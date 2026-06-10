@@ -1,5 +1,6 @@
-# build directories (root only — NOT .github/actions/build-plugin!)
+# build directories (root only — NOT .github/actions/build-plugin or build-aux!)
 /build*/
+!/build-aux
 /.deps/
 *.user
 .DS_Store
