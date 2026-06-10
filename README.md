@@ -11,7 +11,8 @@ broadcast-style **multicamera instant replay** for OBS Studio — open source, c
 | **M1 — Recorder** | Continuous 4-camera recording via [Branch Output](https://github.com/OPENSPHERE-Inc/branch-output), 20-min splits, session folder, web UI with recording control | ✅ implemented (untested in real OBS) |
 | **M2 — Playback** | "Replay A"/"Replay B" OBS sources, synced master timeline across angles, speed 0–100%, reverse, frame-step, position bar, A/B linking | ✅ implemented (untested in real OBS) |
 | **M3 — Events + multiview** | 20 event lists, mark in/out + −5/−10/−20 presets, Live/Recorded modes, per-event angles/notes/speed, play last/selected **to output** (auto scene switch & return), MJPEG multiview (4 cams + A/B) in the browser | ✅ implemented (untested in real OBS) |
-| M4 — Full parity | Highlight reel transitions + music, MP4 export, WebHID/MIDI controllers, loop, 8 cameras, audio playback | ⏳ |
+| **M4 — Export, loop, music, shortcuts** | MP4 clip export (stream-copy, instant, works while recording), Loop, music source unmute during playback, Delete All, keyboard shortcuts | ✅ implemented (untested in real OBS) |
+| M5 — Remaining parity | Audio in replay playback, overlap transitions between events, WebHID/MIDI controllers, 8 cameras, WebRTC previews | ⏳ |
 
 ## How it works (M1)
 
@@ -86,8 +87,22 @@ M2 plays back **completed** segments (after a stop or a 20-min split).
   automatically when the event ends. **Play Events** does the same for the
   selected events back-to-back.
 
-Not yet in M3: audio playback, transitions between events, loop, music,
-export — these are M4.
+### M4 usage
+
+- **Export Clips** exports the selected events (or the last event) as MP4 into
+  `<session>/export/` — stream-copy, no re-encode, works while recording. The
+  clip starts at the keyframe at/before the In point (≤1s pre-roll, 1s GOP).
+  Limitation: an event must not span a 20-minute file split.
+- **Loop** repeats the playing selection; **🎵** unmutes the *Music source*
+  configured in settings during event playback and mutes it after.
+- **Delete All** (settings) wipes recordings + events, keeps configuration —
+  the reference controller behaviour for reusing the same session per game.
+- Keyboard shortcuts: `Space` play/pause · `←/→` frame step (`Shift` = ±10) ·
+  `I/O` mark in/out · `5/6/7` = −5/−10/−20 · `1–4` angle · `P` play last ·
+  `D` direction · `N` jump to now · `L` Live/Recorded.
+
+Not yet implemented (M5): audio in replay playback, overlap transitions
+between events, WebHID/MIDI hardware controllers, 8 cameras.
 
 ## License
 

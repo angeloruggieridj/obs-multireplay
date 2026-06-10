@@ -5,9 +5,10 @@ SPDX-License-Identifier: GPL-2.0-or-later
 */
 
 #include "event-store.hpp"
-#include "plugin-support.h"
 
+// obs-module.h must come before plugin-support.h (MSVC blogva linkage).
 #include <obs-module.h>
+#include "plugin-support.h"
 
 #include <algorithm>
 #include <filesystem>

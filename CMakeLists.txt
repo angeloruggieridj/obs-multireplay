@@ -70,6 +70,7 @@ target_sources(
     src/event-store.cpp
     src/playback-coordinator.cpp
     src/preview.cpp
+    src/export.cpp
 )
 
 set_target_properties_plugin(${CMAKE_PROJECT_NAME} PROPERTIES OUTPUT_NAME ${_name})

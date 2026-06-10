@@ -43,6 +43,7 @@ struct Config {
 	std::string videoEncoderId; // "" = auto-detect best hardware encoder
 	std::string recFormat = "hybrid_mp4";
 	std::string outputSceneName; // scene switched to program on "to output"
+	std::string musicSourceName; // OBS audio source unmuted during playback
 	std::array<CameraConfig, kMaxCameras> cameras;
 };
 
@@ -67,6 +68,10 @@ public:
 	bool startRecording(std::string &errorOut);
 	bool stopRecording();
 	bool isRecording() const { return recording_; }
+
+	// the reference controller "Delete All": wipe recordings + events in the session folder,
+	// keep all settings. Refuses while recording.
+	bool deleteAllSession(std::string &errorOut);
 
 	// --- Config ---
 	Config getConfig() const;

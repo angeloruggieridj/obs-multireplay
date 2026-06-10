@@ -6,6 +6,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "web-server.hpp"
 #include "event-store.hpp"
+#include "export.hpp"
 #include "playback-coordinator.hpp"
 #include "preview.hpp"
 #include "replay-core.hpp"
@@ -531,6 +532,98 @@ void WebServer::setupRoutes()
 			      coordinator.stopEvents();
 			      okResponse(res);
 		      });
+
+	// --- M4: loop / music / Delete All / export clips ---
+	server_->Post("/api/play/loop", [&coordinator](
+						const httplib::Request &req,
+						httplib::Response &res) {
+		obs_data_t *body =
+			obs_data_create_from_json(req.body.c_str());
+		if (!body) {
+			errorResponse(res, "invalid JSON");
+			return;
+		}
+		coordinator.setLoop(obs_data_get_bool(body, "enabled"));
+		obs_data_release(body);
+		okResponse(res);
+	});
+	server_->Post("/api/play/music", [&coordinator](
+						 const httplib::Request &req,
+						 httplib::Response &res) {
+		obs_data_t *body =
+			obs_data_create_from_json(req.body.c_str());
+		if (!body) {
+			errorResponse(res, "invalid JSON");
+			return;
+		}
+		coordinator.setMusicEnabled(
+			obs_data_get_bool(body, "enabled"));
+		obs_data_release(body);
+		okResponse(res);
+	});
+	server_->Get("/api/play/flags",
+		     [&coordinator](const httplib::Request &,
+				    httplib::Response &res) {
+			     obs_data_t *d = obs_data_create();
+			     obs_data_set_bool(d, "loop",
+					       coordinator.loop());
+			     obs_data_set_bool(d, "music",
+					       coordinator.musicEnabled());
+			     jsonResponse(res, obs_data_get_json(d));
+			     obs_data_release(d);
+		     });
+
+	server_->Post("/api/session/deleteAll",
+		      [&core, &engine](const httplib::Request &,
+				       httplib::Response &res) {
+			      std::string err;
+			      if (!core.deleteAllSession(err)) {
+				      errorResponse(res, err);
+				      return;
+			      }
+			      EventStore::instance().clearAll();
+			      engine.clearSession();
+			      okResponse(res);
+		      });
+
+	server_->Post("/api/export/event", [](const httplib::Request &req,
+					      httplib::Response &res) {
+		obs_data_t *body =
+			obs_data_create_from_json(req.body.c_str());
+		if (!body) {
+			errorResponse(res, "invalid JSON");
+			return;
+		}
+		int id = (int)obs_data_get_int(body, "id");
+		int angle = (int)obs_data_get_int(body, "angle"); // 0 = auto
+		std::string folder = obs_data_get_string(body, "folder");
+		obs_data_release(body);
+		std::string err;
+		if (ExportManager::instance().exportEvent(id, angle, folder,
+							  err))
+			okResponse(res);
+		else
+			errorResponse(res, err);
+	});
+	server_->Post("/api/export/last", [](const httplib::Request &req,
+					     httplib::Response &res) {
+		obs_data_t *body = obs_data_create_from_json(
+			req.body.empty() ? "{}" : req.body.c_str());
+		std::string folder =
+			body ? obs_data_get_string(body, "folder") : "";
+		if (body)
+			obs_data_release(body);
+		std::string err;
+		if (ExportManager::instance().exportLastEvent(folder, err))
+			okResponse(res);
+		else
+			errorResponse(res, err);
+	});
+	server_->Get("/api/export/status",
+		     [](const httplib::Request &, httplib::Response &res) {
+			     jsonResponse(res, ExportManager::instance()
+						       .statusJson());
+		     });
 
 	// --- Multiview previews: MJPEG stream + JPEG snapshot ---
 	auto slotFromName = [](const std::string &name) -> int {

@@ -86,6 +86,8 @@ bool PlaybackCoordinator::playEvents(const std::vector<int> &eventIds,
 
 	if (toOutput_)
 		switchToReplayScene();
+	if (musicEnabled_)
+		setMusicMuted(false);
 	startNext();
 	return true;
 }
@@ -109,6 +111,7 @@ void PlaybackCoordinator::stopEvents()
 	queue_.clear();
 	if (active_ && toOutput_)
 		restorePreviousScene();
+	setMusicMuted(true);
 	active_ = false;
 }
 
@@ -160,12 +163,31 @@ void PlaybackCoordinator::onEventFinished()
 		return;
 	queuePos_++;
 	if (queuePos_ < queue_.size()) {
-		// hard cut between events in M3; transitions are M4
+		// hard cut between events (overlap transitions: future work)
+		startNext();
+	} else if (loop_ && !queue_.empty()) {
+		// the reference controller Loop: restart the selection
+		queuePos_ = 0;
+		inheritedSpeed_ = -1.0;
 		startNext();
 	} else {
 		active_ = false;
 		if (toOutput_)
 			restorePreviousScene();
+		setMusicMuted(true);
+	}
+}
+
+void PlaybackCoordinator::setMusicMuted(bool muted)
+{
+	std::string name =
+		ReplayCore::instance().getConfig().musicSourceName;
+	if (name.empty())
+		return;
+	obs_source_t *src = obs_get_source_by_name(name.c_str());
+	if (src) {
+		obs_source_set_muted(src, muted);
+		obs_source_release(src);
 	}
 }
 

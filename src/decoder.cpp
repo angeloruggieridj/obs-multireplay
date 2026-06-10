@@ -5,9 +5,12 @@ SPDX-License-Identifier: GPL-2.0-or-later
 */
 
 #include "decoder.hpp"
-#include "plugin-support.h"
 
+// obs-module.h must come before plugin-support.h: on MSVC, declaring
+// blogva() without dllimport before util/base.h declares it with dllimport
+// is a hard error (C2375).
 #include <obs-module.h>
+#include "plugin-support.h"
 
 extern "C" {
 #include <libavcodec/avcodec.h>

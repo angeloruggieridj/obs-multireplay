@@ -139,7 +139,7 @@
       <button class="angle ang-b" data-ch="B" data-angle="3">3</button>
       <button class="angle ang-b" data-ch="B" data-angle="4">4</button>
     </div>
-    <button disabled>Export Clips <span class="m-badge">M4</span></button>
+    <button id="exportBtn" title="Export selected events (or last event) as MP4 into the session export/ folder">Export Clips</button>
   </div>
 
   <!-- ④ Transport -->
@@ -152,8 +152,8 @@
     <button id="playLast" title="Instantly play last event to output (the reference controller ↺)">↺</button>
     <button id="playSel" title="Play selected events to output">Play Events</button>
     <button id="stopEv" title="Stop event playback">⏹</button>
-    <button disabled>Loop <span class="m-badge">M4</span></button>
-    <button disabled>🎵 <span class="m-badge">M4</span></button>
+    <button id="loopBtn" title="Loop the playing selection">Loop</button>
+    <button id="musicBtn" title="Unmute the configured music source during playback">🎵</button>
     <div class="spacer"></div>
     <span class="timecode" id="timecode">--:--:--</span>
     <span class="group">
@@ -194,7 +194,11 @@
       <input type="number" id="videoBitrateKbps" min="1000" step="500" style="width:84px"></div>
     <div class="field"><span>Video encoder</span>
       <select id="videoEncoderId"><option value="">Auto (hardware first)</option></select></div>
+    <div class="field"><span>Music source (OBS audio source)</span>
+      <input type="text" id="musicSourceName" size="14" placeholder="ReplayMusic"></div>
     <button id="saveBtn">Save settings</button>
+    <button id="deleteAllBtn" title="the reference controller Delete All: wipe recordings + events, keep settings"
+            style="border-color:var(--red);color:#ff8a80">Delete All</button>
   </div>
 
   <div class="statusline" id="statusline">Connecting…</div>
@@ -348,6 +352,57 @@ $("playSel").addEventListener("click", () =>
        { toOutput: true, ids: [...selectedIds].map(id => ({ id })) }));
 $("stopEv").addEventListener("click", () => post("/api/play/stop"));
 
+// ---------- M4: loop / music / export / delete all ----------
+let flags = { loop: false, music: false };
+async function refreshFlags() {
+  try { flags = await api("/api/play/flags"); } catch { return; }
+  $("loopBtn").classList.toggle("on", flags.loop);
+  $("musicBtn").classList.toggle("on", flags.music);
+}
+$("loopBtn").addEventListener("click", () =>
+  post("/api/play/loop", { enabled: !flags.loop }).then(refreshFlags));
+$("musicBtn").addEventListener("click", () =>
+  post("/api/play/music", { enabled: !flags.music }).then(refreshFlags));
+
+$("exportBtn").addEventListener("click", async () => {
+  if (selectedIds.size === 0) {
+    const r = await post("/api/export/last");
+    if (r.ok) setStatus("Export of last event started → export/ folder.");
+    return;
+  }
+  for (const id of selectedIds) await post("/api/export/event", { id });
+  setStatus(`Export of ${selectedIds.size} event(s) started → export/ folder.`);
+});
+
+$("deleteAllBtn").addEventListener("click", async () => {
+  if (!confirm("Delete ALL recordings and events in the session folder?\n" +
+               "Settings, music and tags are kept (the reference controller Delete All)."))
+    return;
+  const r = await post("/api/session/deleteAll");
+  if (r.ok) { selectedIds.clear(); setStatus("Session wiped."); refreshEvents(); }
+});
+
+// ---------- M4: keyboard shortcuts (broadcast-style) ----------
+document.addEventListener("keydown", (e) => {
+  const t = e.target.tagName;
+  if (t === "INPUT" || t === "SELECT" || t === "TEXTAREA") return;
+  const k = e.key.toLowerCase();
+  if (e.code === "Space") { e.preventDefault(); cmd("/api/transport/playPause"); }
+  else if (e.key === "ArrowLeft") cmd("/api/transport/jumpFrames", { value: e.shiftKey ? -10 : -1 });
+  else if (e.key === "ArrowRight") cmd("/api/transport/jumpFrames", { value: e.shiftKey ? 10 : 1 });
+  else if (k === "i") post("/api/events/markIn").then(refreshEvents);
+  else if (k === "o") post("/api/events/markOut").then(refreshEvents);
+  else if (k === "l") post("/api/events/mode", { live: !evState.live }).then(refreshEvents);
+  else if (k === "p") post("/api/play/last", { toOutput: true });
+  else if (k === "d") cmd("/api/transport/changeDirection");
+  else if (k === "n") cmd("/api/transport/jumpToNow");
+  else if (["1","2","3","4"].includes(k))
+    post("/api/channel/angle", { channel: channelTarget, angle: +k });
+  else if (k === "5") post("/api/events/markInOut", { seconds: 5 }).then(refreshEvents);
+  else if (k === "6") post("/api/events/markInOut", { seconds: 10 }).then(refreshEvents);
+  else if (k === "7") post("/api/events/markInOut", { seconds: 20 }).then(refreshEvents);
+});
+
 // ---------- recording / status ----------
 async function loadSources() {
   const data = await api("/api/sources");
@@ -375,6 +430,7 @@ async function loadConfig() {
   const cfg = await api("/api/config");
   $("sessionFolder").value = cfg.sessionFolder || "";
   $("outputSceneName").value = cfg.outputSceneName || "";
+  $("musicSourceName").value = cfg.musicSourceName || "";
   $("splitMinutes").value = cfg.splitMinutes || 20;
   $("videoBitrateKbps").value = cfg.videoBitrateKbps || 12000;
   $("videoEncoderId").value = cfg.videoEncoderId || "";
@@ -384,6 +440,7 @@ $("saveBtn").addEventListener("click", async () => {
   const r = await post("/api/config", {
     sessionFolder: $("sessionFolder").value.trim(),
     outputSceneName: $("outputSceneName").value.trim(),
+    musicSourceName: $("musicSourceName").value.trim(),
     splitMinutes: +$("splitMinutes").value,
     videoBitrateKbps: +$("videoBitrateKbps").value,
     videoEncoderId: $("videoEncoderId").value,
@@ -494,6 +551,7 @@ function tickClock() {
   await loadConfig();
   refreshStatus();
   refreshEvents();
+  refreshFlags();
   setInterval(refreshStatus, 2000);
   setInterval(refreshEvents, 1500);
   setInterval(refreshTransport, 400);

@@ -221,6 +221,41 @@ bool ReplayCore::stopRecording()
 	return true;
 }
 
+bool ReplayCore::deleteAllSession(std::string &errorOut)
+{
+	std::lock_guard<std::mutex> lock(mutex_);
+	if (recording_) {
+		errorOut = "stop recording first";
+		return false;
+	}
+	if (config_.sessionFolder.empty()) {
+		errorOut = "no session folder configured";
+		return false;
+	}
+
+	namespace fs = std::filesystem;
+	std::error_code ec;
+	int removed = 0;
+	for (const auto &entry :
+	     fs::directory_iterator(config_.sessionFolder, ec)) {
+		if (!entry.is_regular_file())
+			continue;
+		std::string name = entry.path().filename().string();
+		std::string ext = entry.path().extension().string();
+		bool isRecording = name.rfind("cam", 0) == 0 &&
+				   (ext == ".mp4" || ext == ".mov");
+		bool isMeta = name == "session.json" ||
+			      name == "events.json";
+		if (isRecording || isMeta) {
+			fs::remove(entry.path(), ec);
+			if (!ec)
+				removed++;
+		}
+	}
+	obs_log(LOG_INFO, "Delete All: removed %d file(s)", removed);
+	return true;
+}
+
 Config ReplayCore::getConfig() const
 {
 	std::lock_guard<std::mutex> lock(mutex_);
@@ -388,6 +423,8 @@ void ReplayCore::loadConfig()
 	config_.videoEncoderId = obs_data_get_string(data, "videoEncoderId");
 	config_.outputSceneName =
 		obs_data_get_string(data, "outputSceneName");
+	config_.musicSourceName =
+		obs_data_get_string(data, "musicSourceName");
 	const char *fmt = obs_data_get_string(data, "recFormat");
 	if (fmt && *fmt)
 		config_.recFormat = fmt;
@@ -424,6 +461,8 @@ void ReplayCore::saveConfig() const
 			    config_.videoEncoderId.c_str());
 	obs_data_set_string(data, "outputSceneName",
 			    config_.outputSceneName.c_str());
+	obs_data_set_string(data, "musicSourceName",
+			    config_.musicSourceName.c_str());
 	obs_data_set_string(data, "recFormat", config_.recFormat.c_str());
 
 	obs_data_array_t *cams = obs_data_array_create();

@@ -8,6 +8,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "event-store.hpp"
 
+#include <atomic>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -35,18 +36,30 @@ public:
 
 	bool queueActive() const;
 
+	// the reference controller Loop: when on, the queue restarts from the first event.
+	void setLoop(bool loop) { loop_ = loop; }
+	bool loop() const { return loop_; }
+
+	// the reference controller music toggle: unmute the configured OBS audio source while a
+	// queue plays, mute it again at the end.
+	void setMusicEnabled(bool enabled) { musicEnabled_ = enabled; }
+	bool musicEnabled() const { return musicEnabled_; }
+
 private:
 	PlaybackCoordinator() = default;
 	void startNext();        // plays queue_[queuePos_]
 	void onEventFinished();  // stop-at-out callback from the player
 	void switchToReplayScene();
 	void restorePreviousScene();
+	void setMusicMuted(bool muted);
 
 	mutable std::mutex mutex_;
 	std::vector<ReplayEvent> queue_;
 	size_t queuePos_ = 0;
 	bool active_ = false;
 	bool toOutput_ = false;
+	std::atomic<bool> loop_{false};
+	std::atomic<bool> musicEnabled_{false};
 	double inheritedSpeed_ = -1.0; // resolved "--" speed chain
 	std::string previousSceneName_;
 };

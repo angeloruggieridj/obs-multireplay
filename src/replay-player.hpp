@@ -120,6 +120,23 @@ public:
 	void setLinked(bool linked) { linked_ = linked; }
 	bool linked() const { return linked_; }
 
+	// Resolve a master-timeline instant to (file, in-file offset) for an
+	// angle. Used by the clip exporter. False when no session is loaded.
+	bool resolveTime(int camIndex, int64_t masterNs, std::string &pathOut,
+			 int64_t &offsetNsOut) const
+	{
+		return index_ ? index_->resolve(camIndex, masterNs, pathOut,
+						offsetNsOut)
+			      : false;
+	}
+
+	void clearSession()
+	{
+		index_.reset();
+		a_.setIndex(nullptr);
+		b_.setIndex(nullptr);
+	}
+
 	// Apply a transport command to a channel, mirrored to the other
 	// when linked. `id` is 'A' or 'B'.
 	template<typename Fn> bool applyTransport(char id, Fn &&fn)
