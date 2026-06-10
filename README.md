@@ -10,8 +10,8 @@ broadcast-style **multicamera instant replay** for OBS Studio — open source, c
 |---|---|---|
 | **M1 — Recorder** | Continuous 4-camera recording via [Branch Output](https://github.com/OPENSPHERE-Inc/branch-output), 20-min splits, session folder, web UI with recording control | ✅ implemented (untested in real OBS) |
 | **M2 — Playback** | "Replay A"/"Replay B" OBS sources, synced master timeline across angles, speed 0–100%, reverse, frame-step, position bar, A/B linking | ✅ implemented (untested in real OBS) |
-| M3 — Events + full UI | 20 event lists, mark in/out, −5/−10/−20, Live/Recorded modes, multiview | ⏳ |
-| M4 — Full parity | Highlight reels, music, MP4 export, WebHID/MIDI controllers, 8 cameras | ⏳ |
+| **M3 — Events + multiview** | 20 event lists, mark in/out + −5/−10/−20 presets, Live/Recorded modes, per-event angles/notes/speed, play last/selected **to output** (auto scene switch & return), MJPEG multiview (4 cams + A/B) in the browser | ✅ implemented (untested in real OBS) |
+| M4 — Full parity | Highlight reel transitions + music, MP4 export, WebHID/MIDI controllers, loop, 8 cameras, audio playback | ⏳ |
 
 ## How it works (M1)
 
@@ -69,8 +69,25 @@ Browser (LAN) ⇄ embedded HTTP server (cpp-httplib) ⇄ ReplayCore ⇄ Branch O
    A/B `1 2 3 4` buttons; slow motion with the presets/slider; `◀` toggles
    reverse; `‹ ›` step a single frame.
 
-M2 plays back **completed** segments (after a stop or a 20-min split). Audio
-playback and event-based playback arrive with M3.
+M2 plays back **completed** segments (after a stop or a 20-min split).
+
+### M3 usage
+
+- The **multiview** at the bottom shows live MJPEG previews of the 4 cameras
+  plus the Replay A/B channels; click a camera tile to assign that angle to
+  the controlled channel.
+- **LIVE** (red) marks events "as they happen" while recording; switch it off
+  for Recorded mode, where marks use the position-bar time.
+- **Mark In/Out**, **−5/−10/−20** create events in the selected list (tabs
+  1–20); checkboxes pick the angles, double-click a note to edit it, click the
+  speed cell for a per-event speed ("--" inherits, the reference controller semantics).
+- **↺** plays the last event straight to program: set *Output scene* in the
+  settings (e.g. a scene containing Replay A), OBS switches to it and back
+  automatically when the event ends. **Play Events** does the same for the
+  selected events back-to-back.
+
+Not yet in M3: audio playback, transitions between events, loop, music,
+export — these are M4.
 
 ## License
 

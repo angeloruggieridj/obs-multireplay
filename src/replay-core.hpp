@@ -42,6 +42,7 @@ struct Config {
 	int audioBitrateKbps = kDefaultAudioBitrateKbps;
 	std::string videoEncoderId; // "" = auto-detect best hardware encoder
 	std::string recFormat = "hybrid_mp4";
+	std::string outputSceneName; // scene switched to program on "to output"
 	std::array<CameraConfig, kMaxCameras> cameras;
 };
 
@@ -80,6 +81,11 @@ public:
 	// Best available encoder: hardware first, x264 fallback.
 	std::string pickVideoEncoder() const;
 
+	// Master-timeline "now" while recording (ns since the earliest camera
+	// start of this recording run), -1 when not recording. Used by the
+	// event system in Live mode (the reference controller "as it happens" marking).
+	int64_t masterNowNs() const;
+
 	// Disk space remaining in session folder (bytes), -1 if unknown.
 	int64_t diskFreeBytes() const;
 	// Estimated remaining recording minutes at current aggregate bitrate.
@@ -95,6 +101,7 @@ private:
 	mutable std::mutex mutex_;
 	Config config_;
 	bool recording_ = false;
+	uint64_t sessionStartMinNs_ = 0; // earliest camera start (monotonic)
 	std::array<CameraStatus, kMaxCameras> cameraStatus_{};
 	obs_hotkey_id startHotkey_ = OBS_INVALID_HOTKEY_ID;
 	obs_hotkey_id stopHotkey_ = OBS_INVALID_HOTKEY_ID;

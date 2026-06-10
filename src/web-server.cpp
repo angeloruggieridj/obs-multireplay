@@ -5,6 +5,9 @@ SPDX-License-Identifier: GPL-2.0-or-later
 */
 
 #include "web-server.hpp"
+#include "event-store.hpp"
+#include "playback-coordinator.hpp"
+#include "preview.hpp"
 #include "replay-core.hpp"
 #include "replay-player.hpp"
 #include "plugin-support.h"
@@ -334,6 +337,266 @@ void WebServer::setupRoutes()
 		obs_data_release(body);
 		okResponse(res);
 	});
+
+	// =====================================================================
+	// M3: events, marking, event playback, multiview previews
+	// =====================================================================
+	auto &store = EventStore::instance();
+	auto &coordinator = PlaybackCoordinator::instance();
+
+	// Current mark time: Live mode = recording "now"; Recorded mode =
+	// channel A playhead (the reference controller Live/Recorded semantics).
+	auto markTimeNs = [&core, &engine, &store]() -> int64_t {
+		if (store.liveMode()) {
+			int64_t now = core.masterNowNs();
+			if (now >= 0)
+				return now;
+		}
+		return engine.channelA().position();
+	};
+
+	server_->Get("/api/events", [&store](const httplib::Request &req,
+					     httplib::Response &res) {
+		int list = store.selectedList();
+		if (req.has_param("list"))
+			list = std::stoi(req.get_param_value("list"));
+		jsonResponse(res, store.listJson(list));
+	});
+
+	server_->Post("/api/events/list", [&store](const httplib::Request &req,
+						   httplib::Response &res) {
+		obs_data_t *body =
+			obs_data_create_from_json(req.body.c_str());
+		if (!body) {
+			errorResponse(res, "invalid JSON");
+			return;
+		}
+		store.selectList((int)obs_data_get_int(body, "list"));
+		obs_data_release(body);
+		okResponse(res);
+	});
+
+	server_->Post("/api/events/mode", [&store](const httplib::Request &req,
+						   httplib::Response &res) {
+		obs_data_t *body =
+			obs_data_create_from_json(req.body.c_str());
+		if (!body) {
+			errorResponse(res, "invalid JSON");
+			return;
+		}
+		store.setLiveMode(obs_data_get_bool(body, "live"));
+		obs_data_release(body);
+		okResponse(res);
+	});
+
+	server_->Post("/api/events/markIn",
+		      [&store, markTimeNs](const httplib::Request &,
+					   httplib::Response &res) {
+			      store.markIn(markTimeNs());
+			      okResponse(res);
+		      });
+	server_->Post("/api/events/markOut",
+		      [&store, markTimeNs](const httplib::Request &,
+					   httplib::Response &res) {
+			      if (store.markOut(markTimeNs()))
+				      okResponse(res);
+			      else
+				      errorResponse(res, "no open event");
+		      });
+	server_->Post("/api/events/markInOut",
+		      [&store, markTimeNs](const httplib::Request &req,
+					   httplib::Response &res) {
+			      obs_data_t *body = obs_data_create_from_json(
+				      req.body.c_str());
+			      int seconds =
+				      body ? (int)obs_data_get_int(body,
+								   "seconds")
+					   : 5;
+			      if (body)
+				      obs_data_release(body);
+			      store.markInOut(markTimeNs(),
+					      seconds > 0 ? seconds : 5);
+			      okResponse(res);
+		      });
+	server_->Post("/api/events/markCancel",
+		      [&store](const httplib::Request &,
+			       httplib::Response &res) {
+			      store.markCancel();
+			      okResponse(res);
+		      });
+
+	// Generic event edit. Body: {id, op, ...}
+	// ops: toggleAngle{angle} | note{angle,text} | speed{value} |
+	//      movePoint{in,deltaNs} | moveToList{list} | remove | duplicate
+	server_->Post("/api/events/edit", [&store](const httplib::Request &req,
+						   httplib::Response &res) {
+		obs_data_t *body =
+			obs_data_create_from_json(req.body.c_str());
+		if (!body) {
+			errorResponse(res, "invalid JSON");
+			return;
+		}
+		int id = (int)obs_data_get_int(body, "id");
+		std::string op = obs_data_get_string(body, "op");
+		bool ok = false;
+		if (op == "toggleAngle")
+			ok = store.toggleAngle(
+				id, (int)obs_data_get_int(body, "angle"));
+		else if (op == "note")
+			ok = store.setAngleNote(
+				id, (int)obs_data_get_int(body, "angle"),
+				obs_data_get_string(body, "text"));
+		else if (op == "speed")
+			ok = store.setSpeed(
+				id, obs_data_get_double(body, "value"));
+		else if (op == "movePoint")
+			ok = store.movePoint(
+				id, obs_data_get_bool(body, "in"),
+				obs_data_get_int(body, "deltaNs"));
+		else if (op == "moveToList")
+			ok = store.moveToList(
+				id, (int)obs_data_get_int(body, "list"));
+		else if (op == "remove")
+			ok = store.remove(id);
+		else if (op == "duplicate")
+			ok = store.duplicate(id) != 0;
+		obs_data_release(body);
+		if (ok)
+			okResponse(res);
+		else
+			errorResponse(res, "edit failed (unknown id or op)");
+	});
+
+	// --- Event playback (the reference controller PlayLastEvent / PlaySelectedEvent /
+	//     ...ToOutput / StopEvents) ---
+	auto parsePlayBody = [](const std::string &body,
+				std::vector<int> &idsOut, bool &toOutputOut) {
+		obs_data_t *data = obs_data_create_from_json(
+			body.empty() ? "{}" : body.c_str());
+		if (!data)
+			return;
+		toOutputOut = obs_data_get_bool(data, "toOutput");
+		obs_data_array_t *ids = obs_data_get_array(data, "ids");
+		if (ids) {
+			size_t n = obs_data_array_count(ids);
+			for (size_t i = 0; i < n; i++) {
+				obs_data_t *item =
+					obs_data_array_item(ids, i);
+				idsOut.push_back((int)obs_data_get_int(
+					item, "id"));
+				obs_data_release(item);
+			}
+			obs_data_array_release(ids);
+		}
+		obs_data_release(data);
+	};
+
+	server_->Post("/api/play/selected",
+		      [&coordinator, ensureSession, parsePlayBody](
+			      const httplib::Request &req,
+			      httplib::Response &res) {
+			      std::string err;
+			      if (!ensureSession(err)) {
+				      errorResponse(res, err);
+				      return;
+			      }
+			      std::vector<int> ids;
+			      bool toOutput = false;
+			      parsePlayBody(req.body, ids, toOutput);
+			      if (coordinator.playEvents(ids, toOutput, err))
+				      okResponse(res);
+			      else
+				      errorResponse(res, err);
+		      });
+	server_->Post("/api/play/last",
+		      [&coordinator, ensureSession, parsePlayBody](
+			      const httplib::Request &req,
+			      httplib::Response &res) {
+			      std::string err;
+			      if (!ensureSession(err)) {
+				      errorResponse(res, err);
+				      return;
+			      }
+			      std::vector<int> ids;
+			      bool toOutput = false;
+			      parsePlayBody(req.body, ids, toOutput);
+			      if (coordinator.playLastEvent(toOutput, err))
+				      okResponse(res);
+			      else
+				      errorResponse(res, err);
+		      });
+	server_->Post("/api/play/stop",
+		      [&coordinator](const httplib::Request &,
+				     httplib::Response &res) {
+			      coordinator.stopEvents();
+			      okResponse(res);
+		      });
+
+	// --- Multiview previews: MJPEG stream + JPEG snapshot ---
+	auto slotFromName = [](const std::string &name) -> int {
+		if (name == "a")
+			return kPreviewSlotA;
+		if (name == "b")
+			return kPreviewSlotB;
+		if (name.size() == 4 && name.rfind("cam", 0) == 0)
+			return name[3] - '1'; // cam1..cam4 -> 0..3
+		return -1;
+	};
+
+	server_->Get(R"(/preview/(cam[1-4]|a|b)\.jpg)",
+		     [slotFromName](const httplib::Request &req,
+				    httplib::Response &res) {
+			     int slot = slotFromName(req.matches[1].str());
+			     uint64_t seq = 0;
+			     auto jpeg = PreviewManager::instance().latest(
+				     slot, seq);
+			     if (!jpeg || jpeg->empty()) {
+				     res.status = 404;
+				     return;
+			     }
+			     res.set_content((const char *)jpeg->data(),
+					     jpeg->size(), "image/jpeg");
+		     });
+
+	server_->Get(
+		R"(/preview/(cam[1-4]|a|b))",
+		[slotFromName](const httplib::Request &req,
+			       httplib::Response &res) {
+			int slot = slotFromName(req.matches[1].str());
+			if (slot < 0) {
+				res.status = 404;
+				return;
+			}
+			res.set_content_provider(
+				"multipart/x-mixed-replace; boundary=mrframe",
+				[slot, lastSeq = (uint64_t)0](
+					size_t,
+					httplib::DataSink &sink) mutable {
+					uint64_t seq = 0;
+					auto jpeg =
+						PreviewManager::instance()
+							.waitNext(slot,
+								  lastSeq,
+								  seq, 1000);
+					if (!jpeg)
+						return sink.is_writable();
+					lastSeq = seq;
+					char head[128];
+					int n = snprintf(
+						head, sizeof(head),
+						"--mrframe\r\nContent-Type: "
+						"image/jpeg\r\n"
+						"Content-Length: %zu\r\n\r\n",
+						jpeg->size());
+					if (!sink.write(head, (size_t)n))
+						return false;
+					if (!sink.write(
+						    (const char *)jpeg->data(),
+						    jpeg->size()))
+						return false;
+					return sink.write("\r\n", 2);
+				});
+		});
 
 	// --- Static UI ---
 	char *uiPath = obs_module_file("ui");

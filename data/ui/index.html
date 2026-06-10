@@ -13,15 +13,15 @@
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--text);
          font: 13px/1.45 system-ui, "Segoe UI", sans-serif; }
-  .wrap { max-width: 1240px; margin: 0 auto; padding: 10px; }
+  .wrap { max-width: 1280px; margin: 0 auto; padding: 10px; }
 
   .toolbar { display: flex; align-items: center; gap: 8px; padding: 8px;
              background: var(--panel); border: 1px solid var(--border);
              border-radius: 6px 6px 0 0; }
   .tabs { display: flex; gap: 2px; flex-wrap: wrap; }
-  .tab { min-width: 30px; text-align: center; padding: 4px 6px; cursor: pointer;
+  .tab { min-width: 28px; text-align: center; padding: 4px 6px; cursor: pointer;
          background: var(--panel2); border: 1px solid var(--border); border-radius: 3px;
-         color: var(--muted); }
+         color: var(--muted); user-select: none; }
   .tab.active { background: var(--blue); color: #fff; }
   .spacer { flex: 1; }
   input[type=text], input[type=number], select {
@@ -31,29 +31,35 @@
            border-radius: 4px; padding: 6px 12px; cursor: pointer; }
   button:hover:not(:disabled) { border-color: var(--muted); }
   button:disabled { opacity: .35; cursor: not-allowed; }
+  button.on { background: var(--accent); border-color: var(--accent2); color: #fff; }
   button.live { font-weight: 700; padding: 6px 18px; }
   button.live.on { background: var(--red); border-color: var(--red); color: #fff; }
 
   .grid { background: var(--panel); border: 1px solid var(--border); border-top: 0;
-          min-height: 150px; }
+          max-height: 220px; overflow-y: auto; }
   table { width: 100%; border-collapse: collapse; }
-  th, td { padding: 4px 8px; border-bottom: 1px solid var(--border); text-align: left;
-           font-variant-numeric: tabular-nums; }
-  th { background: #20324f; color: #cdd6e4; font-weight: 600; }
-  .empty { padding: 28px; text-align: center; color: var(--muted); }
+  th, td { padding: 3px 8px; border-bottom: 1px solid var(--border); text-align: left;
+           font-variant-numeric: tabular-nums; white-space: nowrap; }
+  th { background: #20324f; color: #cdd6e4; font-weight: 600; position: sticky; top: 0; }
+  tr.evrow { cursor: pointer; }
+  tr.evrow.sel { background: #5a3517; outline: 1px solid var(--sel); }
+  tr.evrow.open td { color: var(--orange); }
+  td .note { color: var(--muted); margin-left: 4px; cursor: text; }
+  td .speedcell { cursor: pointer; text-decoration: underline dotted; }
+  .empty { padding: 20px; text-align: center; color: var(--muted); }
+  .delbtn { padding: 0 6px; font-size: 11px; color: var(--muted); background: none; border: none; }
+  .delbtn:hover { color: var(--red); }
 
   .row { display: flex; align-items: center; gap: 8px; padding: 8px;
          background: var(--panel); border: 1px solid var(--border); border-top: 0;
          flex-wrap: wrap; }
-  .group { display: flex; align-items: center; gap: 4px; }
   .lbl { color: var(--muted); margin-right: 2px; }
+  .group { display: flex; align-items: center; gap: 4px; }
   .angle { min-width: 34px; }
-  .angle.on { background: var(--accent); border-color: var(--accent2); color: #fff; }
-  .speed.on { background: var(--accent); border-color: var(--accent2); color: #fff; }
 
   .transport { display: flex; align-items: center; gap: 8px; padding: 10px 8px;
                background: var(--panel); border: 1px solid var(--border); border-top: 0;
-               border-radius: 0 0 6px 6px; flex-wrap: wrap; }
+               flex-wrap: wrap; }
   .rec { width: 44px; height: 34px; border-radius: 4px; font-size: 16px; }
   .rec.on { background: var(--red); border-color: var(--red); color: #fff;
             animation: pulse 1.2s infinite; }
@@ -61,16 +67,16 @@
   .timecode { font-size: 22px; font-weight: 700; letter-spacing: 1px;
               font-variant-numeric: tabular-nums; padding: 0 12px; }
 
-  .cams { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-top: 10px; }
-  .cam { background: var(--panel); border: 1px solid var(--border); border-radius: 6px;
-         padding: 8px; }
-  .cam h3 { margin: 0 0 6px; font-size: 12px; color: var(--muted); font-weight: 600;
-            text-transform: uppercase; letter-spacing: .5px; }
-  .cam select { width: 100%; }
-  .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%;
-         background: #555; margin-right: 5px; }
-  .dot.rec { background: var(--red); }
-  .dot.ok { background: var(--accent2); }
+  .mv { display: grid; grid-template-columns: repeat(6, 1fr); gap: 8px; margin-top: 10px; }
+  .tile { position: relative; background: #000; border: 1px solid var(--border);
+          border-radius: 6px; overflow: hidden; aspect-ratio: 16/9; cursor: pointer; }
+  .tile img { width: 100%; height: 100%; object-fit: contain; display: block; }
+  .tile .tag { position: absolute; left: 6px; top: 6px; background: rgba(0,0,0,.65);
+               padding: 1px 7px; border-radius: 3px; font-size: 11px; font-weight: 700; }
+  .tile.recdot .tag::after { content: " ●"; color: var(--red); }
+  .tile.chA .tag { outline: 2px solid var(--accent2); }
+  .tile .noimg { position: absolute; inset: 0; display: flex; align-items: center;
+                 justify-content: center; color: var(--muted); font-size: 11px; }
 
   .settings { background: var(--panel); border: 1px solid var(--border); border-radius: 6px;
               padding: 10px; margin-top: 10px; display: flex; gap: 14px; flex-wrap: wrap;
@@ -82,6 +88,7 @@
   .warn { color: #ffb74d; }
   .m-badge { font-size: 10px; background: var(--blue); color: #fff; padding: 1px 5px;
              border-radius: 3px; vertical-align: middle; margin-left: 4px; }
+  @media (max-width: 1000px) { .mv { grid-template-columns: repeat(3, 1fr); } }
 </style>
 </head>
 <body>
@@ -91,28 +98,29 @@
   <div class="toolbar">
     <div class="tabs" id="tabs"></div>
     <div class="spacer"></div>
-    <input type="text" placeholder="Search events… (M3)" disabled>
-    <button class="live" id="liveBtn" disabled title="Live/Recorded mode — M3">LIVE</button>
+    <input type="text" id="search" placeholder="🔍 Search events…" size="18">
+    <button class="live" id="liveBtn" title="Live = mark 'as it happens'. Off = Recorded mode (marks use the position bar time)">LIVE</button>
   </div>
 
-  <!-- ② Event grid (M3) -->
+  <!-- ② Event grid -->
   <div class="grid">
     <table>
       <thead><tr>
-        <th style="width:50px">ID</th><th>In</th><th>Out</th><th>Duration</th>
-        <th style="width:60px">Speed</th><th>1</th><th>2</th><th>3</th><th>4</th>
+        <th style="width:46px">ID</th><th>In</th><th>Out</th><th>Duration</th>
+        <th style="width:62px">Speed</th><th>1</th><th>2</th><th>3</th><th>4</th><th></th>
       </tr></thead>
-      <tbody></tbody>
+      <tbody id="evbody"></tbody>
     </table>
-    <div class="empty">Event lists arrive in Milestone 3 — this build is the M1 recorder.</div>
+    <div class="empty" id="evempty">No events in this list yet — use Mark In/Out or −5/−10/−20.</div>
   </div>
 
-  <!-- ③ Marking + angles (M3) -->
+  <!-- ③ Marking + angles -->
   <div class="row">
     <span class="lbl">Mark</span>
-    <button disabled>In</button><button disabled>Out</button>
-    <button disabled>−5</button><button disabled>−10</button><button disabled>−20</button>
-    <span class="m-badge">M3</span>
+    <button id="markIn">In</button><button id="markOut">Out</button>
+    <button id="markCancel" title="Cancel open event">✕</button>
+    <button data-preset="5">−5</button><button data-preset="10">−10</button>
+    <button data-preset="20">−20</button>
     <div class="spacer"></div>
     <div class="group">
       <button id="linkAB" class="on" title="Linked A|B">A|B</button>
@@ -141,9 +149,11 @@
     <button id="dirBtn" title="Change direction (reverse)">◀</button>
     <button id="stepBack" title="Frame step −1">‹</button>
     <button id="stepFwd" title="Frame step +1">›</button>
-    <button disabled title="Play last event — M3">↺</button>
-    <button disabled>Play Events ▾</button>
-    <button disabled>Loop</button><button disabled>🎵</button>
+    <button id="playLast" title="Instantly play last event to output (the reference controller ↺)">↺</button>
+    <button id="playSel" title="Play selected events to output">Play Events</button>
+    <button id="stopEv" title="Stop event playback">⏹</button>
+    <button disabled>Loop <span class="m-badge">M4</span></button>
+    <button disabled>🎵 <span class="m-badge">M4</span></button>
     <div class="spacer"></div>
     <span class="timecode" id="timecode">--:--:--</span>
     <span class="group">
@@ -165,17 +175,23 @@
     <button id="loadSession" title="(Re)index the session folder for playback">⟳ Load session</button>
   </div>
 
-  <!-- ⑥ Cameras -->
-  <div class="cams" id="cams"></div>
+  <!-- ⑥ Multiview: 4 cameras + Replay A/B (MJPEG) -->
+  <div class="mv" id="mv"></div>
 
   <!-- Settings -->
   <div class="settings">
     <div class="field"><span>Session folder (SSD)</span>
-      <input type="text" id="sessionFolder" size="42" placeholder="e.g. D:\replay-session"></div>
+      <input type="text" id="sessionFolder" size="34" placeholder="e.g. D:\replay-session"></div>
+    <div class="field"><span>Camera 1</span><select id="cam0"></select></div>
+    <div class="field"><span>Camera 2</span><select id="cam1"></select></div>
+    <div class="field"><span>Camera 3</span><select id="cam2"></select></div>
+    <div class="field"><span>Camera 4</span><select id="cam3"></select></div>
+    <div class="field"><span>Output scene (replay → program)</span>
+      <input type="text" id="outputSceneName" size="18" placeholder="REPLAY"></div>
     <div class="field"><span>Split (min)</span>
-      <input type="number" id="splitMinutes" min="1" max="60" style="width:70px"></div>
-    <div class="field"><span>Video bitrate (kbps)</span>
-      <input type="number" id="videoBitrateKbps" min="1000" step="500" style="width:90px"></div>
+      <input type="number" id="splitMinutes" min="1" max="60" style="width:64px"></div>
+    <div class="field"><span>Bitrate (kbps)</span>
+      <input type="number" id="videoBitrateKbps" min="1000" step="500" style="width:84px"></div>
     <div class="field"><span>Video encoder</span>
       <select id="videoEncoderId"><option value="">Auto (hardware first)</option></select></div>
     <button id="saveBtn">Save settings</button>
@@ -187,29 +203,152 @@
 <script>
 const $ = (id) => document.getElementById(id);
 const api = (path, opts) => fetch(path, opts).then(r => r.json());
+const post = (path, body) =>
+  api(path, { method: "POST", body: JSON.stringify(body || {}) })
+    .then(r => { if (!r.ok && r.error) setStatus('<span class="warn">⚠ ' + r.error + "</span>"); return r; });
 
-// Event list tabs 1–20 (visual parity; functional in M3)
+let recording = false, recStartedAt = null;
+let transport = null, channelTarget = "A", linked = true, draggingPos = false;
+let evState = { list: 1, live: true, events: [] };
+let selectedIds = new Set();
+
+// ---------- tabs 1..20 ----------
 const tabs = $("tabs");
 for (let i = 1; i <= 20; i++) {
   const t = document.createElement("div");
   t.className = "tab" + (i === 1 ? " active" : "");
   t.textContent = i;
+  t.addEventListener("click", () => {
+    post("/api/events/list", { list: i });
+    evState.list = i;
+    selectedIds.clear();
+    document.querySelectorAll(".tab").forEach((el, idx) =>
+      el.classList.toggle("active", idx + 1 === i));
+    refreshEvents();
+  });
   tabs.appendChild(t);
 }
 
-// Camera slots
-const camsEl = $("cams");
-for (let i = 0; i < 4; i++) {
+// ---------- multiview ----------
+const mvDefs = [
+  { slot: "cam1", tag: "CAM 1", angle: 1 }, { slot: "cam2", tag: "CAM 2", angle: 2 },
+  { slot: "cam3", tag: "CAM 3", angle: 3 }, { slot: "cam4", tag: "CAM 4", angle: 4 },
+  { slot: "a", tag: "A", angle: 0 }, { slot: "b", tag: "B", angle: 0 },
+];
+const mv = $("mv");
+mvDefs.forEach(def => {
   const d = document.createElement("div");
-  d.className = "cam";
-  d.innerHTML = `<h3><span class="dot" id="dot${i}"></span>Camera ${i + 1}</h3>
-    <select id="cam${i}"><option value="">— not used —</option></select>`;
-  camsEl.appendChild(d);
+  d.className = "tile";
+  d.id = "tile-" + def.slot;
+  d.innerHTML = `<div class="noimg">no signal</div>
+    <img src="/preview/${def.slot}" alt="${def.tag}"
+         onload="this.previousElementSibling.style.display='none'"
+         onerror="this.style.display='none'">
+    <div class="tag">${def.tag}</div>`;
+  if (def.angle > 0) {
+    d.title = `Click: angle ${def.angle} on channel ${channelTarget}`;
+    d.addEventListener("click", () =>
+      post("/api/channel/angle", { channel: channelTarget, angle: def.angle }));
+  }
+  mv.appendChild(d);
+});
+
+// ---------- formatting ----------
+function fmtTimecode(ns) {
+  const s = ns / 1e9;
+  const p = (n) => String(Math.floor(n)).padStart(2, "0");
+  const cs = Math.floor((s % 1) * 100);
+  return `${p(s/3600)}:${p(s/60%60)}:${p(s%60)}.${String(cs).padStart(2,"0")}`;
+}
+function fmtBytes(b) {
+  if (b < 0) return "?";
+  const u = ["B","KB","MB","GB","TB"]; let i = 0;
+  while (b >= 1024 && i < u.length - 1) { b /= 1024; i++; }
+  return b.toFixed(1) + " " + u[i];
+}
+function setStatus(msg) { $("statusline").innerHTML = msg; }
+
+// ---------- events grid ----------
+async function refreshEvents() {
+  let data;
+  try { data = await api("/api/events?list=" + evState.list); } catch { return; }
+  evState.events = data.events || [];
+  evState.live = data.liveMode;
+  $("liveBtn").classList.toggle("on", evState.live);
+
+  const q = $("search").value.trim().toLowerCase();
+  const tbody = $("evbody");
+  tbody.innerHTML = "";
+  let shown = 0;
+  evState.events.forEach(ev => {
+    const notes = ev.angles.map(a => a.note || "").join(" ").toLowerCase();
+    if (q && !notes.includes(q) && !String(ev.id).includes(q)) return;
+    shown++;
+    const tr = document.createElement("tr");
+    tr.className = "evrow" + (selectedIds.has(ev.id) ? " sel" : "") +
+                   (ev.tOutNs < 0 ? " open" : "");
+    const dur = ev.tOutNs >= 0 ? fmtTimecode(ev.tOutNs - ev.tInNs) : "(open)";
+    const spd = ev.speed >= 0 ? Math.round(ev.speed * 100) + "%" : "--";
+    let html = `<td>${String(ev.id).padStart(3, "0")}</td>
+      <td>${fmtTimecode(ev.tInNs)}</td>
+      <td>${ev.tOutNs >= 0 ? fmtTimecode(ev.tOutNs) : "—"}</td>
+      <td>${dur}</td>
+      <td><span class="speedcell" title="Click: set speed (empty = --)">${spd}</span></td>`;
+    ev.angles.forEach((a, i) => {
+      html += `<td><input type="checkbox" data-angle="${i + 1}" ${a.enabled ? "checked" : ""}>
+        <span class="note" data-angle="${i + 1}" title="Double-click: edit note">${a.note || "-"}</span></td>`;
+    });
+    html += `<td><button class="delbtn" title="Delete event">✕</button></td>`;
+    tr.innerHTML = html;
+
+    tr.addEventListener("click", (e) => {
+      if (e.target.tagName === "INPUT" || e.target.tagName === "BUTTON" ||
+          e.target.classList.contains("speedcell") || e.target.classList.contains("note")) return;
+      if (!e.ctrlKey && !e.metaKey) selectedIds.clear();
+      if (selectedIds.has(ev.id)) selectedIds.delete(ev.id); else selectedIds.add(ev.id);
+      refreshEvents();
+    });
+    tr.querySelectorAll("input[type=checkbox]").forEach(cb =>
+      cb.addEventListener("change", () =>
+        post("/api/events/edit", { id: ev.id, op: "toggleAngle", angle: +cb.dataset.angle })));
+    tr.querySelectorAll(".note").forEach(n =>
+      n.addEventListener("dblclick", () => {
+        const text = prompt("Note for angle " + n.dataset.angle + ":",
+                            n.textContent === "-" ? "" : n.textContent);
+        if (text !== null)
+          post("/api/events/edit", { id: ev.id, op: "note", angle: +n.dataset.angle, text });
+      }));
+    tr.querySelector(".speedcell").addEventListener("click", () => {
+      const v = prompt("Event speed % (empty = -- inherit):", spd === "--" ? "" : spd.replace("%",""));
+      if (v === null) return;
+      post("/api/events/edit", { id: ev.id, op: "speed", value: v === "" ? -1 : +v / 100 });
+    });
+    tr.querySelector(".delbtn").addEventListener("click", () => {
+      selectedIds.delete(ev.id);
+      post("/api/events/edit", { id: ev.id, op: "remove" }).then(refreshEvents);
+    });
+    tbody.appendChild(tr);
+  });
+  $("evempty").style.display = shown ? "none" : "block";
 }
 
-let recording = false;
-let recStartedAt = null;
+$("search").addEventListener("input", refreshEvents);
+$("liveBtn").addEventListener("click", () =>
+  post("/api/events/mode", { live: !evState.live }).then(refreshEvents));
+$("markIn").addEventListener("click", () => post("/api/events/markIn").then(refreshEvents));
+$("markOut").addEventListener("click", () => post("/api/events/markOut").then(refreshEvents));
+$("markCancel").addEventListener("click", () => post("/api/events/markCancel").then(refreshEvents));
+document.querySelectorAll("[data-preset]").forEach(b =>
+  b.addEventListener("click", () =>
+    post("/api/events/markInOut", { seconds: +b.dataset.preset }).then(refreshEvents)));
 
+$("playLast").addEventListener("click", () => post("/api/play/last", { toOutput: true }));
+$("playSel").addEventListener("click", () =>
+  post("/api/play/selected",
+       { toOutput: true, ids: [...selectedIds].map(id => ({ id })) }));
+$("stopEv").addEventListener("click", () => post("/api/play/stop"));
+
+// ---------- recording / status ----------
 async function loadSources() {
   const data = await api("/api/sources");
   for (let i = 0; i < 4; i++) {
@@ -218,112 +357,73 @@ async function loadSources() {
     sel.innerHTML = '<option value="">— not used —</option>';
     (data.sources || []).forEach(s => {
       const o = document.createElement("option");
-      o.value = s.name; o.textContent = `${s.name} (${s.id})`;
+      o.value = s.name; o.textContent = s.name;
       sel.appendChild(o);
     });
     sel.value = current;
   }
 }
-
 async function loadEncoders() {
   const data = await api("/api/encoders");
-  const sel = $("videoEncoderId");
   (data.encoders || []).forEach(e => {
     const o = document.createElement("option");
     o.value = e.id; o.textContent = e.name;
-    sel.appendChild(o);
+    $("videoEncoderId").appendChild(o);
   });
 }
-
 async function loadConfig() {
   const cfg = await api("/api/config");
   $("sessionFolder").value = cfg.sessionFolder || "";
+  $("outputSceneName").value = cfg.outputSceneName || "";
   $("splitMinutes").value = cfg.splitMinutes || 20;
   $("videoBitrateKbps").value = cfg.videoBitrateKbps || 12000;
   $("videoEncoderId").value = cfg.videoEncoderId || "";
   (cfg.cameras || []).forEach((c, i) => { if (i < 4) $("cam" + i).value = c.sourceName || ""; });
 }
-
-async function saveConfig() {
-  const body = {
+$("saveBtn").addEventListener("click", async () => {
+  const r = await post("/api/config", {
     sessionFolder: $("sessionFolder").value.trim(),
+    outputSceneName: $("outputSceneName").value.trim(),
     splitMinutes: +$("splitMinutes").value,
     videoBitrateKbps: +$("videoBitrateKbps").value,
     videoEncoderId: $("videoEncoderId").value,
     cameras: [0,1,2,3].map(i => ({ sourceName: $("cam" + i).value })),
-  };
-  const r = await api("/api/config", { method: "POST", body: JSON.stringify(body) });
-  setStatus(r.ok ? "Settings saved." : ("Error: " + (r.error || "save failed")));
-}
-
-function fmtBytes(b) {
-  if (b < 0) return "?";
-  const u = ["B","KB","MB","GB","TB"]; let i = 0;
-  while (b >= 1024 && i < u.length - 1) { b /= 1024; i++; }
-  return b.toFixed(1) + " " + u[i];
-}
-
-function setStatus(msg) { $("statusline").innerHTML = msg; }
+  });
+  if (r.ok) setStatus("Settings saved.");
+});
 
 async function refreshStatus() {
   let st;
   try { st = await api("/api/status"); }
   catch { setStatus('<span class="warn">Connection to OBS lost — is OBS running?</span>'); return; }
-
   recording = st.recording;
   $("recBtn").classList.toggle("on", recording);
   if (recording && !recStartedAt) recStartedAt = Date.now();
   if (!recording) recStartedAt = null;
-
   (st.cameras || []).forEach((c, i) => {
-    const dot = $("dot" + i);
-    if (!dot) return;
-    dot.className = "dot" + (c.recording ? " rec" : (c.configured && c.sourceFound ? " ok" : ""));
+    const tile = $("tile-cam" + (i + 1));
+    if (tile) tile.classList.toggle("recdot", !!c.recording);
   });
-
   let line = `Encoder: <b>${st.videoEncoder}</b> · Disk free: <b>${fmtBytes(st.diskFreeBytes)}</b>`;
   if (st.estimatedMinutesRemaining >= 0)
-    line += ` · Estimated remaining: <b>${Math.floor(st.estimatedMinutesRemaining / 60)}h ${st.estimatedMinutesRemaining % 60}m</b>`;
+    line += ` · Remaining: <b>${Math.floor(st.estimatedMinutesRemaining / 60)}h ${st.estimatedMinutesRemaining % 60}m</b>`;
   if (!st.branchOutputAvailable)
-    line = '<span class="warn">⚠ Branch Output plugin not installed — recording unavailable. ' +
-           'Get it from github.com/OPENSPHERE-Inc/branch-output</span><br>' + line;
+    line = '<span class="warn">⚠ Branch Output plugin not installed — recording unavailable.</span><br>' + line;
   setStatus(line);
 }
-
-function tickClock() {
-  // When a session is loaded the transport poller owns the timecode display.
-  if (typeof transport !== "undefined" && transport && transport.sessionLoaded) return;
-  const el = $("timecode");
-  if (recording && recStartedAt) {
-    const s = Math.floor((Date.now() - recStartedAt) / 1000);
-    const p = (n) => String(n).padStart(2, "0");
-    el.textContent = `${p(Math.floor(s/3600))}:${p(Math.floor(s/60)%60)}:${p(s%60)}`;
-  } else {
-    el.textContent = "--:--:--";
-  }
-}
-
 $("recBtn").addEventListener("click", async () => {
-  const r = await api("/api/recording/" + (recording ? "stop" : "start"), { method: "POST" });
-  if (!r.ok && r.error) setStatus('<span class="warn">⚠ ' + r.error + "</span>");
+  await post("/api/recording/" + (recording ? "stop" : "start"));
   refreshStatus();
 });
-$("saveBtn").addEventListener("click", saveConfig);
 
-// ---------- M2: transport / channels ----------
-let channelTarget = "A";   // which channel transport commands address
-let linked = true;
-let draggingPos = false;
-let transport = null;
-
+// ---------- transport ----------
 const cmd = (path, body) =>
-  api(path, { method: "POST", body: JSON.stringify(Object.assign({ channel: channelTarget }, body || {}) ) })
-    .then(r => { if (!r.ok && r.error) setStatus('<span class="warn">⚠ ' + r.error + "</span>"); return r; });
+  post(path, Object.assign({ channel: channelTarget }, body || {}));
 
-function setLinkMode(mode) { // "AB" | "A" | "B"
+function setLinkMode(mode) {
   linked = mode === "AB";
   channelTarget = mode === "B" ? "B" : "A";
-  api("/api/channel/link", { method: "POST", body: JSON.stringify({ linked }) });
+  post("/api/channel/link", { linked });
   $("linkAB").classList.toggle("on", mode === "AB");
   $("selA").classList.toggle("on", mode === "A");
   $("selB").classList.toggle("on", mode === "B");
@@ -334,8 +434,7 @@ $("selB").addEventListener("click", () => setLinkMode("B"));
 
 document.querySelectorAll(".ang-a, .ang-b").forEach(btn =>
   btn.addEventListener("click", () =>
-    api("/api/channel/angle", { method: "POST",
-      body: JSON.stringify({ channel: btn.dataset.ch, angle: +btn.dataset.angle }) })));
+    post("/api/channel/angle", { channel: btn.dataset.ch, angle: +btn.dataset.angle })));
 
 $("playBtn").addEventListener("click", () => cmd("/api/transport/playPause"));
 $("dirBtn").addEventListener("click", () => cmd("/api/transport/changeDirection"));
@@ -343,10 +442,9 @@ $("stepBack").addEventListener("click", () => cmd("/api/transport/jumpFrames", {
 $("stepFwd").addEventListener("click", () => cmd("/api/transport/jumpFrames", { value: 1 }));
 $("jumpNow").addEventListener("click", () => cmd("/api/transport/jumpToNow"));
 $("loadSession").addEventListener("click", async () => {
-  const r = await api("/api/session/load", { method: "POST" });
-  setStatus(r.ok ? "Session indexed for playback." : '<span class="warn">⚠ ' + r.error + "</span>");
+  const r = await post("/api/session/load");
+  if (r.ok) setStatus("Session indexed for playback.");
 });
-
 document.querySelectorAll(".speed[data-speed]").forEach(btn =>
   btn.addEventListener("click", () => {
     cmd("/api/transport/speed", { value: +btn.dataset.speed });
@@ -354,33 +452,23 @@ document.querySelectorAll(".speed[data-speed]").forEach(btn =>
   }));
 $("speedSlider").addEventListener("input", () =>
   cmd("/api/transport/speed", { value: +$("speedSlider").value / 100 }));
-
 $("posBar").addEventListener("pointerdown", () => { draggingPos = true; });
 $("posBar").addEventListener("change", () => {
   draggingPos = false;
   if (!transport || !transport.durationNs) return;
-  const ns = Math.round(+$("posBar").value / 1000 * transport.durationNs);
-  cmd("/api/transport/seek", { positionNs: ns });
+  cmd("/api/transport/seek",
+      { positionNs: Math.round(+$("posBar").value / 1000 * transport.durationNs) });
 });
-
-function fmtTimecode(ns) {
-  const s = ns / 1e9;
-  const p = (n) => String(Math.floor(n)).padStart(2, "0");
-  const cs = Math.floor((s % 1) * 100);
-  return `${p(s/3600)}:${p(s/60%60)}:${p(s%60)}.${String(cs).padStart(2,"0")}`;
-}
 
 async function refreshTransport() {
   try { transport = await api("/api/transport"); } catch { return; }
   if (!transport.sessionLoaded) return;
   const ch = transport[channelTarget] || transport.A;
-
   $("playBtn").textContent = ch.playing ? "⏸" : "▶";
   $("dirBtn").classList.toggle("on", ch.reverse);
   $("timecode").textContent = fmtTimecode(ch.positionNs) + "  " + Math.round(ch.speed * 100) + "%";
   if (!draggingPos && transport.durationNs > 0)
     $("posBar").value = Math.round(ch.positionNs / transport.durationNs * 1000);
-
   document.querySelectorAll(".ang-a").forEach(b =>
     b.classList.toggle("on", +b.dataset.angle === transport.A.angle));
   document.querySelectorAll(".ang-b").forEach(b =>
@@ -389,11 +477,25 @@ async function refreshTransport() {
     b.classList.toggle("on", Math.abs(+b.dataset.speed - ch.speed) < 0.01));
 }
 
+function tickClock() {
+  if (transport && transport.sessionLoaded) return;
+  const el = $("timecode");
+  if (recording && recStartedAt) {
+    const s = Math.floor((Date.now() - recStartedAt) / 1000);
+    const p = (n) => String(n).padStart(2, "0");
+    el.textContent = `${p(Math.floor(s/3600))}:${p(Math.floor(s/60)%60)}:${p(s%60)}`;
+  } else {
+    el.textContent = "--:--:--";
+  }
+}
+
 (async function init() {
   await Promise.all([loadSources(), loadEncoders()]);
   await loadConfig();
   refreshStatus();
+  refreshEvents();
   setInterval(refreshStatus, 2000);
+  setInterval(refreshEvents, 1500);
   setInterval(refreshTransport, 400);
   setInterval(tickClock, 250);
 })();

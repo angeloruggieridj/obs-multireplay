@@ -6,6 +6,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "replay-core.hpp"
 #include "branch-output-control.hpp"
+#include "event-store.hpp"
 #include "plugin-support.h"
 
 #include <util/platform.h>
@@ -175,6 +176,13 @@ bool ReplayCore::startRecording(std::string &errorOut)
 	}
 
 	recording_ = true;
+	sessionStartMinNs_ = UINT64_MAX;
+	for (const auto &st : cameraStatus_) {
+		if (st.recording && st.startTimestampNs < sessionStartMinNs_)
+			sessionStartMinNs_ = st.startTimestampNs;
+	}
+	EventStore::instance().setSessionFolder(config_.sessionFolder);
+	EventStore::instance().setLiveMode(true); // the reference controller: recording => Live
 	writeSessionManifest();
 	obs_log(LOG_INFO, "Recording started on %d camera(s)", started);
 	return true;
@@ -235,6 +243,14 @@ std::string ReplayCore::pickVideoEncoder() const
 			return id;
 	}
 	return "obs_x264";
+}
+
+int64_t ReplayCore::masterNowNs() const
+{
+	if (!recording_ || sessionStartMinNs_ == 0 ||
+	    sessionStartMinNs_ == UINT64_MAX)
+		return -1;
+	return (int64_t)(os_gettime_ns() - sessionStartMinNs_);
 }
 
 int64_t ReplayCore::diskFreeBytes() const
@@ -370,9 +386,14 @@ void ReplayCore::loadConfig()
 		config_.audioBitrateKbps =
 			(int)obs_data_get_int(data, "audioBitrateKbps");
 	config_.videoEncoderId = obs_data_get_string(data, "videoEncoderId");
+	config_.outputSceneName =
+		obs_data_get_string(data, "outputSceneName");
 	const char *fmt = obs_data_get_string(data, "recFormat");
 	if (fmt && *fmt)
 		config_.recFormat = fmt;
+	if (!config_.sessionFolder.empty())
+		EventStore::instance().setSessionFolder(
+			config_.sessionFolder);
 
 	obs_data_array_t *cams = obs_data_get_array(data, "cameras");
 	if (cams) {
@@ -401,6 +422,8 @@ void ReplayCore::saveConfig() const
 	obs_data_set_int(data, "audioBitrateKbps", config_.audioBitrateKbps);
 	obs_data_set_string(data, "videoEncoderId",
 			    config_.videoEncoderId.c_str());
+	obs_data_set_string(data, "outputSceneName",
+			    config_.outputSceneName.c_str());
 	obs_data_set_string(data, "recFormat", config_.recFormat.c_str());
 
 	obs_data_array_t *cams = obs_data_array_create();

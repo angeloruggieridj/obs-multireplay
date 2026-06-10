@@ -1,5 +1,6 @@
-build*/
-.deps/
+# build directories (root only — NOT .github/actions/build-plugin!)
+/build*/
+/.deps/
 *.user
 .DS_Store
 .idea/

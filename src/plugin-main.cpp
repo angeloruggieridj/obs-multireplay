@@ -20,6 +20,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #include <obs-module.h>
 
 #include "plugin-support.h"
+#include "preview.hpp"
 #include "replay-core.hpp"
 #include "replay-player.hpp"
 #include "web-server.hpp"
@@ -47,6 +48,7 @@ bool obs_module_load(void)
 
 	multireplay::registerReplaySources();
 	multireplay::ReplayEngine::instance().load();
+	multireplay::PreviewManager::instance().start();
 
 	multireplay::WebServer::instance().start(core.getConfig().port);
 
@@ -56,6 +58,7 @@ bool obs_module_load(void)
 void obs_module_unload(void)
 {
 	multireplay::WebServer::instance().stop();
+	multireplay::PreviewManager::instance().stop();
 	multireplay::ReplayEngine::instance().unload();
 	multireplay::ReplayCore::instance().unload();
 	obs_log(LOG_INFO, "plugin unloaded");
