@@ -639,6 +639,12 @@ void WebServer::setupRoutes()
 		return -1;
 	};
 
+	server_->Get("/api/preview/debug",
+		     [](const httplib::Request &, httplib::Response &res) {
+			     jsonResponse(res, PreviewManager::instance()
+						       .debugJson());
+		     });
+
 	server_->Get(R"(/preview/(cam[1-4]|a|b)\.jpg)",
 		     [slotFromName](const httplib::Request &req,
 				    httplib::Response &res) {

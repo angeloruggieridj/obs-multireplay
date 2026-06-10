@@ -11,6 +11,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -44,6 +45,10 @@ public:
 	waitNext(int slot, uint64_t lastSeq, uint64_t &seqOut,
 		 int timeoutMs) const;
 
+	// Diagnostics for /api/preview/debug: per-slot counters that tell
+	// whether the pipeline fails at capture, render or encode stage.
+	std::string debugJson() const;
+
 	// Preview cadence (frames per second served to browsers).
 	static constexpr int kFps = 8;
 	// Preview tile max size.
@@ -70,6 +75,14 @@ private:
 
 	std::mutex rawMutex_;
 	RawFrame raw_[kPreviewSlots];
+
+	// diagnostics (atomic: written from graphics/preview threads)
+	std::atomic<uint32_t> diagSourceMissing_[kPreviewSlots] = {};
+	std::atomic<uint32_t> diagZeroSize_[kPreviewSlots] = {};
+	std::atomic<uint32_t> diagRendered_[kPreviewSlots] = {};
+	std::atomic<uint32_t> diagEncoded_[kPreviewSlots] = {};
+	std::atomic<uint32_t> diagCaptureTimeouts_{0};
+	std::atomic<uint32_t> diagCapturePasses_{0};
 
 	mutable std::mutex jpegMutex_;
 	mutable std::condition_variable jpegCv_;

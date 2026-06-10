@@ -52,31 +52,54 @@ struct PreviewManager::EncCtx {
 		width = height = 0;
 	}
 
+	AVPixelFormat pixFmt = AV_PIX_FMT_YUVJ420P;
+
+	bool tryOpen(int w, int h, AVPixelFormat fmt, int compliance)
+	{
+		ctx = avcodec_alloc_context3(codec);
+		if (!ctx)
+			return false;
+		ctx->width = w;
+		ctx->height = h;
+		ctx->pix_fmt = fmt;
+		ctx->color_range = AVCOL_RANGE_JPEG;
+		ctx->time_base = AVRational{1, PreviewManager::kFps};
+		ctx->flags |= AV_CODEC_FLAG_QSCALE;
+		ctx->global_quality = FF_QP2LAMBDA * 6; // decent quality
+		ctx->strict_std_compliance = compliance;
+		if (avcodec_open2(ctx, codec, nullptr) < 0) {
+			avcodec_free_context(&ctx);
+			return false;
+		}
+		pixFmt = fmt;
+		return true;
+	}
+
 	bool ensure(int w, int h)
 	{
 		if (ctx && w == width && h == height)
 			return true;
 		reset();
 		codec = avcodec_find_encoder(AV_CODEC_ID_MJPEG);
-		if (!codec)
+		if (!codec) {
+			obs_log(LOG_WARNING,
+				"preview: MJPEG encoder not found in FFmpeg");
 			return false;
-		ctx = avcodec_alloc_context3(codec);
-		if (!ctx)
-			return false;
-		ctx->width = w;
-		ctx->height = h;
-		ctx->pix_fmt = AV_PIX_FMT_YUVJ420P;
-		ctx->color_range = AVCOL_RANGE_JPEG;
-		ctx->time_base = AVRational{1, PreviewManager::kFps};
-		ctx->flags |= AV_CODEC_FLAG_QSCALE;
-		ctx->global_quality = FF_QP2LAMBDA * 6; // decent quality
-		if (avcodec_open2(ctx, codec, nullptr) < 0) {
-			reset();
+		}
+		// yuvj420p is deprecated in newer FFmpeg: fall back to yuv420p
+		// + unofficial compliance when the legacy format is rejected.
+		if (!tryOpen(w, h, AV_PIX_FMT_YUVJ420P,
+			     FF_COMPLIANCE_NORMAL) &&
+		    !tryOpen(w, h, AV_PIX_FMT_YUV420P,
+			     FF_COMPLIANCE_UNOFFICIAL)) {
+			obs_log(LOG_WARNING,
+				"preview: cannot open MJPEG encoder (%dx%d)",
+				w, h);
 			return false;
 		}
 		frame = av_frame_alloc();
 		packet = av_packet_alloc();
-		frame->format = AV_PIX_FMT_YUVJ420P;
+		frame->format = pixFmt;
 		frame->width = w;
 		frame->height = h;
 		if (av_frame_get_buffer(frame, 0) < 0) {
@@ -223,13 +246,18 @@ void PreviewManager::captureAll()
 	auto &core = ReplayCore::instance();
 	Config cfg = core.getConfig();
 
+	diagCapturePasses_++;
+
 	for (int slot = 0; slot < kPreviewSlots; slot++) {
 		obs_source_t *src = nullptr;
+		bool wanted = false;
 		if (slot < kMaxCameras) {
 			const std::string &name =
 				cfg.cameras[slot].sourceName;
-			if (!name.empty())
+			if (!name.empty()) {
+				wanted = true;
 				src = obs_get_source_by_name(name.c_str());
+			}
 		} else {
 			ReplayPlayer &player =
 				slot == kPreviewSlotA
@@ -237,17 +265,23 @@ void PreviewManager::captureAll()
 					: ReplayEngine::instance().channelB();
 			src = player.acquireSource();
 		}
-		if (!src)
+		if (!src) {
+			if (wanted)
+				diagSourceMissing_[slot]++;
 			continue;
+		}
 
 		std::vector<uint8_t> rgba;
 		int w = 0, h = 0;
 		if (renderSourceRgba(src, rgba, w, h)) {
+			diagRendered_[slot]++;
 			std::lock_guard<std::mutex> lock(rawMutex_);
 			raw_[slot].rgba = std::move(rgba);
 			raw_[slot].width = w;
 			raw_[slot].height = h;
 			raw_[slot].fresh = true;
+		} else {
+			diagZeroSize_[slot]++;
 		}
 		obs_source_release(src);
 	}
@@ -271,7 +305,7 @@ void PreviewManager::encodeSlot(int slot)
 		return;
 
 	enc_->sws = sws_getCachedContext(enc_->sws, w, h, AV_PIX_FMT_RGBA, w,
-					 h, AV_PIX_FMT_YUVJ420P, SWS_BILINEAR,
+					 h, enc_->pixFmt, SWS_BILINEAR,
 					 nullptr, nullptr, nullptr);
 	if (!enc_->sws)
 		return;
@@ -296,7 +330,42 @@ void PreviewManager::encodeSlot(int slot)
 		jpeg_[slot] = std::move(jpeg);
 		seq_[slot]++;
 	}
+	if (diagEncoded_[slot]++ == 0)
+		obs_log(LOG_INFO, "preview: slot %d first JPEG produced", slot);
 	jpegCv_.notify_all();
+}
+
+std::string PreviewManager::debugJson() const
+{
+	obs_data_t *root = obs_data_create();
+	obs_data_set_bool(root, "running", running_);
+	obs_data_set_int(root, "capturePasses", diagCapturePasses_);
+	obs_data_set_int(root, "captureTimeouts", diagCaptureTimeouts_);
+	obs_data_array_t *arr = obs_data_array_create();
+	for (int slot = 0; slot < kPreviewSlots; slot++) {
+		obs_data_t *s = obs_data_create();
+		obs_data_set_int(s, "slot", slot);
+		obs_data_set_int(s, "sourceMissing",
+				 diagSourceMissing_[slot]);
+		obs_data_set_int(s, "renderFailedOrZeroSize",
+				 diagZeroSize_[slot]);
+		obs_data_set_int(s, "rendered", diagRendered_[slot]);
+		obs_data_set_int(s, "encodedJpeg", diagEncoded_[slot]);
+		{
+			std::lock_guard<std::mutex> lock(jpegMutex_);
+			obs_data_set_int(s, "seq", (int64_t)seq_[slot]);
+			obs_data_set_bool(s, "hasJpeg",
+					  jpeg_[slot] &&
+						  !jpeg_[slot]->empty());
+		}
+		obs_data_array_push_back(arr, s);
+		obs_data_release(s);
+	}
+	obs_data_set_array(root, "slots", arr);
+	obs_data_array_release(arr);
+	std::string json = obs_data_get_json(root);
+	obs_data_release(root);
+	return json;
 }
 
 void PreviewManager::threadLoop()
@@ -323,6 +392,11 @@ void PreviewManager::threadLoop()
 		if (os_event_timedwait(captureEvent_, 500) == 0) {
 			for (int slot = 0; slot < kPreviewSlots; slot++)
 				encodeSlot(slot);
+		} else {
+			if (diagCaptureTimeouts_++ == 0)
+				obs_log(LOG_WARNING,
+					"preview: graphics capture timed out "
+					"(will keep retrying)");
 		}
 
 		auto elapsed = std::chrono::steady_clock::now() - begin;
