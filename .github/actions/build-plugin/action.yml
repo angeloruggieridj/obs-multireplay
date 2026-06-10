@@ -43,7 +43,8 @@ runs:
 
         if [[ '${{ inputs.codesign }}' == 'true' ]] build_args+=(--codesign)
 
-        .github/scripts/build-macos ${build_args}
+        # invoked via zsh: exec bits are lost when committing from Windows
+        zsh .github/scripts/build-macos ${build_args}
 
     - name: Install Dependencies 🛍️
       if: runner.os == 'Linux'
@@ -71,7 +72,8 @@ runs:
         )
         if (( ${+RUNNER_DEBUG} )) build_args+=(--debug)
 
-        .github/scripts/build-ubuntu ${build_args}
+        # invoked via zsh: exec bits are lost when committing from Windows
+        zsh .github/scripts/build-ubuntu ${build_args}
 
     - name: Run Windows Build
       if: runner.os == 'Windows'
