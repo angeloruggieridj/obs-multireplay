@@ -1,0 +1,402 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OBS MultiReplay</title>
+<style>
+  :root {
+    --bg: #16181d; --panel: #1f232b; --panel2: #262b35; --border: #343a46;
+    --text: #e8eaee; --muted: #8b93a3; --accent: #2e7d32; --accent2: #43a047;
+    --red: #d32f2f; --orange: #e07b39; --blue: #3a6ea5; --sel: #e07b39;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 13px/1.45 system-ui, "Segoe UI", sans-serif; }
+  .wrap { max-width: 1240px; margin: 0 auto; padding: 10px; }
+
+  .toolbar { display: flex; align-items: center; gap: 8px; padding: 8px;
+             background: var(--panel); border: 1px solid var(--border);
+             border-radius: 6px 6px 0 0; }
+  .tabs { display: flex; gap: 2px; flex-wrap: wrap; }
+  .tab { min-width: 30px; text-align: center; padding: 4px 6px; cursor: pointer;
+         background: var(--panel2); border: 1px solid var(--border); border-radius: 3px;
+         color: var(--muted); }
+  .tab.active { background: var(--blue); color: #fff; }
+  .spacer { flex: 1; }
+  input[type=text], input[type=number], select {
+    background: #11141a; color: var(--text); border: 1px solid var(--border);
+    border-radius: 3px; padding: 5px 7px; }
+  button { background: var(--panel2); color: var(--text); border: 1px solid var(--border);
+           border-radius: 4px; padding: 6px 12px; cursor: pointer; }
+  button:hover:not(:disabled) { border-color: var(--muted); }
+  button:disabled { opacity: .35; cursor: not-allowed; }
+  button.live { font-weight: 700; padding: 6px 18px; }
+  button.live.on { background: var(--red); border-color: var(--red); color: #fff; }
+
+  .grid { background: var(--panel); border: 1px solid var(--border); border-top: 0;
+          min-height: 150px; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { padding: 4px 8px; border-bottom: 1px solid var(--border); text-align: left;
+           font-variant-numeric: tabular-nums; }
+  th { background: #20324f; color: #cdd6e4; font-weight: 600; }
+  .empty { padding: 28px; text-align: center; color: var(--muted); }
+
+  .row { display: flex; align-items: center; gap: 8px; padding: 8px;
+         background: var(--panel); border: 1px solid var(--border); border-top: 0;
+         flex-wrap: wrap; }
+  .group { display: flex; align-items: center; gap: 4px; }
+  .lbl { color: var(--muted); margin-right: 2px; }
+  .angle { min-width: 34px; }
+  .angle.on { background: var(--accent); border-color: var(--accent2); color: #fff; }
+  .speed.on { background: var(--accent); border-color: var(--accent2); color: #fff; }
+
+  .transport { display: flex; align-items: center; gap: 8px; padding: 10px 8px;
+               background: var(--panel); border: 1px solid var(--border); border-top: 0;
+               border-radius: 0 0 6px 6px; flex-wrap: wrap; }
+  .rec { width: 44px; height: 34px; border-radius: 4px; font-size: 16px; }
+  .rec.on { background: var(--red); border-color: var(--red); color: #fff;
+            animation: pulse 1.2s infinite; }
+  @keyframes pulse { 50% { filter: brightness(1.35); } }
+  .timecode { font-size: 22px; font-weight: 700; letter-spacing: 1px;
+              font-variant-numeric: tabular-nums; padding: 0 12px; }
+
+  .cams { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-top: 10px; }
+  .cam { background: var(--panel); border: 1px solid var(--border); border-radius: 6px;
+         padding: 8px; }
+  .cam h3 { margin: 0 0 6px; font-size: 12px; color: var(--muted); font-weight: 600;
+            text-transform: uppercase; letter-spacing: .5px; }
+  .cam select { width: 100%; }
+  .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%;
+         background: #555; margin-right: 5px; }
+  .dot.rec { background: var(--red); }
+  .dot.ok { background: var(--accent2); }
+
+  .settings { background: var(--panel); border: 1px solid var(--border); border-radius: 6px;
+              padding: 10px; margin-top: 10px; display: flex; gap: 14px; flex-wrap: wrap;
+              align-items: flex-end; }
+  .field { display: flex; flex-direction: column; gap: 3px; }
+  .field span { color: var(--muted); font-size: 11px; }
+  .statusline { margin-top: 10px; color: var(--muted); font-size: 12px; }
+  .statusline b { color: var(--text); }
+  .warn { color: #ffb74d; }
+  .m-badge { font-size: 10px; background: var(--blue); color: #fff; padding: 1px 5px;
+             border-radius: 3px; vertical-align: middle; margin-left: 4px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <!-- ① Toolbar: event list tabs / search / LIVE -->
+  <div class="toolbar">
+    <div class="tabs" id="tabs"></div>
+    <div class="spacer"></div>
+    <input type="text" placeholder="Search events… (M3)" disabled>
+    <button class="live" id="liveBtn" disabled title="Live/Recorded mode — M3">LIVE</button>
+  </div>
+
+  <!-- ② Event grid (M3) -->
+  <div class="grid">
+    <table>
+      <thead><tr>
+        <th style="width:50px">ID</th><th>In</th><th>Out</th><th>Duration</th>
+        <th style="width:60px">Speed</th><th>1</th><th>2</th><th>3</th><th>4</th>
+      </tr></thead>
+      <tbody></tbody>
+    </table>
+    <div class="empty">Event lists arrive in Milestone 3 — this build is the M1 recorder.</div>
+  </div>
+
+  <!-- ③ Marking + angles (M3) -->
+  <div class="row">
+    <span class="lbl">Mark</span>
+    <button disabled>In</button><button disabled>Out</button>
+    <button disabled>−5</button><button disabled>−10</button><button disabled>−20</button>
+    <span class="m-badge">M3</span>
+    <div class="spacer"></div>
+    <div class="group">
+      <button id="linkAB" class="on" title="Linked A|B">A|B</button>
+      <button id="selA" title="Control channel A only">A</button>
+      <button id="selB" title="Control channel B only">B</button>
+      <span class="lbl" style="margin-left:8px">A</span>
+      <button class="angle" disabled title="Program angle — M4">P</button>
+      <button class="angle ang-a" data-ch="A" data-angle="1">1</button>
+      <button class="angle ang-a" data-ch="A" data-angle="2">2</button>
+      <button class="angle ang-a" data-ch="A" data-angle="3">3</button>
+      <button class="angle ang-a" data-ch="A" data-angle="4">4</button>
+      <span class="lbl" style="margin-left:8px">B</span>
+      <button class="angle" disabled title="Program angle — M4">P</button>
+      <button class="angle ang-b" data-ch="B" data-angle="1">1</button>
+      <button class="angle ang-b" data-ch="B" data-angle="2">2</button>
+      <button class="angle ang-b" data-ch="B" data-angle="3">3</button>
+      <button class="angle ang-b" data-ch="B" data-angle="4">4</button>
+    </div>
+    <button disabled>Export Clips <span class="m-badge">M4</span></button>
+  </div>
+
+  <!-- ④ Transport -->
+  <div class="transport">
+    <button id="recBtn" class="rec" title="Start/stop continuous recording">●</button>
+    <button id="playBtn" title="Play/pause">▶</button>
+    <button id="dirBtn" title="Change direction (reverse)">◀</button>
+    <button id="stepBack" title="Frame step −1">‹</button>
+    <button id="stepFwd" title="Frame step +1">›</button>
+    <button disabled title="Play last event — M3">↺</button>
+    <button disabled>Play Events ▾</button>
+    <button disabled>Loop</button><button disabled>🎵</button>
+    <div class="spacer"></div>
+    <span class="timecode" id="timecode">--:--:--</span>
+    <span class="group">
+      <button class="speed" data-speed="0.25">25%</button>
+      <button class="speed" data-speed="0.33">33%</button>
+      <button class="speed" data-speed="0.50">50%</button>
+      <button class="speed" data-speed="0.75">75%</button>
+      <button class="speed on" data-speed="1">100%</button>
+      <input type="range" id="speedSlider" min="0" max="100" value="100"
+             style="width:110px" title="Slow motion 0–100%">
+    </span>
+  </div>
+
+  <!-- ⑤ Position bar -->
+  <div class="row" style="border-radius:0 0 6px 6px">
+    <input type="range" id="posBar" min="0" max="1000" value="0" style="flex:1"
+           title="Position on the synced master timeline">
+    <button id="jumpNow" title="Jump to now (latest recorded frame)">⏭|</button>
+    <button id="loadSession" title="(Re)index the session folder for playback">⟳ Load session</button>
+  </div>
+
+  <!-- ⑥ Cameras -->
+  <div class="cams" id="cams"></div>
+
+  <!-- Settings -->
+  <div class="settings">
+    <div class="field"><span>Session folder (SSD)</span>
+      <input type="text" id="sessionFolder" size="42" placeholder="e.g. D:\replay-session"></div>
+    <div class="field"><span>Split (min)</span>
+      <input type="number" id="splitMinutes" min="1" max="60" style="width:70px"></div>
+    <div class="field"><span>Video bitrate (kbps)</span>
+      <input type="number" id="videoBitrateKbps" min="1000" step="500" style="width:90px"></div>
+    <div class="field"><span>Video encoder</span>
+      <select id="videoEncoderId"><option value="">Auto (hardware first)</option></select></div>
+    <button id="saveBtn">Save settings</button>
+  </div>
+
+  <div class="statusline" id="statusline">Connecting…</div>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const api = (path, opts) => fetch(path, opts).then(r => r.json());
+
+// Event list tabs 1–20 (visual parity; functional in M3)
+const tabs = $("tabs");
+for (let i = 1; i <= 20; i++) {
+  const t = document.createElement("div");
+  t.className = "tab" + (i === 1 ? " active" : "");
+  t.textContent = i;
+  tabs.appendChild(t);
+}
+
+// Camera slots
+const camsEl = $("cams");
+for (let i = 0; i < 4; i++) {
+  const d = document.createElement("div");
+  d.className = "cam";
+  d.innerHTML = `<h3><span class="dot" id="dot${i}"></span>Camera ${i + 1}</h3>
+    <select id="cam${i}"><option value="">— not used —</option></select>`;
+  camsEl.appendChild(d);
+}
+
+let recording = false;
+let recStartedAt = null;
+
+async function loadSources() {
+  const data = await api("/api/sources");
+  for (let i = 0; i < 4; i++) {
+    const sel = $("cam" + i);
+    const current = sel.value;
+    sel.innerHTML = '<option value="">— not used —</option>';
+    (data.sources || []).forEach(s => {
+      const o = document.createElement("option");
+      o.value = s.name; o.textContent = `${s.name} (${s.id})`;
+      sel.appendChild(o);
+    });
+    sel.value = current;
+  }
+}
+
+async function loadEncoders() {
+  const data = await api("/api/encoders");
+  const sel = $("videoEncoderId");
+  (data.encoders || []).forEach(e => {
+    const o = document.createElement("option");
+    o.value = e.id; o.textContent = e.name;
+    sel.appendChild(o);
+  });
+}
+
+async function loadConfig() {
+  const cfg = await api("/api/config");
+  $("sessionFolder").value = cfg.sessionFolder || "";
+  $("splitMinutes").value = cfg.splitMinutes || 20;
+  $("videoBitrateKbps").value = cfg.videoBitrateKbps || 12000;
+  $("videoEncoderId").value = cfg.videoEncoderId || "";
+  (cfg.cameras || []).forEach((c, i) => { if (i < 4) $("cam" + i).value = c.sourceName || ""; });
+}
+
+async function saveConfig() {
+  const body = {
+    sessionFolder: $("sessionFolder").value.trim(),
+    splitMinutes: +$("splitMinutes").value,
+    videoBitrateKbps: +$("videoBitrateKbps").value,
+    videoEncoderId: $("videoEncoderId").value,
+    cameras: [0,1,2,3].map(i => ({ sourceName: $("cam" + i).value })),
+  };
+  const r = await api("/api/config", { method: "POST", body: JSON.stringify(body) });
+  setStatus(r.ok ? "Settings saved." : ("Error: " + (r.error || "save failed")));
+}
+
+function fmtBytes(b) {
+  if (b < 0) return "?";
+  const u = ["B","KB","MB","GB","TB"]; let i = 0;
+  while (b >= 1024 && i < u.length - 1) { b /= 1024; i++; }
+  return b.toFixed(1) + " " + u[i];
+}
+
+function setStatus(msg) { $("statusline").innerHTML = msg; }
+
+async function refreshStatus() {
+  let st;
+  try { st = await api("/api/status"); }
+  catch { setStatus('<span class="warn">Connection to OBS lost — is OBS running?</span>'); return; }
+
+  recording = st.recording;
+  $("recBtn").classList.toggle("on", recording);
+  if (recording && !recStartedAt) recStartedAt = Date.now();
+  if (!recording) recStartedAt = null;
+
+  (st.cameras || []).forEach((c, i) => {
+    const dot = $("dot" + i);
+    if (!dot) return;
+    dot.className = "dot" + (c.recording ? " rec" : (c.configured && c.sourceFound ? " ok" : ""));
+  });
+
+  let line = `Encoder: <b>${st.videoEncoder}</b> · Disk free: <b>${fmtBytes(st.diskFreeBytes)}</b>`;
+  if (st.estimatedMinutesRemaining >= 0)
+    line += ` · Estimated remaining: <b>${Math.floor(st.estimatedMinutesRemaining / 60)}h ${st.estimatedMinutesRemaining % 60}m</b>`;
+  if (!st.branchOutputAvailable)
+    line = '<span class="warn">⚠ Branch Output plugin not installed — recording unavailable. ' +
+           'Get it from github.com/OPENSPHERE-Inc/branch-output</span><br>' + line;
+  setStatus(line);
+}
+
+function tickClock() {
+  // When a session is loaded the transport poller owns the timecode display.
+  if (typeof transport !== "undefined" && transport && transport.sessionLoaded) return;
+  const el = $("timecode");
+  if (recording && recStartedAt) {
+    const s = Math.floor((Date.now() - recStartedAt) / 1000);
+    const p = (n) => String(n).padStart(2, "0");
+    el.textContent = `${p(Math.floor(s/3600))}:${p(Math.floor(s/60)%60)}:${p(s%60)}`;
+  } else {
+    el.textContent = "--:--:--";
+  }
+}
+
+$("recBtn").addEventListener("click", async () => {
+  const r = await api("/api/recording/" + (recording ? "stop" : "start"), { method: "POST" });
+  if (!r.ok && r.error) setStatus('<span class="warn">⚠ ' + r.error + "</span>");
+  refreshStatus();
+});
+$("saveBtn").addEventListener("click", saveConfig);
+
+// ---------- M2: transport / channels ----------
+let channelTarget = "A";   // which channel transport commands address
+let linked = true;
+let draggingPos = false;
+let transport = null;
+
+const cmd = (path, body) =>
+  api(path, { method: "POST", body: JSON.stringify(Object.assign({ channel: channelTarget }, body || {}) ) })
+    .then(r => { if (!r.ok && r.error) setStatus('<span class="warn">⚠ ' + r.error + "</span>"); return r; });
+
+function setLinkMode(mode) { // "AB" | "A" | "B"
+  linked = mode === "AB";
+  channelTarget = mode === "B" ? "B" : "A";
+  api("/api/channel/link", { method: "POST", body: JSON.stringify({ linked }) });
+  $("linkAB").classList.toggle("on", mode === "AB");
+  $("selA").classList.toggle("on", mode === "A");
+  $("selB").classList.toggle("on", mode === "B");
+}
+$("linkAB").addEventListener("click", () => setLinkMode("AB"));
+$("selA").addEventListener("click", () => setLinkMode("A"));
+$("selB").addEventListener("click", () => setLinkMode("B"));
+
+document.querySelectorAll(".ang-a, .ang-b").forEach(btn =>
+  btn.addEventListener("click", () =>
+    api("/api/channel/angle", { method: "POST",
+      body: JSON.stringify({ channel: btn.dataset.ch, angle: +btn.dataset.angle }) })));
+
+$("playBtn").addEventListener("click", () => cmd("/api/transport/playPause"));
+$("dirBtn").addEventListener("click", () => cmd("/api/transport/changeDirection"));
+$("stepBack").addEventListener("click", () => cmd("/api/transport/jumpFrames", { value: -1 }));
+$("stepFwd").addEventListener("click", () => cmd("/api/transport/jumpFrames", { value: 1 }));
+$("jumpNow").addEventListener("click", () => cmd("/api/transport/jumpToNow"));
+$("loadSession").addEventListener("click", async () => {
+  const r = await api("/api/session/load", { method: "POST" });
+  setStatus(r.ok ? "Session indexed for playback." : '<span class="warn">⚠ ' + r.error + "</span>");
+});
+
+document.querySelectorAll(".speed[data-speed]").forEach(btn =>
+  btn.addEventListener("click", () => {
+    cmd("/api/transport/speed", { value: +btn.dataset.speed });
+    $("speedSlider").value = Math.round(+btn.dataset.speed * 100);
+  }));
+$("speedSlider").addEventListener("input", () =>
+  cmd("/api/transport/speed", { value: +$("speedSlider").value / 100 }));
+
+$("posBar").addEventListener("pointerdown", () => { draggingPos = true; });
+$("posBar").addEventListener("change", () => {
+  draggingPos = false;
+  if (!transport || !transport.durationNs) return;
+  const ns = Math.round(+$("posBar").value / 1000 * transport.durationNs);
+  cmd("/api/transport/seek", { positionNs: ns });
+});
+
+function fmtTimecode(ns) {
+  const s = ns / 1e9;
+  const p = (n) => String(Math.floor(n)).padStart(2, "0");
+  const cs = Math.floor((s % 1) * 100);
+  return `${p(s/3600)}:${p(s/60%60)}:${p(s%60)}.${String(cs).padStart(2,"0")}`;
+}
+
+async function refreshTransport() {
+  try { transport = await api("/api/transport"); } catch { return; }
+  if (!transport.sessionLoaded) return;
+  const ch = transport[channelTarget] || transport.A;
+
+  $("playBtn").textContent = ch.playing ? "⏸" : "▶";
+  $("dirBtn").classList.toggle("on", ch.reverse);
+  $("timecode").textContent = fmtTimecode(ch.positionNs) + "  " + Math.round(ch.speed * 100) + "%";
+  if (!draggingPos && transport.durationNs > 0)
+    $("posBar").value = Math.round(ch.positionNs / transport.durationNs * 1000);
+
+  document.querySelectorAll(".ang-a").forEach(b =>
+    b.classList.toggle("on", +b.dataset.angle === transport.A.angle));
+  document.querySelectorAll(".ang-b").forEach(b =>
+    b.classList.toggle("on", +b.dataset.angle === transport.B.angle));
+  document.querySelectorAll(".speed[data-speed]").forEach(b =>
+    b.classList.toggle("on", Math.abs(+b.dataset.speed - ch.speed) < 0.01));
+}
+
+(async function init() {
+  await Promise.all([loadSources(), loadEncoders()]);
+  await loadConfig();
+  refreshStatus();
+  setInterval(refreshStatus, 2000);
+  setInterval(refreshTransport, 400);
+  setInterval(tickClock, 250);
+})();
+</script>
+</body>
+</html>
