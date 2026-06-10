@@ -218,6 +218,43 @@ bool ReplayCore::stopRecording()
 	return true;
 }
 
+void ReplayCore::disarmPersistedFilters()
+{
+	struct Ctx {
+		int disarmed = 0;
+	} ctx;
+
+	obs_enum_sources(
+		[](void *param, obs_source_t *source) {
+			auto *c = static_cast<Ctx *>(param);
+			for (int i = 1; i <= kMaxCameras; i++) {
+				std::string name =
+					std::string(branch_output::
+							    kFilterNamePrefix) +
+					std::to_string(i);
+				obs_source_t *filter =
+					obs_source_get_filter_by_name(
+						source, name.c_str());
+				if (filter) {
+					if (obs_source_enabled(filter)) {
+						obs_source_set_enabled(filter,
+								       false);
+						c->disarmed++;
+					}
+					obs_source_release(filter);
+				}
+			}
+			return true;
+		},
+		&ctx);
+
+	if (ctx.disarmed > 0)
+		obs_log(LOG_INFO,
+			"disarmed %d persisted recording filter(s) — "
+			"recording starts only via REC",
+			ctx.disarmed);
+}
+
 bool ReplayCore::deleteAllSession(std::string &errorOut)
 {
 	std::lock_guard<std::mutex> lock(mutex_);

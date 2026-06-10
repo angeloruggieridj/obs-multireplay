@@ -79,6 +79,7 @@ private:
 	// diagnostics (atomic: written from graphics/preview threads)
 	std::atomic<uint32_t> diagSourceMissing_[kPreviewSlots] = {};
 	std::atomic<uint32_t> diagZeroSize_[kPreviewSlots] = {};
+	std::atomic<uint32_t> diagRenderFail_[kPreviewSlots] = {};
 	std::atomic<uint32_t> diagRendered_[kPreviewSlots] = {};
 	std::atomic<uint32_t> diagEncoded_[kPreviewSlots] = {};
 	std::atomic<uint32_t> diagCaptureTimeouts_{0};

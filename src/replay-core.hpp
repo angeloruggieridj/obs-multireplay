@@ -73,6 +73,11 @@ public:
 	// keep all settings. Refuses while recording.
 	bool deleteAllSession(std::string &errorOut);
 
+	// Branch Output filters are persisted (enabled) in the scene
+	// collection and would auto-record on OBS startup: disable them all
+	// until the operator presses REC. Called from obs_module_post_load.
+	void disarmPersistedFilters();
+
 	// --- Config ---
 	Config getConfig() const;
 	void setConfig(const Config &cfg);

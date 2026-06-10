@@ -271,9 +271,22 @@ void PreviewManager::captureAll()
 			continue;
 		}
 
+		uint32_t srcW = obs_source_get_width(src);
+		uint32_t srcH = obs_source_get_height(src);
+		if (!srcW || !srcH) {
+			diagZeroSize_[slot]++;
+			obs_source_release(src);
+			continue;
+		}
+
 		std::vector<uint8_t> rgba;
 		int w = 0, h = 0;
-		if (renderSourceRgba(src, rgba, w, h)) {
+		// Queued graphics tasks are not guaranteed to run with the
+		// gs context entered: enter it explicitly (recursive-safe).
+		obs_enter_graphics();
+		bool ok = renderSourceRgba(src, rgba, w, h);
+		obs_leave_graphics();
+		if (ok) {
 			diagRendered_[slot]++;
 			std::lock_guard<std::mutex> lock(rawMutex_);
 			raw_[slot].rgba = std::move(rgba);
@@ -281,7 +294,11 @@ void PreviewManager::captureAll()
 			raw_[slot].height = h;
 			raw_[slot].fresh = true;
 		} else {
-			diagZeroSize_[slot]++;
+			if (diagRenderFail_[slot]++ == 0)
+				obs_log(LOG_WARNING,
+					"preview: slot %d texrender/stage "
+					"failed (src %ux%u)",
+					slot, srcW, srcH);
 		}
 		obs_source_release(src);
 	}
@@ -347,8 +364,8 @@ std::string PreviewManager::debugJson() const
 		obs_data_set_int(s, "slot", slot);
 		obs_data_set_int(s, "sourceMissing",
 				 diagSourceMissing_[slot]);
-		obs_data_set_int(s, "renderFailedOrZeroSize",
-				 diagZeroSize_[slot]);
+		obs_data_set_int(s, "zeroSize", diagZeroSize_[slot]);
+		obs_data_set_int(s, "renderFailed", diagRenderFail_[slot]);
 		obs_data_set_int(s, "rendered", diagRendered_[slot]);
 		obs_data_set_int(s, "encodedJpeg", diagEncoded_[slot]);
 		{

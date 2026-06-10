@@ -63,6 +63,9 @@ void obs_module_post_load(void)
 	if (multireplay::ReplayCore::instance().branchOutputAvailable()) {
 		obs_log(LOG_INFO, "Branch Output plugin detected — recording "
 				  "layer ready");
+		// Filters saved in the scene collection are enabled and would
+		// auto-record on startup (the reference controller records only on REC).
+		multireplay::ReplayCore::instance().disarmPersistedFilters();
 	} else {
 		obs_log(LOG_WARNING,
 			"Branch Output plugin not found. Install it from "
