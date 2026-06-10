@@ -245,9 +245,7 @@ mvDefs.forEach(def => {
   d.className = "tile";
   d.id = "tile-" + def.slot;
   d.innerHTML = `<div class="noimg">no signal</div>
-    <img src="/preview/${def.slot}" alt="${def.tag}"
-         onload="this.previousElementSibling.style.display='none'"
-         onerror="this.style.display='none'">
+    <img alt="${def.tag}" style="display:none">
     <div class="tag">${def.tag}</div>`;
   if (def.angle > 0) {
     d.title = `Click: angle ${def.angle} on channel ${channelTarget}`;
@@ -255,6 +253,33 @@ mvDefs.forEach(def => {
       post("/api/channel/angle", { channel: channelTarget, angle: def.angle }));
   }
   mv.appendChild(d);
+});
+
+// Multiview = JPEG snapshot polling (~5 fps), NOT MJPEG streams: browsers
+// allow only 6 connections per host, so 6 persistent streams would starve
+// every fetch() of the REST API (UI stuck on "Connecting…").
+mvDefs.forEach((def, idx) => {
+  const tile = $("tile-" + def.slot);
+  const img = tile.querySelector("img");
+  const noimg = tile.querySelector(".noimg");
+  let busy = false, failures = 0;
+  setInterval(() => {
+    if (busy || document.hidden) return;
+    busy = true;
+    const probe = new Image();
+    probe.onload = () => {
+      img.src = probe.src;
+      img.style.display = "";
+      noimg.style.display = "none";
+      failures = 0;
+      busy = false;
+    };
+    probe.onerror = () => {
+      if (++failures > 5) { img.style.display = "none"; noimg.style.display = ""; }
+      busy = false;
+    };
+    probe.src = "/preview/" + def.slot + ".jpg?t=" + Date.now();
+  }, 200 + idx * 7); // ~5 fps, staggered so requests don't burst together
 });
 
 // ---------- formatting ----------
@@ -547,8 +572,12 @@ function tickClock() {
 }
 
 (async function init() {
-  await Promise.all([loadSources(), loadEncoders()]);
-  await loadConfig();
+  // Each loader is independent: one failing endpoint must not leave the UI
+  // stuck on "Connecting…".
+  try { await Promise.all([loadSources(), loadEncoders()]); }
+  catch (e) { console.warn("init sources/encoders:", e); }
+  try { await loadConfig(); }
+  catch (e) { console.warn("init config:", e); }
   refreshStatus();
   refreshEvents();
   refreshFlags();

@@ -73,8 +73,11 @@ void obs_module_post_load(void)
 
 void obs_module_unload(void)
 {
-	multireplay::WebServer::instance().stop();
+	// Stop the preview manager FIRST: open MJPEG connections only
+	// terminate when it reports !running(), and WebServer::stop() joins
+	// the listener thread which waits for all active handlers.
 	multireplay::PreviewManager::instance().stop();
+	multireplay::WebServer::instance().stop();
 	multireplay::ReplayEngine::instance().unload();
 	multireplay::ReplayCore::instance().unload();
 	obs_log(LOG_INFO, "plugin unloaded");

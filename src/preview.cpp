@@ -101,6 +101,7 @@ void PreviewManager::start()
 {
 	if (running_)
 		return;
+	os_event_init(&captureEvent_, OS_EVENT_TYPE_AUTO);
 	enc_ = std::make_unique<EncCtx>();
 	running_ = true;
 	thread_ = std::thread([this]() { threadLoop(); });
@@ -109,9 +110,18 @@ void PreviewManager::start()
 void PreviewManager::stop()
 {
 	running_ = false;
+	// Wake the thread immediately if it is blocked in os_event_timedwait.
+	if (captureEvent_)
+		os_event_signal(captureEvent_);
 	jpegCv_.notify_all();
 	if (thread_.joinable())
 		thread_.join();
+	// Destroy the event only after join so any in-flight graphics task
+	// cannot signal a dead handle.
+	if (captureEvent_) {
+		os_event_destroy(captureEvent_);
+		captureEvent_ = nullptr;
+	}
 	enc_.reset();
 }
 
@@ -143,12 +153,14 @@ namespace {
 struct CaptureTaskCtx {
 	PreviewManager *mgr;
 	void (PreviewManager::*fn)();
+	os_event_t *ev; // signalled when the graphics work is done
 };
 
 void runCaptureTask(void *param)
 {
 	auto *task = static_cast<CaptureTaskCtx *>(param);
 	(task->mgr->*(task->fn))();
+	os_event_signal(task->ev);
 }
 
 // Render one source scaled into an RGBA buffer. Graphics context required.
@@ -293,18 +305,28 @@ void PreviewManager::threadLoop()
 
 	const auto interval = std::chrono::milliseconds(1000 / kFps);
 
+	// captureCtx is stack-local but lives for the entire thread lifetime,
+	// so it is always valid when the graphics task dereferences it.
+	CaptureTaskCtx captureCtx{this, &PreviewManager::captureAll,
+				  captureEvent_};
+
 	while (running_) {
 		auto begin = std::chrono::steady_clock::now();
 
-		CaptureTaskCtx task{this, &PreviewManager::captureAll};
-		obs_queue_task(OBS_TASK_GRAPHICS, runCaptureTask, &task,
-			       true /* wait for completion */);
-
-		for (int slot = 0; slot < kPreviewSlots; slot++)
-			encodeSlot(slot);
+		// Use wait=false to avoid deadlocking when OBS shuts down the
+		// graphics thread before obs_module_unload returns.  We sync
+		// manually via captureEvent_ with a 500 ms timeout: if the
+		// graphics thread is already gone we skip encode and let
+		// running_ = false terminate the loop on the next iteration.
+		obs_queue_task(OBS_TASK_GRAPHICS, runCaptureTask, &captureCtx,
+			       false);
+		if (os_event_timedwait(captureEvent_, 500) == 0) {
+			for (int slot = 0; slot < kPreviewSlots; slot++)
+				encodeSlot(slot);
+		}
 
 		auto elapsed = std::chrono::steady_clock::now() - begin;
-		if (elapsed < interval)
+		if (elapsed < interval && running_)
 			std::this_thread::sleep_for(interval - elapsed);
 	}
 }

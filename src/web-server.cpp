@@ -17,6 +17,9 @@ SPDX-License-Identifier: GPL-2.0-or-later
 
 // cpp-httplib (MIT) — HTTP only, no TLS needed on the local network for M1.
 #define CPPHTTPLIB_NO_EXCEPTIONS
+// Headroom for the snapshot pollers + REST polling of multiple browsers
+// (long-lived MJPEG streams would otherwise starve the default pool).
+#define CPPHTTPLIB_THREAD_POOL_COUNT 16
 #include "third-party/httplib.h"
 
 namespace multireplay {
@@ -671,8 +674,17 @@ void WebServer::setupRoutes()
 							.waitNext(slot,
 								  lastSeq,
 								  seq, 1000);
-					if (!jpeg)
+					if (!jpeg) {
+						// End the stream on shutdown,
+						// otherwise the open
+						// connection blocks
+						// WebServer::stop() and OBS
+						// never exits.
+						if (!PreviewManager::instance()
+							     .running())
+							return false;
 						return sink.is_writable();
+					}
 					lastSeq = seq;
 					char head[128];
 					int n = snprintf(

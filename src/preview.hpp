@@ -14,6 +14,8 @@ SPDX-License-Identifier: GPL-2.0-or-later
 #include <thread>
 #include <vector>
 
+#include <util/threading.h>
+
 namespace multireplay {
 
 // Multiview preview slots: 0..3 = cameras, 4 = Replay A, 5 = Replay B.
@@ -30,6 +32,7 @@ public:
 
 	void start();
 	void stop();
+	bool running() const { return running_; }
 
 	// Latest JPEG for a slot (empty if none yet). `seq` identifies the
 	// frame so MJPEG streams can wait for the next one.
@@ -76,6 +79,11 @@ private:
 	// FFmpeg encode contexts are created lazily inside encodeSlot().
 	struct EncCtx;
 	std::unique_ptr<EncCtx> enc_;
+
+	// Persistent event used to synchronise the graphics capture task
+	// with the preview thread. Allocated in start(), destroyed in stop()
+	// after join so the graphics task can never signal a dead event.
+	os_event_t *captureEvent_ = nullptr;
 };
 
 } // namespace multireplay
