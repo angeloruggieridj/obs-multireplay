@@ -177,17 +177,31 @@ function(_check_dependencies)
     endif()
 
     if(NOT EXISTS "${dependencies_dir}/${file}")
-      message(STATUS "Downloading ${url}")
-      file(DOWNLOAD "${url}" "${dependencies_dir}/${file}" STATUS download_status EXPECTED_HASH SHA256=${hash})
+      # Retry transient CDN failures (e.g. curl 52 "Server returned nothing")
+      # up to 3 times before giving up — GitHub release downloads flake.
+      set(error_code 1)
+      foreach(download_attempt RANGE 1 3)
+        message(STATUS "Downloading ${url} (attempt ${download_attempt}/3)")
+        file(
+          DOWNLOAD "${url}" "${dependencies_dir}/${file}"
+          STATUS download_status
+          EXPECTED_HASH SHA256=${hash}
+        )
 
-      list(GET download_status 0 error_code)
-      list(GET download_status 1 error_message)
+        list(GET download_status 0 error_code)
+        list(GET download_status 1 error_message)
+        if(error_code GREATER 0)
+          message(STATUS "Downloading ${url} - Failure (${error_message})")
+          file(REMOVE "${dependencies_dir}/${file}")
+          execute_process(COMMAND "${CMAKE_COMMAND}" -E sleep 5)
+        else()
+          message(STATUS "Downloading ${url} - done")
+          break()
+        endif()
+      endforeach()
+
       if(error_code GREATER 0)
-        message(STATUS "Downloading ${url} - Failure")
-        message(FATAL_ERROR "Unable to download ${url}, failed with error: ${error_message}")
-        file(REMOVE "${dependencies_dir}/${file}")
-      else()
-        message(STATUS "Downloading ${url} - done")
+        message(FATAL_ERROR "Unable to download ${url} after 3 attempts, last error: ${error_message}")
       endif()
     endif()
 

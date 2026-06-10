@@ -98,12 +98,9 @@ void ReplayCore::load()
 		"MultiReplayStopRecording",
 		obs_module_text("Hotkey.StopRecording"), onStopHotkey, nullptr);
 
-	if (!branch_output::available()) {
-		obs_log(LOG_WARNING,
-			"Branch Output plugin not found. Install it from "
-			"https://github.com/OPENSPHERE-Inc/branch-output — "
-			"recording will be unavailable until then.");
-	}
+	// NOTE: Branch Output availability is checked in obs_module_post_load
+	// (plugin-main.cpp): at this point Branch Output may not be loaded
+	// yet (alphabetical module load order).
 }
 
 void ReplayCore::unload()

@@ -55,6 +55,22 @@ bool obs_module_load(void)
 	return true;
 }
 
+void obs_module_post_load(void)
+{
+	// Module load order is alphabetical: obs-multireplay loads BEFORE
+	// osi-branch-output, so the filter type only exists after all
+	// modules finished loading — check it here, not in obs_module_load.
+	if (multireplay::ReplayCore::instance().branchOutputAvailable()) {
+		obs_log(LOG_INFO, "Branch Output plugin detected — recording "
+				  "layer ready");
+	} else {
+		obs_log(LOG_WARNING,
+			"Branch Output plugin not found. Install it from "
+			"https://github.com/OPENSPHERE-Inc/branch-output — "
+			"recording will be unavailable until then.");
+	}
+}
+
 void obs_module_unload(void)
 {
 	multireplay::WebServer::instance().stop();
