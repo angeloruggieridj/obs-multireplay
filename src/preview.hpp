@@ -98,6 +98,14 @@ private:
 	// with the preview thread. Allocated in start(), destroyed in stop()
 	// after join so the graphics task can never signal a dead event.
 	os_event_t *captureEvent_ = nullptr;
+
+	// the reference controller Recorded-mode scrub: when the operator is NOT following live,
+	// camera tiles show the decoded frame at the current playhead instead
+	// of the live feed (one lightweight decoder per configured camera).
+	struct ScrubCtx;
+	std::unique_ptr<ScrubCtx> scrub_;
+	std::atomic<bool> scrubActive_{false};
+	void updateScrubSlots(); // runs on the preview thread
 };
 
 } // namespace multireplay

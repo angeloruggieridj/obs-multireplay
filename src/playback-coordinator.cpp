@@ -103,6 +103,7 @@ bool PlaybackCoordinator::playEvents(const std::vector<int> &eventIds,
 	queuePos_ = 0;
 	toOutput_ = toOutput;
 	active_ = true;
+	ReplayEngine::instance().setFollowLive(false);
 
 	if (toOutput_)
 		switchToReplayScene();

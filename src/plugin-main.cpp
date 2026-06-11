@@ -18,12 +18,29 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 */
 
 #include <obs-module.h>
+#include <obs-frontend-api.h>
 
 #include "plugin-support.h"
 #include "preview.hpp"
 #include "replay-core.hpp"
 #include "replay-player.hpp"
 #include "web-server.hpp"
+
+namespace {
+// Branch Output filters are persisted ENABLED in the scene collection and
+// start recording as soon as their source becomes active. The scene
+// collection loads AFTER obs_module_post_load, so the disarm must run on
+// the frontend FINISHED_LOADING / SCENE_COLLECTION_CHANGED events.
+void onFrontendEvent(enum obs_frontend_event event, void *)
+{
+	if (event == OBS_FRONTEND_EVENT_FINISHED_LOADING ||
+	    event == OBS_FRONTEND_EVENT_SCENE_COLLECTION_CHANGED) {
+		if (!multireplay::ReplayCore::instance().isRecording())
+			multireplay::ReplayCore::instance()
+				.disarmPersistedFilters();
+	}
+}
+} // namespace
 
 namespace multireplay {
 void registerReplaySources(); // replay-source.cpp
@@ -52,6 +69,8 @@ bool obs_module_load(void)
 
 	multireplay::WebServer::instance().start(core.getConfig().port);
 
+	obs_frontend_add_event_callback(onFrontendEvent, nullptr);
+
 	return true;
 }
 
@@ -76,6 +95,7 @@ void obs_module_post_load(void)
 
 void obs_module_unload(void)
 {
+	obs_frontend_remove_event_callback(onFrontendEvent, nullptr);
 	// Stop the preview manager FIRST: open MJPEG connections only
 	// terminate when it reports !running(), and WebServer::stop() joins
 	// the listener thread which waits for all active handlers.

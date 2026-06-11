@@ -87,6 +87,12 @@
                      font-variant-numeric: tabular-nums; }
   .posbar .pb-time.l { left: 6px; }
   .posbar .pb-time.r { right: 6px; }
+  /* tail of the bar not yet indexed for playback (recording in progress) */
+  .posbar .pb-unseek { position: absolute; top: 0; bottom: 0; right: 0;
+                       pointer-events: none; border-left: 1px solid var(--red);
+                       background: repeating-linear-gradient(45deg,
+                         rgba(211,47,47,.10) 0 6px, rgba(211,47,47,.22) 6px 12px); }
+  #jumpNow.on { background: var(--red); border-color: var(--red); color: #fff; }
   .tile { position: relative; background: #000; border: 1px solid var(--border);
           border-radius: 6px; overflow: hidden; aspect-ratio: 16/9; cursor: pointer; }
   .tile img { width: 100%; height: 100%; object-fit: contain; display: block; }
@@ -198,6 +204,7 @@
   <div class="row" style="border-radius:0 0 6px 6px">
     <div class="posbar" id="posBar"
          title="Master timeline: orange = events, green = A, blue = B. Click/drag to seek">
+      <div class="pb-unseek" id="pbUnseek" style="width:0"></div>
       <div class="pb-time l" id="pbTimeL">00:00:00</div>
       <div class="pb-time r" id="pbTimeR">--:--:--</div>
       <div class="pb-head" id="pbHeadA"></div>
@@ -678,7 +685,10 @@ function barSeek(clientX, force) {
   const now = Date.now();
   if (!force && now - lastSeekSent < 120) return; // throttle while dragging
   lastSeekSent = now;
-  cmd("/api/transport/seek", { positionNs: Math.round(frac * transport.durationNs) });
+  // the bar spans up to NOW, but seeking is clamped to the indexed footage
+  const maxSeek = (transport.seekableNs || transport.durationNs) - 1;
+  const ns = Math.min(Math.round(frac * transport.durationNs), Math.max(maxSeek, 0));
+  cmd("/api/transport/seek", { positionNs: ns });
 }
 posBar.addEventListener("pointerdown", (e) => {
   draggingPos = true;
@@ -691,11 +701,19 @@ posBar.addEventListener("pointerup", (e) => {
   draggingPos = false;
 });
 
-// Event markers on the bar (orange = events of the selected list)
+// Event markers on the bar (orange = events of the selected list).
+// Rebuilt ONLY when events/duration actually change, and never while the
+// user is interacting with the bar — clicking a marker can't race a refresh.
+let lastBarSig = "";
 function renderBarEvents() {
-  posBar.querySelectorAll(".pb-event").forEach(el => el.remove());
+  if (draggingPos) return;
   if (!transport || !transport.durationNs) return;
   const dur = transport.durationNs;
+  const sig = evState.events.map(e => e.id + ":" + e.tInNs + ":" + e.tOutNs).join(",") +
+              "|" + [...selectedIds].join(",") + "|" + Math.round(dur / 2e9);
+  if (sig === lastBarSig) return;
+  lastBarSig = sig;
+  posBar.querySelectorAll(".pb-event").forEach(el => el.remove());
   evState.events.forEach(ev => {
     if (ev.tOutNs < 0 || ev.tInNs > dur) return;
     const el = document.createElement("div");
@@ -727,8 +745,13 @@ async function refreshTransport() {
   $("revBtn").classList.toggle("on", ch.playing && ch.reverse);
   $("pauseBtn").classList.toggle("on", !ch.playing);
   $("pbHeadB").style.display = transport.linked ? "none" : "";
+  $("jumpNow").classList.toggle("on", !!transport.followLive);
   if (transport.durationNs > 0) {
     $("pbTimeR").textContent = fmtTimecode(transport.durationNs).slice(0, 8);
+    // shade the not-yet-seekable tail (still being recorded/indexed)
+    const unseek = Math.max(0,
+      (1 - (transport.seekableNs || transport.durationNs) / transport.durationNs) * 100);
+    $("pbUnseek").style.width = unseek.toFixed(2) + "%";
     renderBarEvents();
   }
   document.querySelectorAll(".ang-a").forEach(b =>

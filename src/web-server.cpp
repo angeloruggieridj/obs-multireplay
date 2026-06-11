@@ -280,8 +280,9 @@ void WebServer::setupRoutes()
 					   });
 		      });
 	server_->Post("/api/transport/play",
-		      [transportCmd](const httplib::Request &req,
-				     httplib::Response &res) {
+		      [transportCmd, &engine](const httplib::Request &req,
+					      httplib::Response &res) {
+			      engine.setFollowLive(false);
 			      transportCmd(req, res,
 					   [](ReplayPlayer &p, obs_data_t *) {
 						   p.setPlaying(true);
@@ -325,8 +326,10 @@ void WebServer::setupRoutes()
 		});
 	server_->Post(
 		"/api/transport/seek",
-		[transportCmd](const httplib::Request &req,
-			       httplib::Response &res) {
+		[transportCmd, &engine](const httplib::Request &req,
+					httplib::Response &res) {
+			// any explicit seek leaves "live follow" mode (the reference controller)
+			engine.setFollowLive(false);
 			transportCmd(req, res,
 				     [](ReplayPlayer &p, obs_data_t *body) {
 					     p.seekMaster(obs_data_get_int(
@@ -334,8 +337,10 @@ void WebServer::setupRoutes()
 				     });
 		});
 	server_->Post("/api/transport/jumpToNow",
-		      [transportCmd](const httplib::Request &req,
-				     httplib::Response &res) {
+		      [transportCmd, &engine](const httplib::Request &req,
+					      httplib::Response &res) {
+			      // NOW = back to live (broadcast replayJumpToNow)
+			      engine.setFollowLive(true);
 			      transportCmd(req, res,
 					   [](ReplayPlayer &p, obs_data_t *) {
 						   p.jumpToEnd();

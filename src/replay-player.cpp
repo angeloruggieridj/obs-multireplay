@@ -5,6 +5,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
 */
 
 #include "replay-player.hpp"
+#include "replay-core.hpp"
 #include "plugin-support.h"
 
 #include <media-io/video-io.h>
@@ -402,8 +403,22 @@ std::string ReplayEngine::transportJson() const
 	obs_data_t *root = obs_data_create();
 	obs_data_set_bool(root, "sessionLoaded", (bool)index_);
 	obs_data_set_bool(root, "linked", linked_);
-	obs_data_set_int(root, "durationNs",
-			 index_ ? index_->masterDurationNs() : 0);
+	obs_data_set_bool(root, "followLive", followLive_);
+
+	// broadcast-style timeline: the bar always spans up to "NOW".
+	// seekableNs   = indexed footage (playable right now)
+	// durationNs   = live edge (= NOW while recording)
+	int64_t indexed = index_ ? index_->masterDurationNs() : 0;
+	int64_t liveEdge = indexed;
+	bool rec = ReplayCore::instance().isRecording();
+	if (rec) {
+		int64_t now = ReplayCore::instance().masterNowNs();
+		if (now > liveEdge)
+			liveEdge = now;
+	}
+	obs_data_set_bool(root, "recording", rec);
+	obs_data_set_int(root, "seekableNs", indexed);
+	obs_data_set_int(root, "durationNs", liveEdge);
 
 	const ReplayPlayer *players[2] = {&a_, &b_};
 	const char *names[2] = {"A", "B"};

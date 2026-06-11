@@ -5,6 +5,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
 */
 
 #include "preview.hpp"
+#include "decoder.hpp"
 #include "replay-core.hpp"
 #include "replay-player.hpp"
 #include "plugin-support.h"
@@ -112,6 +113,23 @@ struct PreviewManager::EncCtx {
 	}
 };
 
+// ---- the reference controller Recorded-mode scrub decoders ------------------------------------
+
+struct PreviewManager::ScrubCtx {
+	struct Slot {
+		SegmentDecoder dec;
+		std::string path;
+		int64_t lastOffNs = -1;
+		SwsContext *sws = nullptr;
+		~Slot()
+		{
+			if (sws)
+				sws_freeContext(sws);
+		}
+	};
+	Slot slots[kPreviewSlots];
+};
+
 // ---------------------------------------------------------------------------
 
 PreviewManager &PreviewManager::instance()
@@ -126,6 +144,7 @@ void PreviewManager::start()
 		return;
 	os_event_init(&captureEvent_, OS_EVENT_TYPE_AUTO);
 	enc_ = std::make_unique<EncCtx>();
+	scrub_ = std::make_unique<ScrubCtx>();
 	running_ = true;
 	thread_ = std::thread([this]() { threadLoop(); });
 }
@@ -146,6 +165,7 @@ void PreviewManager::stop()
 		captureEvent_ = nullptr;
 	}
 	enc_.reset();
+	scrub_.reset();
 }
 
 std::shared_ptr<std::vector<uint8_t>>
@@ -248,10 +268,16 @@ void PreviewManager::captureAll()
 
 	diagCapturePasses_++;
 
+	const bool scrub = scrubActive_;
+
 	for (int slot = 0; slot < kPreviewSlots; slot++) {
 		obs_source_t *src = nullptr;
 		bool wanted = false;
 		if (slot < kMaxCameras) {
+			// In scrub mode camera tiles are fed by the decoders
+			// (updateScrubSlots), not by live rendering.
+			if (scrub)
+				continue;
 			const std::string &name =
 				cfg.cameras[slot].sourceName;
 			if (!name.empty()) {
@@ -385,6 +411,81 @@ std::string PreviewManager::debugJson() const
 	return json;
 }
 
+void PreviewManager::updateScrubSlots()
+{
+	auto &engine = ReplayEngine::instance();
+	Config cfg = ReplayCore::instance().getConfig();
+	int64_t pos = engine.channelA().position();
+
+	for (int slot = 0; slot < kMaxCameras; slot++) {
+		if (cfg.cameras[slot].sourceName.empty())
+			continue;
+
+		std::string path;
+		int64_t offNs = 0;
+		if (!engine.resolveTime(slot, pos, path, offNs))
+			continue;
+
+		auto &S = scrub_->slots[slot];
+		if (S.path != path) {
+			if (!S.dec.open(path))
+				continue;
+			S.path = path;
+			S.lastOffNs = -1;
+		}
+		// re-decode only when the playhead actually moved (>40ms)
+		if (S.lastOffNs >= 0 && llabs(offNs - S.lastOffNs) < 40000000)
+			continue;
+
+		S.dec.seekTo(offNs);
+		DecodedFrame f;
+		bool got = false;
+		while (S.dec.nextFrame(f)) {
+			if (f.ptsNs >= offNs) {
+				got = true;
+				break;
+			}
+		}
+		S.dec.clearAudio();
+		if (!got)
+			continue;
+		S.lastOffNs = offNs;
+
+		// I420 -> RGBA scaled into the preview box
+		double scale = std::min((double)kMaxWidth / f.width,
+					(double)kMaxHeight / f.height);
+		if (scale > 1.0)
+			scale = 1.0;
+		int w = ((int)(f.width * scale)) & ~1;
+		int h = ((int)(f.height * scale)) & ~1;
+		if (w < 2 || h < 2)
+			continue;
+
+		S.sws = sws_getCachedContext(S.sws, f.width, f.height,
+					     AV_PIX_FMT_YUV420P, w, h,
+					     AV_PIX_FMT_RGBA, SWS_BILINEAR,
+					     nullptr, nullptr, nullptr);
+		if (!S.sws)
+			continue;
+
+		std::vector<uint8_t> rgba((size_t)w * h * 4);
+		const uint8_t *srcData[4] = {f.y.data(), f.u.data(),
+					     f.v.data(), nullptr};
+		int srcLines[4] = {f.strideY, f.strideU, f.strideV, 0};
+		uint8_t *dstData[4] = {rgba.data(), nullptr, nullptr, nullptr};
+		int dstLines[4] = {w * 4, 0, 0, 0};
+		sws_scale(S.sws, srcData, srcLines, 0, f.height, dstData,
+			  dstLines);
+
+		std::lock_guard<std::mutex> lock(rawMutex_);
+		raw_[slot].rgba = std::move(rgba);
+		raw_[slot].width = w;
+		raw_[slot].height = h;
+		raw_[slot].fresh = true;
+		diagRendered_[slot]++;
+	}
+}
+
 void PreviewManager::threadLoop()
 {
 	os_set_thread_name("multireplay-preview");
@@ -399,6 +500,11 @@ void PreviewManager::threadLoop()
 	while (running_) {
 		auto begin = std::chrono::steady_clock::now();
 
+		// the reference controller Recorded-mode: camera tiles scrub with the playhead
+		// whenever the operator is not following live.
+		auto &engine = ReplayEngine::instance();
+		scrubActive_ = engine.sessionLoaded() && !engine.followLive();
+
 		// Use wait=false to avoid deadlocking when OBS shuts down the
 		// graphics thread before obs_module_unload returns.  We sync
 		// manually via captureEvent_ with a 500 ms timeout: if the
@@ -407,6 +513,8 @@ void PreviewManager::threadLoop()
 		obs_queue_task(OBS_TASK_GRAPHICS, runCaptureTask, &captureCtx,
 			       false);
 		if (os_event_timedwait(captureEvent_, 500) == 0) {
+			if (scrubActive_)
+				updateScrubSlots();
 			for (int slot = 0; slot < kPreviewSlots; slot++)
 				encodeSlot(slot);
 		} else {

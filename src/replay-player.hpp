@@ -120,6 +120,12 @@ public:
 	void setLinked(bool linked) { linked_ = linked; }
 	bool linked() const { return linked_; }
 
+	// the reference controller "live follow": when true, the operator is "at NOW" — camera
+	// tiles show the live feed. Any seek into the recorded timeline turns
+	// it off; the NOW button turns it back on.
+	void setFollowLive(bool follow) { followLive_ = follow; }
+	bool followLive() const { return followLive_; }
+
 	// Resolve a master-timeline instant to (file, in-file offset) for an
 	// angle. Used by the clip exporter. False when no session is loaded.
 	bool resolveTime(int camIndex, int64_t masterNs, std::string &pathOut,
@@ -160,6 +166,7 @@ private:
 	ReplayPlayer a_;
 	ReplayPlayer b_;
 	std::atomic<bool> linked_{true};
+	std::atomic<bool> followLive_{true};
 	std::shared_ptr<SessionIndex> index_;
 };
 
