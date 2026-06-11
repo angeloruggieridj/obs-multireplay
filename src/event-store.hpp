@@ -16,7 +16,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
 namespace multireplay {
 
 constexpr int kEventLists = 20;
-constexpr int kEventAngles = 4;
+constexpr int kEventAngles = 8; // M5: full reference parity
 
 // One broadcast-style replay event: a time range on the master timeline with
 // per-angle enable flags and notes. Footage is never touched.

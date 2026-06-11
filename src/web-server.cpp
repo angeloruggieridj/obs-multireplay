@@ -639,42 +639,55 @@ void WebServer::setupRoutes()
 		     });
 
 	// --- Multiview previews: MJPEG stream + JPEG snapshot ---
-	auto slotFromName = [](const std::string &name) -> int {
-		if (name == "a")
-			return kPreviewSlotA;
-		if (name == "b")
-			return kPreviewSlotB;
-		if (name.size() == 4 && name.rfind("cam", 0) == 0)
-			return name[3] - '1'; // cam1..cam4 -> 0..3
-		return -1;
-	};
-
 	server_->Get("/api/preview/debug",
 		     [](const httplib::Request &, httplib::Response &res) {
 			     jsonResponse(res, PreviewManager::instance()
 						       .debugJson());
 		     });
 
-	server_->Get(R"(/preview/(cam[1-4]|a|b)\.jpg)",
-		     [slotFromName](const httplib::Request &req,
-				    httplib::Response &res) {
-			     int slot = slotFromName(req.matches[1].str());
-			     uint64_t seq = 0;
-			     auto jpeg = PreviewManager::instance().latest(
-				     slot, seq);
-			     if (!jpeg || jpeg->empty()) {
-				     res.status = 404;
-				     return;
-			     }
-			     res.set_content((const char *)jpeg->data(),
-					     jpeg->size(), "image/jpeg");
-		     });
+	registerPreviewRoutes(*server_);
 
-	server_->Get(
-		R"(/preview/(cam[1-4]|a|b))",
-		[slotFromName](const httplib::Request &req,
-			       httplib::Response &res) {
-			int slot = slotFromName(req.matches[1].str());
+	// --- Static UI ---
+	char *uiPath = obs_module_file("ui");
+	if (uiPath) {
+		server_->set_mount_point("/", uiPath);
+		bfree(uiPath);
+	} else {
+		obs_log(LOG_WARNING, "UI directory not found in module data");
+	}
+}
+
+void WebServer::registerPreviewRoutes(httplib::Server &srv)
+{
+	auto slotFromName2 = [](const std::string &name) -> int {
+		if (name == "a")
+			return kPreviewSlotA;
+		if (name == "b")
+			return kPreviewSlotB;
+		if (name.size() == 4 && name.rfind("cam", 0) == 0)
+			return name[3] - '1'; // cam1..cam8 -> 0..7
+		return -1;
+	};
+
+	srv.Get(R"(/preview/(cam[1-8]|a|b)\.jpg)",
+		[slotFromName2](const httplib::Request &req,
+				httplib::Response &res) {
+			int slot = slotFromName2(req.matches[1].str());
+			uint64_t seq = 0;
+			auto jpeg =
+				PreviewManager::instance().latest(slot, seq);
+			if (!jpeg || jpeg->empty()) {
+				res.status = 404;
+				return;
+			}
+			res.set_content((const char *)jpeg->data(),
+					jpeg->size(), "image/jpeg");
+		});
+
+	srv.Get(R"(/preview/(cam[1-8]|a|b))",
+		[slotFromName2](const httplib::Request &req,
+				httplib::Response &res) {
+			int slot = slotFromName2(req.matches[1].str());
 			if (slot < 0) {
 				res.status = 404;
 				return;
@@ -718,15 +731,6 @@ void WebServer::setupRoutes()
 					return sink.write("\r\n", 2);
 				});
 		});
-
-	// --- Static UI ---
-	char *uiPath = obs_module_file("ui");
-	if (uiPath) {
-		server_->set_mount_point("/", uiPath);
-		bfree(uiPath);
-	} else {
-		obs_log(LOG_WARNING, "UI directory not found in module data");
-	}
 }
 
 void WebServer::start(int port)
@@ -747,6 +751,24 @@ void WebServer::start(int port)
 				port);
 		}
 	});
+
+	// Dedicated MJPEG stream port (port+1): persistent per-tile video
+	// streams live in their own browser connection pool, leaving the
+	// REST API on the main port unaffected.
+	streamServer_ = std::make_unique<httplib::Server>();
+	registerPreviewRoutes(*streamServer_);
+	streamThread_ = std::thread([this, port]() {
+		obs_log(LOG_INFO,
+			"Preview stream server on http://0.0.0.0:%d",
+			port + 1);
+		if (!streamServer_->listen("0.0.0.0", port + 1)) {
+			obs_log(LOG_WARNING,
+				"Stream server failed to bind port %d — "
+				"the UI will fall back to snapshot polling",
+				port + 1);
+		}
+	});
+
 	running_ = true;
 }
 
@@ -755,9 +777,14 @@ void WebServer::stop()
 	if (!running_)
 		return;
 	server_->stop();
+	if (streamServer_)
+		streamServer_->stop();
 	if (thread_.joinable())
 		thread_.join();
+	if (streamThread_.joinable())
+		streamThread_.join();
 	server_.reset();
+	streamServer_.reset();
 	running_ = false;
 }
 

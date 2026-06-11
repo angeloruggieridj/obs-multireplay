@@ -60,13 +60,34 @@ bool PlaybackCoordinator::playEvents(const std::vector<int> &eventIds,
 {
 	std::lock_guard<std::mutex> lock(mutex_);
 
-	std::vector<ReplayEvent> resolved;
+	// Expand into one item per enabled angle (the reference controller plays every checked
+	// angle in sequence) and resolve the "--" speed inheritance chain.
+	std::vector<QueueItem> items;
+	double inherited = -1.0;
+	double fallback = ReplayEngine::instance().channelA().speed();
 	for (int id : eventIds) {
 		ReplayEvent ev;
-		if (EventStore::instance().get(id, ev) && ev.tOutNs >= 0)
-			resolved.push_back(ev);
+		if (!EventStore::instance().get(id, ev) || ev.tOutNs < 0)
+			continue;
+		double speed = ev.speed >= 0
+				       ? ev.speed
+				       : (inherited >= 0 ? inherited
+							 : fallback);
+		if (ev.speed >= 0)
+			inherited = ev.speed;
+		bool anyAngle = false;
+		for (int a = 0; a < kEventAngles; a++) {
+			if (ev.angles[a].enabled) {
+				items.push_back({ev.id, ev.tInNs, ev.tOutNs,
+						 a, speed});
+				anyAngle = true;
+			}
+		}
+		if (!anyAngle)
+			items.push_back({ev.id, ev.tInNs, ev.tOutNs, 0,
+					 speed});
 	}
-	if (resolved.empty()) {
+	if (items.empty()) {
 		errorOut = "no playable (completed) events selected";
 		return false;
 	}
@@ -78,10 +99,9 @@ bool PlaybackCoordinator::playEvents(const std::vector<int> &eventIds,
 		return false;
 	}
 
-	queue_ = std::move(resolved);
+	queue_ = std::move(items);
 	queuePos_ = 0;
 	toOutput_ = toOutput;
-	inheritedSpeed_ = -1.0;
 	active_ = true;
 
 	if (toOutput_)
@@ -124,36 +144,20 @@ bool PlaybackCoordinator::queueActive() const
 void PlaybackCoordinator::startNext()
 {
 	// mutex_ held by caller
-	const ReplayEvent &ev = queue_[queuePos_];
+	const QueueItem &item = queue_[queuePos_];
 	ReplayPlayer &a = ReplayEngine::instance().channelA();
 
-	// first enabled angle of the event (the reference controller default-angle behaviour)
-	int angle = 0;
-	for (int i = 0; i < kEventAngles; i++) {
-		if (ev.angles[i].enabled) {
-			angle = i;
-			break;
-		}
-	}
-
-	// the reference controller per-event speed semantics: explicit speed becomes the new
-	// default for following "--" events; "--" inherits.
-	double speed = ev.speed >= 0
-			       ? ev.speed
-			       : (inheritedSpeed_ >= 0 ? inheritedSpeed_
-						       : a.speed());
-	if (ev.speed >= 0)
-		inheritedSpeed_ = ev.speed;
-
-	a.setAngle(angle);
+	a.setAngle(item.angle);
 	a.setReverse(false);
-	a.setSpeed(speed);
-	a.seekMaster(ev.tInNs);
-	a.setStopAt(ev.tOutNs, [this]() { onEventFinished(); });
+	a.setSpeed(item.speed);
+	a.seekMaster(item.tInNs);
+	a.setStopAt(item.tOutNs, [this]() { onEventFinished(); });
 	a.setPlaying(true);
 
-	obs_log(LOG_INFO, "coordinator: playing event %d (angle %d, %d%%)",
-		ev.id, angle + 1, (int)(speed * 100));
+	obs_log(LOG_INFO,
+		"coordinator: playing event %d angle %d (%d%%) [%zu/%zu]",
+		item.eventId, item.angle + 1, (int)(item.speed * 100),
+		queuePos_ + 1, queue_.size());
 }
 
 void PlaybackCoordinator::onEventFinished()
@@ -168,7 +172,6 @@ void PlaybackCoordinator::onEventFinished()
 	} else if (loop_ && !queue_.empty()) {
 		// the reference controller Loop: restart the selection
 		queuePos_ = 0;
-		inheritedSpeed_ = -1.0;
 		startNext();
 	} else {
 		active_ = false;

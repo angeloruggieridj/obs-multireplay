@@ -45,10 +45,15 @@ target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE Threads::Threads)
 # Finder copied from obs-studio (cmake/finders); obs-deps prebuilt provide
 # FFmpeg on Windows/macOS, system packages on Linux (libavformat-dev etc.).
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake/finders")
-find_package(FFmpeg REQUIRED COMPONENTS avcodec avformat avutil swscale)
+find_package(FFmpeg REQUIRED COMPONENTS avcodec avformat avutil swscale swresample)
 target_link_libraries(
   ${CMAKE_PROJECT_NAME}
-  PRIVATE FFmpeg::avcodec FFmpeg::avformat FFmpeg::avutil FFmpeg::swscale
+  PRIVATE
+    FFmpeg::avcodec
+    FFmpeg::avformat
+    FFmpeg::avutil
+    FFmpeg::swscale
+    FFmpeg::swresample
 )
 
 # cpp-httplib on Windows needs winsock

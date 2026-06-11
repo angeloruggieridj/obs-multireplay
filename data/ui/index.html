@@ -67,7 +67,26 @@
   .timecode { font-size: 22px; font-weight: 700; letter-spacing: 1px;
               font-variant-numeric: tabular-nums; padding: 0 12px; }
 
-  .mv { display: grid; grid-template-columns: repeat(6, 1fr); gap: 8px; margin-top: 10px; }
+  .mv { display: grid; gap: 8px; margin-top: 10px;
+        grid-template-columns: repeat(auto-fill, minmax(var(--tile, 200px), 1fr)); }
+
+  /* broadcast-style position bar: event markers + A/B playheads + timecodes */
+  .posbar { position: relative; flex: 1; height: 34px; background: #11141a;
+            border: 1px solid var(--border); border-radius: 4px; cursor: pointer;
+            user-select: none; touch-action: none; }
+  .posbar .pb-tick { position: absolute; top: 22px; bottom: 0; width: 1px;
+                     background: #2a2f3a; }
+  .posbar .pb-event { position: absolute; top: 3px; height: 10px; min-width: 3px;
+                      background: var(--orange); border-radius: 2px; opacity: .85; }
+  .posbar .pb-event.sel { outline: 1px solid #fff; }
+  .posbar .pb-head { position: absolute; top: 0; bottom: 0; width: 2px;
+                     background: var(--accent2); pointer-events: none; }
+  .posbar .pb-head.b { background: var(--blue); }
+  .posbar .pb-time { position: absolute; bottom: 1px; font-size: 10px;
+                     color: var(--muted); pointer-events: none;
+                     font-variant-numeric: tabular-nums; }
+  .posbar .pb-time.l { left: 6px; }
+  .posbar .pb-time.r { right: 6px; }
   .tile { position: relative; background: #000; border: 1px solid var(--border);
           border-radius: 6px; overflow: hidden; aspect-ratio: 16/9; cursor: pointer; }
   .tile img { width: 100%; height: 100%; object-fit: contain; display: block; }
@@ -107,7 +126,9 @@
     <table>
       <thead><tr>
         <th style="width:46px">ID</th><th>In</th><th>Out</th><th>Duration</th>
-        <th style="width:62px">Speed</th><th>1</th><th>2</th><th>3</th><th>4</th><th></th>
+        <th style="width:62px">Speed</th>
+        <th>1</th><th>2</th><th>3</th><th>4</th>
+        <th>5</th><th>6</th><th>7</th><th>8</th><th></th>
       </tr></thead>
       <tbody id="evbody"></tbody>
     </table>
@@ -127,17 +148,9 @@
       <button id="selA" title="Control channel A only">A</button>
       <button id="selB" title="Control channel B only">B</button>
       <span class="lbl" style="margin-left:8px">A</span>
-      <button class="angle" disabled title="Program angle — M4">P</button>
-      <button class="angle ang-a" data-ch="A" data-angle="1">1</button>
-      <button class="angle ang-a" data-ch="A" data-angle="2">2</button>
-      <button class="angle ang-a" data-ch="A" data-angle="3">3</button>
-      <button class="angle ang-a" data-ch="A" data-angle="4">4</button>
+      <span class="group" id="anglesA"></span>
       <span class="lbl" style="margin-left:8px">B</span>
-      <button class="angle" disabled title="Program angle — M4">P</button>
-      <button class="angle ang-b" data-ch="B" data-angle="1">1</button>
-      <button class="angle ang-b" data-ch="B" data-angle="2">2</button>
-      <button class="angle ang-b" data-ch="B" data-angle="3">3</button>
-      <button class="angle ang-b" data-ch="B" data-angle="4">4</button>
+      <span class="group" id="anglesB"></span>
     </div>
     <button id="exportBtn" title="Export selected events (or last event) as MP4 into the session export/ folder">Export Clips</button>
   </div>
@@ -167,10 +180,15 @@
     </span>
   </div>
 
-  <!-- ⑤ Position bar -->
+  <!-- ⑤ Position bar (broadcast-style: event markers + A/B playheads) -->
   <div class="row" style="border-radius:0 0 6px 6px">
-    <input type="range" id="posBar" min="0" max="1000" value="0" style="flex:1"
-           title="Position on the synced master timeline">
+    <div class="posbar" id="posBar"
+         title="Master timeline: orange = events, green = A, blue = B. Click/drag to seek">
+      <div class="pb-time l" id="pbTimeL">00:00:00</div>
+      <div class="pb-time r" id="pbTimeR">--:--:--</div>
+      <div class="pb-head" id="pbHeadA"></div>
+      <div class="pb-head b" id="pbHeadB"></div>
+    </div>
     <button id="jumpNow" title="Jump to now (latest recorded frame)">⏭|</button>
     <button id="loadSession" title="(Re)index the session folder for playback">⟳ Load session</button>
   </div>
@@ -182,10 +200,7 @@
   <div class="settings">
     <div class="field"><span>Session folder (SSD)</span>
       <input type="text" id="sessionFolder" size="34" placeholder="e.g. D:\replay-session"></div>
-    <div class="field"><span>Camera 1</span><select id="cam0"></select></div>
-    <div class="field"><span>Camera 2</span><select id="cam1"></select></div>
-    <div class="field"><span>Camera 3</span><select id="cam2"></select></div>
-    <div class="field"><span>Camera 4</span><select id="cam3"></select></div>
+    <span id="camFields" style="display:contents"></span>
     <div class="field"><span>Output scene (replay → program)</span>
       <input type="text" id="outputSceneName" size="18" placeholder="REPLAY"></div>
     <div class="field"><span>Split (min)</span>
@@ -196,7 +211,11 @@
       <select id="videoEncoderId"><option value="">Auto (hardware first)</option></select></div>
     <div class="field"><span>Music source (OBS audio source)</span>
       <input type="text" id="musicSourceName" size="14" placeholder="ReplayMusic"></div>
+    <div class="field"><span>Preview size</span>
+      <input type="range" id="tileSize" min="140" max="480" step="10"
+             style="width:110px" title="Multiview tile size (saved in this browser)"></div>
     <button id="saveBtn">Save settings</button>
+    <button id="hidBtn" title="Connect a Contour ShuttlePro/Xpress jog controller (experimental, Chrome/Edge)">🎛 Shuttle</button>
     <button id="deleteAllBtn" title="the reference controller Delete All: wipe recordings + events, keep settings"
             style="border-color:var(--red);color:#ff8a80">Delete All</button>
   </div>
@@ -211,10 +230,33 @@ const post = (path, body) =>
   api(path, { method: "POST", body: JSON.stringify(body || {}) })
     .then(r => { if (!r.ok && r.error) setStatus('<span class="warn">⚠ ' + r.error + "</span>"); return r; });
 
+const NCAMS = 8; // M5: full reference parity
 let recording = false, recStartedAt = null;
 let transport = null, channelTarget = "A", linked = true, draggingPos = false;
 let evState = { list: 1, live: true, events: [] };
 let selectedIds = new Set();
+let streamBase = null; // dedicated MJPEG port, set in loadConfig
+
+// ---------- dynamic camera fields + A/B angle buttons (1..8) ----------
+for (let i = 0; i < NCAMS; i++) {
+  const d = document.createElement("div");
+  d.className = "field";
+  d.innerHTML = `<span>Camera ${i + 1}</span><select id="cam${i}"></select>`;
+  $("camFields").appendChild(d);
+}
+["A", "B"].forEach(ch => {
+  const box = $("angles" + ch);
+  const p = document.createElement("button");
+  p.className = "angle"; p.disabled = true; p.textContent = "P";
+  p.title = "Program angle — future";
+  box.appendChild(p);
+  for (let a = 1; a <= NCAMS; a++) {
+    const b = document.createElement("button");
+    b.className = "angle ang-" + ch.toLowerCase();
+    b.dataset.ch = ch; b.dataset.angle = a; b.textContent = a;
+    box.appendChild(b);
+  }
+});
 
 // ---------- tabs 1..20 ----------
 const tabs = $("tabs");
@@ -234,11 +276,10 @@ for (let i = 1; i <= 20; i++) {
 }
 
 // ---------- multiview ----------
-const mvDefs = [
-  { slot: "cam1", tag: "CAM 1", angle: 1 }, { slot: "cam2", tag: "CAM 2", angle: 2 },
-  { slot: "cam3", tag: "CAM 3", angle: 3 }, { slot: "cam4", tag: "CAM 4", angle: 4 },
-  { slot: "a", tag: "A", angle: 0 }, { slot: "b", tag: "B", angle: 0 },
-];
+const mvDefs = [];
+for (let i = 1; i <= NCAMS; i++)
+  mvDefs.push({ slot: "cam" + i, tag: "CAM " + i, angle: i });
+mvDefs.push({ slot: "a", tag: "A", angle: 0 }, { slot: "b", tag: "B", angle: 0 });
 const mv = $("mv");
 mvDefs.forEach(def => {
   const d = document.createElement("div");
@@ -255,24 +296,54 @@ mvDefs.forEach(def => {
   mv.appendChild(d);
 });
 
-// Multiview = JPEG snapshot polling (~5 fps), NOT MJPEG streams: browsers
-// allow only 6 connections per host, so 6 persistent streams would starve
-// every fetch() of the REST API (UI stuck on "Connecting…").
-// fetch() (instead of <img> probing) keeps expected 404s out of the console
-// and lets us skip slots that cannot have a picture yet.
-let camConfigured = [false, false, false, false]; // updated by loadConfig/save
+// Multiview delivery (M5): true push video — one persistent MJPEG stream per
+// tile served from a DEDICATED port (port+1). Browsers cap connections at 6
+// per host:port, so streams on their own port leave the REST API untouched.
+// If the stream port is unreachable (firewall), the tile silently falls back
+// to JPEG snapshot polling on the main port.
+let camConfigured = new Array(NCAMS).fill(false); // updated by loadConfig/save
 mvDefs.forEach((def, idx) => {
   const tile = $("tile-" + def.slot);
   const img = tile.querySelector("img");
   const noimg = tile.querySelector(".noimg");
+  let mode = "stream";         // "stream" | "poll"
+  let streamOn = false;
   let busy = false, failures = 0, lastUrl = null;
   const showNoSignal = () => { img.style.display = "none"; noimg.style.display = ""; };
+  const showImg = () => { img.style.display = ""; noimg.style.display = "none"; };
+  const eligible = () =>
+    def.angle > 0 ? camConfigured[idx]
+                  : !!(transport && transport.sessionLoaded);
+
+  function startStream() {
+    streamOn = true;
+    img.onload = () => { showImg(); };
+    img.onerror = () => { // stream port unreachable -> polling fallback
+      mode = "poll"; streamOn = false;
+      img.onload = img.onerror = null;
+      img.removeAttribute("src");
+    };
+    img.src = streamBase + "/preview/" + def.slot;
+  }
+  function stopStream() {
+    streamOn = false;
+    img.onload = img.onerror = null;
+    img.removeAttribute("src");
+    showNoSignal();
+  }
+
   setInterval(async () => {
-    if (busy || document.hidden) return;
-    // skip slots that cannot produce frames: unconfigured cameras, and the
-    // A/B channels until a session is loaded
-    if (def.angle > 0 && !camConfigured[idx]) { showNoSignal(); return; }
-    if (def.angle === 0 && !(transport && transport.sessionLoaded)) { showNoSignal(); return; }
+    if (document.hidden) return;
+    if (!eligible()) { if (streamOn) stopStream(); else showNoSignal(); return; }
+
+    if (mode === "stream") {
+      if (!streamBase) return;        // config not loaded yet
+      if (!streamOn) startStream();
+      return;                          // push stream: nothing to poll
+    }
+
+    // --- polling fallback (~5 fps) ---
+    if (busy) return;
     busy = true;
     try {
       const r = await fetch("/preview/" + def.slot + ".jpg?t=" + Date.now());
@@ -282,8 +353,7 @@ mvDefs.forEach((def, idx) => {
         img.src = url;
         if (lastUrl) URL.revokeObjectURL(lastUrl);
         lastUrl = url;
-        img.style.display = "";
-        noimg.style.display = "none";
+        showImg();
         failures = 0;
       } else if (++failures > 5) {
         showNoSignal();
@@ -292,7 +362,7 @@ mvDefs.forEach((def, idx) => {
       if (++failures > 5) showNoSignal();
     }
     busy = false;
-  }, 200 + idx * 7); // ~5 fps, staggered so requests don't burst together
+  }, 200 + idx * 7);
 });
 
 // ---------- formatting ----------
@@ -434,17 +504,17 @@ document.addEventListener("keydown", (e) => {
   else if (k === "p") post("/api/play/last", { toOutput: true });
   else if (k === "d") cmd("/api/transport/changeDirection");
   else if (k === "n") cmd("/api/transport/jumpToNow");
-  else if (["1","2","3","4"].includes(k))
+  else if (["1","2","3","4","5","6","7","8"].includes(k))
     post("/api/channel/angle", { channel: channelTarget, angle: +k });
-  else if (k === "5") post("/api/events/markInOut", { seconds: 5 }).then(refreshEvents);
-  else if (k === "6") post("/api/events/markInOut", { seconds: 10 }).then(refreshEvents);
-  else if (k === "7") post("/api/events/markInOut", { seconds: 20 }).then(refreshEvents);
+  else if (k === "z") post("/api/events/markInOut", { seconds: 5 }).then(refreshEvents);
+  else if (k === "x") post("/api/events/markInOut", { seconds: 10 }).then(refreshEvents);
+  else if (k === "c") post("/api/events/markInOut", { seconds: 20 }).then(refreshEvents);
 });
 
 // ---------- recording / status ----------
 async function loadSources() {
   const data = await api("/api/sources");
-  for (let i = 0; i < 4; i++) {
+  for (let i = 0; i < NCAMS; i++) {
     const sel = $("cam" + i);
     const current = sel.value;
     sel.innerHTML = '<option value="">— not used —</option>';
@@ -473,11 +543,14 @@ async function loadConfig() {
   $("videoBitrateKbps").value = cfg.videoBitrateKbps || 12000;
   $("videoEncoderId").value = cfg.videoEncoderId || "";
   (cfg.cameras || []).forEach((c, i) => {
-    if (i < 4) {
+    if (i < NCAMS) {
       $("cam" + i).value = c.sourceName || "";
       camConfigured[i] = !!c.sourceName;
     }
   });
+  // dedicated MJPEG stream port = REST port + 1
+  if (cfg.port)
+    streamBase = location.protocol + "//" + location.hostname + ":" + (cfg.port + 1);
 }
 $("saveBtn").addEventListener("click", async () => {
   const r = await post("/api/config", {
@@ -487,11 +560,12 @@ $("saveBtn").addEventListener("click", async () => {
     splitMinutes: +$("splitMinutes").value,
     videoBitrateKbps: +$("videoBitrateKbps").value,
     videoEncoderId: $("videoEncoderId").value,
-    cameras: [0,1,2,3].map(i => ({ sourceName: $("cam" + i).value })),
+    cameras: Array.from({ length: NCAMS },
+                        (_, i) => ({ sourceName: $("cam" + i).value })),
   });
   if (r.ok) {
     setStatus("Settings saved.");
-    for (let i = 0; i < 4; i++) camConfigured[i] = !!$("cam" + i).value;
+    for (let i = 0; i < NCAMS; i++) camConfigured[i] = !!$("cam" + i).value;
   }
 });
 
@@ -555,13 +629,50 @@ document.querySelectorAll(".speed[data-speed]").forEach(btn =>
   }));
 $("speedSlider").addEventListener("input", () =>
   cmd("/api/transport/speed", { value: +$("speedSlider").value / 100 }));
-$("posBar").addEventListener("pointerdown", () => { draggingPos = true; });
-$("posBar").addEventListener("change", () => {
-  draggingPos = false;
+// ---------- broadcast-style position bar ----------
+const posBar = $("posBar");
+let lastSeekSent = 0;
+function barSeek(clientX, force) {
   if (!transport || !transport.durationNs) return;
-  cmd("/api/transport/seek",
-      { positionNs: Math.round(+$("posBar").value / 1000 * transport.durationNs) });
+  const rect = posBar.getBoundingClientRect();
+  const frac = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
+  const now = Date.now();
+  if (!force && now - lastSeekSent < 120) return; // throttle while dragging
+  lastSeekSent = now;
+  cmd("/api/transport/seek", { positionNs: Math.round(frac * transport.durationNs) });
+}
+posBar.addEventListener("pointerdown", (e) => {
+  draggingPos = true;
+  posBar.setPointerCapture(e.pointerId);
+  barSeek(e.clientX, true);
 });
+posBar.addEventListener("pointermove", (e) => { if (draggingPos) barSeek(e.clientX); });
+posBar.addEventListener("pointerup", (e) => {
+  if (draggingPos) barSeek(e.clientX, true);
+  draggingPos = false;
+});
+
+// Event markers on the bar (orange = events of the selected list)
+function renderBarEvents() {
+  posBar.querySelectorAll(".pb-event").forEach(el => el.remove());
+  if (!transport || !transport.durationNs) return;
+  const dur = transport.durationNs;
+  evState.events.forEach(ev => {
+    if (ev.tOutNs < 0 || ev.tInNs > dur) return;
+    const el = document.createElement("div");
+    el.className = "pb-event" + (selectedIds.has(ev.id) ? " sel" : "");
+    el.style.left = (ev.tInNs / dur * 100) + "%";
+    el.style.width = Math.max(0.3, (ev.tOutNs - ev.tInNs) / dur * 100) + "%";
+    el.title = "Event " + ev.id + " — click to select";
+    el.addEventListener("pointerdown", (e) => {
+      e.stopPropagation();
+      selectedIds.clear(); selectedIds.add(ev.id);
+      cmd("/api/transport/seek", { positionNs: ev.tInNs });
+      refreshEvents();
+    });
+    posBar.appendChild(el);
+  });
+}
 
 async function refreshTransport() {
   try { transport = await api("/api/transport"); } catch { return; }
@@ -570,8 +681,14 @@ async function refreshTransport() {
   $("playBtn").textContent = ch.playing ? "⏸" : "▶";
   $("dirBtn").classList.toggle("on", ch.reverse);
   $("timecode").textContent = fmtTimecode(ch.positionNs) + "  " + Math.round(ch.speed * 100) + "%";
-  if (!draggingPos && transport.durationNs > 0)
-    $("posBar").value = Math.round(ch.positionNs / transport.durationNs * 1000);
+  if (transport.durationNs > 0) {
+    $("pbHeadA").style.left = (transport.A.positionNs / transport.durationNs * 100) + "%";
+    $("pbHeadB").style.left = (transport.B.positionNs / transport.durationNs * 100) + "%";
+    $("pbHeadB").style.display = transport.linked ? "none" : "";
+    $("pbTimeL").textContent = fmtTimecode(ch.positionNs).slice(0, 8);
+    $("pbTimeR").textContent = fmtTimecode(transport.durationNs).slice(0, 8);
+    renderBarEvents();
+  }
   document.querySelectorAll(".ang-a").forEach(b =>
     b.classList.toggle("on", +b.dataset.angle === transport.A.angle));
   document.querySelectorAll(".ang-b").forEach(b =>
@@ -591,6 +708,106 @@ function tickClock() {
     el.textContent = "--:--:--";
   }
 }
+
+// ---------- multiview tile size (persisted per-browser) ----------
+(function initTileSize() {
+  const saved = +localStorage.getItem("mvTileSize") || 200;
+  $("tileSize").value = saved;
+  document.documentElement.style.setProperty("--tile", saved + "px");
+  $("tileSize").addEventListener("input", () => {
+    const v = +$("tileSize").value;
+    document.documentElement.style.setProperty("--tile", v + "px");
+    localStorage.setItem("mvTileSize", v);
+  });
+})();
+
+// ---------- M5: Web MIDI controller support (optional) ----------
+// Default note map (any channel): 36 play/pause · 37 direction · 38 mark in ·
+// 39 mark out · 40 play last · 41-44 angle 1-4 · 45 jump to now ·
+// 46/47 frame -1/+1 · CC1 (mod wheel) = speed 0-100%.
+if (navigator.requestMIDIAccess) {
+  navigator.requestMIDIAccess().then(midi => {
+    const hook = (input) => input.onmidimessage = (msg) => {
+      const [st, d1, d2] = msg.data;
+      const type = st & 0xf0;
+      if (type === 0x90 && d2 > 0) { // note on
+        if (d1 === 36) cmd("/api/transport/playPause");
+        else if (d1 === 37) cmd("/api/transport/changeDirection");
+        else if (d1 === 38) post("/api/events/markIn").then(refreshEvents);
+        else if (d1 === 39) post("/api/events/markOut").then(refreshEvents);
+        else if (d1 === 40) post("/api/play/last", { toOutput: true });
+        else if (d1 >= 41 && d1 <= 48)
+          post("/api/channel/angle", { channel: channelTarget, angle: d1 - 40 });
+        else if (d1 === 49) cmd("/api/transport/jumpToNow");
+        else if (d1 === 50) cmd("/api/transport/jumpFrames", { value: -1 });
+        else if (d1 === 51) cmd("/api/transport/jumpFrames", { value: 1 });
+      } else if (type === 0xb0 && d1 === 1) { // CC1 mod wheel -> speed
+        cmd("/api/transport/speed", { value: d2 / 127 });
+      }
+    };
+    midi.inputs.forEach(hook);
+    midi.onstatechange = (e) => { if (e.port.type === "input") hook(e.port); };
+  }).catch(() => {});
+}
+
+// ---------- M5: WebHID — Contour ShuttlePro v2 / ShuttleXpress ----------
+// Experimental. Jog ring = frame step, shuttle = speed+direction,
+// buttons 1-8 = angles, 9 = mark in, 10 = mark out, 11 = play last,
+// 12 = play/pause, 13 = jump to now. Requires Chrome/Edge + user gesture.
+$("hidBtn").addEventListener("click", async () => {
+  if (!navigator.hid) { setStatus("WebHID not available in this browser."); return; }
+  let devices;
+  try {
+    devices = await navigator.hid.requestDevice({
+      filters: [{ vendorId: 0x0b33 }], // Contour Design
+    });
+  } catch (e) { return; }
+  if (!devices.length) return;
+  const dev = devices[0];
+  if (!dev.opened) await dev.open();
+  let lastJog = null, lastButtons = 0, lastShuttle = 0;
+  dev.oninputreport = (e) => {
+    const d = new Uint8Array(e.data.buffer);
+    const shuttle = d[0] > 127 ? d[0] - 256 : d[0]; // -7..7
+    const jog = d[1];
+    const buttons = d.length >= 5 ? d[3] | (d[4] << 8) : 0;
+
+    if (lastJog !== null && jog !== lastJog) {
+      let delta = jog - lastJog;
+      if (delta > 128) delta -= 256;
+      if (delta < -128) delta += 256;
+      cmd("/api/transport/jumpFrames", { value: delta });
+    }
+    lastJog = jog;
+
+    if (shuttle !== lastShuttle) {
+      lastShuttle = shuttle;
+      if (shuttle === 0) cmd("/api/transport/pause");
+      else {
+        cmd("/api/transport/speed", { value: Math.abs(shuttle) / 7 });
+        post("/api/transport/" + (shuttle < 0 ? "play" : "play"));
+        // direction follows the shuttle sign
+        if ((shuttle < 0) !== (transport && transport[channelTarget] &&
+                               transport[channelTarget].reverse))
+          cmd("/api/transport/changeDirection");
+      }
+    }
+
+    const pressed = buttons & ~lastButtons; // newly pressed
+    lastButtons = buttons;
+    for (let b = 0; b < 13; b++) {
+      if (!(pressed & (1 << b))) continue;
+      if (b < 8) post("/api/channel/angle", { channel: channelTarget, angle: b + 1 });
+      else if (b === 8) post("/api/events/markIn").then(refreshEvents);
+      else if (b === 9) post("/api/events/markOut").then(refreshEvents);
+      else if (b === 10) post("/api/play/last", { toOutput: true });
+      else if (b === 11) cmd("/api/transport/playPause");
+      else if (b === 12) cmd("/api/transport/jumpToNow");
+    }
+  };
+  $("hidBtn").classList.add("on");
+  setStatus("Shuttle connected: " + dev.productName);
+});
 
 (async function init() {
   // Each loader is independent: one failing endpoint must not leave the UI

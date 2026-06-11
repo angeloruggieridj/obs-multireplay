@@ -236,6 +236,30 @@ void ReplayPlayer::outputFrame(const DecodedFrame &frame)
 	out.timestamp = outputTimestamp_;
 
 	obs_source_output_video(source_, &out);
+
+	// --- M5: audio playback ---
+	// Audio only makes sense forward at (near) normal speed: in slow
+	// motion / reverse / scrub broadcast-style replays are effectively mute.
+	auto chunks = decoder_.takeAudio();
+	bool audible = playing_ && !reverse_ && speed_.load() > 0.99;
+	if (!audible)
+		return;
+	for (auto &chunk : chunks) {
+		if (chunk.frames <= 0)
+			continue;
+		struct obs_source_audio audio = {};
+		audio.data[0] = (const uint8_t *)chunk.left.data();
+		audio.data[1] = (const uint8_t *)chunk.right.data();
+		audio.frames = (uint32_t)chunk.frames;
+		audio.speakers = SPEAKERS_STEREO;
+		audio.format = AUDIO_FORMAT_FLOAT_PLANAR;
+		audio.samples_per_sec = SegmentDecoder::kAudioSampleRate;
+		// Map the chunk onto the synthetic output clock, keeping the
+		// original A/V offset relative to the current video frame.
+		int64_t offset = chunk.ptsNs - frame.ptsNs;
+		audio.timestamp = outputTimestamp_ + (uint64_t)std::max<int64_t>(0, offset);
+		obs_source_output_audio(source_, &audio);
+	}
 }
 
 void ReplayPlayer::threadLoop()

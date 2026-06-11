@@ -16,6 +16,8 @@ extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
 #include <libavutil/imgutils.h>
+#include <libavutil/opt.h>
+#include <libswresample/swresample.h>
 #include <libswscale/swscale.h>
 }
 
@@ -87,6 +89,46 @@ bool SegmentDecoder::open(const std::string &path)
 	if (fr.num > 0 && fr.den > 0)
 		frameDurationNs_ = (int64_t)1000000000 * fr.den / fr.num;
 
+	// --- audio stream (optional: failure just means muted playback) ---
+	audioStreamIndex_ = av_find_best_stream(fmt_, AVMEDIA_TYPE_AUDIO, -1,
+						streamIndex_, nullptr, 0);
+	if (audioStreamIndex_ >= 0) {
+		AVStream *as = fmt_->streams[audioStreamIndex_];
+		const AVCodec *adec =
+			avcodec_find_decoder(as->codecpar->codec_id);
+		if (adec) {
+			audioCodec_ = avcodec_alloc_context3(adec);
+			if (audioCodec_ &&
+			    avcodec_parameters_to_context(
+				    audioCodec_, as->codecpar) >= 0 &&
+			    avcodec_open2(audioCodec_, adec, nullptr) >= 0) {
+				audioFrame_ = av_frame_alloc();
+				AVChannelLayout outLayout =
+					AV_CHANNEL_LAYOUT_STEREO;
+				if (swr_alloc_set_opts2(
+					    &swr_, &outLayout,
+					    AV_SAMPLE_FMT_FLTP,
+					    kAudioSampleRate,
+					    &audioCodec_->ch_layout,
+					    audioCodec_->sample_fmt,
+					    audioCodec_->sample_rate, 0,
+					    nullptr) < 0 ||
+				    swr_init(swr_) < 0) {
+					if (swr_)
+						swr_free(&swr_);
+					swr_ = nullptr;
+				}
+			}
+			if (!swr_) {
+				if (audioCodec_)
+					avcodec_free_context(&audioCodec_);
+				audioStreamIndex_ = -1;
+			}
+		} else {
+			audioStreamIndex_ = -1;
+		}
+	}
+
 	path_ = path;
 	return true;
 }
@@ -97,6 +139,14 @@ void SegmentDecoder::close()
 		sws_freeContext(sws_);
 		sws_ = nullptr;
 	}
+	if (swr_)
+		swr_free(&swr_);
+	if (audioFrame_)
+		av_frame_free(&audioFrame_);
+	if (audioCodec_)
+		avcodec_free_context(&audioCodec_);
+	audioStreamIndex_ = -1;
+	audioQueue_.clear();
 	if (packet_)
 		av_packet_free(&packet_);
 	if (frame_)
@@ -120,7 +170,65 @@ bool SegmentDecoder::seekTo(int64_t ns)
 	if (av_seek_frame(fmt_, streamIndex_, ts, AVSEEK_FLAG_BACKWARD) < 0)
 		return false;
 	avcodec_flush_buffers(codec_);
+	if (audioCodec_)
+		avcodec_flush_buffers(audioCodec_);
+	audioQueue_.clear();
 	return true;
+}
+
+void SegmentDecoder::decodeAudioPacket(const AVPacket *pkt)
+{
+	if (!audioCodec_ || !swr_)
+		return;
+	if (avcodec_send_packet(audioCodec_, pkt) < 0)
+		return;
+
+	AVStream *as = fmt_->streams[audioStreamIndex_];
+	while (avcodec_receive_frame(audioCodec_, audioFrame_) == 0) {
+		int outFrames = (int)av_rescale_rnd(
+			swr_get_delay(swr_, audioCodec_->sample_rate) +
+				audioFrame_->nb_samples,
+			kAudioSampleRate, audioCodec_->sample_rate,
+			AV_ROUND_UP);
+		AudioChunk chunk;
+		chunk.left.resize((size_t)outFrames);
+		chunk.right.resize((size_t)outFrames);
+		uint8_t *outPlanes[2] = {(uint8_t *)chunk.left.data(),
+					 (uint8_t *)chunk.right.data()};
+		int64_t pts = audioFrame_->best_effort_timestamp;
+		if (pts == AV_NOPTS_VALUE)
+			pts = audioFrame_->pts;
+		int converted = swr_convert(
+			swr_, outPlanes, outFrames,
+			(const uint8_t **)audioFrame_->extended_data,
+			audioFrame_->nb_samples);
+		av_frame_unref(audioFrame_);
+		if (converted <= 0)
+			continue;
+		chunk.frames = converted;
+		chunk.left.resize((size_t)converted);
+		chunk.right.resize((size_t)converted);
+		if (pts == AV_NOPTS_VALUE)
+			pts = 0;
+		else if (as->start_time != AV_NOPTS_VALUE)
+			pts -= as->start_time;
+		chunk.ptsNs = rescaleToNs(pts, as->time_base);
+		// bound the queue (~2s) so scrubbing can't grow it unbounded
+		if (audioQueue_.size() < 100)
+			audioQueue_.push_back(std::move(chunk));
+	}
+}
+
+std::vector<AudioChunk> SegmentDecoder::takeAudio()
+{
+	std::vector<AudioChunk> out;
+	out.swap(audioQueue_);
+	return out;
+}
+
+void SegmentDecoder::clearAudio()
+{
+	audioQueue_.clear();
 }
 
 bool SegmentDecoder::nextFrame(DecodedFrame &out)
@@ -152,6 +260,8 @@ bool SegmentDecoder::nextFrame(DecodedFrame &out)
 		}
 		if (packet_->stream_index == streamIndex_)
 			avcodec_send_packet(codec_, packet_);
+		else if (packet_->stream_index == audioStreamIndex_)
+			decodeAudioPacket(packet_);
 		av_packet_unref(packet_);
 	}
 }

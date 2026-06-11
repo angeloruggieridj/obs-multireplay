@@ -12,7 +12,8 @@ broadcast-style **multicamera instant replay** for OBS Studio — open source, c
 | **M2 — Playback** | "Replay A"/"Replay B" OBS sources, synced master timeline across angles, speed 0–100%, reverse, frame-step, position bar, A/B linking | ✅ implemented (untested in real OBS) |
 | **M3 — Events + multiview** | 20 event lists, mark in/out + −5/−10/−20 presets, Live/Recorded modes, per-event angles/notes/speed, play last/selected **to output** (auto scene switch & return), MJPEG multiview (4 cams + A/B) in the browser | ✅ implemented (untested in real OBS) |
 | **M4 — Export, loop, music, shortcuts** | MP4 clip export (stream-copy, instant, works while recording), Loop, music source unmute during playback, Delete All, keyboard shortcuts | ✅ implemented (untested in real OBS) |
-| M5 — Remaining parity | Audio in replay playback, overlap transitions between events, WebHID/MIDI controllers, 8 cameras, WebRTC previews | ⏳ |
+| **M5 — Streaming previews, audio, 8 cams, controllers** | Continuous push video previews (per-tile MJPEG streams on a dedicated port, automatic polling fallback), audio in replay playback (forward @100%), 8 cameras end-to-end, Web MIDI + WebHID ShuttlePro (experimental) | ✅ implemented (untested in real OBS) |
+| M6 — Polish | WebRTC/WHIP previews (H.264, requires libdatachannel), overlap transitions between events (dual-decoder compositing) | ⏳ |
 
 ## How it works (M1)
 
@@ -101,8 +102,24 @@ M2 plays back **completed** segments (after a stop or a 20-min split).
   `I/O` mark in/out · `5/6/7` = −5/−10/−20 · `1–4` angle · `P` play last ·
   `D` direction · `N` jump to now · `L` Live/Recorded.
 
-Not yet implemented (M5): audio in replay playback, overlap transitions
-between events, WebHID/MIDI hardware controllers, 8 cameras.
+### M5 usage
+
+- **Previews are now continuous video**: each tile is a persistent MJPEG
+  stream served on **port 8457** (REST port + 1) at 12 fps. Allow that port
+  in the firewall for LAN clients; if unreachable, tiles fall back to
+  snapshot polling automatically.
+- **Audio plays in replays** at 100% forward speed (slow motion / reverse
+  are mute, like a stadium replay).
+- **8 cameras**: all selectors, tiles, angle buttons and event columns go
+  up to 8. Keyboard: digits `1-8` = angle; `Z/X/C` = −5/−10/−20 presets.
+- **🎛 Shuttle** (settings) connects a Contour ShuttlePro v2/Xpress via
+  WebHID (Chrome/Edge): jog = frame step, shuttle ring = speed+direction,
+  buttons 1-8 = angles, 9/10 = mark in/out, 11 = play last, 12 = play/pause,
+  13 = jump to now. Experimental — untested on real hardware.
+
+Deferred to M6 (heavy infrastructure, documented rationale): WebRTC/WHIP
+previews (needs libdatachannel + DTLS vendoring), overlap transitions
+between events (needs dual-decoder compositing in the replay source).
 
 ## License
 

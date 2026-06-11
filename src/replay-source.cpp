@@ -64,7 +64,7 @@ obs_source_info makeInfo(const char *id, const char *(*getName)(void *),
 	obs_source_info info = {};
 	info.id = id;
 	info.type = OBS_SOURCE_TYPE_INPUT;
-	info.output_flags = OBS_SOURCE_ASYNC_VIDEO |
+	info.output_flags = OBS_SOURCE_ASYNC_VIDEO | OBS_SOURCE_AUDIO |
 			    OBS_SOURCE_DO_NOT_DUPLICATE;
 	info.icon_type = OBS_ICON_TYPE_MEDIA;
 	info.get_name = getName;

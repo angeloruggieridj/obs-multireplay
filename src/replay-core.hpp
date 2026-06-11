@@ -24,7 +24,7 @@ GNU General Public License for more details.
 
 namespace multireplay {
 
-constexpr int kMaxCameras = 4;
+constexpr int kMaxCameras = 8; // M5: full reference parity (was 4 in v1)
 constexpr int kDefaultPort = 8456;
 constexpr int kDefaultSplitMinutes = 20;
 constexpr int kDefaultVideoBitrateKbps = 12000;

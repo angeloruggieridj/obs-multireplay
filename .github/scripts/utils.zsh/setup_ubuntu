@@ -46,7 +46,8 @@ if (( ! (${skips[(Ie)all]} + ${skips[(Ie)deps]}) )) {
     libavcodec-dev \
     libavformat-dev \
     libavutil-dev \
-    libswscale-dev
+    libswscale-dev \
+    libswresample-dev
 
   local -a _qt_packages=()
 

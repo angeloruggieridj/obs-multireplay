@@ -14,7 +14,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
 
 namespace multireplay {
 
-constexpr int kIndexMaxCameras = 4;
+constexpr int kIndexMaxCameras = 8; // M5: full reference parity
 
 // One recorded file (Branch Output splits every N minutes).
 struct Segment {

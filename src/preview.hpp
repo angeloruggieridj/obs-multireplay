@@ -19,10 +19,10 @@ SPDX-License-Identifier: GPL-2.0-or-later
 
 namespace multireplay {
 
-// Multiview preview slots: 0..3 = cameras, 4 = Replay A, 5 = Replay B.
-constexpr int kPreviewSlots = 6;
-constexpr int kPreviewSlotA = 4;
-constexpr int kPreviewSlotB = 5;
+// Multiview preview slots: 0..7 = cameras, 8 = Replay A, 9 = Replay B.
+constexpr int kPreviewSlots = 10;
+constexpr int kPreviewSlotA = 8;
+constexpr int kPreviewSlotB = 9;
 
 // Captures low-res snapshots of the camera sources and the Replay A/B
 // sources on the OBS graphics thread, JPEG-encodes them (FFmpeg mjpeg)
@@ -50,7 +50,7 @@ public:
 	std::string debugJson() const;
 
 	// Preview cadence (frames per second served to browsers).
-	static constexpr int kFps = 8;
+	static constexpr int kFps = 12;
 	// Preview tile max size.
 	static constexpr int kMaxWidth = 480;
 	static constexpr int kMaxHeight = 270;

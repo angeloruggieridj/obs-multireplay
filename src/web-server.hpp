@@ -27,9 +27,16 @@ public:
 private:
 	WebServer() = default;
 	void setupRoutes();
+	// Preview endpoints (.jpg snapshot + MJPEG push stream) registered on
+	// BOTH servers. The dedicated stream port (port+1) exists because
+	// browsers cap connections at 6 per host:port — persistent MJPEG
+	// streams on the main port would starve the REST API.
+	void registerPreviewRoutes(httplib::Server &srv);
 
 	std::unique_ptr<httplib::Server> server_;
+	std::unique_ptr<httplib::Server> streamServer_;
 	std::thread thread_;
+	std::thread streamThread_;
 	bool running_ = false;
 	int port_ = 0;
 };

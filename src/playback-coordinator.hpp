@@ -53,14 +53,24 @@ private:
 	void restorePreviousScene();
 	void setMusicMuted(bool muted);
 
+	// One queue item per (event, enabled angle): the reference controller plays every checked
+	// angle of an event back-to-back. Speed is resolved at queue-build
+	// time ("--" inheritance chain).
+	struct QueueItem {
+		int eventId;
+		int64_t tInNs;
+		int64_t tOutNs;
+		int angle; // 0-based
+		double speed;
+	};
+
 	mutable std::mutex mutex_;
-	std::vector<ReplayEvent> queue_;
+	std::vector<QueueItem> queue_;
 	size_t queuePos_ = 0;
 	bool active_ = false;
 	bool toOutput_ = false;
 	std::atomic<bool> loop_{false};
 	std::atomic<bool> musicEnabled_{false};
-	double inheritedSpeed_ = -1.0; // resolved "--" speed chain
 	std::string previousSceneName_;
 };
 
