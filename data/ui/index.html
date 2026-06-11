@@ -97,17 +97,19 @@
   .tile .noimg { position: absolute; inset: 0; display: flex; align-items: center;
                  justify-content: center; color: var(--muted); font-size: 11px; }
 
-  .settingswrap { margin-top: 10px; }
-  .settingswrap summary { cursor: pointer; color: var(--muted); padding: 6px 10px;
-                          background: var(--panel); border: 1px solid var(--border);
-                          border-radius: 6px; user-select: none; }
-  .settingswrap[open] summary { border-radius: 6px 6px 0 0; color: var(--text); }
-  .settings { background: var(--panel); border: 1px solid var(--border);
-              border-top: 0; border-radius: 0 0 6px 6px;
-              padding: 10px; display: flex; gap: 14px; flex-wrap: wrap;
+  dialog#settingsDlg { background: var(--panel); color: var(--text);
+                       border: 1px solid var(--border); border-radius: 8px;
+                       padding: 0; max-width: 880px; }
+  dialog#settingsDlg::backdrop { background: rgba(0,0,0,.55); }
+  .dlghead { display: flex; justify-content: space-between; align-items: center;
+             padding: 8px 12px; border-bottom: 1px solid var(--border); }
+  .settings { padding: 12px; display: flex; gap: 14px; flex-wrap: wrap;
               align-items: flex-end; }
   .checkfield { display: flex; align-items: center; gap: 6px; color: var(--muted);
                 font-size: 12px; }
+  /* broadcast-style transport: reverse-play | pause | forward-play */
+  .tbtn { min-width: 42px; height: 34px; font-size: 15px; }
+  .tbtn.on { background: var(--accent); border-color: var(--accent2); color: #fff; }
   .field { display: flex; flex-direction: column; gap: 3px; }
   .field span { color: var(--muted); font-size: 11px; }
   .statusline { margin-top: 10px; color: var(--muted); font-size: 12px; }
@@ -127,6 +129,7 @@
     <div class="spacer"></div>
     <input type="text" id="search" placeholder="🔍 Search events…" size="18">
     <button class="live" id="liveBtn" title="Live = mark 'as it happens'. Off = Recorded mode (marks use the position bar time)">LIVE</button>
+    <button id="settingsBtn" title="Settings">⚙</button>
   </div>
 
   <!-- ② Event grid -->
@@ -166,10 +169,13 @@
   <!-- ④ Transport -->
   <div class="transport">
     <button id="recBtn" class="rec" title="Start/stop continuous recording">●</button>
-    <button id="playBtn" title="Play/pause">▶</button>
-    <button id="dirBtn" title="Change direction (reverse)">◀</button>
-    <button id="stepBack" title="Frame step −1">‹</button>
-    <button id="stepFwd" title="Frame step +1">›</button>
+    <span style="width:8px"></span>
+    <button id="stepBack" class="tbtn" title="Frame step −1">⏮</button>
+    <button id="revBtn" class="tbtn" title="Play in REVERSE">◀</button>
+    <button id="pauseBtn" class="tbtn" title="Pause">⏸</button>
+    <button id="playBtn" class="tbtn" title="Play forward">▶</button>
+    <button id="stepFwd" class="tbtn" title="Frame step +1">⏭</button>
+    <span style="width:8px"></span>
     <button id="playLast" title="Instantly play last event to output (the reference controller ↺)">↺</button>
     <button id="playSel" title="Play selected events to output">Play Events</button>
     <button id="stopEv" title="Stop event playback">⏹</button>
@@ -197,16 +203,16 @@
       <div class="pb-head" id="pbHeadA"></div>
       <div class="pb-head b" id="pbHeadB"></div>
     </div>
-    <button id="jumpNow" title="Jump to now (latest recorded frame)">⏭|</button>
-    <button id="loadSession" title="(Re)index the session folder for playback">⟳ Load session</button>
+    <button id="jumpNow" title="Jump to now (latest recorded frame)">⇥ NOW</button>
   </div>
 
   <!-- ⑥ Multiview: 4 cameras + Replay A/B (MJPEG) -->
   <div class="mv" id="mv"></div>
 
-  <!-- Settings (collapsible) -->
-  <details class="settingswrap" id="settingsBox">
-  <summary>⚙ Settings</summary>
+  <!-- Settings (modal dialog, opened with the ⚙ icon in the toolbar) -->
+  <dialog id="settingsDlg">
+  <div class="dlghead"><b>⚙ Settings</b>
+    <button id="settingsClose" title="Close">✕</button></div>
   <div class="settings">
     <div class="field"><span>Session folder (SSD)</span>
       <input type="text" id="sessionFolder" size="34" placeholder="e.g. D:\replay-session"></div>
@@ -232,7 +238,7 @@
     <button id="deleteAllBtn" title="the reference controller Delete All: wipe recordings + events, keep settings"
             style="border-color:var(--red);color:#ff8a80">Delete All</button>
   </div>
-  </details>
+  </dialog>
 
   <div class="statusline" id="statusline">Connecting…</div>
 </div>
@@ -325,6 +331,9 @@ mvDefs.forEach((def, idx) => {
   let busy = false, failures = 0, lastUrl = null;
   const showNoSignal = () => { img.style.display = "none"; noimg.style.display = ""; };
   const showImg = () => { img.style.display = ""; noimg.style.display = "none"; };
+  // visible: should the tile occupy space? (A/B are ALWAYS visible)
+  const visible = () => def.angle > 0 ? camConfigured[idx] : true;
+  // feedable: can it actually receive frames right now?
   const eligible = () =>
     def.angle > 0 ? camConfigured[idx]
                   : !!(transport && transport.sessionLoaded);
@@ -348,13 +357,12 @@ mvDefs.forEach((def, idx) => {
 
   setInterval(async () => {
     if (document.hidden) return;
-    // hide tiles for slots that can't have a picture (saves screen space)
+    // unconfigured camera tiles are hidden; A/B always stay visible
+    tile.style.display = visible() ? "" : "none";
     if (!eligible()) {
-      if (streamOn) stopStream();
-      tile.style.display = "none";
+      if (streamOn) stopStream(); else showNoSignal();
       return;
     }
-    tile.style.display = "";
 
     if (mode === "stream") {
       if (!streamBase) return;        // config not loaded yet
@@ -637,15 +645,22 @@ document.querySelectorAll(".ang-a, .ang-b").forEach(btn =>
   btn.addEventListener("click", () =>
     post("/api/channel/angle", { channel: btn.dataset.ch, angle: +btn.dataset.angle })));
 
-$("playBtn").addEventListener("click", () => cmd("/api/transport/playPause"));
-$("dirBtn").addEventListener("click", () => cmd("/api/transport/changeDirection"));
+// broadcast-style transport: ◀ = play reverse, ▶ = play forward, ⏸ = pause.
+async function playDirection(reverse) {
+  const ch = transport && (transport[channelTarget] || transport.A);
+  if (ch && ch.reverse !== reverse) await cmd("/api/transport/changeDirection");
+  cmd("/api/transport/play");
+}
+$("playBtn").addEventListener("click", () => playDirection(false));
+$("revBtn").addEventListener("click", () => playDirection(true));
+$("pauseBtn").addEventListener("click", () => cmd("/api/transport/pause"));
 $("stepBack").addEventListener("click", () => cmd("/api/transport/jumpFrames", { value: -1 }));
 $("stepFwd").addEventListener("click", () => cmd("/api/transport/jumpFrames", { value: 1 }));
 $("jumpNow").addEventListener("click", () => cmd("/api/transport/jumpToNow"));
-$("loadSession").addEventListener("click", async () => {
-  const r = await post("/api/session/load");
-  if (r.ok) setStatus("Session indexed for playback.");
-});
+
+// Settings dialog
+$("settingsBtn").addEventListener("click", () => $("settingsDlg").showModal());
+$("settingsClose").addEventListener("click", () => $("settingsDlg").close());
 document.querySelectorAll(".speed[data-speed]").forEach(btn =>
   btn.addEventListener("click", () => {
     cmd("/api/transport/speed", { value: +btn.dataset.speed });
@@ -698,18 +713,21 @@ function renderBarEvents() {
   });
 }
 
+// M6: the transport is SAMPLED every 400ms but RENDERED at display rate —
+// the playhead/timecode are interpolated client-side between samples, so
+// the bar and the clock move smoothly instead of jumping.
+let sample = null; // { t: performance.now(), A: {...}, B: {...}, durationNs }
 async function refreshTransport() {
   try { transport = await api("/api/transport"); } catch { return; }
   if (!transport.sessionLoaded) return;
+  sample = { t: performance.now(), durationNs: transport.durationNs,
+             A: { ...transport.A }, B: { ...transport.B } };
   const ch = transport[channelTarget] || transport.A;
-  $("playBtn").textContent = ch.playing ? "⏸" : "▶";
-  $("dirBtn").classList.toggle("on", ch.reverse);
-  $("timecode").textContent = fmtTimecode(ch.positionNs) + "  " + Math.round(ch.speed * 100) + "%";
+  $("playBtn").classList.toggle("on", ch.playing && !ch.reverse);
+  $("revBtn").classList.toggle("on", ch.playing && ch.reverse);
+  $("pauseBtn").classList.toggle("on", !ch.playing);
+  $("pbHeadB").style.display = transport.linked ? "none" : "";
   if (transport.durationNs > 0) {
-    $("pbHeadA").style.left = (transport.A.positionNs / transport.durationNs * 100) + "%";
-    $("pbHeadB").style.left = (transport.B.positionNs / transport.durationNs * 100) + "%";
-    $("pbHeadB").style.display = transport.linked ? "none" : "";
-    $("pbTimeL").textContent = fmtTimecode(ch.positionNs).slice(0, 8);
     $("pbTimeR").textContent = fmtTimecode(transport.durationNs).slice(0, 8);
     renderBarEvents();
   }
@@ -720,6 +738,32 @@ async function refreshTransport() {
   document.querySelectorAll(".speed[data-speed]").forEach(b =>
     b.classList.toggle("on", Math.abs(+b.dataset.speed - ch.speed) < 0.01));
 }
+
+function interpPos(chSample, elapsedMs, durationNs) {
+  let pos = chSample.positionNs;
+  if (chSample.playing)
+    pos += elapsedMs * 1e6 * chSample.speed * (chSample.reverse ? -1 : 1);
+  return Math.min(Math.max(pos, 0), Math.max(durationNs - 1, 0));
+}
+
+function renderSmooth() {
+  requestAnimationFrame(renderSmooth);
+  if (!sample || !transport || !transport.sessionLoaded) return;
+  const elapsed = performance.now() - sample.t;
+  const dur = sample.durationNs;
+  const posA = interpPos(sample.A, elapsed, dur);
+  const posB = interpPos(sample.B, elapsed, dur);
+  if (dur > 0) {
+    $("pbHeadA").style.left = (posA / dur * 100) + "%";
+    $("pbHeadB").style.left = (posB / dur * 100) + "%";
+  }
+  const chPos = channelTarget === "B" ? posB : posA;
+  const chSpeed = (channelTarget === "B" ? sample.B : sample.A).speed;
+  $("timecode").textContent =
+    fmtTimecode(chPos) + "  " + Math.round(chSpeed * 100) + "%";
+  $("pbTimeL").textContent = fmtTimecode(chPos).slice(0, 8);
+}
+requestAnimationFrame(renderSmooth);
 
 function tickClock() {
   if (transport && transport.sessionLoaded) return;

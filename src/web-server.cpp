@@ -14,6 +14,9 @@ SPDX-License-Identifier: GPL-2.0-or-later
 #include "plugin-support.h"
 
 #include <obs-module.h>
+#include <util/platform.h>
+
+#include <atomic>
 
 // cpp-httplib (MIT) — HTTP only, no TLS needed on the local network for M1.
 #define CPPHTTPLIB_NO_EXCEPTIONS
@@ -215,9 +218,27 @@ void WebServer::setupRoutes()
 
 	// --- M2: transport (the reference controller: ReplayPlayPause / ChangeDirection /
 	// ChangeSpeed / JumpFrames / JumpToNow / ACamera / BCamera) ---
+	// M6: the session keeps itself indexed — completed segments are picked
+	// up automatically (throttled), no manual "Load session" needed.
 	server_->Get("/api/transport",
-		     [&engine](const httplib::Request &,
-			       httplib::Response &res) {
+		     [&core, &engine](const httplib::Request &,
+				      httplib::Response &res) {
+			     static std::atomic<int64_t> lastRefreshMs{0};
+			     int64_t nowMs =
+				     (int64_t)(os_gettime_ns() / 1000000);
+			     if (nowMs - lastRefreshMs.load() > 5000) {
+				     lastRefreshMs = nowMs;
+				     if (engine.sessionLoaded()) {
+					     if (core.isRecording())
+						     engine.refreshSession();
+				     } else {
+					     std::string err;
+					     engine.loadSession(
+						     core.getConfig()
+							     .sessionFolder,
+						     err);
+			     }
+			     }
 			     jsonResponse(res, engine.transportJson());
 		     });
 
