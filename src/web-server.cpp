@@ -103,6 +103,10 @@ void WebServer::setupRoutes()
 					      cfg.audioBitrateKbps);
 			     obs_data_set_string(data, "videoEncoderId",
 						 cfg.videoEncoderId.c_str());
+			     obs_data_set_string(data, "outputSceneName",
+						 cfg.outputSceneName.c_str());
+			     obs_data_set_string(data, "musicSourceName",
+						 cfg.musicSourceName.c_str());
 			     obs_data_set_string(data, "recFormat",
 						 cfg.recFormat.c_str());
 			     obs_data_array_t *cams = obs_data_array_create();
@@ -144,6 +148,12 @@ void WebServer::setupRoutes()
 		if (obs_data_has_user_value(data, "videoEncoderId"))
 			cfg.videoEncoderId =
 				obs_data_get_string(data, "videoEncoderId");
+		if (obs_data_has_user_value(data, "outputSceneName"))
+			cfg.outputSceneName =
+				obs_data_get_string(data, "outputSceneName");
+		if (obs_data_has_user_value(data, "musicSourceName"))
+			cfg.musicSourceName =
+				obs_data_get_string(data, "musicSourceName");
 		if (obs_data_has_user_value(data, "recFormat"))
 			cfg.recFormat = obs_data_get_string(data, "recFormat");
 		obs_data_array_t *cams = obs_data_get_array(data, "cameras");

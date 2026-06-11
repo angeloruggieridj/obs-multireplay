@@ -258,27 +258,40 @@ mvDefs.forEach(def => {
 // Multiview = JPEG snapshot polling (~5 fps), NOT MJPEG streams: browsers
 // allow only 6 connections per host, so 6 persistent streams would starve
 // every fetch() of the REST API (UI stuck on "Connecting…").
+// fetch() (instead of <img> probing) keeps expected 404s out of the console
+// and lets us skip slots that cannot have a picture yet.
+let camConfigured = [false, false, false, false]; // updated by loadConfig/save
 mvDefs.forEach((def, idx) => {
   const tile = $("tile-" + def.slot);
   const img = tile.querySelector("img");
   const noimg = tile.querySelector(".noimg");
-  let busy = false, failures = 0;
-  setInterval(() => {
+  let busy = false, failures = 0, lastUrl = null;
+  const showNoSignal = () => { img.style.display = "none"; noimg.style.display = ""; };
+  setInterval(async () => {
     if (busy || document.hidden) return;
+    // skip slots that cannot produce frames: unconfigured cameras, and the
+    // A/B channels until a session is loaded
+    if (def.angle > 0 && !camConfigured[idx]) { showNoSignal(); return; }
+    if (def.angle === 0 && !(transport && transport.sessionLoaded)) { showNoSignal(); return; }
     busy = true;
-    const probe = new Image();
-    probe.onload = () => {
-      img.src = probe.src;
-      img.style.display = "";
-      noimg.style.display = "none";
-      failures = 0;
-      busy = false;
-    };
-    probe.onerror = () => {
-      if (++failures > 5) { img.style.display = "none"; noimg.style.display = ""; }
-      busy = false;
-    };
-    probe.src = "/preview/" + def.slot + ".jpg?t=" + Date.now();
+    try {
+      const r = await fetch("/preview/" + def.slot + ".jpg?t=" + Date.now());
+      if (r.ok) {
+        const blob = await r.blob();
+        const url = URL.createObjectURL(blob);
+        img.src = url;
+        if (lastUrl) URL.revokeObjectURL(lastUrl);
+        lastUrl = url;
+        img.style.display = "";
+        noimg.style.display = "none";
+        failures = 0;
+      } else if (++failures > 5) {
+        showNoSignal();
+      }
+    } catch (e) {
+      if (++failures > 5) showNoSignal();
+    }
+    busy = false;
   }, 200 + idx * 7); // ~5 fps, staggered so requests don't burst together
 });
 
@@ -459,7 +472,12 @@ async function loadConfig() {
   $("splitMinutes").value = cfg.splitMinutes || 20;
   $("videoBitrateKbps").value = cfg.videoBitrateKbps || 12000;
   $("videoEncoderId").value = cfg.videoEncoderId || "";
-  (cfg.cameras || []).forEach((c, i) => { if (i < 4) $("cam" + i).value = c.sourceName || ""; });
+  (cfg.cameras || []).forEach((c, i) => {
+    if (i < 4) {
+      $("cam" + i).value = c.sourceName || "";
+      camConfigured[i] = !!c.sourceName;
+    }
+  });
 }
 $("saveBtn").addEventListener("click", async () => {
   const r = await post("/api/config", {
@@ -471,7 +489,10 @@ $("saveBtn").addEventListener("click", async () => {
     videoEncoderId: $("videoEncoderId").value,
     cameras: [0,1,2,3].map(i => ({ sourceName: $("cam" + i).value })),
   });
-  if (r.ok) setStatus("Settings saved.");
+  if (r.ok) {
+    setStatus("Settings saved.");
+    for (let i = 0; i < 4; i++) camConfigured[i] = !!$("cam" + i).value;
+  }
 });
 
 async function refreshStatus() {
