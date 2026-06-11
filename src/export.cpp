@@ -40,15 +40,18 @@ bool ExportManager::exportEvent(int eventId, int angle1Based,
 		return false;
 	}
 
-	int angle = angle1Based >= 1 ? angle1Based - 1 : 0;
-	if (angle1Based < 1) {
-		// default: first enabled angle
-		for (int i = 0; i < kEventAngles; i++) {
-			if (ev.angles[i].enabled) {
-				angle = i;
-				break;
-			}
-		}
+	// angle1Based >= 1: export that single angle.
+	// angle1Based == 0: export EVERY enabled angle (one file each) —
+	// the reference controller exports all checked angles, not just the first.
+	std::vector<int> angles;
+	if (angle1Based >= 1) {
+		angles.push_back(angle1Based - 1);
+	} else {
+		for (int i = 0; i < kEventAngles; i++)
+			if (ev.angles[i].enabled)
+				angles.push_back(i);
+		if (angles.empty())
+			angles.push_back(0);
 	}
 
 	std::string folder = customFolder;
@@ -60,20 +63,22 @@ bool ExportManager::exportEvent(int eventId, int angle1Based,
 	std::error_code ec;
 	fs::create_directories(folder, ec);
 
-	fs::path out(folder);
-	out /= "event" + std::to_string(ev.id) + "_list" +
-	       std::to_string(ev.list) + "_cam" + std::to_string(angle + 1) +
-	       ".mp4";
-
 	{
 		std::lock_guard<std::mutex> lock(mutex_);
-		Job job;
-		job.eventId = ev.id;
-		job.angle = angle;
-		job.tInNs = ev.tInNs;
-		job.tOutNs = ev.tOutNs;
-		job.outPath = out.string();
-		jobs_.push_back(std::move(job));
+		for (int angle : angles) {
+			fs::path out(folder);
+			out /= "event" + std::to_string(ev.id) + "_list" +
+			       std::to_string(ev.list) + "_cam" +
+			       std::to_string(angle + 1) + ".mp4";
+
+			Job job;
+			job.eventId = ev.id;
+			job.angle = angle;
+			job.tInNs = ev.tInNs;
+			job.tOutNs = ev.tOutNs;
+			job.outPath = out.string();
+			jobs_.push_back(std::move(job));
+		}
 
 		if (!workerRunning_) {
 			if (thread_.joinable())

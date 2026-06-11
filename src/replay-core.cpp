@@ -7,6 +7,8 @@ SPDX-License-Identifier: GPL-2.0-or-later
 #include "replay-core.hpp"
 #include "branch-output-control.hpp"
 #include "event-store.hpp"
+#include "playback-coordinator.hpp"
+#include "replay-player.hpp"
 #include "plugin-support.h"
 
 #include <util/platform.h>
@@ -98,9 +100,109 @@ void ReplayCore::load()
 		"MultiReplayStopRecording",
 		obs_module_text("Hotkey.StopRecording"), onStopHotkey, nullptr);
 
+	registerReplayHotkeys();
+
 	// NOTE: Branch Output availability is checked in obs_module_post_load
 	// (plugin-main.cpp): at this point Branch Output may not be loaded
 	// yet (alphabetical module load order).
+}
+
+// ---------------------------------------------------------------------------
+// Full broadcast-style hotkey set: visible in OBS Settings -> Hotkeys, hence
+// directly mappable from a Stream Deck via its native OBS integration.
+// ---------------------------------------------------------------------------
+namespace {
+
+int64_t hotkeyMarkTimeNs()
+{
+	if (EventStore::instance().liveMode()) {
+		int64_t now = ReplayCore::instance().masterNowNs();
+		if (now >= 0)
+			return now;
+	}
+	return ReplayEngine::instance().channelA().position();
+}
+
+using SimpleFn = void (*)();
+
+void onSimpleHotkey(void *data, obs_hotkey_id, obs_hotkey_t *, bool pressed)
+{
+	if (pressed)
+		reinterpret_cast<SimpleFn>(data)();
+}
+
+struct HotkeyDef {
+	const char *name;
+	const char *locale;
+	SimpleFn fn;
+};
+
+const HotkeyDef kReplayHotkeys[] = {
+	{"ReplayMarkIn", "Hotkey.MarkIn",
+	 []() { EventStore::instance().markIn(hotkeyMarkTimeNs()); }},
+	{"ReplayMarkOut", "Hotkey.MarkOut",
+	 []() { EventStore::instance().markOut(hotkeyMarkTimeNs()); }},
+	{"ReplayMarkInOut5", "Hotkey.Mark5",
+	 []() { EventStore::instance().markInOut(hotkeyMarkTimeNs(), 5); }},
+	{"ReplayMarkInOut10", "Hotkey.Mark10",
+	 []() { EventStore::instance().markInOut(hotkeyMarkTimeNs(), 10); }},
+	{"ReplayMarkInOut20", "Hotkey.Mark20",
+	 []() { EventStore::instance().markInOut(hotkeyMarkTimeNs(), 20); }},
+	{"ReplayPlayLastEventToOutput", "Hotkey.PlayLast",
+	 []() {
+		 std::string err;
+		 PlaybackCoordinator::instance().playLastEvent(
+			 ReplayCore::instance().getConfig().autoSwitchScene,
+			 err);
+	 }},
+	{"ReplayPlayPause", "Hotkey.PlayPause",
+	 []() {
+		 auto &a = ReplayEngine::instance().channelA();
+		 a.setPlaying(!a.playing());
+	 }},
+	{"ReplayChangeDirection", "Hotkey.Direction",
+	 []() { ReplayEngine::instance().channelA().changeDirection(); }},
+	{"ReplayJumpToNow", "Hotkey.JumpToNow",
+	 []() { ReplayEngine::instance().channelA().jumpToEnd(); }},
+	{"ReplayStopEvents", "Hotkey.StopEvents",
+	 []() { PlaybackCoordinator::instance().stopEvents(); }},
+	{"ReplayLiveToggle", "Hotkey.LiveToggle",
+	 []() {
+		 auto &store = EventStore::instance();
+		 store.setLiveMode(!store.liveMode());
+	 }},
+};
+
+// Angle hotkeys need an index: lambdas can't capture, so use a template.
+template<int N> void setAngleA()
+{
+	ReplayEngine::instance().applyTransport(
+		'A', [](ReplayPlayer &p) { p.setAngle(N); });
+}
+
+const SimpleFn kAngleFns[kMaxCameras] = {
+	setAngleA<0>, setAngleA<1>, setAngleA<2>, setAngleA<3>,
+	setAngleA<4>, setAngleA<5>, setAngleA<6>, setAngleA<7>,
+};
+
+} // namespace
+
+void ReplayCore::registerReplayHotkeys()
+{
+	for (const auto &def : kReplayHotkeys) {
+		extraHotkeys_.push_back(obs_hotkey_register_frontend(
+			def.name, obs_module_text(def.locale), onSimpleHotkey,
+			reinterpret_cast<void *>(def.fn)));
+	}
+	for (int i = 0; i < kMaxCameras; i++) {
+		std::string name = "ReplayACamera" + std::to_string(i + 1);
+		std::string desc =
+			std::string(obs_module_text("Hotkey.AngleA")) + " " +
+			std::to_string(i + 1);
+		extraHotkeys_.push_back(obs_hotkey_register_frontend(
+			name.c_str(), desc.c_str(), onSimpleHotkey,
+			reinterpret_cast<void *>(kAngleFns[i])));
+	}
 }
 
 void ReplayCore::unload()
@@ -111,6 +213,10 @@ void ReplayCore::unload()
 		obs_hotkey_unregister(startHotkey_);
 	if (stopHotkey_ != OBS_INVALID_HOTKEY_ID)
 		obs_hotkey_unregister(stopHotkey_);
+	for (obs_hotkey_id id : extraHotkeys_)
+		if (id != OBS_INVALID_HOTKEY_ID)
+			obs_hotkey_unregister(id);
+	extraHotkeys_.clear();
 }
 
 bool ReplayCore::startRecording(std::string &errorOut)
@@ -459,6 +565,9 @@ void ReplayCore::loadConfig()
 		obs_data_get_string(data, "outputSceneName");
 	config_.musicSourceName =
 		obs_data_get_string(data, "musicSourceName");
+	if (obs_data_has_user_value(data, "autoSwitchScene"))
+		config_.autoSwitchScene =
+			obs_data_get_bool(data, "autoSwitchScene");
 	const char *fmt = obs_data_get_string(data, "recFormat");
 	if (fmt && *fmt)
 		config_.recFormat = fmt;
@@ -497,6 +606,7 @@ void ReplayCore::saveConfig() const
 			    config_.outputSceneName.c_str());
 	obs_data_set_string(data, "musicSourceName",
 			    config_.musicSourceName.c_str());
+	obs_data_set_bool(data, "autoSwitchScene", config_.autoSwitchScene);
 	obs_data_set_string(data, "recFormat", config_.recFormat.c_str());
 
 	obs_data_array_t *cams = obs_data_array_create();

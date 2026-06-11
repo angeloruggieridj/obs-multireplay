@@ -84,6 +84,11 @@ void WebServer::setupRoutes()
 	server_->Post("/api/recording/stop",
 		      [&core](const httplib::Request &, httplib::Response &res) {
 			      core.stopRecording();
+			      // auto-index the session so playback is ready
+			      // without a manual "Load session" click
+			      std::string err;
+			      ReplayEngine::instance().loadSession(
+				      core.getConfig().sessionFolder, err);
 			      okResponse(res);
 		      });
 
@@ -107,6 +112,8 @@ void WebServer::setupRoutes()
 						 cfg.outputSceneName.c_str());
 			     obs_data_set_string(data, "musicSourceName",
 						 cfg.musicSourceName.c_str());
+			     obs_data_set_bool(data, "autoSwitchScene",
+					       cfg.autoSwitchScene);
 			     obs_data_set_string(data, "recFormat",
 						 cfg.recFormat.c_str());
 			     obs_data_array_t *cams = obs_data_array_create();
@@ -154,6 +161,9 @@ void WebServer::setupRoutes()
 		if (obs_data_has_user_value(data, "musicSourceName"))
 			cfg.musicSourceName =
 				obs_data_get_string(data, "musicSourceName");
+		if (obs_data_has_user_value(data, "autoSwitchScene"))
+			cfg.autoSwitchScene =
+				obs_data_get_bool(data, "autoSwitchScene");
 		if (obs_data_has_user_value(data, "recFormat"))
 			cfg.recFormat = obs_data_get_string(data, "recFormat");
 		obs_data_array_t *cams = obs_data_get_array(data, "cameras");

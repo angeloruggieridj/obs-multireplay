@@ -97,9 +97,17 @@
   .tile .noimg { position: absolute; inset: 0; display: flex; align-items: center;
                  justify-content: center; color: var(--muted); font-size: 11px; }
 
-  .settings { background: var(--panel); border: 1px solid var(--border); border-radius: 6px;
-              padding: 10px; margin-top: 10px; display: flex; gap: 14px; flex-wrap: wrap;
+  .settingswrap { margin-top: 10px; }
+  .settingswrap summary { cursor: pointer; color: var(--muted); padding: 6px 10px;
+                          background: var(--panel); border: 1px solid var(--border);
+                          border-radius: 6px; user-select: none; }
+  .settingswrap[open] summary { border-radius: 6px 6px 0 0; color: var(--text); }
+  .settings { background: var(--panel); border: 1px solid var(--border);
+              border-top: 0; border-radius: 0 0 6px 6px;
+              padding: 10px; display: flex; gap: 14px; flex-wrap: wrap;
               align-items: flex-end; }
+  .checkfield { display: flex; align-items: center; gap: 6px; color: var(--muted);
+                font-size: 12px; }
   .field { display: flex; flex-direction: column; gap: 3px; }
   .field span { color: var(--muted); font-size: 11px; }
   .statusline { margin-top: 10px; color: var(--muted); font-size: 12px; }
@@ -196,7 +204,9 @@
   <!-- ⑥ Multiview: 4 cameras + Replay A/B (MJPEG) -->
   <div class="mv" id="mv"></div>
 
-  <!-- Settings -->
+  <!-- Settings (collapsible) -->
+  <details class="settingswrap" id="settingsBox">
+  <summary>⚙ Settings</summary>
   <div class="settings">
     <div class="field"><span>Session folder (SSD)</span>
       <input type="text" id="sessionFolder" size="34" placeholder="e.g. D:\replay-session"></div>
@@ -214,11 +224,15 @@
     <div class="field"><span>Preview size</span>
       <input type="range" id="tileSize" min="140" max="480" step="10"
              style="width:110px" title="Multiview tile size (saved in this browser)"></div>
+    <label class="checkfield" title="On: playing an event switches the OBS scene to the output scene and back. Off: only the Replay source is fed — you switch scenes yourself">
+      <input type="checkbox" id="autoSwitchScene" checked> Auto switch scene on play
+    </label>
     <button id="saveBtn">Save settings</button>
     <button id="hidBtn" title="Connect a Contour ShuttlePro/Xpress jog controller (experimental, Chrome/Edge)">🎛 Shuttle</button>
     <button id="deleteAllBtn" title="the reference controller Delete All: wipe recordings + events, keep settings"
             style="border-color:var(--red);color:#ff8a80">Delete All</button>
   </div>
+  </details>
 
   <div class="statusline" id="statusline">Connecting…</div>
 </div>
@@ -334,7 +348,13 @@ mvDefs.forEach((def, idx) => {
 
   setInterval(async () => {
     if (document.hidden) return;
-    if (!eligible()) { if (streamOn) stopStream(); else showNoSignal(); return; }
+    // hide tiles for slots that can't have a picture (saves screen space)
+    if (!eligible()) {
+      if (streamOn) stopStream();
+      tile.style.display = "none";
+      return;
+    }
+    tile.style.display = "";
 
     if (mode === "stream") {
       if (!streamBase) return;        // config not loaded yet
@@ -454,10 +474,12 @@ document.querySelectorAll("[data-preset]").forEach(b =>
   b.addEventListener("click", () =>
     post("/api/events/markInOut", { seconds: +b.dataset.preset }).then(refreshEvents)));
 
-$("playLast").addEventListener("click", () => post("/api/play/last", { toOutput: true }));
+const wantSwitch = () => $("autoSwitchScene").checked;
+$("playLast").addEventListener("click", () =>
+  post("/api/play/last", { toOutput: wantSwitch() }));
 $("playSel").addEventListener("click", () =>
   post("/api/play/selected",
-       { toOutput: true, ids: [...selectedIds].map(id => ({ id })) }));
+       { toOutput: wantSwitch(), ids: [...selectedIds].map(id => ({ id })) }));
 $("stopEv").addEventListener("click", () => post("/api/play/stop"));
 
 // ---------- M4: loop / music / export / delete all ----------
@@ -501,7 +523,7 @@ document.addEventListener("keydown", (e) => {
   else if (k === "i") post("/api/events/markIn").then(refreshEvents);
   else if (k === "o") post("/api/events/markOut").then(refreshEvents);
   else if (k === "l") post("/api/events/mode", { live: !evState.live }).then(refreshEvents);
-  else if (k === "p") post("/api/play/last", { toOutput: true });
+  else if (k === "p") post("/api/play/last", { toOutput: wantSwitch() });
   else if (k === "d") cmd("/api/transport/changeDirection");
   else if (k === "n") cmd("/api/transport/jumpToNow");
   else if (["1","2","3","4","5","6","7","8"].includes(k))
@@ -539,6 +561,7 @@ async function loadConfig() {
   $("sessionFolder").value = cfg.sessionFolder || "";
   $("outputSceneName").value = cfg.outputSceneName || "";
   $("musicSourceName").value = cfg.musicSourceName || "";
+  $("autoSwitchScene").checked = cfg.autoSwitchScene !== false;
   $("splitMinutes").value = cfg.splitMinutes || 20;
   $("videoBitrateKbps").value = cfg.videoBitrateKbps || 12000;
   $("videoEncoderId").value = cfg.videoEncoderId || "";
@@ -557,6 +580,7 @@ $("saveBtn").addEventListener("click", async () => {
     sessionFolder: $("sessionFolder").value.trim(),
     outputSceneName: $("outputSceneName").value.trim(),
     musicSourceName: $("musicSourceName").value.trim(),
+    autoSwitchScene: $("autoSwitchScene").checked,
     splitMinutes: +$("splitMinutes").value,
     videoBitrateKbps: +$("videoBitrateKbps").value,
     videoEncoderId: $("videoEncoderId").value,

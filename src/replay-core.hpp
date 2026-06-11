@@ -44,6 +44,8 @@ struct Config {
 	std::string recFormat = "hybrid_mp4";
 	std::string outputSceneName; // scene switched to program on "to output"
 	std::string musicSourceName; // OBS audio source unmuted during playback
+	bool autoSwitchScene = true; // play-to-output switches the OBS scene;
+				     // false = only feed the Replay source
 	std::array<CameraConfig, kMaxCameras> cameras;
 };
 
@@ -108,6 +110,8 @@ private:
 	void saveConfig() const;
 	void writeSessionManifest() const;
 
+	void registerReplayHotkeys(); // full broadcast-style hotkey set
+
 	mutable std::mutex mutex_;
 	Config config_;
 	bool recording_ = false;
@@ -115,6 +119,7 @@ private:
 	std::array<CameraStatus, kMaxCameras> cameraStatus_{};
 	obs_hotkey_id startHotkey_ = OBS_INVALID_HOTKEY_ID;
 	obs_hotkey_id stopHotkey_ = OBS_INVALID_HOTKEY_ID;
+	std::vector<obs_hotkey_id> extraHotkeys_;
 };
 
 } // namespace multireplay
