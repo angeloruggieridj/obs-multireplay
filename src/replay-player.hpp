@@ -97,6 +97,10 @@ private:
 	std::string cachedPath_;
 	int cachedAngle_ = -1;
 	uint64_t outputTimestamp_ = 0;
+	// Monotonic audio clock: chunks are paced by their own duration
+	// instead of being re-anchored to each video frame (which stutters).
+	uint64_t audioTimestamp_ = 0;
+	bool audioPrimed_ = false;
 };
 
 // Owns the two channels and the shared session index. Linked mode mirrors

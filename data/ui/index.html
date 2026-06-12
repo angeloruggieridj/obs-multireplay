@@ -620,7 +620,7 @@ async function refreshStatus() {
     const tile = $("tile-cam" + (i + 1));
     if (tile) tile.classList.toggle("recdot", !!c.recording);
   });
-  let line = `Encoder: <b>${st.videoEncoder}</b> · Disk free: <b>${fmtBytes(st.diskFreeBytes)}</b>`;
+  let line = `v<b>${st.version || "?"}</b> · Encoder: <b>${st.videoEncoder}</b> · Disk free: <b>${fmtBytes(st.diskFreeBytes)}</b>`;
   if (st.estimatedMinutesRemaining >= 0)
     line += ` · Remaining: <b>${Math.floor(st.estimatedMinutesRemaining / 60)}h ${st.estimatedMinutesRemaining % 60}m</b>`;
   if (!st.branchOutputAvailable)
@@ -689,6 +689,13 @@ function barSeek(clientX, force) {
   const maxSeek = (transport.seekableNs || transport.durationNs) - 1;
   const ns = Math.min(Math.round(frac * transport.durationNs), Math.max(maxSeek, 0));
   cmd("/api/transport/seek", { positionNs: ns });
+  // optimistic local update: the playhead follows the pointer instantly,
+  // without waiting for the next 400ms transport sample
+  if (sample) {
+    sample.A.positionNs = ns;
+    sample.B.positionNs = ns;
+    sample.t = performance.now();
+  }
 }
 posBar.addEventListener("pointerdown", (e) => {
   draggingPos = true;

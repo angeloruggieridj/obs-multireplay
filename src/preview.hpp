@@ -50,7 +50,9 @@ public:
 	std::string debugJson() const;
 
 	// Preview cadence (frames per second served to browsers).
-	static constexpr int kFps = 12;
+	// 20 fps keeps tiles visually fluid while staying cheap on the iGPU
+	// (capture is a small scaled render; JPEG encode ~1-2 ms per tile).
+	static constexpr int kFps = 20;
 	// Preview tile max size.
 	static constexpr int kMaxWidth = 480;
 	static constexpr int kMaxHeight = 270;
@@ -98,14 +100,6 @@ private:
 	// with the preview thread. Allocated in start(), destroyed in stop()
 	// after join so the graphics task can never signal a dead event.
 	os_event_t *captureEvent_ = nullptr;
-
-	// the reference controller Recorded-mode scrub: when the operator is NOT following live,
-	// camera tiles show the decoded frame at the current playhead instead
-	// of the live feed (one lightweight decoder per configured camera).
-	struct ScrubCtx;
-	std::unique_ptr<ScrubCtx> scrub_;
-	std::atomic<bool> scrubActive_{false};
-	void updateScrubSlots(); // runs on the preview thread
 };
 
 } // namespace multireplay

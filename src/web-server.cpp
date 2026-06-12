@@ -691,6 +691,16 @@ void WebServer::setupRoutes()
 	} else {
 		obs_log(LOG_WARNING, "UI directory not found in module data");
 	}
+
+	// The UI must never be served stale from the browser cache: after a
+	// plugin update an old index.html talking to a new API is the #1
+	// source of "I don't see the new UI" confusion.
+	server_->set_post_routing_handler(
+		[](const httplib::Request &req, httplib::Response &res) {
+			if (req.path == "/" ||
+			    req.path.find(".html") != std::string::npos)
+				res.set_header("Cache-Control", "no-store");
+		});
 }
 
 void WebServer::registerPreviewRoutes(httplib::Server &srv)

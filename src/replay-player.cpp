@@ -109,6 +109,10 @@ void ReplayPlayer::stepFrames(int frames)
 
 void ReplayPlayer::seekMaster(int64_t positionNs)
 {
+	// A manual seek cancels any pending event out-point: otherwise a
+	// stale stop-at from a previous event freezes the very next play
+	// on its first frame.
+	stopAtNs_ = -1;
 	positionNs_ = std::max<int64_t>(0, positionNs);
 	wake_.notify_all();
 }
@@ -138,6 +142,7 @@ void ReplayPlayer::invalidateCache()
 	gopCache_.clear();
 	cachedPath_.clear();
 	cachedAngle_ = -1;
+	audioPrimed_ = false;
 	decoder_.close();
 }
 
@@ -243,8 +248,10 @@ void ReplayPlayer::outputFrame(const DecodedFrame &frame)
 	// motion / reverse / scrub broadcast-style replays are effectively mute.
 	auto chunks = decoder_.takeAudio();
 	bool audible = playing_ && !reverse_ && speed_.load() > 0.99;
-	if (!audible)
+	if (!audible) {
+		audioPrimed_ = false; // re-anchor on the next audible frame
 		return;
+	}
 	for (auto &chunk : chunks) {
 		if (chunk.frames <= 0)
 			continue;
@@ -255,10 +262,16 @@ void ReplayPlayer::outputFrame(const DecodedFrame &frame)
 		audio.speakers = SPEAKERS_STEREO;
 		audio.format = AUDIO_FORMAT_FLOAT_PLANAR;
 		audio.samples_per_sec = SegmentDecoder::kAudioSampleRate;
-		// Map the chunk onto the synthetic output clock, keeping the
-		// original A/V offset relative to the current video frame.
-		int64_t offset = chunk.ptsNs - frame.ptsNs;
-		audio.timestamp = outputTimestamp_ + (uint64_t)std::max<int64_t>(0, offset);
+		// Monotonic audio clock: anchor once, then advance by the
+		// chunk's own duration. Re-anchoring every chunk to the video
+		// clock causes overlapping timestamps and choppy audio.
+		if (!audioPrimed_) {
+			audioTimestamp_ = outputTimestamp_;
+			audioPrimed_ = true;
+		}
+		audio.timestamp = audioTimestamp_;
+		audioTimestamp_ += (uint64_t)chunk.frames * 1000000000ULL /
+				   SegmentDecoder::kAudioSampleRate;
 		obs_source_output_audio(source_, &audio);
 	}
 }

@@ -463,6 +463,7 @@ std::string ReplayCore::statusJson() const
 	std::lock_guard<std::mutex> lock(mutex_);
 
 	obs_data_t *root = obs_data_create();
+	obs_data_set_string(root, "version", PLUGIN_VERSION);
 	obs_data_set_bool(root, "recording", recording_);
 	obs_data_set_bool(root, "branchOutputAvailable",
 			  branch_output::available());
