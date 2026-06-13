@@ -3,8 +3,9 @@ obs-multireplay — broadcast-style instant replay for OBS Studio
 Copyright (C) 2026 obs-multireplay contributors
 SPDX-License-Identifier: GPL-2.0-or-later
 
-Registers the "Replay A" / "Replay B" async video sources. Add them to any
-OBS scene; the ReplayEngine pushes decoded frames into them.
+Registers the "Replay A" async video source. Add it to any OBS scene; the
+ReplayEngine pushes decoded frames into it. (Single-channel build: the former
+"Replay B" source was removed to halve the decode load.)
 */
 
 #include "replay-player.hpp"
@@ -26,11 +27,6 @@ const char *getNameA(void *)
 	return obs_module_text("ReplaySource.A");
 }
 
-const char *getNameB(void *)
-{
-	return obs_module_text("ReplaySource.B");
-}
-
 void *createForChannel(obs_source_t *source, char channel)
 {
 	auto *ctx = new ReplaySourceContext{source, channel};
@@ -42,11 +38,6 @@ void *createForChannel(obs_source_t *source, char channel)
 void *createA(obs_data_t *, obs_source_t *source)
 {
 	return createForChannel(source, 'A');
-}
-
-void *createB(obs_data_t *, obs_source_t *source)
-{
-	return createForChannel(source, 'B');
 }
 
 void destroy(void *data)
@@ -74,16 +65,13 @@ obs_source_info makeInfo(const char *id, const char *(*getName)(void *),
 }
 
 obs_source_info infoA;
-obs_source_info infoB;
 
 } // namespace
 
 void registerReplaySources()
 {
 	infoA = makeInfo("multireplay_replay_a", getNameA, createA);
-	infoB = makeInfo("multireplay_replay_b", getNameB, createB);
 	obs_register_source(&infoA);
-	obs_register_source(&infoB);
 }
 
 } // namespace multireplay

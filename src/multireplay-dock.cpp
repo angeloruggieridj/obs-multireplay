@@ -19,7 +19,9 @@ SPDX-License-Identifier: GPL-2.0-or-later
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QGridLayout>
+#include <QSplitter>
 #include <QPushButton>
+#include <QToolButton>
 #include <QSlider>
 #include <QLabel>
 #include <QLineEdit>
@@ -36,7 +38,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
 #include <QFileDialog>
 #include <QGroupBox>
 #include <QMessageBox>
-#include <QFrame>
+#include <QSizePolicy>
 
 #include <algorithm>
 #include <string>
@@ -84,15 +86,26 @@ bool ensureSession()
 				  err);
 }
 
+// small compact transport/marker button
+QPushButton *compactBtn(const QString &text, QWidget *parent, int w = 0)
+{
+	auto *b = new QPushButton(text, parent);
+	b->setMaximumHeight(26);
+	if (w > 0)
+		b->setFixedWidth(w);
+	b->setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Fixed);
+	return b;
+}
+
 } // namespace
 
 // ---------------------------------------------------------------------------
-// Preview render callbacks (run on the OBS graphics thread)
+// Preview render callback (runs on the OBS graphics thread)
 // ---------------------------------------------------------------------------
 
-void MultiReplayDock::renderChannel(char id, uint32_t cx, uint32_t cy)
+void MultiReplayDock::drawChannelA(void *, uint32_t cx, uint32_t cy)
 {
-	ReplayPlayer *p = ReplayEngine::instance().channel(id);
+	ReplayPlayer *p = ReplayEngine::instance().channel('A');
 	obs_source_t *src = p ? p->acquireSource() : nullptr;
 	if (!src)
 		return;
@@ -119,16 +132,6 @@ void MultiReplayDock::renderChannel(char id, uint32_t cx, uint32_t cy)
 	obs_source_release(src);
 }
 
-void MultiReplayDock::drawChannelA(void *, uint32_t cx, uint32_t cy)
-{
-	renderChannel('A', cx, cy);
-}
-
-void MultiReplayDock::drawChannelB(void *, uint32_t cx, uint32_t cy)
-{
-	renderChannel('B', cx, cy);
-}
-
 // ---------------------------------------------------------------------------
 // Construction
 // ---------------------------------------------------------------------------
@@ -136,27 +139,30 @@ void MultiReplayDock::drawChannelB(void *, uint32_t cx, uint32_t cy)
 MultiReplayDock::MultiReplayDock(QWidget *parent) : QWidget(parent)
 {
 	setObjectName("MultiReplayDock");
+	setMinimumWidth(280);
 
 	auto *root = new QVBoxLayout(this);
-	root->setContentsMargins(6, 6, 6, 6);
-	root->setSpacing(6);
+	root->setContentsMargins(4, 4, 4, 4);
+	root->setSpacing(4);
 
-	// --- top bar: REC + status + settings ---
+	// --- top toolbar: REC + status + settings ---
 	{
 		auto *bar = new QHBoxLayout();
+		bar->setSpacing(4);
 		recBtn_ = new QPushButton(this);
-		recBtn_->setCheckable(false);
+		recBtn_->setMinimumWidth(84);
+		recBtn_->setMaximumHeight(28);
 		bar->addWidget(recBtn_);
 
 		statusLbl_ = new QLabel(this);
-		statusLbl_->setTextInteractionFlags(Qt::TextSelectableByMouse);
+		statusLbl_->setStyleSheet("color:#9aa;");
 		bar->addWidget(statusLbl_, 1);
 
-		auto *gear = new QPushButton(QStringLiteral("⚙"), this);
+		auto *gear = new QToolButton(this);
+		gear->setText(QStringLiteral("⚙"));
 		gear->setToolTip(obs_module_text("Dock.Settings"));
-		gear->setFixedWidth(34);
 		bar->addWidget(gear);
-		connect(gear, &QPushButton::clicked, this,
+		connect(gear, &QToolButton::clicked, this,
 			&MultiReplayDock::openSettings);
 
 		root->addLayout(bar);
@@ -178,10 +184,24 @@ MultiReplayDock::MultiReplayDock(QWidget *parent) : QWidget(parent)
 		});
 	}
 
-	root->addWidget(buildPreviews());
-	root->addWidget(buildTransport());
-	root->addWidget(buildMarkers());
-	root->addWidget(buildEvents(), 1);
+	// --- vertical splitter: controls on top, event list below ---
+	auto *splitter = new QSplitter(Qt::Vertical, this);
+	splitter->setChildrenCollapsible(false);
+	splitter->setHandleWidth(6);
+
+	auto *controls = new QWidget(splitter);
+	auto *cv = new QVBoxLayout(controls);
+	cv->setContentsMargins(0, 0, 0, 0);
+	cv->setSpacing(4);
+	cv->addWidget(buildPreview(), 1);
+	cv->addWidget(buildTransport());
+	cv->addWidget(buildMarkers());
+
+	splitter->addWidget(controls);
+	splitter->addWidget(buildEvents());
+	splitter->setStretchFactor(0, 3);
+	splitter->setStretchFactor(1, 2);
+	root->addWidget(splitter, 1);
 
 	pollTimer_ = new QTimer(this);
 	pollTimer_->setInterval(66); // ~15 fps transport refresh
@@ -195,65 +215,48 @@ MultiReplayDock::MultiReplayDock(QWidget *parent) : QWidget(parent)
 MultiReplayDock::~MultiReplayDock() = default;
 
 // ---------------------------------------------------------------------------
-// A/B previews + angle selectors
+// Single A preview + angle selector
 // ---------------------------------------------------------------------------
 
-QWidget *MultiReplayDock::buildPreviews()
+QWidget *MultiReplayDock::buildPreview()
 {
 	auto *box = new QWidget(this);
-	auto *grid = new QGridLayout(box);
-	grid->setContentsMargins(0, 0, 0, 0);
-
-	auto makeAngles = [this](char ch) -> QWidget * {
-		auto *w = new QWidget(this);
-		auto *h = new QHBoxLayout(w);
-		h->setContentsMargins(0, 0, 0, 0);
-		h->setSpacing(2);
-		auto *group = new QButtonGroup(this);
-		group->setExclusive(true);
-		for (int i = 1; i <= kNCams; i++) {
-			auto *b = new QPushButton(QString::number(i), this);
-			b->setCheckable(true);
-			b->setFixedWidth(26);
-			group->addButton(b, i);
-			h->addWidget(b);
-		}
-		connect(group, &QButtonGroup::idClicked, this,
-			[this, ch](int id) { setAngle(ch, id); });
-		if (ch == 'A')
-			anglesA_ = group;
-		else
-			anglesB_ = group;
-		return w;
-	};
+	auto *v = new QVBoxLayout(box);
+	v->setContentsMargins(0, 0, 0, 0);
+	v->setSpacing(3);
 
 	displayA_ = new OBSQTDisplay(this);
-	displayB_ = new OBSQTDisplay(this);
 	displayA_->setRenderCallback(&MultiReplayDock::drawChannelA, this);
-	displayB_->setRenderCallback(&MultiReplayDock::drawChannelB, this);
+	displayA_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+	displayA_->setMinimumHeight(150);
+	v->addWidget(displayA_, 1);
 
-	grid->addWidget(new QLabel(QStringLiteral("A"), this), 0, 0,
-			Qt::AlignHCenter);
-	grid->addWidget(new QLabel(QStringLiteral("B"), this), 0, 1,
-			Qt::AlignHCenter);
-	grid->addWidget(displayA_, 1, 0);
-	grid->addWidget(displayB_, 1, 1);
-	grid->addWidget(makeAngles('A'), 2, 0, Qt::AlignHCenter);
-	grid->addWidget(makeAngles('B'), 2, 1, Qt::AlignHCenter);
+	// angle selector row (cam 1..N)
+	auto *row = new QWidget(box);
+	auto *h = new QHBoxLayout(row);
+	h->setContentsMargins(0, 0, 0, 0);
+	h->setSpacing(2);
+	h->addWidget(new QLabel(obs_module_text("Dock.Angle"), row));
+	anglesA_ = new QButtonGroup(this);
+	anglesA_->setExclusive(true);
+	for (int i = 1; i <= kNCams; i++) {
+		auto *b = new QPushButton(QString::number(i), row);
+		b->setCheckable(true);
+		b->setFixedWidth(28);
+		b->setMaximumHeight(26);
+		anglesA_->addButton(b, i);
+		h->addWidget(b);
+	}
+	h->addStretch(1);
+	connect(anglesA_, &QButtonGroup::idClicked, this,
+		[this](int id) { setAngle(id); });
+	v->addWidget(row);
 
-	linkedChk_ = new QCheckBox(obs_module_text("Dock.LinkAB"), this);
-	linkedChk_->setChecked(ReplayEngine::instance().linked());
-	connect(linkedChk_, &QCheckBox::toggled, this, [](bool on) {
-		ReplayEngine::instance().setLinked(on);
-	});
-	grid->addWidget(linkedChk_, 3, 0, 1, 2, Qt::AlignHCenter);
-
-	box->setMinimumHeight(220);
 	return box;
 }
 
 // ---------------------------------------------------------------------------
-// Transport: seekbar + NOW + play/pause/reverse/step + speed
+// Transport: seekbar + timecode + buttons + speed
 // ---------------------------------------------------------------------------
 
 QWidget *MultiReplayDock::buildTransport()
@@ -261,7 +264,7 @@ QWidget *MultiReplayDock::buildTransport()
 	auto *box = new QWidget(this);
 	auto *v = new QVBoxLayout(box);
 	v->setContentsMargins(0, 0, 0, 0);
-	v->setSpacing(4);
+	v->setSpacing(3);
 
 	seek_ = new QSlider(Qt::Horizontal, this);
 	seek_->setRange(0, 10000);
@@ -272,75 +275,85 @@ QWidget *MultiReplayDock::buildTransport()
 		seekToFraction(seek_->value() / 10000.0);
 	});
 	connect(seek_, &QSlider::sliderMoved, this, [this](int val) {
-		// optimistic timecode while dragging
 		tcLbl_->setText(formatTc((int64_t)(val / 10000.0 *
 						   (double)durationNs_)) +
 				" / " + formatTc(durationNs_));
 	});
 	v->addWidget(seek_);
 
-	tcLbl_ = new QLabel("00:00.000 / 00:00.000", this);
-	tcLbl_->setAlignment(Qt::AlignCenter);
-	v->addWidget(tcLbl_);
-
 	auto *h = new QHBoxLayout();
-	auto mkBtn = [this, h](const QString &txt) {
-		auto *b = new QPushButton(txt, this);
-		b->setFixedWidth(40);
+	h->setSpacing(3);
+
+	tcLbl_ = new QLabel("00:00.000 / 00:00.000", this);
+	tcLbl_->setStyleSheet("font-family:monospace;");
+	h->addWidget(tcLbl_);
+	h->addStretch(1);
+
+	auto *stepBack = compactBtn(QStringLiteral("⏮"), this, 32);
+	reverseBtn_ = compactBtn(QStringLiteral("◀"), this, 32);
+	playPauseBtn_ = compactBtn(QStringLiteral("▶"), this, 36);
+	auto *stepFwd = compactBtn(QStringLiteral("⏭"), this, 32);
+	nowBtn_ = compactBtn(QStringLiteral("NOW"), this, 44);
+	for (auto *b : {stepBack, reverseBtn_, playPauseBtn_, stepFwd, nowBtn_})
 		h->addWidget(b);
-		return b;
-	};
 
-	auto *stepBack = mkBtn(QStringLiteral("⏮"));   // |<
-	reverseBtn_ = mkBtn(QStringLiteral("◀"));      // <
-	playPauseBtn_ = mkBtn(QStringLiteral("▶"));    // >
-	auto *stepFwd = mkBtn(QStringLiteral("⏭"));    // >|
-	nowBtn_ = mkBtn(QStringLiteral("NOW"));
-	nowBtn_->setFixedWidth(48);
-
-	connect(stepBack, &QPushButton::clicked, this, [](){
-		if (!ensureSession()) return;
+	connect(stepBack, &QPushButton::clicked, this, []() {
+		if (!ensureSession())
+			return;
 		ReplayEngine::instance().setFollowLive(false);
-		ReplayEngine::instance().applyTransport('A', [](ReplayPlayer &p){ p.stepFrames(-1); });
+		ReplayEngine::instance().applyTransport(
+			'A', [](ReplayPlayer &p) { p.stepFrames(-1); });
 	});
-	connect(stepFwd, &QPushButton::clicked, this, [](){
-		if (!ensureSession()) return;
+	connect(stepFwd, &QPushButton::clicked, this, []() {
+		if (!ensureSession())
+			return;
 		ReplayEngine::instance().setFollowLive(false);
-		ReplayEngine::instance().applyTransport('A', [](ReplayPlayer &p){ p.stepFrames(1); });
+		ReplayEngine::instance().applyTransport(
+			'A', [](ReplayPlayer &p) { p.stepFrames(1); });
 	});
-	connect(reverseBtn_, &QPushButton::clicked, this, [](){
-		if (!ensureSession()) return;
-		ReplayEngine::instance().applyTransport('A', [](ReplayPlayer &p){ p.changeDirection(); });
+	connect(reverseBtn_, &QPushButton::clicked, this, []() {
+		if (!ensureSession())
+			return;
+		ReplayEngine::instance().applyTransport(
+			'A', [](ReplayPlayer &p) { p.changeDirection(); });
 	});
-	connect(playPauseBtn_, &QPushButton::clicked, this, [](){
-		if (!ensureSession()) return;
+	connect(playPauseBtn_, &QPushButton::clicked, this, []() {
+		if (!ensureSession())
+			return;
 		auto &engine = ReplayEngine::instance();
 		bool playing = engine.channelA().playing();
 		if (!playing)
 			engine.setFollowLive(false);
-		engine.applyTransport('A', [playing](ReplayPlayer &p){ p.setPlaying(!playing); });
+		engine.applyTransport('A', [playing](ReplayPlayer &p) {
+			p.setPlaying(!playing);
+		});
 	});
-	connect(nowBtn_, &QPushButton::clicked, this, [](){
-		if (!ensureSession()) return;
+	connect(nowBtn_, &QPushButton::clicked, this, []() {
+		if (!ensureSession())
+			return;
 		auto &engine = ReplayEngine::instance();
 		engine.setFollowLive(true);
-		engine.applyTransport('A', [](ReplayPlayer &p){ p.jumpToEnd(); });
+		engine.applyTransport('A',
+				      [](ReplayPlayer &p) { p.jumpToEnd(); });
 	});
 
-	h->addSpacing(10);
-	h->addWidget(new QLabel(obs_module_text("Dock.Speed"), this));
+	v->addLayout(h);
+
+	// speed row
+	auto *sh = new QHBoxLayout();
+	sh->setSpacing(3);
+	sh->addWidget(new QLabel(obs_module_text("Dock.Speed"), this));
 	speed_ = new QSlider(Qt::Horizontal, this);
 	speed_->setRange(5, 100); // 0.05x .. 1.00x
 	speed_->setValue(100);
-	speed_->setFixedWidth(120);
-	connect(speed_, &QSlider::valueChanged, this, [](int val){
+	connect(speed_, &QSlider::valueChanged, this, [](int val) {
 		double sp = val / 100.0;
-		ReplayEngine::instance().applyTransport('A', [sp](ReplayPlayer &p){ p.setSpeed(sp); });
+		ReplayEngine::instance().applyTransport(
+			'A', [sp](ReplayPlayer &p) { p.setSpeed(sp); });
 	});
-	h->addWidget(speed_);
-	h->addStretch(1);
+	sh->addWidget(speed_, 1);
+	v->addLayout(sh);
 
-	v->addLayout(h);
 	return box;
 }
 
@@ -353,24 +366,25 @@ QWidget *MultiReplayDock::buildMarkers()
 	auto *box = new QWidget(this);
 	auto *h = new QHBoxLayout(box);
 	h->setContentsMargins(0, 0, 0, 0);
+	h->setSpacing(3);
 
 	liveChk_ = new QCheckBox(obs_module_text("Dock.LiveMode"), this);
 	liveChk_->setChecked(EventStore::instance().liveMode());
-	connect(liveChk_, &QCheckBox::toggled, this, [](bool on){
-		EventStore::instance().setLiveMode(on);
-	});
+	connect(liveChk_, &QCheckBox::toggled, this,
+		[](bool on) { EventStore::instance().setLiveMode(on); });
 	h->addWidget(liveChk_);
 	h->addStretch(1);
 
-	auto *in = new QPushButton(obs_module_text("Dock.MarkIn"), this);
-	auto *out = new QPushButton(obs_module_text("Dock.MarkOut"), this);
-	connect(in, &QPushButton::clicked, this, [this](){
+	auto *in = compactBtn(obs_module_text("Dock.MarkIn"), this);
+	auto *out = compactBtn(obs_module_text("Dock.MarkOut"), this);
+	connect(in, &QPushButton::clicked, this, [this]() {
 		EventStore::instance().markIn(markTimeNs());
 		refreshEvents();
 	});
-	connect(out, &QPushButton::clicked, this, [this](){
+	connect(out, &QPushButton::clicked, this, [this]() {
 		if (!EventStore::instance().markOut(markTimeNs()))
-			QMessageBox::information(this, "obs-multireplay",
+			QMessageBox::information(
+				this, "obs-multireplay",
 				obs_module_text("Dock.NoOpenEvent"));
 		refreshEvents();
 	});
@@ -378,16 +392,16 @@ QWidget *MultiReplayDock::buildMarkers()
 	h->addWidget(out);
 
 	for (int sec : {5, 10, 20}) {
-		auto *b = new QPushButton(QString("-%1s").arg(sec), this);
-		connect(b, &QPushButton::clicked, this, [this, sec](){
+		auto *b = compactBtn(QString("-%1s").arg(sec), this, 40);
+		connect(b, &QPushButton::clicked, this, [this, sec]() {
 			EventStore::instance().markInOut(markTimeNs(), sec);
 			refreshEvents();
 		});
 		h->addWidget(b);
 	}
 
-	auto *cancel = new QPushButton(obs_module_text("Dock.Cancel"), this);
-	connect(cancel, &QPushButton::clicked, this, [this](){
+	auto *cancel = compactBtn(obs_module_text("Dock.Cancel"), this);
+	connect(cancel, &QPushButton::clicked, this, [this]() {
 		EventStore::instance().markCancel();
 		refreshEvents();
 	});
@@ -405,18 +419,20 @@ QWidget *MultiReplayDock::buildEvents()
 	auto *box = new QWidget(this);
 	auto *v = new QVBoxLayout(box);
 	v->setContentsMargins(0, 0, 0, 0);
-	v->setSpacing(4);
+	v->setSpacing(3);
 
 	auto *top = new QHBoxLayout();
+	top->setSpacing(3);
 	top->addWidget(new QLabel(obs_module_text("Dock.List"), this));
 	listCombo_ = new QComboBox(this);
 	for (int i = 1; i <= kEventLists; i++)
 		listCombo_->addItem(QString::number(i));
 	listCombo_->setCurrentIndex(EventStore::instance().selectedList() - 1);
-	connect(listCombo_, &QComboBox::currentIndexChanged, this, [this](int idx){
-		EventStore::instance().selectList(idx + 1);
-		refreshEvents();
-	});
+	connect(listCombo_, &QComboBox::currentIndexChanged, this,
+		[this](int idx) {
+			EventStore::instance().selectList(idx + 1);
+			refreshEvents();
+		});
 	top->addWidget(listCombo_);
 
 	search_ = new QLineEdit(this);
@@ -428,15 +444,16 @@ QWidget *MultiReplayDock::buildEvents()
 	v->addLayout(top);
 
 	events_ = new QTableWidget(this);
-	events_->setColumnCount(7);
+	events_->setColumnCount(6);
 	events_->setHorizontalHeaderLabels(
 		{"ID", obs_module_text("Dock.In"), obs_module_text("Dock.Out"),
-		 obs_module_text("Dock.Duration"), obs_module_text("Dock.Speed"),
-		 obs_module_text("Dock.Angles"), obs_module_text("Dock.Note")});
+		 obs_module_text("Dock.Duration"), obs_module_text("Dock.Angles"),
+		 obs_module_text("Dock.Note")});
 	events_->horizontalHeader()->setStretchLastSection(true);
 	events_->setSelectionBehavior(QAbstractItemView::SelectRows);
 	events_->setEditTriggers(QAbstractItemView::NoEditTriggers);
 	events_->verticalHeader()->setVisible(false);
+	events_->setAlternatingRowColors(true);
 	connect(events_, &QTableWidget::itemDoubleClicked, this,
 		[this](QTableWidgetItem *) {
 			std::string err;
@@ -449,61 +466,63 @@ QWidget *MultiReplayDock::buildEvents()
 
 	// playback controls
 	auto *pb = new QHBoxLayout();
-	auto *playSel = new QPushButton(obs_module_text("Dock.PlaySelected"), this);
-	auto *playLast = new QPushButton(obs_module_text("Dock.PlayLast"), this);
-	auto *stop = new QPushButton(obs_module_text("Dock.Stop"), this);
-	connect(playSel, &QPushButton::clicked, this, [this](){
+	pb->setSpacing(3);
+	auto *playSel = compactBtn(obs_module_text("Dock.PlaySelected"), this);
+	auto *playLast = compactBtn(obs_module_text("Dock.PlayLast"), this);
+	auto *stop = compactBtn(obs_module_text("Dock.Stop"), this);
+	connect(playSel, &QPushButton::clicked, this, [this]() {
 		std::string err;
-		if (ensureSession() && !PlaybackCoordinator::instance().playEvents(
-			selectedEventIds(), toOutputChk_->isChecked(), err))
+		if (ensureSession() &&
+		    !PlaybackCoordinator::instance().playEvents(
+			    selectedEventIds(), toOutputChk_->isChecked(), err))
 			QMessageBox::warning(this, "obs-multireplay",
-				QString::fromStdString(err));
+					     QString::fromStdString(err));
 	});
-	connect(playLast, &QPushButton::clicked, this, [this](){
+	connect(playLast, &QPushButton::clicked, this, [this]() {
 		std::string err;
-		if (ensureSession() && !PlaybackCoordinator::instance().playLastEvent(
-			toOutputChk_->isChecked(), err))
+		if (ensureSession() &&
+		    !PlaybackCoordinator::instance().playLastEvent(
+			    toOutputChk_->isChecked(), err))
 			QMessageBox::warning(this, "obs-multireplay",
-				QString::fromStdString(err));
+					     QString::fromStdString(err));
 	});
-	connect(stop, &QPushButton::clicked, this, [](){
-		PlaybackCoordinator::instance().stopEvents();
-	});
+	connect(stop, &QPushButton::clicked, this,
+		[]() { PlaybackCoordinator::instance().stopEvents(); });
 	pb->addWidget(playSel);
 	pb->addWidget(playLast);
 	pb->addWidget(stop);
+	pb->addStretch(1);
 
 	toOutputChk_ = new QCheckBox(obs_module_text("Dock.ToOutput"), this);
 	loopChk_ = new QCheckBox(obs_module_text("Dock.Loop"), this);
 	musicChk_ = new QCheckBox(obs_module_text("Dock.Music"), this);
-	connect(loopChk_, &QCheckBox::toggled, this, [](bool on){
-		PlaybackCoordinator::instance().setLoop(on);
-	});
-	connect(musicChk_, &QCheckBox::toggled, this, [](bool on){
+	connect(loopChk_, &QCheckBox::toggled, this,
+		[](bool on) { PlaybackCoordinator::instance().setLoop(on); });
+	connect(musicChk_, &QCheckBox::toggled, this, [](bool on) {
 		PlaybackCoordinator::instance().setMusicEnabled(on);
 	});
 	pb->addWidget(toOutputChk_);
 	pb->addWidget(loopChk_);
 	pb->addWidget(musicChk_);
-	pb->addStretch(1);
 	v->addLayout(pb);
 
 	// edit controls
 	auto *eb = new QHBoxLayout();
-	auto *dup = new QPushButton(obs_module_text("Dock.Duplicate"), this);
-	auto *del = new QPushButton(obs_module_text("Dock.Delete"), this);
-	auto *exp = new QPushButton(obs_module_text("Dock.Export"), this);
-	connect(dup, &QPushButton::clicked, this, [this](){
+	eb->setSpacing(3);
+	auto *dup = compactBtn(obs_module_text("Dock.Duplicate"), this);
+	auto *del = compactBtn(obs_module_text("Dock.Delete"), this);
+	auto *exp = compactBtn(obs_module_text("Dock.Export"), this);
+	connect(dup, &QPushButton::clicked, this, [this]() {
 		for (int id : selectedEventIds())
 			EventStore::instance().duplicate(id);
 		refreshEvents();
 	});
-	connect(del, &QPushButton::clicked, this, [this](){
+	connect(del, &QPushButton::clicked, this, [this]() {
 		for (int id : selectedEventIds())
 			EventStore::instance().remove(id);
 		refreshEvents();
 	});
-	connect(exp, &QPushButton::clicked, this, [this](){
+	connect(exp, &QPushButton::clicked, this, [this]() {
 		auto ids = selectedEventIds();
 		if (ids.empty())
 			return;
@@ -552,9 +571,9 @@ std::vector<int> MultiReplayDock::selectedEventIds() const
 	return ids;
 }
 
-void MultiReplayDock::setAngle(char channel, int angle1Based)
+void MultiReplayDock::setAngle(int angle1Based)
 {
-	ReplayPlayer *p = ReplayEngine::instance().channel(channel);
+	ReplayPlayer *p = ReplayEngine::instance().channel('A');
 	if (p && angle1Based >= 1 && angle1Based <= kIndexMaxCameras)
 		p->setAngle(angle1Based - 1);
 }
@@ -597,7 +616,7 @@ void MultiReplayDock::poll()
 	}
 
 	// --- transport ---
-	Data t(ReplayEngine::instance().transportJson());
+	Data t(engine.transportJson());
 	if (t) {
 		seekableNs_ = obs_data_get_int(t, "seekableNs");
 		durationNs_ = obs_data_get_int(t, "durationNs");
@@ -610,10 +629,6 @@ void MultiReplayDock::poll()
 		double spA = a ? obs_data_get_double(a, "speed") : 1.0;
 		if (a)
 			obs_data_release(a);
-		obs_data_t *b = obs_data_get_obj(t, "B");
-		int angleB = b ? (int)obs_data_get_int(b, "angle") : 1;
-		if (b)
-			obs_data_release(b);
 
 		if (!seekDragging_) {
 			int v = durationNs_ > 0
@@ -639,16 +654,15 @@ void MultiReplayDock::poll()
 
 		if (anglesA_ && anglesA_->button(angleA))
 			anglesA_->button(angleA)->setChecked(true);
-		if (anglesB_ && anglesB_->button(angleB))
-			anglesB_->button(angleB)->setChecked(true);
 	}
 
 	// --- recording status ---
 	bool rec = core.isRecording();
 	recBtn_->setText(rec ? QStringLiteral("■ STOP")
 			     : QStringLiteral("● REC"));
-	recBtn_->setStyleSheet(rec ? "background:#c0392b;color:white;font-weight:bold"
-				   : "font-weight:bold");
+	recBtn_->setStyleSheet(
+		rec ? "background:#c0392b;color:white;font-weight:bold"
+		    : "font-weight:bold");
 
 	Data st(core.statusJson());
 	if (st) {
@@ -685,7 +699,6 @@ void MultiReplayDock::refreshEvents()
 		int id = (int)obs_data_get_int(e, "id");
 		int64_t tin = obs_data_get_int(e, "tInNs");
 		int64_t tout = obs_data_get_int(e, "tOutNs");
-		double speed = obs_data_get_double(e, "speed");
 
 		QString angles, notes;
 		obs_data_array_t *aArr = obs_data_get_array(e, "angles");
@@ -708,13 +721,11 @@ void MultiReplayDock::refreshEvents()
 
 		QString dur = tout >= 0 ? formatTc(tout - tin)
 					: obs_module_text("Dock.Open");
-		QString spd = speed < 0 ? "--"
-					: QString::number(speed, 'f', 2);
 
 		// search filter (id / notes / angles)
 		if (!needle.isEmpty()) {
-			QString hay = QString::number(id) + " " + notes.toLower() +
-				      " " + angles;
+			QString hay = QString::number(id) + " " +
+				      notes.toLower() + " " + angles;
 			if (!hay.contains(needle)) {
 				obs_data_release(e);
 				continue;
@@ -724,8 +735,7 @@ void MultiReplayDock::refreshEvents()
 		int row = events_->rowCount();
 		events_->insertRow(row);
 		auto set = [this, row](int col, const QString &txt) {
-			events_->setItem(row, col,
-					 new QTableWidgetItem(txt));
+			events_->setItem(row, col, new QTableWidgetItem(txt));
 		};
 		auto *idItem = new QTableWidgetItem(QString::number(id));
 		idItem->setData(Qt::UserRole, id);
@@ -733,9 +743,8 @@ void MultiReplayDock::refreshEvents()
 		set(1, formatTc(tin));
 		set(2, tout >= 0 ? formatTc(tout) : "--");
 		set(3, dur);
-		set(4, spd);
-		set(5, angles.trimmed());
-		set(6, notes);
+		set(4, angles.trimmed());
+		set(5, notes);
 
 		obs_data_release(e);
 	}
@@ -758,8 +767,8 @@ void MultiReplayDock::openSettings()
 
 	// session folder
 	auto *folderRow = new QHBoxLayout();
-	auto *folderEdit = new QLineEdit(
-		QString::fromStdString(cfg.sessionFolder), &dlg);
+	auto *folderEdit =
+		new QLineEdit(QString::fromStdString(cfg.sessionFolder), &dlg);
 	auto *browse = new QPushButton("...", &dlg);
 	browse->setFixedWidth(34);
 	folderRow->addWidget(folderEdit, 1);

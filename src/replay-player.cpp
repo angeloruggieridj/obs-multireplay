@@ -160,7 +160,8 @@ void ReplayPlayer::invalidateCache()
 // ---------------------------------------------------------------------------
 const DecodedFrame *
 ReplayPlayer::frameAt(int64_t masterNs,
-		      const std::shared_ptr<SessionIndex> &index)
+		      const std::shared_ptr<SessionIndex> &index,
+		      int64_t leadNs)
 {
 	if (!index)
 		return nullptr;
@@ -170,6 +171,9 @@ ReplayPlayer::frameAt(int64_t masterNs,
 	int64_t offsetNs = 0;
 	if (!index->resolve(snapAngle, masterNs, path, offsetNs))
 		return nullptr;
+
+	// Decode up to this point (display frame stays at/below offsetNs).
+	const int64_t fillTarget = offsetNs + std::max<int64_t>(0, leadNs);
 
 	if (path != cachedPath_ || snapAngle != cachedAngle_) {
 		gopCache_.clear();
@@ -193,31 +197,31 @@ ReplayPlayer::frameAt(int64_t masterNs,
 			gopCache_.clear();
 			decoder_.seekTo(offsetNs);
 		}
-		// fill cache up to the target
+		// fill cache up to the target (+ lead for audio read-ahead)
 		DecodedFrame f;
 		while (decoder_.nextFrame(f)) {
 			gopCache_.push_back(std::move(f));
 			f = DecodedFrame{};
-			if (gopCache_.back().ptsNs >= offsetNs)
+			if (gopCache_.back().ptsNs >= fillTarget)
 				break;
 			if (gopCache_.size() > kMaxCacheFrames)
 				gopCache_.pop_front();
 		}
-	} else if (offsetNs > gopCache_.back().ptsNs) {
-		// Decode forward to the target.
+	} else if (fillTarget > gopCache_.back().ptsNs) {
+		// Decode forward to the target (+ lead).
 		DecodedFrame f;
-		while (gopCache_.back().ptsNs < offsetNs &&
+		while (gopCache_.back().ptsNs < fillTarget &&
 		       decoder_.nextFrame(f)) {
 			gopCache_.push_back(std::move(f));
 			f = DecodedFrame{};
 			if (gopCache_.size() > kMaxCacheFrames)
 				gopCache_.pop_front();
 		}
-		// If forward decode didn't reach the target (decoder stalled /
-		// hit EOF), seek explicitly.  This is a safety net; with
-		// invalidateCache() called on every seek in threadLoop, this
-		// branch fires only during continuous playback when the player
-		// crosses a segment boundary within the same angle.
+		// If forward decode didn't even reach the DISPLAY target
+		// (decoder stalled / hit EOF), seek explicitly.  Safety net;
+		// with invalidateCache() on every seek in threadLoop this branch
+		// fires only during continuous playback across a segment
+		// boundary within the same angle.
 		if (gopCache_.empty() ||
 		    gopCache_.back().ptsNs < offsetNs) {
 			gopCache_.clear();
@@ -226,7 +230,7 @@ ReplayPlayer::frameAt(int64_t masterNs,
 			while (decoder_.nextFrame(f2)) {
 				gopCache_.push_back(std::move(f2));
 				f2 = DecodedFrame{};
-				if (gopCache_.back().ptsNs >= offsetNs)
+				if (gopCache_.back().ptsNs >= fillTarget)
 					break;
 				if (gopCache_.size() > kMaxCacheFrames)
 					gopCache_.pop_front();
@@ -459,8 +463,17 @@ void ReplayPlayer::threadLoop()
 			// of audio followed by silence repeatedly.
 			const uint64_t nowTs = (uint64_t)os_gettime_ns();
 
+			// Audio read-ahead: only when we will actually emit
+			// audio (playing forward at full speed). Decoding ~200ms
+			// past the playhead pulls the upcoming audio so OBS can
+			// buffer it; brief decode stalls then no longer underrun
+			// the mixer (the main cause of choppy replay audio).
+			const bool audibleNow =
+				playing_ && !reverse_ && speed_.load() > 0.99;
+			const int64_t leadNs = audibleNow ? 200000000LL : 0;
+
 			const DecodedFrame *frame =
-				frameAt(renderPos, indexSnap);
+				frameAt(renderPos, indexSnap, leadNs);
 
 			// Drain audio immediately after decode.  decoder_ is
 			// thread-exclusive so takeAudio() is safe here.
@@ -534,13 +547,11 @@ ReplayEngine &ReplayEngine::instance()
 void ReplayEngine::load()
 {
 	a_.start();
-	b_.start();
 }
 
 void ReplayEngine::unload()
 {
 	a_.stop();
-	b_.stop();
 	index_.reset();
 }
 
@@ -555,12 +566,8 @@ bool ReplayEngine::loadSession(const std::string &folder,
 	}
 	index_ = index;
 	a_.setIndex(index);
-	b_.setIndex(index);
-	// default angles: A=cam1, B=cam2 (the reference controller default behaviour)
-	a_.setAngle(0);
-	b_.setAngle(1);
+	a_.setAngle(0); // default angle: cam1
 	a_.jumpToEnd();
-	b_.jumpToEnd();
 	return true;
 }
 
@@ -574,8 +581,6 @@ ReplayPlayer *ReplayEngine::channel(char id)
 {
 	if (id == 'A' || id == 'a')
 		return &a_;
-	if (id == 'B' || id == 'b')
-		return &b_;
 	return nullptr;
 }
 
@@ -583,7 +588,6 @@ std::string ReplayEngine::transportJson() const
 {
 	obs_data_t *root = obs_data_create();
 	obs_data_set_bool(root, "sessionLoaded", (bool)index_);
-	obs_data_set_bool(root, "linked", linked_);
 	obs_data_set_bool(root, "followLive", followLive_);
 
 	// broadcast-style timeline: the bar always spans up to "NOW".
@@ -601,18 +605,14 @@ std::string ReplayEngine::transportJson() const
 	obs_data_set_int(root, "seekableNs", indexed);
 	obs_data_set_int(root, "durationNs", liveEdge);
 
-	const ReplayPlayer *players[2] = {&a_, &b_};
-	const char *names[2] = {"A", "B"};
-	for (int i = 0; i < 2; i++) {
-		obs_data_t *ch = obs_data_create();
-		obs_data_set_bool(ch, "playing", players[i]->playing());
-		obs_data_set_bool(ch, "reverse", players[i]->reverse());
-		obs_data_set_double(ch, "speed", players[i]->speed());
-		obs_data_set_int(ch, "positionNs", players[i]->position());
-		obs_data_set_int(ch, "angle", players[i]->angle() + 1);
-		obs_data_set_obj(root, names[i], ch);
-		obs_data_release(ch);
-	}
+	obs_data_t *ch = obs_data_create();
+	obs_data_set_bool(ch, "playing", a_.playing());
+	obs_data_set_bool(ch, "reverse", a_.reverse());
+	obs_data_set_double(ch, "speed", a_.speed());
+	obs_data_set_int(ch, "positionNs", a_.position());
+	obs_data_set_int(ch, "angle", a_.angle() + 1);
+	obs_data_set_obj(root, "A", ch);
+	obs_data_release(ch);
 
 	std::string json = obs_data_get_json(root);
 	obs_data_release(root);

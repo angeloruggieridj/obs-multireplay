@@ -39,7 +39,7 @@ public:
 
 private:
 	// --- UI assembly ---
-	QWidget *buildPreviews();
+	QWidget *buildPreview();
 	QWidget *buildTransport();
 	QWidget *buildMarkers();
 	QWidget *buildEvents();
@@ -51,19 +51,14 @@ private:
 	int64_t markTimeNs() const; // Live=masterNow, Recorded=A playhead
 	std::vector<int> selectedEventIds() const;
 	void seekToFraction(double frac);
-	void setAngle(char channel, int angle1Based);
+	void setAngle(int angle1Based);
 
-	// --- preview render callbacks (run on the OBS graphics thread) ---
+	// --- preview render callback (runs on the OBS graphics thread) ---
 	static void drawChannelA(void *data, uint32_t cx, uint32_t cy);
-	static void drawChannelB(void *data, uint32_t cx, uint32_t cy);
-	static void renderChannel(char id, uint32_t cx, uint32_t cy);
 
-	// previews
+	// preview (single replay channel A)
 	OBSQTDisplay *displayA_ = nullptr;
-	OBSQTDisplay *displayB_ = nullptr;
 	QButtonGroup *anglesA_ = nullptr;
-	QButtonGroup *anglesB_ = nullptr;
-	QCheckBox *linkedChk_ = nullptr;
 
 	// recording / status
 	QPushButton *recBtn_ = nullptr;

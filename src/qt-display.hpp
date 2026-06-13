@@ -8,8 +8,8 @@ OBSQTDisplay pattern used by OBS Studio's UI (GPLv2) and by community plugins
 (e.g. OPENSPHERE source-dock): a borderless QWidget whose native window backs
 an obs_display_t; a draw callback renders an OBS source into it every frame.
 
-Used by the dock to show the live "Replay A" / "Replay B" program previews
-without going through the (now removed) browser layer.
+Used by the dock to show the live "Replay A" program preview without going
+through the (now removed) browser layer.
 */
 
 #pragma once

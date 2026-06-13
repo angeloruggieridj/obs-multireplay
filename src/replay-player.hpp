@@ -72,8 +72,13 @@ private:
 	// Ensure gopCache_ covers `masterNs` for the given index/angle;
 	// returns the frame closest at/below masterNs (nullptr if none).
 	// Must be called WITHOUT stateMutex_ held (does I/O + FFmpeg decode).
+	// `leadNs` decodes this far PAST masterNs so the decoder also pulls the
+	// interleaved audio for the upcoming window (a read-ahead cushion that
+	// lets OBS buffer audio and absorb decode jitter — reduces stutter).
+	// The DISPLAYED frame is still the one at/below masterNs.
 	const DecodedFrame *frameAt(int64_t masterNs,
-				    const std::shared_ptr<SessionIndex> &index);
+				    const std::shared_ptr<SessionIndex> &index,
+				    int64_t leadNs = 0);
 	// Must be called WITH stateMutex_ held (writes to source_).
 	// VIDEO only — audio is handled separately to avoid burst-on-resume.
 	// `ts` = os_gettime_ns() captured once per tick and shared with
@@ -127,8 +132,8 @@ private:
 	bool audioPrimed_ = false;
 };
 
-// Owns the two channels and the shared session index. Linked mode mirrors
-// transport commands on both channels (the reference controller A|B behaviour).
+// Owns the single replay channel (A) and the shared session index.
+// (Single-channel build: the former B channel was removed for performance.)
 class ReplayEngine {
 public:
 	static ReplayEngine &instance();
@@ -142,11 +147,7 @@ public:
 	bool sessionLoaded() const { return (bool)index_; }
 
 	ReplayPlayer &channelA() { return a_; }
-	ReplayPlayer &channelB() { return b_; }
 	ReplayPlayer *channel(char id);
-
-	void setLinked(bool linked) { linked_ = linked; }
-	bool linked() const { return linked_; }
 
 	// the reference controller "live follow": when true, the operator is "at NOW" — camera
 	// tiles show the live feed. Any seek into the recorded timeline turns
@@ -168,32 +169,25 @@ public:
 	{
 		index_.reset();
 		a_.setIndex(nullptr);
-		b_.setIndex(nullptr);
 	}
 
-	// Apply a transport command to a channel, mirrored to the other
-	// when linked. `id` is 'A' or 'B'.
+	// Apply a transport command to the (single) replay channel A.
+	// `id` kept for API compatibility; only 'A' is valid now.
 	template<typename Fn> bool applyTransport(char id, Fn &&fn)
 	{
 		ReplayPlayer *p = channel(id);
 		if (!p)
 			return false;
 		fn(*p);
-		if (linked_) {
-			ReplayPlayer *other = (p == &a_) ? &b_ : &a_;
-			fn(*other);
-		}
 		return true;
 	}
 
 	std::string transportJson() const;
 
 private:
-	ReplayEngine() : a_('A'), b_('B') {}
+	ReplayEngine() : a_('A') {}
 
 	ReplayPlayer a_;
-	ReplayPlayer b_;
-	std::atomic<bool> linked_{true};
 	std::atomic<bool> followLive_{true};
 	std::shared_ptr<SessionIndex> index_;
 };
