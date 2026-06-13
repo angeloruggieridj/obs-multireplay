@@ -39,15 +39,232 @@ SPDX-License-Identifier: GPL-2.0-or-later
 #include <QGroupBox>
 #include <QMessageBox>
 #include <QSizePolicy>
+#include <QStyle>
+#include <QPainter>
+#include <QMouseEvent>
+#include <QFontDatabase>
 
 #include <algorithm>
 #include <string>
 
 namespace multireplay {
 
+// ---------------------------------------------------------------------------
+// Dock-wide stylesheet — a compact, modern dark theme that sits cleanly on top
+// of OBS' own palette. Selectors are scoped by object name / Qt class so the
+// dock styles only itself and never leaks into the rest of OBS.
+// ---------------------------------------------------------------------------
+static const char *kDockStyle = R"QSS(
+#MultiReplayDock {
+	background: #1b1e25;
+}
+#MultiReplayDock QLabel {
+	color: #d7dbe3;
+	background: transparent;
+}
+QLabel#mrMuted { color: #8a909c; font-size: 11px; }
+QLabel#mrTimecode {
+	color: #eef1f6;
+	font-size: 13px;
+	font-weight: 600;
+	letter-spacing: 0.5px;
+}
+QLabel#mrSectionLabel {
+	color: #7f8694;
+	font-size: 10px;
+	font-weight: 700;
+}
+
+/* generic buttons */
+#MultiReplayDock QPushButton {
+	background: #2a2f3a;
+	color: #e3e6ec;
+	border: 1px solid #363c49;
+	border-radius: 5px;
+	padding: 5px 11px;
+	font-size: 12px;
+}
+#MultiReplayDock QPushButton:hover { background: #333a47; border-color: #4a5566; }
+#MultiReplayDock QPushButton:pressed { background: #3b4452; }
+#MultiReplayDock QPushButton:disabled { color: #5b616d; border-color: #2b303a; }
+
+/* transport icon buttons */
+QPushButton#mrTransport {
+	background: #262b35;
+	border: 1px solid #343b48;
+	border-radius: 6px;
+	min-width: 34px;
+	min-height: 30px;
+	padding: 0;
+}
+QPushButton#mrTransport:hover { background: #323a48; }
+QPushButton#mrPlay {
+	background: #2563eb;
+	border: 1px solid #2f6ef2;
+	border-radius: 6px;
+	min-width: 44px;
+	min-height: 30px;
+	padding: 0;
+}
+QPushButton#mrPlay:hover { background: #2f6ef2; }
+
+/* NOW / live-edge button */
+QPushButton#mrNow {
+	background: #2a2f3a;
+	border: 1px solid #3a4150;
+	border-radius: 6px;
+	font-weight: 700;
+	font-size: 11px;
+	letter-spacing: 0.5px;
+	min-height: 30px;
+}
+QPushButton#mrNow[live="true"] {
+	background: #b91c1c;
+	border-color: #ef4444;
+	color: #fff;
+}
+
+/* REC button */
+QPushButton#mrRec {
+	font-weight: 700;
+	font-size: 12px;
+	letter-spacing: 0.6px;
+	border-radius: 5px;
+	min-height: 30px;
+	padding: 5px 14px;
+}
+QPushButton#mrRec[recording="false"] {
+	background: #2a2f3a; color: #ff6b6b; border: 1px solid #5a3a3f;
+}
+QPushButton#mrRec[recording="false"]:hover { background: #34272b; }
+QPushButton#mrRec[recording="true"] {
+	background: #dc2626; color: #fff; border: 1px solid #ef4444;
+}
+
+/* settings gear */
+QToolButton#mrGear {
+	background: #2a2f3a;
+	border: 1px solid #363c49;
+	border-radius: 5px;
+	padding: 4px 8px;
+	color: #d7dbe3;
+	font-size: 15px;
+}
+QToolButton#mrGear:hover { background: #333a47; }
+
+/* angle segmented control */
+QPushButton#mrAngle {
+	background: #23272f;
+	border: 1px solid #333a45;
+	border-radius: 5px;
+	color: #aeb4c0;
+	font-weight: 600;
+	min-width: 30px;
+	min-height: 28px;
+	padding: 0;
+}
+QPushButton#mrAngle:hover { background: #2e333d; color: #e3e6ec; }
+QPushButton#mrAngle:checked {
+	background: #2563eb;
+	border-color: #3b82f6;
+	color: #fff;
+}
+
+/* small accent action buttons (Mark In/Out etc.) */
+QPushButton#mrAccent {
+	background: #1f2630; border: 1px solid #2f6ef2; color: #9cc0ff;
+}
+QPushButton#mrAccent:hover { background: #243247; color: #cfe0ff; }
+QPushButton#mrDanger { color: #ff7a7a; border-color: #5a3a3f; }
+QPushButton#mrDanger:hover { background: #34272b; }
+
+/* checkboxes */
+#MultiReplayDock QCheckBox { color: #cfd3db; spacing: 6px; font-size: 12px; }
+#MultiReplayDock QCheckBox::indicator {
+	width: 15px; height: 15px; border-radius: 4px;
+	border: 1px solid #3f4654; background: #20242c;
+}
+#MultiReplayDock QCheckBox::indicator:checked {
+	background: #2563eb; border-color: #3b82f6;
+}
+
+/* inputs */
+#MultiReplayDock QComboBox, #MultiReplayDock QLineEdit {
+	background: #20242c; color: #e3e6ec;
+	border: 1px solid #343b48; border-radius: 5px;
+	padding: 4px 8px; min-height: 22px;
+}
+#MultiReplayDock QComboBox:hover, #MultiReplayDock QLineEdit:hover {
+	border-color: #4a5566;
+}
+#MultiReplayDock QComboBox::drop-down { border: 0; width: 18px; }
+#MultiReplayDock QComboBox QAbstractItemView {
+	background: #20242c; color: #e3e6ec;
+	border: 1px solid #343b48; selection-background-color: #2563eb;
+	outline: 0;
+}
+
+/* speed slider */
+QSlider#mrSpeed::groove:horizontal {
+	height: 4px; background: #2c313b; border-radius: 2px;
+}
+QSlider#mrSpeed::sub-page:horizontal { background: #2563eb; border-radius: 2px; }
+QSlider#mrSpeed::handle:horizontal {
+	width: 13px; height: 13px; margin: -5px 0;
+	background: #e8ebf1; border-radius: 7px;
+}
+QSlider#mrSpeed::handle:horizontal:hover { background: #fff; }
+
+/* event table */
+QTableWidget#mrEvents {
+	background: #1d2129;
+	alternate-background-color: #20242d;
+	gridline-color: transparent;
+	border: 1px solid #2c313b;
+	border-radius: 6px;
+	color: #d7dbe3;
+	outline: 0;
+}
+QTableWidget#mrEvents::item { padding: 5px 6px; border: 0; }
+QTableWidget#mrEvents::item:selected {
+	background: #2563eb; color: #fff;
+}
+QHeaderView::section {
+	background: #242932;
+	color: #8a909c;
+	padding: 6px 6px;
+	border: 0;
+	border-bottom: 1px solid #2f3540;
+	font-size: 10px;
+	font-weight: 700;
+}
+QTableCornerButton::section { background: #242932; border: 0; }
+
+/* scrollbars */
+#MultiReplayDock QScrollBar:vertical {
+	background: transparent; width: 10px; margin: 0;
+}
+#MultiReplayDock QScrollBar::handle:vertical {
+	background: #3a4150; border-radius: 5px; min-height: 24px;
+}
+#MultiReplayDock QScrollBar::handle:vertical:hover { background: #4a5566; }
+#MultiReplayDock QScrollBar::add-line, #MultiReplayDock QScrollBar::sub-line {
+	height: 0; width: 0;
+}
+
+QSplitter::handle { background: transparent; }
+)QSS";
+
 namespace {
 
 constexpr int kNCams = kIndexMaxCameras; // 8
+
+QString monoFamily()
+{
+	// Prefer a real fixed-pitch family for timecodes; fall back gracefully.
+	QFont f = QFontDatabase::systemFont(QFontDatabase::FixedFont);
+	return f.family();
+}
 
 QString formatTc(int64_t ns)
 {
@@ -86,18 +303,143 @@ bool ensureSession()
 				  err);
 }
 
-// small compact transport/marker button
-QPushButton *compactBtn(const QString &text, QWidget *parent, int w = 0)
+// small compact marker/action button. `role` maps to a QSS object name so the
+// stylesheet can theme it ("" = default, "mrAccent", "mrDanger").
+QPushButton *compactBtn(const QString &text, QWidget *parent,
+			const char *role = "")
 {
 	auto *b = new QPushButton(text, parent);
-	b->setMaximumHeight(26);
-	if (w > 0)
-		b->setFixedWidth(w);
+	b->setMinimumHeight(28);
+	if (role && *role)
+		b->setObjectName(QString::fromLatin1(role));
 	b->setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Fixed);
+	b->setCursor(Qt::PointingHandCursor);
 	return b;
 }
 
+// transport icon button backed by a real QStyle pixmap (no font glyphs, so it
+// always renders regardless of the platform's emoji/symbol fonts).
+QPushButton *iconBtn(QStyle::StandardPixmap sp, QWidget *parent,
+		     const QString &tip, const char *role = "mrTransport")
+{
+	auto *b = new QPushButton(parent);
+	b->setObjectName(QString::fromLatin1(role));
+	b->setIcon(parent->style()->standardIcon(sp));
+	b->setIconSize(QSize(16, 16));
+	b->setToolTip(tip);
+	b->setCursor(Qt::PointingHandCursor);
+	b->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+	return b;
+}
+
+// Re-evaluate a widget's stylesheet after a dynamic property changes (QSS
+// property selectors like [recording="true"] don't restyle on their own).
+void repolish(QWidget *w)
+{
+	w->style()->unpolish(w);
+	w->style()->polish(w);
+	w->update();
+}
+
 } // namespace
+
+// ---------------------------------------------------------------------------
+// SeekBar
+// ---------------------------------------------------------------------------
+
+SeekBar::SeekBar(QWidget *parent) : QWidget(parent)
+{
+	setFixedHeight(20);
+	setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+	setCursor(Qt::PointingHandCursor);
+	setMouseTracking(false);
+}
+
+void SeekBar::setProgress(double positionFrac, double seekableFrac)
+{
+	positionFrac_ = std::clamp(positionFrac, 0.0, 1.0);
+	seekableFrac_ = std::clamp(seekableFrac, 0.0, 1.0);
+	if (!dragging_)
+		update();
+}
+
+double SeekBar::fracAt(int x) const
+{
+	const int m = 2;
+	double w = std::max(1, width() - 2 * m);
+	return std::clamp((double)(x - m) / w, 0.0, 1.0);
+}
+
+void SeekBar::paintEvent(QPaintEvent *)
+{
+	QPainter p(this);
+	p.setRenderHint(QPainter::Antialiasing, true);
+
+	const int m = 2;
+	const int h = 6;                       // track thickness
+	const int y = (height() - h) / 2;
+	const int w = width() - 2 * m;
+	const double pos = dragging_ ? dragFrac_ : positionFrac_;
+
+	// track
+	QRectF track(m, y, w, h);
+	p.setPen(Qt::NoPen);
+	p.setBrush(QColor(0x2c, 0x31, 0x3b));
+	p.drawRoundedRect(track, 3, 3);
+
+	// seekable (footage flushed to disk)
+	if (seekableFrac_ > 0.0) {
+		QRectF s(m, y, w * seekableFrac_, h);
+		p.setBrush(QColor(0x3a, 0x41, 0x50));
+		p.drawRoundedRect(s, 3, 3);
+	}
+
+	// played-up-to-position fill
+	if (pos > 0.0) {
+		QRectF f(m, y, w * pos, h);
+		p.setBrush(QColor(0x25, 0x63, 0xeb));
+		p.drawRoundedRect(f, 3, 3);
+	}
+
+	// handle
+	double hx = m + w * pos;
+	double r = (dragging_ || underMouse()) ? 7.0 : 5.5;
+	p.setBrush(QColor(0xee, 0xf1, 0xf6));
+	p.setPen(QPen(QColor(0x12, 0x16, 0x1d), 1.0));
+	p.drawEllipse(QPointF(hx, height() / 2.0), r, r);
+}
+
+void SeekBar::mousePressEvent(QMouseEvent *e)
+{
+	if (e->button() != Qt::LeftButton)
+		return;
+	dragging_ = true;
+	dragFrac_ = fracAt(e->pos().x());
+	emit scrubStateChanged(true);
+	emit scrubMoved(dragFrac_);
+	update();
+}
+
+void SeekBar::mouseMoveEvent(QMouseEvent *e)
+{
+	if (!dragging_)
+		return;
+	dragFrac_ = fracAt(e->pos().x());
+	emit scrubMoved(dragFrac_);
+	update();
+}
+
+void SeekBar::mouseReleaseEvent(QMouseEvent *e)
+{
+	if (e->button() != Qt::LeftButton || !dragging_)
+		return;
+	dragging_ = false;
+	dragFrac_ = fracAt(e->pos().x());
+	positionFrac_ = dragFrac_;
+	emit seekRequested(dragFrac_);
+	emit scrubStateChanged(false);
+	update();
+}
 
 // ---------------------------------------------------------------------------
 // Preview render callback (runs on the OBS graphics thread)
@@ -139,27 +481,32 @@ void MultiReplayDock::drawChannelA(void *, uint32_t cx, uint32_t cy)
 MultiReplayDock::MultiReplayDock(QWidget *parent) : QWidget(parent)
 {
 	setObjectName("MultiReplayDock");
-	setMinimumWidth(280);
+	setMinimumWidth(300);
+	setStyleSheet(QString::fromUtf8(kDockStyle));
 
 	auto *root = new QVBoxLayout(this);
-	root->setContentsMargins(4, 4, 4, 4);
-	root->setSpacing(4);
+	root->setContentsMargins(8, 8, 8, 8);
+	root->setSpacing(8);
 
 	// --- top toolbar: REC + status + settings ---
 	{
 		auto *bar = new QHBoxLayout();
-		bar->setSpacing(4);
-		recBtn_ = new QPushButton(this);
-		recBtn_->setMinimumWidth(84);
-		recBtn_->setMaximumHeight(28);
+		bar->setSpacing(6);
+		recBtn_ = new QPushButton(QStringLiteral("●  REC"), this);
+		recBtn_->setObjectName("mrRec");
+		recBtn_->setProperty("recording", false);
+		recBtn_->setMinimumWidth(92);
+		recBtn_->setCursor(Qt::PointingHandCursor);
 		bar->addWidget(recBtn_);
 
 		statusLbl_ = new QLabel(this);
-		statusLbl_->setStyleSheet("color:#9aa;");
+		statusLbl_->setObjectName("mrMuted");
 		bar->addWidget(statusLbl_, 1);
 
 		auto *gear = new QToolButton(this);
+		gear->setObjectName("mrGear");
 		gear->setText(QStringLiteral("⚙"));
+		gear->setCursor(Qt::PointingHandCursor);
 		gear->setToolTip(obs_module_text("Dock.Settings"));
 		bar->addWidget(gear);
 		connect(gear, &QToolButton::clicked, this,
@@ -223,7 +570,7 @@ QWidget *MultiReplayDock::buildPreview()
 	auto *box = new QWidget(this);
 	auto *v = new QVBoxLayout(box);
 	v->setContentsMargins(0, 0, 0, 0);
-	v->setSpacing(3);
+	v->setSpacing(6);
 
 	displayA_ = new OBSQTDisplay(this);
 	displayA_->setRenderCallback(&MultiReplayDock::drawChannelA, this);
@@ -231,19 +578,25 @@ QWidget *MultiReplayDock::buildPreview()
 	displayA_->setMinimumHeight(150);
 	v->addWidget(displayA_, 1);
 
-	// angle selector row (cam 1..N)
+	// angle selector row (cam 1..N) — segmented control
 	auto *row = new QWidget(box);
 	auto *h = new QHBoxLayout(row);
 	h->setContentsMargins(0, 0, 0, 0);
-	h->setSpacing(2);
-	h->addWidget(new QLabel(obs_module_text("Dock.Angle"), row));
+	h->setSpacing(4);
+	auto *lbl = new QLabel(
+		QString::fromUtf8(obs_module_text("Dock.Angle")).toUpper(), row);
+	lbl->setObjectName("mrSectionLabel");
+	h->addWidget(lbl);
 	anglesA_ = new QButtonGroup(this);
 	anglesA_->setExclusive(true);
 	for (int i = 1; i <= kNCams; i++) {
 		auto *b = new QPushButton(QString::number(i), row);
+		b->setObjectName("mrAngle");
 		b->setCheckable(true);
-		b->setFixedWidth(28);
-		b->setMaximumHeight(26);
+		b->setCursor(Qt::PointingHandCursor);
+		b->setToolTip(QString("%1 %2")
+				      .arg(obs_module_text("Dock.Angle"))
+				      .arg(i));
 		anglesA_->addButton(b, i);
 		h->addWidget(b);
 	}
@@ -264,38 +617,47 @@ QWidget *MultiReplayDock::buildTransport()
 	auto *box = new QWidget(this);
 	auto *v = new QVBoxLayout(box);
 	v->setContentsMargins(0, 0, 0, 0);
-	v->setSpacing(3);
+	v->setSpacing(6);
 
-	seek_ = new QSlider(Qt::Horizontal, this);
-	seek_->setRange(0, 10000);
-	connect(seek_, &QSlider::sliderPressed, this,
-		[this]() { seekDragging_ = true; });
-	connect(seek_, &QSlider::sliderReleased, this, [this]() {
-		seekDragging_ = false;
-		seekToFraction(seek_->value() / 10000.0);
+	seek_ = new SeekBar(this);
+	connect(seek_, &SeekBar::scrubStateChanged, this,
+		[this](bool dragging) { seekDragging_ = dragging; });
+	connect(seek_, &SeekBar::scrubMoved, this, [this](double frac) {
+		tcLbl_->setText(formatTc((int64_t)(frac * (double)durationNs_)) +
+				"  /  " + formatTc(durationNs_));
 	});
-	connect(seek_, &QSlider::sliderMoved, this, [this](int val) {
-		tcLbl_->setText(formatTc((int64_t)(val / 10000.0 *
-						   (double)durationNs_)) +
-				" / " + formatTc(durationNs_));
-	});
+	connect(seek_, &SeekBar::seekRequested, this,
+		[this](double frac) { seekToFraction(frac); });
 	v->addWidget(seek_);
 
-	auto *h = new QHBoxLayout();
-	h->setSpacing(3);
+	tcLbl_ = new QLabel("00:00.000  /  00:00.000", this);
+	tcLbl_->setObjectName("mrTimecode");
+	tcLbl_->setFont(QFont(monoFamily()));
+	tcLbl_->setAlignment(Qt::AlignHCenter);
+	v->addWidget(tcLbl_);
 
-	tcLbl_ = new QLabel("00:00.000 / 00:00.000", this);
-	tcLbl_->setStyleSheet("font-family:monospace;");
-	h->addWidget(tcLbl_);
+	auto *h = new QHBoxLayout();
+	h->setSpacing(6);
 	h->addStretch(1);
 
-	auto *stepBack = compactBtn(QStringLiteral("⏮"), this, 32);
-	reverseBtn_ = compactBtn(QStringLiteral("◀"), this, 32);
-	playPauseBtn_ = compactBtn(QStringLiteral("▶"), this, 36);
-	auto *stepFwd = compactBtn(QStringLiteral("⏭"), this, 32);
-	nowBtn_ = compactBtn(QStringLiteral("NOW"), this, 44);
-	for (auto *b : {stepBack, reverseBtn_, playPauseBtn_, stepFwd, nowBtn_})
+	auto *stepBack = iconBtn(QStyle::SP_MediaSkipBackward, this,
+				 obs_module_text("Dock.StepBack"));
+	reverseBtn_ = iconBtn(QStyle::SP_MediaSeekBackward, this,
+			      obs_module_text("Dock.Reverse"));
+	playPauseBtn_ = iconBtn(QStyle::SP_MediaPlay, this,
+				obs_module_text("Dock.PlayPause"), "mrPlay");
+	auto *stepFwd = iconBtn(QStyle::SP_MediaSkipForward, this,
+				obs_module_text("Dock.StepFwd"));
+	nowBtn_ = new QPushButton(QStringLiteral("NOW"), this);
+	nowBtn_->setObjectName("mrNow");
+	nowBtn_->setProperty("live", false);
+	nowBtn_->setCursor(Qt::PointingHandCursor);
+	nowBtn_->setToolTip(obs_module_text("Dock.JumpToNow"));
+	nowBtn_->setMinimumWidth(46);
+	for (auto *b : {stepBack, reverseBtn_, playPauseBtn_, stepFwd})
 		h->addWidget(b);
+	h->addWidget(nowBtn_);
+	h->addStretch(1);
 
 	connect(stepBack, &QPushButton::clicked, this, []() {
 		if (!ensureSession())
@@ -341,17 +703,29 @@ QWidget *MultiReplayDock::buildTransport()
 
 	// speed row
 	auto *sh = new QHBoxLayout();
-	sh->setSpacing(3);
-	sh->addWidget(new QLabel(obs_module_text("Dock.Speed"), this));
+	sh->setSpacing(8);
+	auto *spLbl = new QLabel(
+		QString::fromUtf8(obs_module_text("Dock.Speed")).toUpper(), this);
+	spLbl->setObjectName("mrSectionLabel");
+	sh->addWidget(spLbl);
 	speed_ = new QSlider(Qt::Horizontal, this);
+	speed_->setObjectName("mrSpeed");
 	speed_->setRange(5, 100); // 0.05x .. 1.00x
 	speed_->setValue(100);
-	connect(speed_, &QSlider::valueChanged, this, [](int val) {
+	speed_->setCursor(Qt::PointingHandCursor);
+	speedLbl_ = new QLabel("1.00x", this);
+	speedLbl_->setObjectName("mrTimecode");
+	speedLbl_->setFont(QFont(monoFamily()));
+	speedLbl_->setMinimumWidth(46);
+	speedLbl_->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+	connect(speed_, &QSlider::valueChanged, this, [this](int val) {
 		double sp = val / 100.0;
+		speedLbl_->setText(QString::asprintf("%.2fx", sp));
 		ReplayEngine::instance().applyTransport(
 			'A', [sp](ReplayPlayer &p) { p.setSpeed(sp); });
 	});
 	sh->addWidget(speed_, 1);
+	sh->addWidget(speedLbl_);
 	v->addLayout(sh);
 
 	return box;
@@ -366,17 +740,18 @@ QWidget *MultiReplayDock::buildMarkers()
 	auto *box = new QWidget(this);
 	auto *h = new QHBoxLayout(box);
 	h->setContentsMargins(0, 0, 0, 0);
-	h->setSpacing(3);
+	h->setSpacing(5);
 
 	liveChk_ = new QCheckBox(obs_module_text("Dock.LiveMode"), this);
 	liveChk_->setChecked(EventStore::instance().liveMode());
+	liveChk_->setCursor(Qt::PointingHandCursor);
 	connect(liveChk_, &QCheckBox::toggled, this,
 		[](bool on) { EventStore::instance().setLiveMode(on); });
 	h->addWidget(liveChk_);
 	h->addStretch(1);
 
-	auto *in = compactBtn(obs_module_text("Dock.MarkIn"), this);
-	auto *out = compactBtn(obs_module_text("Dock.MarkOut"), this);
+	auto *in = compactBtn(obs_module_text("Dock.MarkIn"), this, "mrAccent");
+	auto *out = compactBtn(obs_module_text("Dock.MarkOut"), this, "mrAccent");
 	connect(in, &QPushButton::clicked, this, [this]() {
 		EventStore::instance().markIn(markTimeNs());
 		refreshEvents();
@@ -392,7 +767,7 @@ QWidget *MultiReplayDock::buildMarkers()
 	h->addWidget(out);
 
 	for (int sec : {5, 10, 20}) {
-		auto *b = compactBtn(QString("-%1s").arg(sec), this, 40);
+		auto *b = compactBtn(QString("-%1s").arg(sec), this);
 		connect(b, &QPushButton::clicked, this, [this, sec]() {
 			EventStore::instance().markInOut(markTimeNs(), sec);
 			refreshEvents();
@@ -400,7 +775,7 @@ QWidget *MultiReplayDock::buildMarkers()
 		h->addWidget(b);
 	}
 
-	auto *cancel = compactBtn(obs_module_text("Dock.Cancel"), this);
+	auto *cancel = compactBtn(obs_module_text("Dock.Cancel"), this, "mrDanger");
 	connect(cancel, &QPushButton::clicked, this, [this]() {
 		EventStore::instance().markCancel();
 		refreshEvents();
@@ -422,9 +797,13 @@ QWidget *MultiReplayDock::buildEvents()
 	v->setSpacing(3);
 
 	auto *top = new QHBoxLayout();
-	top->setSpacing(3);
-	top->addWidget(new QLabel(obs_module_text("Dock.List"), this));
+	top->setSpacing(5);
+	auto *listLbl = new QLabel(
+		QString::fromUtf8(obs_module_text("Dock.List")).toUpper(), this);
+	listLbl->setObjectName("mrSectionLabel");
+	top->addWidget(listLbl);
 	listCombo_ = new QComboBox(this);
+	listCombo_->setFixedWidth(56);
 	for (int i = 1; i <= kEventLists; i++)
 		listCombo_->addItem(QString::number(i));
 	listCombo_->setCurrentIndex(EventStore::instance().selectedList() - 1);
@@ -444,16 +823,30 @@ QWidget *MultiReplayDock::buildEvents()
 	v->addLayout(top);
 
 	events_ = new QTableWidget(this);
+	events_->setObjectName("mrEvents");
 	events_->setColumnCount(6);
 	events_->setHorizontalHeaderLabels(
-		{"ID", obs_module_text("Dock.In"), obs_module_text("Dock.Out"),
+		{"#", obs_module_text("Dock.In"), obs_module_text("Dock.Out"),
 		 obs_module_text("Dock.Duration"), obs_module_text("Dock.Angles"),
 		 obs_module_text("Dock.Note")});
-	events_->horizontalHeader()->setStretchLastSection(true);
 	events_->setSelectionBehavior(QAbstractItemView::SelectRows);
+	events_->setSelectionMode(QAbstractItemView::ExtendedSelection);
 	events_->setEditTriggers(QAbstractItemView::NoEditTriggers);
 	events_->verticalHeader()->setVisible(false);
+	events_->verticalHeader()->setDefaultSectionSize(28);
 	events_->setAlternatingRowColors(true);
+	events_->setShowGrid(false);
+	events_->setFrameShape(QFrame::NoFrame);
+	{
+		QHeaderView *hh = events_->horizontalHeader();
+		hh->setHighlightSections(false);
+		hh->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+		hh->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+		hh->setSectionResizeMode(2, QHeaderView::ResizeToContents);
+		hh->setSectionResizeMode(3, QHeaderView::ResizeToContents);
+		hh->setSectionResizeMode(4, QHeaderView::ResizeToContents);
+		hh->setSectionResizeMode(5, QHeaderView::Stretch);
+	}
 	connect(events_, &QTableWidget::itemDoubleClicked, this,
 		[this](QTableWidgetItem *) {
 			std::string err;
@@ -467,9 +860,10 @@ QWidget *MultiReplayDock::buildEvents()
 	// playback controls
 	auto *pb = new QHBoxLayout();
 	pb->setSpacing(3);
-	auto *playSel = compactBtn(obs_module_text("Dock.PlaySelected"), this);
+	auto *playSel = compactBtn(obs_module_text("Dock.PlaySelected"), this,
+				   "mrAccent");
 	auto *playLast = compactBtn(obs_module_text("Dock.PlayLast"), this);
-	auto *stop = compactBtn(obs_module_text("Dock.Stop"), this);
+	auto *stop = compactBtn(obs_module_text("Dock.Stop"), this, "mrDanger");
 	connect(playSel, &QPushButton::clicked, this, [this]() {
 		std::string err;
 		if (ensureSession() &&
@@ -510,7 +904,7 @@ QWidget *MultiReplayDock::buildEvents()
 	auto *eb = new QHBoxLayout();
 	eb->setSpacing(3);
 	auto *dup = compactBtn(obs_module_text("Dock.Duplicate"), this);
-	auto *del = compactBtn(obs_module_text("Dock.Delete"), this);
+	auto *del = compactBtn(obs_module_text("Dock.Delete"), this, "mrDanger");
 	auto *exp = compactBtn(obs_module_text("Dock.Export"), this);
 	connect(dup, &QPushButton::clicked, this, [this]() {
 		for (int id : selectedEventIds())
@@ -631,21 +1025,25 @@ void MultiReplayDock::poll()
 			obs_data_release(a);
 
 		if (!seekDragging_) {
-			int v = durationNs_ > 0
-					? (int)(10000.0 * (double)posA /
-						(double)durationNs_)
-					: 0;
-			seek_->blockSignals(true);
-			seek_->setValue(std::clamp(v, 0, 10000));
-			seek_->blockSignals(false);
-			tcLbl_->setText(formatTc(posA) + " / " +
+			double posFrac = durationNs_ > 0
+						 ? (double)posA / (double)durationNs_
+						 : 0.0;
+			double seekFrac = durationNs_ > 0
+						  ? (double)seekableNs_ /
+							    (double)durationNs_
+						  : 1.0;
+			seek_->setProgress(posFrac, seekFrac);
+			tcLbl_->setText(formatTc(posA) + "  /  " +
 					formatTc(durationNs_));
 		}
 
-		playPauseBtn_->setText(playingA ? QStringLiteral("⏸")
-						: QStringLiteral("▶"));
-		nowBtn_->setStyleSheet(followLive ? "color:#e33;font-weight:bold"
-						  : "");
+		QStyle::StandardPixmap sp = playingA ? QStyle::SP_MediaPause
+						     : QStyle::SP_MediaPlay;
+		playPauseBtn_->setIcon(style()->standardIcon(sp));
+		if (nowBtn_->property("live").toBool() != followLive) {
+			nowBtn_->setProperty("live", followLive);
+			repolish(nowBtn_);
+		}
 		if (!speed_->isSliderDown()) {
 			speed_->blockSignals(true);
 			speed_->setValue(std::clamp((int)(spA * 100.0), 5, 100));
@@ -658,11 +1056,12 @@ void MultiReplayDock::poll()
 
 	// --- recording status ---
 	bool rec = core.isRecording();
-	recBtn_->setText(rec ? QStringLiteral("■ STOP")
-			     : QStringLiteral("● REC"));
-	recBtn_->setStyleSheet(
-		rec ? "background:#c0392b;color:white;font-weight:bold"
-		    : "font-weight:bold");
+	recBtn_->setText(rec ? QStringLiteral("◼  STOP")
+			     : QStringLiteral("●  REC"));
+	if (recBtn_->property("recording").toBool() != rec) {
+		recBtn_->setProperty("recording", rec);
+		repolish(recBtn_);
+	}
 
 	Data st(core.statusJson());
 	if (st) {
@@ -734,22 +1133,27 @@ void MultiReplayDock::refreshEvents()
 
 		int row = events_->rowCount();
 		events_->insertRow(row);
-		auto set = [this, row](int col, const QString &txt) {
-			events_->setItem(row, col, new QTableWidgetItem(txt));
+		auto set = [this, row](int col, const QString &txt,
+				       Qt::Alignment al = Qt::AlignVCenter |
+							  Qt::AlignLeft) {
+			auto *it = new QTableWidgetItem(txt);
+			it->setTextAlignment(al);
+			events_->setItem(row, col, it);
 		};
 		auto *idItem = new QTableWidgetItem(QString::number(id));
 		idItem->setData(Qt::UserRole, id);
+		idItem->setTextAlignment(Qt::AlignCenter);
 		events_->setItem(row, 0, idItem);
-		set(1, formatTc(tin));
-		set(2, tout >= 0 ? formatTc(tout) : "--");
-		set(3, dur);
-		set(4, angles.trimmed());
+		const Qt::Alignment mid = Qt::AlignVCenter | Qt::AlignHCenter;
+		set(1, formatTc(tin), mid);
+		set(2, tout >= 0 ? formatTc(tout) : "--", mid);
+		set(3, dur, mid);
+		set(4, angles.trimmed(), mid);
 		set(5, notes);
 
 		obs_data_release(e);
 	}
 	obs_data_array_release(arr);
-	events_->resizeColumnsToContents();
 }
 
 // ---------------------------------------------------------------------------

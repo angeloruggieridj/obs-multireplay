@@ -17,6 +17,7 @@ event list.
 #include <vector>
 
 class QPushButton;
+class QToolButton;
 class QSlider;
 class QLabel;
 class QLineEdit;
@@ -29,6 +30,46 @@ class QTimer;
 namespace multireplay {
 
 class OBSQTDisplay;
+
+// ---------------------------------------------------------------------------
+// SeekBar — modern timeline scrubber.
+//
+// A flat custom-painted bar (not a bead-on-rail QSlider): it draws the full
+// recorded timeline, highlights the seekable region (footage already flushed
+// to disk), fills the played-up-to-position portion with the accent colour and
+// renders a slim handle at the playhead. Clicking or dragging emits fractions
+// in [0,1]; the host maps them onto the master timeline.
+// ---------------------------------------------------------------------------
+class SeekBar : public QWidget {
+	Q_OBJECT
+
+public:
+	explicit SeekBar(QWidget *parent = nullptr);
+
+	// position/duration/seekable expressed as fractions of the timeline
+	// [0,1]; -1 (default seekableFrac) means "whole bar is seekable".
+	void setProgress(double positionFrac, double seekableFrac = 1.0);
+	bool dragging() const { return dragging_; }
+
+signals:
+	void scrubStateChanged(bool dragging); // press(true) / release(false)
+	void scrubMoved(double frac);          // live drag/hover position
+	void seekRequested(double frac);       // committed on release/click
+
+protected:
+	void paintEvent(QPaintEvent *) override;
+	void mousePressEvent(QMouseEvent *) override;
+	void mouseMoveEvent(QMouseEvent *) override;
+	void mouseReleaseEvent(QMouseEvent *) override;
+
+private:
+	double fracAt(int x) const;
+
+	double positionFrac_ = 0.0;
+	double seekableFrac_ = 1.0;
+	double dragFrac_ = 0.0;
+	bool dragging_ = false;
+};
 
 class MultiReplayDock : public QWidget {
 	Q_OBJECT
@@ -65,8 +106,9 @@ private:
 	QLabel *statusLbl_ = nullptr;
 
 	// transport
-	QSlider *seek_ = nullptr;
+	SeekBar *seek_ = nullptr;
 	QSlider *speed_ = nullptr;
+	QLabel *speedLbl_ = nullptr;
 	QLabel *tcLbl_ = nullptr;
 	QPushButton *playPauseBtn_ = nullptr;
 	QPushButton *reverseBtn_ = nullptr;
