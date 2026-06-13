@@ -69,9 +69,12 @@ public:
 
 private:
 	void threadLoop();
-	// Ensure gopCache_ covers `localNs` for the current segment/angle;
-	// returns the cached frame closest at/below localNs (nullptr if none).
-	const DecodedFrame *frameAt(int64_t masterNs);
+	// Ensure gopCache_ covers `masterNs` for the given index/angle;
+	// returns the frame closest at/below masterNs (nullptr if none).
+	// Must be called WITHOUT stateMutex_ held (does I/O + FFmpeg decode).
+	const DecodedFrame *frameAt(int64_t masterNs,
+				    const std::shared_ptr<SessionIndex> &index);
+	// Must be called WITH stateMutex_ held (writes to source_).
 	void outputFrame(const DecodedFrame &frame);
 	void invalidateCache();
 
@@ -86,8 +89,15 @@ private:
 	std::atomic<int> pendingStepFrames_{0};
 	std::atomic<int64_t> stopAtNs_{-1};
 	std::function<void()> onStop_; // guarded by stateMutex_
+	// Set by seekMaster()/setAngle() to force audio re-anchor on the
+	// next output tick (avoids stale timestamps after a seek or cut).
+	std::atomic<bool> pendingAudioReset_{false};
 
-	std::mutex stateMutex_; // protects index_, source_, decoder, cache
+	std::mutex stateMutex_; // protects index_, source_ (and onStop_)
+	// decoder_, gopCache_, cachedPath_, cachedAngle_, audioPrimed_,
+	// outputTimestamp_, audioTimestamp_ are thread-exclusive (threadLoop only)
+	// — they must NOT be accessed while stateMutex_ is held to avoid the
+	// long I/O+decode stall on the graphics thread.
 	std::condition_variable wake_;
 	std::shared_ptr<SessionIndex> index_;
 	obs_source_t *source_ = nullptr; // weak: set/cleared by the source

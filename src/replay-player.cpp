@@ -109,11 +109,13 @@ void ReplayPlayer::stepFrames(int frames)
 
 void ReplayPlayer::seekMaster(int64_t positionNs)
 {
-	// A manual seek cancels any pending event out-point: otherwise a
-	// stale stop-at from a previous event freezes the very next play
-	// on its first frame.
+	// Cancel any pending event out-point: a stale stop-at from a previous
+	// event would freeze the very next play on its first frame.
 	stopAtNs_ = -1;
 	positionNs_ = std::max<int64_t>(0, positionNs);
+	// Force audio re-anchor so we don't emit stale timestamps after the
+	// seek (the old audio clock offset is invalid at the new position).
+	pendingAudioReset_ = true;
 	wake_.notify_all();
 }
 
@@ -134,6 +136,9 @@ void ReplayPlayer::jumpToEnd()
 void ReplayPlayer::setAngle(int camIndex)
 {
 	angle_ = std::clamp(camIndex, 0, kIndexMaxCameras - 1);
+	// Changing the camera angle means a new audio stream: re-anchor the
+	// clock so the first chunk from the new stream has a clean timestamp.
+	pendingAudioReset_ = true;
 	wake_.notify_all();
 }
 
@@ -146,23 +151,32 @@ void ReplayPlayer::invalidateCache()
 	decoder_.close();
 }
 
-const DecodedFrame *ReplayPlayer::frameAt(int64_t masterNs)
+// ---------------------------------------------------------------------------
+// frameAt: resolve masterNs → segment file → decoded frame.
+//
+// MUST be called WITHOUT stateMutex_ held: it does blocking I/O (file open,
+// seek) and FFmpeg decoding which can take 50-200 ms. The decoder, cache and
+// associated fields are owned exclusively by the player thread.
+// ---------------------------------------------------------------------------
+const DecodedFrame *
+ReplayPlayer::frameAt(int64_t masterNs,
+		      const std::shared_ptr<SessionIndex> &index)
 {
-	// stateMutex_ must be held by the caller.
-	if (!index_)
+	if (!index)
 		return nullptr;
 
+	int snapAngle = angle_.load();
 	std::string path;
 	int64_t offsetNs = 0;
-	if (!index_->resolve(angle_, masterNs, path, offsetNs))
+	if (!index->resolve(snapAngle, masterNs, path, offsetNs))
 		return nullptr;
 
-	if (path != cachedPath_ || angle_ != cachedAngle_) {
+	if (path != cachedPath_ || snapAngle != cachedAngle_) {
 		gopCache_.clear();
 		if (!decoder_.open(path))
 			return nullptr;
 		cachedPath_ = path;
-		cachedAngle_ = angle_;
+		cachedAngle_ = snapAngle;
 		decoder_.seekTo(offsetNs);
 	}
 
@@ -213,9 +227,9 @@ const DecodedFrame *ReplayPlayer::frameAt(int64_t masterNs)
 						 : nullptr);
 }
 
+// Must be called with stateMutex_ held (accesses source_).
 void ReplayPlayer::outputFrame(const DecodedFrame &frame)
 {
-	// stateMutex_ must be held by the caller.
 	if (!source_)
 		return;
 
@@ -236,20 +250,17 @@ void ReplayPlayer::outputFrame(const DecodedFrame &frame)
 				    out.color_matrix, out.color_range_min,
 				    out.color_range_max);
 
-	// Async sources need monotonically increasing timestamps even when
-	// the playhead moves backwards.
+	// Async sources need monotonically increasing timestamps.
 	outputTimestamp_ += (uint64_t)decoder_.frameDurationNs();
 	out.timestamp = outputTimestamp_;
-
 	obs_source_output_video(source_, &out);
 
-	// --- M5: audio playback ---
-	// Audio only makes sense forward at (near) normal speed: in slow
-	// motion / reverse / scrub broadcast-style replays are effectively mute.
+	// --- Audio playback ---
+	// Only at forward normal speed: slow-motion/reverse replays are muted.
 	auto chunks = decoder_.takeAudio();
 	bool audible = playing_ && !reverse_ && speed_.load() > 0.99;
 	if (!audible) {
-		audioPrimed_ = false; // re-anchor on the next audible frame
+		audioPrimed_ = false;
 		return;
 	}
 	for (auto &chunk : chunks) {
@@ -262,9 +273,9 @@ void ReplayPlayer::outputFrame(const DecodedFrame &frame)
 		audio.speakers = SPEAKERS_STEREO;
 		audio.format = AUDIO_FORMAT_FLOAT_PLANAR;
 		audio.samples_per_sec = SegmentDecoder::kAudioSampleRate;
-		// Monotonic audio clock: anchor once, then advance by the
-		// chunk's own duration. Re-anchoring every chunk to the video
-		// clock causes overlapping timestamps and choppy audio.
+		// Monotonic audio clock: anchor once, then advance by chunk
+		// duration. Re-anchoring every chunk to the video clock causes
+		// overlapping timestamps and choppy audio.
 		if (!audioPrimed_) {
 			audioTimestamp_ = outputTimestamp_;
 			audioPrimed_ = true;
@@ -276,51 +287,86 @@ void ReplayPlayer::outputFrame(const DecodedFrame &frame)
 	}
 }
 
+// ---------------------------------------------------------------------------
+// threadLoop
+//
+// Three key design decisions:
+//
+//  1. Decode outside stateMutex_: frameAt() can take 50-200 ms (disk seek +
+//     FFmpeg). Holding stateMutex_ during that time would block the OBS
+//     graphics thread (which calls acquireSource()) → frame drops in OBS.
+//
+//  2. Wall-clock position advancement: position advances by actual elapsed
+//     time (capped to 3×frameDurNs), not by a fixed frameDurNs constant.
+//     Combined with a compensated sleep (frameDurNs minus work already done),
+//     the loop runs at the correct cadence AND the position matches the JS
+//     client-side linear interpolation — no accumulated drift, no snap-back.
+//
+//  3. Audio reset on seek: seekMaster()/setAngle() set pendingAudioReset_.
+//     The thread clears it before outputting the first post-seek frame,
+//     re-anchoring the audio clock and preventing timestamp collisions.
+// ---------------------------------------------------------------------------
 void ReplayPlayer::threadLoop()
 {
 	os_set_thread_name("multireplay-player");
 
+	using Clock = std::chrono::steady_clock;
+	auto lastTick = Clock::now();
 	int64_t lastRenderedPos = -1;
 
 	while (running_) {
+		auto tickStart = Clock::now();
+		// Elapsed since the previous iteration — used to advance the
+		// playhead position in real time. Capped to 3 frames so a long
+		// pause or the very first tick cannot cause a huge jump.
 		int64_t frameDurNs = decoder_.isOpen()
 					     ? decoder_.frameDurationNs()
-					     : 33333333;
-		std::function<void()> stopCallback;
+					     : 33333333LL;
+		int64_t elapsedNs =
+			std::chrono::duration_cast<std::chrono::nanoseconds>(
+				tickStart - lastTick)
+				.count();
+		elapsedNs = std::min(elapsedNs, frameDurNs * 3);
+		lastTick = tickStart;
 
+		std::function<void()> stopCallback;
+		int64_t renderPos = -1;
+		std::shared_ptr<SessionIndex> indexSnap;
+		bool shouldRender = false;
+
+		// ── 1. Advance playhead (brief mutex hold) ────────────────────
 		{
 			std::unique_lock<std::mutex> lock(stateMutex_);
 
 			if (!index_ || !source_) {
 				wake_.wait_for(lock,
 					       std::chrono::milliseconds(50));
+				lastTick = Clock::now(); // reset after sleep
 				continue;
 			}
 
-			// frame stepping (pauses playback)
+			// frame stepping
 			int step = pendingStepFrames_.exchange(0);
 			if (step != 0)
 				positionNs_ = std::max<int64_t>(
-					0, positionNs_ + step * frameDurNs);
+					0,
+					positionNs_ + step * frameDurNs);
 
-			// advance playhead
+			// advance by actual wall-clock elapsed time
 			if (playing_) {
-				double delta = (double)frameDurNs *
+				double delta = (double)elapsedNs *
 					       speed_.load() *
 					       (reverse_ ? -1.0 : 1.0);
-				int64_t next = positionNs_ + (int64_t)delta;
+				int64_t next =
+					positionNs_ + (int64_t)delta;
 				int64_t maxPos =
 					index_->masterDurationNs() - 1;
 				if (next <= 0) {
 					next = 0;
-					playing_ = false; // hit session start
+					playing_ = false;
 				} else if (next >= maxPos) {
-					// at the live edge: try refresh once,
-					// otherwise hold
 					next = maxPos;
 				}
-
-				// M3: event playback stops at the out point
 				int64_t stopAt = stopAtNs_.load();
 				if (stopAt >= 0 &&
 				    ((!reverse_ && next >= stopAt) ||
@@ -334,24 +380,54 @@ void ReplayPlayer::threadLoop()
 				positionNs_ = next;
 			}
 
-			if (positionNs_ != lastRenderedPos) {
-				const DecodedFrame *frame =
-					frameAt(positionNs_);
-				if (frame) {
+			renderPos = positionNs_.load();
+			indexSnap = index_;
+			shouldRender = (renderPos != lastRenderedPos);
+		}
+		// ── mutex released ─────────────────────────────────────────────
+
+		// ── 2. Decode WITHOUT mutex (I/O + FFmpeg, potentially slow) ──
+		if (shouldRender) {
+			// Apply any pending audio reset requested by seekMaster
+			// or setAngle() before we decode the first post-seek frame.
+			if (pendingAudioReset_.exchange(false))
+				audioPrimed_ = false;
+
+			const DecodedFrame *frame =
+				frameAt(renderPos, indexSnap);
+			if (frame) {
+				std::lock_guard<std::mutex> lock(stateMutex_);
+				if (source_) {
 					outputFrame(*frame);
-					lastRenderedPos = positionNs_;
+					lastRenderedPos = renderPos;
 				}
 			}
 		}
 
-		// fire outside the lock: the callback may call back into us
+		// ── 3. Stop callback (outside lock: may call back into us) ────
 		if (stopCallback)
 			stopCallback();
 
-		std::unique_lock<std::mutex> idle(stateMutex_);
-		wake_.wait_for(idle,
-			       std::chrono::nanoseconds(
-				       playing_ ? frameDurNs : 33333333));
+		// ── 4. Compensated sleep: target one-frame cadence ────────────
+		// Subtract the time already spent this tick so the total
+		// interval (work + sleep) stays close to frameDurNs.  This
+		// keeps the real-time position advancement in step with the JS
+		// client-side linear interpolation, eliminating snap-back.
+		auto tickEnd = Clock::now();
+		int64_t tickSpentNs =
+			std::chrono::duration_cast<std::chrono::nanoseconds>(
+				tickEnd - tickStart)
+				.count();
+		// Always yield at least 1 ms to avoid busy-looping if decode
+		// takes longer than one frame interval; 33 ms when paused.
+		int64_t sleepNs = std::max<int64_t>(
+			1000000LL,
+			(playing_ ? frameDurNs : 33333333LL) - tickSpentNs);
+		{
+			std::unique_lock<std::mutex> idle(stateMutex_);
+			wake_.wait_for(idle,
+				       std::chrono::nanoseconds(sleepNs));
+		}
 	}
 }
 

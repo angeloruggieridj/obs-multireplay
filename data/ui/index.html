@@ -781,11 +781,19 @@ async function refreshTransport() {
     b.classList.toggle("on", Math.abs(+b.dataset.speed - ch.speed) < 0.01));
 }
 
-function interpPos(chSample, elapsedMs, durationNs) {
+// Interpolates the playhead position for one channel.
+// seekableNs – the indexed portion of the timeline (hard ceiling):
+//   clamping to this prevents the playhead overshooting into the red zone
+//   (unindexed buffer) which would cause a visible snap-back on the next
+//   poll when seekableNs jumps forward.
+// When paused we return positionNs directly (no extrapolation): the server
+// position is authoritative and the player will not have moved.
+function interpPos(chSample, elapsedMs, seekableNs) {
   let pos = chSample.positionNs;
   if (chSample.playing)
     pos += elapsedMs * 1e6 * chSample.speed * (chSample.reverse ? -1 : 1);
-  return Math.min(Math.max(pos, 0), Math.max(durationNs - 1, 0));
+  const ceil = Math.max(seekableNs - 1, 0);
+  return Math.min(Math.max(pos, 0), ceil);
 }
 
 // Reposition existing event marker <div>s using the current interpolated
@@ -813,8 +821,11 @@ function renderSmooth() {
   if (sample.recording && dur > 0)
     dur = dur + elapsed * 1e6;
 
-  const posA = interpPos(sample.A, elapsed, dur);
-  const posB = interpPos(sample.B, elapsed, dur);
+  // Pass seekableNs as the ceiling so extrapolation never goes into the
+  // red zone.  The head position on the bar is then expressed as a
+  // fraction of dur (which can be larger than seekableNs during recording).
+  const posA = interpPos(sample.A, elapsed, sample.seekableNs);
+  const posB = interpPos(sample.B, elapsed, sample.seekableNs);
   if (dur > 0) {
     $("pbHeadA").style.left = (posA / dur * 100) + "%";
     $("pbHeadB").style.left = (posB / dur * 100) + "%";
