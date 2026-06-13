@@ -24,6 +24,7 @@ class QLineEdit;
 class QComboBox;
 class QCheckBox;
 class QTableWidget;
+class QTableWidgetItem;
 class QButtonGroup;
 class QTimer;
 
@@ -88,7 +89,7 @@ private:
 	// --- engine interaction ---
 	void poll();             // periodic transport/status refresh
 	void refreshEvents();    // reload the selected list into the table
-	void onEventItemChanged(class QTableWidgetItem *item); // edit commit
+	void onEventItemChanged(QTableWidgetItem *item); // edit commit
 	QWidget *makeCameraCell(int id, const bool *enabled); // 1..8 toggles
 	void openSettings();     // configuration dialog
 	int64_t markTimeNs() const; // Live=masterNow, Recorded=A playhead
