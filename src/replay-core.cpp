@@ -281,11 +281,6 @@ bool ReplayCore::startRecording(std::string &errorOut)
 	}
 
 	recording_ = true;
-	sessionStartMinNs_ = UINT64_MAX;
-	for (const auto &st : cameraStatus_) {
-		if (st.recording && st.startTimestampNs < sessionStartMinNs_)
-			sessionStartMinNs_ = st.startTimestampNs;
-	}
 	// Record wall-clock start time so SessionIndex can filter segment files
 	// from previous recording sessions that share the same folder.
 	sessionWallStartSec_ = (int64_t)::time(nullptr);
@@ -423,14 +418,6 @@ std::string ReplayCore::pickVideoEncoder() const
 			return id;
 	}
 	return "obs_x264";
-}
-
-int64_t ReplayCore::masterNowNs() const
-{
-	if (!recording_ || sessionStartMinNs_ == 0 ||
-	    sessionStartMinNs_ == UINT64_MAX)
-		return -1;
-	return (int64_t)(os_gettime_ns() - sessionStartMinNs_);
 }
 
 int64_t ReplayCore::diskFreeBytes() const

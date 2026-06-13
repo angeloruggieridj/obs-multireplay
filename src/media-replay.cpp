@@ -54,6 +54,7 @@ void MediaReplay::unload()
 
 	std::lock_guard<std::mutex> lock(mutex_);
 	if (mediaSource_) {
+		obs_source_dec_showing(mediaSource_);
 		obs_source_release(mediaSource_);
 		mediaSource_ = nullptr;
 	}
@@ -72,6 +73,7 @@ void MediaReplay::ensureSource()
 	// is being torn down) and (re)adopt the named source for the current
 	// collection, creating it if the operator hasn't added one.
 	if (mediaSource_) {
+		obs_source_dec_showing(mediaSource_);
 		obs_source_release(mediaSource_);
 		mediaSource_ = nullptr;
 	}
@@ -110,6 +112,12 @@ void MediaReplay::ensureSource()
 		obs_data_set_bool(s, "close_when_inactive", false);
 		obs_source_update(mediaSource_, s);
 		obs_data_release(s);
+
+		// CRITICAL: keep the source "showing" for the plugin's lifetime.
+		// A Media Source only opens its file and runs its decode thread
+		// while active; without this it never reports a duration, the
+		// pending seek never applies and nothing plays / no preview.
+		obs_source_inc_showing(mediaSource_);
 	}
 }
 
