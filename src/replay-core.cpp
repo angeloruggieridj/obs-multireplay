@@ -556,6 +556,8 @@ void ReplayCore::loadConfig()
 	config_.videoEncoderId = obs_data_get_string(data, "videoEncoderId");
 	config_.outputSceneName =
 		obs_data_get_string(data, "outputSceneName");
+	config_.replaySourceName =
+		obs_data_get_string(data, "replaySourceName");
 	config_.musicSourceName =
 		obs_data_get_string(data, "musicSourceName");
 	if (obs_data_has_user_value(data, "autoSwitchScene"))
@@ -597,6 +599,8 @@ void ReplayCore::saveConfig() const
 			    config_.videoEncoderId.c_str());
 	obs_data_set_string(data, "outputSceneName",
 			    config_.outputSceneName.c_str());
+	obs_data_set_string(data, "replaySourceName",
+			    config_.replaySourceName.c_str());
 	obs_data_set_string(data, "musicSourceName",
 			    config_.musicSourceName.c_str());
 	obs_data_set_bool(data, "autoSwitchScene", config_.autoSwitchScene);

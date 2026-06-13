@@ -43,6 +43,10 @@ struct Config {
 	std::string videoEncoderId; // "" = auto-detect best hardware encoder
 	std::string recFormat = "hybrid_mp4";
 	std::string outputSceneName; // scene switched to program on "to output"
+	// OBS Media Source the plugin drives for replay. Put one in the output
+	// scene and pick it here, so the replay actually feeds that scene.
+	// Empty = the plugin's own managed "MultiReplay — Replay A" source.
+	std::string replaySourceName;
 	std::string musicSourceName; // OBS audio source unmuted during playback
 	bool autoSwitchScene = true; // play-to-output switches the OBS scene;
 				     // false = only feed the Replay source

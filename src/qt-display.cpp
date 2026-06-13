@@ -130,8 +130,21 @@ void OBSQTDisplay::paintEvent(QPaintEvent *)
 
 bool OBSQTDisplay::event(QEvent *e)
 {
-	if (e->type() == QEvent::Show || e->type() == QEvent::Expose)
+	switch (e->type()) {
+	case QEvent::Show:
+	case QEvent::Expose:
 		createDisplay();
+		break;
+	case QEvent::WinIdChange:
+		// Re-docking / floating the panel gives the widget a new native
+		// window; the old obs_display points at a dead handle (black /
+		// missing preview). Rebuild it against the new window.
+		destroyDisplay();
+		createDisplay();
+		break;
+	default:
+		break;
+	}
 	return QWidget::event(e);
 }
 

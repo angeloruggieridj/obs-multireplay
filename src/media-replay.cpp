@@ -67,6 +67,12 @@ void MediaReplay::unload()
 
 void MediaReplay::ensureSource()
 {
+	// Read config BEFORE locking mutex_: startRecording() holds ReplayCore's
+	// lock while calling clearSession() (which locks mutex_), so acquiring
+	// ReplayCore's lock under mutex_ here would be the opposite order → AB-BA
+	// deadlock.
+	std::string cfgName = ReplayCore::instance().getConfig().replaySourceName;
+
 	std::lock_guard<std::mutex> lock(mutex_);
 
 	// Drop any prior ref (e.g. on scene-collection change the old instance
@@ -82,13 +88,19 @@ void MediaReplay::ensureSource()
 	eventActive_ = false;
 	eventOnDone_ = nullptr;
 
-	const char *name = obs_module_text("ReplaySource.A");
+	// Which source to drive: the one the operator picked in Settings (a
+	// Media Source they placed in their output scene), or our own managed
+	// source when nothing is picked.
+	const char *managedName = obs_module_text("ReplaySource.A");
+	std::string targetName = cfgName.empty() ? managedName : cfgName;
 
-	obs_source_t *existing = obs_get_source_by_name(name);
+	obs_source_t *existing = obs_get_source_by_name(targetName.c_str());
 	if (existing) {
-		// Adopt the instance restored from the scene collection.
+		// Adopt the operator's source, or our own restored from the
+		// scene collection.
 		mediaSource_ = existing; // get_source_by_name already add-ref'd
-	} else {
+	} else if (cfgName.empty()) {
+		// No explicit pick: create our managed Media Source.
 		obs_data_t *s = obs_data_create();
 		obs_data_set_bool(s, "is_local_file", true);
 		obs_data_set_bool(s, "looping", false);
@@ -96,12 +108,18 @@ void MediaReplay::ensureSource()
 		obs_data_set_bool(s, "close_when_inactive", false);
 		obs_data_set_bool(s, "hw_decode", true);
 		obs_data_set_int(s, "speed_percent", 100);
-		mediaSource_ = obs_source_create("ffmpeg_source", name, s,
+		mediaSource_ = obs_source_create("ffmpeg_source", managedName, s,
 						 nullptr);
 		obs_data_release(s);
 		if (!mediaSource_)
 			obs_log(LOG_ERROR,
 				"MediaReplay: failed to create ffmpeg_source");
+	} else {
+		// Picked source not present yet (scene still loading) — retry on
+		// the next ensureSource()/settings change.
+		obs_log(LOG_INFO,
+			"MediaReplay: replay source '%s' not found yet",
+			cfgName.c_str());
 	}
 
 	// Apply our control flags without disturbing any loaded file.
@@ -468,16 +486,19 @@ void MediaReplay::monitorLoop()
 
 std::string MediaReplay::transportJson() const
 {
+	// Call out to other singletons BEFORE locking mutex_ (each of these
+	// locks internally): avoids an AB-BA deadlock with startRecording(),
+	// which holds ReplayCore's lock while calling into MediaReplay.
 	int64_t footage = footageDurationNs();
 	int64_t pos = position();
 	bool play = playing();
+	bool rec = ReplayCore::instance().isRecording();
 
 	std::lock_guard<std::mutex> lock(mutex_);
 	obs_data_t *root = obs_data_create();
 	obs_data_set_bool(root, "sessionLoaded", (bool)index_);
 	obs_data_set_bool(root, "followLive", followLive_);
-	obs_data_set_bool(root, "recording",
-			  ReplayCore::instance().isRecording());
+	obs_data_set_bool(root, "recording", rec);
 	obs_data_set_int(root, "seekableNs", footage);
 	obs_data_set_int(root, "durationNs", footage);
 

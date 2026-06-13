@@ -46,6 +46,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
 #include <string>
+#include <cstring>
 
 namespace multireplay {
 
@@ -1371,6 +1372,40 @@ void MultiReplayDock::openSettings()
 
 	auto *outScene = makeSourceCombo(cfg.outputSceneName);
 	form->addRow(obs_module_text("Dock.OutputScene"), outScene);
+
+	// Replay Media Source: list the Media Sources present, plus "(auto)".
+	auto *replaySrc = new QComboBox(&dlg);
+	replaySrc->addItem(obs_module_text("Dock.AutoReplaySource"), "");
+	{
+		Data md(core.sourcesJson());
+		obs_data_array_t *arr =
+			md ? obs_data_get_array(md, "sources") : nullptr;
+		if (arr) {
+			size_t n = obs_data_array_count(arr);
+			for (size_t i = 0; i < n; i++) {
+				obs_data_t *it = obs_data_array_item(arr, i);
+				const char *id = obs_data_get_string(it, "id");
+				const char *nm = obs_data_get_string(it, "name");
+				// Only Media-type sources can play a recording.
+				if (id &&
+				    (strcmp(id, "ffmpeg_source") == 0 ||
+				     strcmp(id, "vlc_source") == 0))
+					replaySrc->addItem(QString::fromUtf8(nm),
+							   QString::fromUtf8(nm));
+				obs_data_release(it);
+			}
+			obs_data_array_release(arr);
+		}
+	}
+	{
+		int idx = replaySrc->findData(
+			QString::fromStdString(cfg.replaySourceName));
+		if (idx >= 0)
+			replaySrc->setCurrentIndex(idx);
+	}
+	replaySrc->setToolTip(obs_module_text("Dock.ReplaySourceHint"));
+	form->addRow(obs_module_text("Dock.ReplaySource"), replaySrc);
+
 	auto *music = makeSourceCombo(cfg.musicSourceName);
 	form->addRow(obs_module_text("Dock.MusicSource"), music);
 
@@ -1404,6 +1439,8 @@ void MultiReplayDock::openSettings()
 	cfg.audioBitrateKbps = abr->value();
 	cfg.videoEncoderId = enc->currentData().toString().toStdString();
 	cfg.outputSceneName = outScene->currentData().toString().toStdString();
+	cfg.replaySourceName =
+		replaySrc->currentData().toString().toStdString();
 	cfg.musicSourceName = music->currentData().toString().toStdString();
 	cfg.autoSwitchScene = autoSwitch->isChecked();
 	for (int i = 0; i < kMaxCameras; i++)
@@ -1411,6 +1448,8 @@ void MultiReplayDock::openSettings()
 			camCombos[i]->currentData().toString().toStdString();
 	core.setConfig(cfg);
 	EventStore::instance().setSessionFolder(cfg.sessionFolder);
+	// Re-bind the engine to the (possibly changed) replay Media Source.
+	MediaReplay::instance().ensureSource();
 	refreshEvents();
 }
 
