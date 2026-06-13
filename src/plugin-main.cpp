@@ -21,10 +21,13 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #include <obs-frontend-api.h>
 
 #include "plugin-support.h"
-#include "preview.hpp"
+#include "multireplay-dock.hpp"
 #include "replay-core.hpp"
 #include "replay-player.hpp"
-#include "web-server.hpp"
+
+namespace {
+constexpr const char *kDockId = "obs-multireplay-dock";
+}
 
 namespace {
 // Branch Output filters are persisted ENABLED in the scene collection and
@@ -65,9 +68,6 @@ bool obs_module_load(void)
 
 	multireplay::registerReplaySources();
 	multireplay::ReplayEngine::instance().load();
-	multireplay::PreviewManager::instance().start();
-
-	multireplay::WebServer::instance().start(core.getConfig().port);
 
 	obs_frontend_add_event_callback(onFrontendEvent, nullptr);
 
@@ -91,16 +91,21 @@ void obs_module_post_load(void)
 			"https://github.com/OPENSPHERE-Inc/branch-output — "
 			"recording will be unavailable until then.");
 	}
+
+	// Register the native dock now that the Qt frontend is ready. OBS wraps
+	// the widget in a dock and takes ownership of it (removed by id below).
+	auto *dock = new multireplay::MultiReplayDock();
+	if (!obs_frontend_add_dock_by_id(kDockId, obs_module_text("Dock.Title"),
+					 dock)) {
+		obs_log(LOG_ERROR, "Failed to register the obs-multireplay dock");
+		delete dock;
+	}
 }
 
 void obs_module_unload(void)
 {
 	obs_frontend_remove_event_callback(onFrontendEvent, nullptr);
-	// Stop the preview manager FIRST: open MJPEG connections only
-	// terminate when it reports !running(), and WebServer::stop() joins
-	// the listener thread which waits for all active handlers.
-	multireplay::PreviewManager::instance().stop();
-	multireplay::WebServer::instance().stop();
+	obs_frontend_remove_dock(kDockId);
 	multireplay::ReplayEngine::instance().unload();
 	multireplay::ReplayCore::instance().unload();
 	obs_log(LOG_INFO, "plugin unloaded");
