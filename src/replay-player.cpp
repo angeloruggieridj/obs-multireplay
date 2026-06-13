@@ -204,7 +204,7 @@ ReplayPlayer::frameAt(int64_t masterNs,
 				gopCache_.pop_front();
 		}
 	} else if (offsetNs > gopCache_.back().ptsNs) {
-		// decode forward to the target
+		// Decode forward to the target.
 		DecodedFrame f;
 		while (gopCache_.back().ptsNs < offsetNs &&
 		       decoder_.nextFrame(f)) {
@@ -212,6 +212,27 @@ ReplayPlayer::frameAt(int64_t masterNs,
 			f = DecodedFrame{};
 			if (gopCache_.size() > kMaxCacheFrames)
 				gopCache_.pop_front();
+		}
+		// Fallback: decoder stalled or hit EOF before reaching the
+		// target (common when event 2 starts *later* in the same file
+		// than where event 1 ended — the decoder is at EOF for that
+		// segment, so nextFrame() returns false immediately).
+		// Without this seek the cache never reaches offsetNs and we
+		// return the last cached frame (frozen frame bug).
+		const int64_t tolerance = decoder_.frameDurationNs() * 2;
+		if (gopCache_.empty() ||
+		    gopCache_.back().ptsNs + tolerance < offsetNs) {
+			gopCache_.clear();
+			decoder_.seekTo(offsetNs);
+			DecodedFrame f2;
+			while (decoder_.nextFrame(f2)) {
+				gopCache_.push_back(std::move(f2));
+				f2 = DecodedFrame{};
+				if (gopCache_.back().ptsNs >= offsetNs)
+					break;
+				if (gopCache_.size() > kMaxCacheFrames)
+					gopCache_.pop_front();
+			}
 		}
 	}
 
@@ -252,23 +273,31 @@ void ReplayPlayer::outputFrame(const DecodedFrame &frame)
 				    out.color_matrix, out.color_range_min,
 				    out.color_range_max);
 
-	// Async sources need monotonically increasing timestamps.
-	outputTimestamp_ += (uint64_t)decoder_.frameDurationNs();
-	out.timestamp = outputTimestamp_;
+	// Use the OBS wall-clock (os_gettime_ns() domain) as the frame
+	// timestamp.  OBS async sources display frames keyed on this clock;
+	// using an arbitrary counter starting near 0 would place every frame
+	// far in the past relative to OBS's audio mixer clock → audio discarded
+	// or misaligned.  The loop cadence (compensated sleep) controls the
+	// actual playback frame rate.
+	out.timestamp = (uint64_t)os_gettime_ns();
 	obs_source_output_video(source_, &out);
 }
 
 // Called from threadLoop every tick, WITHOUT stateMutex_ held.
-// decoder_ is thread-exclusive so takeAudio() is safe here.
-// `audible` = forward play at normal speed; when false we drain and discard
-// to prevent bursting a full pause-worth of audio on the next resume.
+// `audible` = forward play at normal speed; when false we drain and discard.
+// `seekOccurred` = a seek/angle-change happened this tick; the audio decoded
+// during seek-to-target (frames before the in-point) must be discarded so
+// we don't burst stale audio at the start of the event → skip/desync.
 void ReplayPlayer::outputAudio(obs_source_t *src,
-			       std::vector<AudioChunk> chunks)
+			       std::vector<AudioChunk> chunks,
+			       bool seekOccurred)
 {
 	bool audible = playing_ && !reverse_ && speed_.load() > 0.99;
-	if (!audible) {
+	if (!audible || seekOccurred) {
+		// Discard: not audible, or this is the seek pre-roll batch.
+		// Reset the anchor so the next real chunk starts cleanly.
 		audioPrimed_ = false;
-		return; // chunks discarded — decoder buffer already drained
+		return;
 	}
 	for (auto &chunk : chunks) {
 		if (chunk.frames <= 0)
@@ -280,13 +309,12 @@ void ReplayPlayer::outputAudio(obs_source_t *src,
 		audio.speakers = SPEAKERS_STEREO;
 		audio.format = AUDIO_FORMAT_FLOAT_PLANAR;
 		audio.samples_per_sec = SegmentDecoder::kAudioSampleRate;
-		// Monotonic audio clock: anchor to current video timestamp once,
-		// then advance by exact chunk duration.  Re-anchoring on every
-		// chunk causes overlapping timestamps → choppy audio.
+		// Monotonic audio clock in the os_gettime_ns() domain: anchor
+		// once to real time, then advance by exact chunk duration.
+		// Anchoring to os_gettime_ns() (not an arbitrary counter) keeps
+		// audio timestamps compatible with OBS's audio mixer clock.
 		if (!audioPrimed_) {
-			// outputTimestamp_ was already advanced by outputFrame();
-			// sync the audio clock to the current video position.
-			audioTimestamp_ = outputTimestamp_;
+			audioTimestamp_ = (uint64_t)os_gettime_ns();
 			audioPrimed_ = true;
 		}
 		audio.timestamp = audioTimestamp_;
@@ -397,19 +425,23 @@ void ReplayPlayer::threadLoop()
 
 		// ── 2. Decode WITHOUT mutex (I/O + FFmpeg, potentially slow) ──
 		if (shouldRender) {
-			// Apply any pending audio reset requested by seekMaster
-			// or setAngle() before we decode the first post-seek frame.
-			if (pendingAudioReset_.exchange(false))
+			// Capture and clear the seek/angle-change flag BEFORE
+			// calling frameAt(): the flag tells us that the audio
+			// decoded during seek pre-roll must be discarded (it
+			// covers frames before the event in-point).
+			const bool seekOccurred =
+				pendingAudioReset_.exchange(false);
+			if (seekOccurred)
 				audioPrimed_ = false;
 
 			const DecodedFrame *frame =
 				frameAt(renderPos, indexSnap);
 
-			// Drain audio immediately after decode (decoder_ is
-			// thread-exclusive).  Draining here — whether or not we
-			// got a frame — prevents audio accumulating in the
-			// decoder's internal buffer during pauses or cache hits,
-			// which would otherwise burst on resume → skip.
+			// Drain audio immediately after decode.  decoder_ is
+			// thread-exclusive so takeAudio() is safe here.
+			// Draining every tick — not just when we output video —
+			// prevents audio accumulating during cache hits or stalls,
+			// which would otherwise burst on the next resume → skip.
 			auto audioChunks = decoder_.takeAudio();
 
 			if (frame) {
@@ -420,20 +452,16 @@ void ReplayPlayer::threadLoop()
 				}
 			}
 
-			// Output audio outside the mutex: obs_source_output_audio
-			// is thread-safe; we only need source_ for the call.
-			// Use acquireSource() (add-refs) so the source cannot
-			// disappear under us while we output audio chunks.
+			// Output audio outside the mutex.
+			// Pass seekOccurred so the first post-seek batch (pre-roll
+			// frames decoded to reach the in-point) is discarded.
 			if (!audioChunks.empty()) {
 				obs_source_t *src = acquireSource();
 				if (src) {
-					outputAudio(src, std::move(audioChunks));
+					outputAudio(src, std::move(audioChunks),
+						    seekOccurred);
 					obs_source_release(src);
 				}
-			} else {
-				// No new audio decoded (cached frame hit or
-				// decode stall): keep audioPrimed_ / timestamp
-				// state unchanged — no gap to introduce.
 			}
 		} else {
 			// Paused or position unchanged: drain the decoder buffer

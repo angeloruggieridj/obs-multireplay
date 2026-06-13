@@ -77,10 +77,12 @@ private:
 	// Must be called WITH stateMutex_ held (writes to source_).
 	// VIDEO only — audio is handled separately to avoid burst-on-resume.
 	void outputFrame(const DecodedFrame &frame);
-	// Called WITHOUT stateMutex_ held. Drains and emits audio chunks from
-	// a decoder_.takeAudio() call; discards if not at audible speed.
+	// Called WITHOUT stateMutex_ held. Emits audio chunks; discards if not
+	// at audible speed or if seekOccurred (pre-roll frames from seek-to-target
+	// must not be played — they precede the event in-point).
 	void outputAudio(obs_source_t *src,
-			 std::vector<AudioChunk> chunks);
+			 std::vector<AudioChunk> chunks,
+			 bool seekOccurred);
 	void invalidateCache();
 
 	char channelId_;
@@ -111,9 +113,8 @@ private:
 	std::deque<DecodedFrame> gopCache_;
 	std::string cachedPath_;
 	int cachedAngle_ = -1;
-	uint64_t outputTimestamp_ = 0;
-	// Monotonic audio clock: chunks are paced by their own duration
-	// instead of being re-anchored to each video frame (which stutters).
+	// Audio clock in the os_gettime_ns() domain.  Anchored once at the
+	// start of each playback segment, then advanced by chunk duration.
 	uint64_t audioTimestamp_ = 0;
 	bool audioPrimed_ = false;
 };
