@@ -75,7 +75,12 @@ private:
 	const DecodedFrame *frameAt(int64_t masterNs,
 				    const std::shared_ptr<SessionIndex> &index);
 	// Must be called WITH stateMutex_ held (writes to source_).
+	// VIDEO only — audio is handled separately to avoid burst-on-resume.
 	void outputFrame(const DecodedFrame &frame);
+	// Called WITHOUT stateMutex_ held. Drains and emits audio chunks from
+	// a decoder_.takeAudio() call; discards if not at audible speed.
+	void outputAudio(obs_source_t *src,
+			 std::vector<SegmentDecoder::AudioChunk> chunks);
 	void invalidateCache();
 
 	char channelId_;

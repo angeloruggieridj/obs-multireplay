@@ -524,7 +524,20 @@ $("deleteAllBtn").addEventListener("click", async () => {
                "Settings, music and tags are kept (the reference controller Delete All)."))
     return;
   const r = await post("/api/session/deleteAll");
-  if (r.ok) { selectedIds.clear(); setStatus("Session wiped."); refreshEvents(); }
+  if (r.ok) {
+    selectedIds.clear();
+    setStatus("Session wiped.");
+    // Reset timeline state immediately so the bar shows 0 duration, not the
+    // stale values from before the wipe (next refreshTransport() confirms).
+    sample = null;
+    transport = null;
+    $("pbTimeR").textContent = "--:--:--";
+    $("pbUnseek").style.width = "0";
+    $("pbHeadA").style.left = "0";
+    $("pbHeadB").style.left = "0";
+    refreshEvents();
+    refreshTransport();
+  }
 });
 
 // ---------- M4: keyboard shortcuts (broadcast-style) ----------

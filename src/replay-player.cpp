@@ -228,6 +228,8 @@ ReplayPlayer::frameAt(int64_t masterNs,
 }
 
 // Must be called with stateMutex_ held (accesses source_).
+// VIDEO ONLY — audio is handled separately in threadLoop so it can be
+// drained every tick (preventing burst-on-resume after a pause).
 void ReplayPlayer::outputFrame(const DecodedFrame &frame)
 {
 	if (!source_)
@@ -254,14 +256,19 @@ void ReplayPlayer::outputFrame(const DecodedFrame &frame)
 	outputTimestamp_ += (uint64_t)decoder_.frameDurationNs();
 	out.timestamp = outputTimestamp_;
 	obs_source_output_video(source_, &out);
+}
 
-	// --- Audio playback ---
-	// Only at forward normal speed: slow-motion/reverse replays are muted.
-	auto chunks = decoder_.takeAudio();
+// Called from threadLoop every tick, WITHOUT stateMutex_ held.
+// decoder_ is thread-exclusive so takeAudio() is safe here.
+// `audible` = forward play at normal speed; when false we drain and discard
+// to prevent bursting a full pause-worth of audio on the next resume.
+void ReplayPlayer::outputAudio(obs_source_t *src,
+			       std::vector<SegmentDecoder::AudioChunk> chunks)
+{
 	bool audible = playing_ && !reverse_ && speed_.load() > 0.99;
 	if (!audible) {
 		audioPrimed_ = false;
-		return;
+		return; // chunks discarded — decoder buffer already drained
 	}
 	for (auto &chunk : chunks) {
 		if (chunk.frames <= 0)
@@ -273,17 +280,19 @@ void ReplayPlayer::outputFrame(const DecodedFrame &frame)
 		audio.speakers = SPEAKERS_STEREO;
 		audio.format = AUDIO_FORMAT_FLOAT_PLANAR;
 		audio.samples_per_sec = SegmentDecoder::kAudioSampleRate;
-		// Monotonic audio clock: anchor once, then advance by chunk
-		// duration. Re-anchoring every chunk to the video clock causes
-		// overlapping timestamps and choppy audio.
+		// Monotonic audio clock: anchor to current video timestamp once,
+		// then advance by exact chunk duration.  Re-anchoring on every
+		// chunk causes overlapping timestamps → choppy audio.
 		if (!audioPrimed_) {
+			// outputTimestamp_ was already advanced by outputFrame();
+			// sync the audio clock to the current video position.
 			audioTimestamp_ = outputTimestamp_;
 			audioPrimed_ = true;
 		}
 		audio.timestamp = audioTimestamp_;
 		audioTimestamp_ += (uint64_t)chunk.frames * 1000000000ULL /
 				   SegmentDecoder::kAudioSampleRate;
-		obs_source_output_audio(source_, &audio);
+		obs_source_output_audio(src, &audio);
 	}
 }
 
@@ -395,6 +404,14 @@ void ReplayPlayer::threadLoop()
 
 			const DecodedFrame *frame =
 				frameAt(renderPos, indexSnap);
+
+			// Drain audio immediately after decode (decoder_ is
+			// thread-exclusive).  Draining here — whether or not we
+			// got a frame — prevents audio accumulating in the
+			// decoder's internal buffer during pauses or cache hits,
+			// which would otherwise burst on resume → skip.
+			auto audioChunks = decoder_.takeAudio();
+
 			if (frame) {
 				std::lock_guard<std::mutex> lock(stateMutex_);
 				if (source_) {
@@ -402,6 +419,28 @@ void ReplayPlayer::threadLoop()
 					lastRenderedPos = renderPos;
 				}
 			}
+
+			// Output audio outside the mutex: obs_source_output_audio
+			// is thread-safe; we only need source_ for the call.
+			// Use acquireSource() (add-refs) so the source cannot
+			// disappear under us while we output audio chunks.
+			if (!audioChunks.empty()) {
+				obs_source_t *src = acquireSource();
+				if (src) {
+					outputAudio(src, std::move(audioChunks));
+					obs_source_release(src);
+				}
+			} else {
+				// No new audio decoded (cached frame hit or
+				// decode stall): keep audioPrimed_ / timestamp
+				// state unchanged — no gap to introduce.
+			}
+		} else {
+			// Paused or position unchanged: drain the decoder buffer
+			// and discard so we don't accumulate audio that would
+			// burst on the next resume.
+			if (decoder_.isOpen())
+				decoder_.takeAudio(); // drain & discard
 		}
 
 		// ── 3. Stop callback (outside lock: may call back into us) ────
