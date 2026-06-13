@@ -213,15 +213,13 @@ ReplayPlayer::frameAt(int64_t masterNs,
 			if (gopCache_.size() > kMaxCacheFrames)
 				gopCache_.pop_front();
 		}
-		// Fallback: decoder stalled or hit EOF before reaching the
-		// target (common when event 2 starts *later* in the same file
-		// than where event 1 ended — the decoder is at EOF for that
-		// segment, so nextFrame() returns false immediately).
-		// Without this seek the cache never reaches offsetNs and we
-		// return the last cached frame (frozen frame bug).
-		const int64_t tolerance = decoder_.frameDurationNs() * 2;
+		// If forward decode didn't reach the target (decoder stalled /
+		// hit EOF), seek explicitly.  This is a safety net; with
+		// invalidateCache() called on every seek in threadLoop, this
+		// branch fires only during continuous playback when the player
+		// crosses a segment boundary within the same angle.
 		if (gopCache_.empty() ||
-		    gopCache_.back().ptsNs + tolerance < offsetNs) {
+		    gopCache_.back().ptsNs < offsetNs) {
 			gopCache_.clear();
 			decoder_.seekTo(offsetNs);
 			DecodedFrame f2;
@@ -431,8 +429,17 @@ void ReplayPlayer::threadLoop()
 			// covers frames before the event in-point).
 			const bool seekOccurred =
 				pendingAudioReset_.exchange(false);
-			if (seekOccurred)
-				audioPrimed_ = false;
+			if (seekOccurred) {
+				// CRITICAL: close the decoder and clear the cache
+				// so frameAt() always reopens the file and seeks to
+				// the new position from scratch.  Without this the
+				// decoder is at EOF of the previous event's segment;
+				// nextFrame() returns false immediately → cache never
+				// advances → frozen frame on every subsequent event
+				// and on every seek from the bar.
+				invalidateCache(); // thread-exclusive, safe here
+				lastRenderedPos = -1; // force re-render even if pos unchanged
+			}
 
 			const DecodedFrame *frame =
 				frameAt(renderPos, indexSnap);
