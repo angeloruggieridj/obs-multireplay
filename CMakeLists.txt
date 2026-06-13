@@ -68,9 +68,9 @@ target_sources(
     src/replay-core.cpp
     src/branch-output-control.cpp
     src/session-index.cpp
-    src/decoder.cpp
-    src/replay-player.cpp
-    src/replay-source.cpp
+    # Playback engine: OBS Media Source (ffmpeg_source) driver
+    src/media-replay.cpp
+    src/media-replay.hpp
     src/event-store.cpp
     src/playback-coordinator.cpp
     src/export.cpp

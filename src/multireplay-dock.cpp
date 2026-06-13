@@ -7,7 +7,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
 #include "multireplay-dock.hpp"
 #include "qt-display.hpp"
 #include "replay-core.hpp"
-#include "replay-player.hpp"
+#include "media-replay.hpp"
 #include "event-store.hpp"
 #include "playback-coordinator.hpp"
 #include "export.hpp"
@@ -325,7 +325,7 @@ struct Data {
 
 bool ensureSession()
 {
-	auto &engine = ReplayEngine::instance();
+	auto &engine = MediaReplay::instance();
 	if (engine.sessionLoaded())
 		return true;
 	std::string err;
@@ -477,8 +477,7 @@ void SeekBar::mouseReleaseEvent(QMouseEvent *e)
 
 void MultiReplayDock::drawChannelA(void *, uint32_t cx, uint32_t cy)
 {
-	ReplayPlayer *p = ReplayEngine::instance().channel('A');
-	obs_source_t *src = p ? p->acquireSource() : nullptr;
+	obs_source_t *src = MediaReplay::instance().acquireSource();
 	if (!src)
 		return;
 	uint32_t sw = obs_source_get_width(src);
@@ -548,7 +547,7 @@ MultiReplayDock::MultiReplayDock(QWidget *parent) : QWidget(parent)
 			if (core.isRecording()) {
 				core.stopRecording();
 				std::string err;
-				ReplayEngine::instance().loadSession(
+				MediaReplay::instance().loadSession(
 					core.getConfig().sessionFolder, err);
 			} else {
 				std::string err;
@@ -676,10 +675,10 @@ QWidget *MultiReplayDock::buildTransport()
 	h->setSpacing(6);
 	h->addStretch(1);
 
+	// Media Source has no reverse playback, so the transport is
+	// step-back / play-pause / step-fwd / NOW. Stepping is a seek.
 	auto *stepBack = iconBtn(QStyle::SP_MediaSkipBackward, this,
 				 obs_module_text("Dock.StepBack"));
-	reverseBtn_ = iconBtn(QStyle::SP_MediaSeekBackward, this,
-			      obs_module_text("Dock.Reverse"));
 	playPauseBtn_ = iconBtn(QStyle::SP_MediaPlay, this,
 				obs_module_text("Dock.PlayPause"), "mrPlay");
 	auto *stepFwd = iconBtn(QStyle::SP_MediaSkipForward, this,
@@ -690,7 +689,7 @@ QWidget *MultiReplayDock::buildTransport()
 	nowBtn_->setCursor(Qt::PointingHandCursor);
 	nowBtn_->setToolTip(obs_module_text("Dock.JumpToNow"));
 	nowBtn_->setMinimumWidth(46);
-	for (auto *b : {stepBack, reverseBtn_, playPauseBtn_, stepFwd})
+	for (auto *b : {stepBack, playPauseBtn_, stepFwd})
 		h->addWidget(b);
 	h->addWidget(nowBtn_);
 	h->addStretch(1);
@@ -698,41 +697,27 @@ QWidget *MultiReplayDock::buildTransport()
 	connect(stepBack, &QPushButton::clicked, this, []() {
 		if (!ensureSession())
 			return;
-		ReplayEngine::instance().setFollowLive(false);
-		ReplayEngine::instance().applyTransport(
-			'A', [](ReplayPlayer &p) { p.stepFrames(-1); });
+		MediaReplay::instance().setFollowLive(false);
+		MediaReplay::instance().stepFrames(-1);
 	});
 	connect(stepFwd, &QPushButton::clicked, this, []() {
 		if (!ensureSession())
 			return;
-		ReplayEngine::instance().setFollowLive(false);
-		ReplayEngine::instance().applyTransport(
-			'A', [](ReplayPlayer &p) { p.stepFrames(1); });
-	});
-	connect(reverseBtn_, &QPushButton::clicked, this, []() {
-		if (!ensureSession())
-			return;
-		ReplayEngine::instance().applyTransport(
-			'A', [](ReplayPlayer &p) { p.changeDirection(); });
+		MediaReplay::instance().setFollowLive(false);
+		MediaReplay::instance().stepFrames(1);
 	});
 	connect(playPauseBtn_, &QPushButton::clicked, this, []() {
 		if (!ensureSession())
 			return;
-		auto &engine = ReplayEngine::instance();
-		bool playing = engine.channelA().playing();
-		if (!playing)
+		auto &engine = MediaReplay::instance();
+		if (!engine.playing())
 			engine.setFollowLive(false);
-		engine.applyTransport('A', [playing](ReplayPlayer &p) {
-			p.setPlaying(!playing);
-		});
+		engine.togglePlay();
 	});
 	connect(nowBtn_, &QPushButton::clicked, this, []() {
 		if (!ensureSession())
 			return;
-		auto &engine = ReplayEngine::instance();
-		engine.setFollowLive(true);
-		engine.applyTransport('A',
-				      [](ReplayPlayer &p) { p.jumpToEnd(); });
+		MediaReplay::instance().jumpToEnd();
 	});
 
 	v->addLayout(h);
@@ -754,11 +739,13 @@ QWidget *MultiReplayDock::buildTransport()
 	speedLbl_->setFont(QFont(monoFamily()));
 	speedLbl_->setMinimumWidth(46);
 	speedLbl_->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+	// Live label on drag; commit the speed on release (each change reloads
+	// the Media Source, so don't thrash it while dragging).
 	connect(speed_, &QSlider::valueChanged, this, [this](int val) {
-		double sp = val / 100.0;
-		speedLbl_->setText(QString::asprintf("%.2fx", sp));
-		ReplayEngine::instance().applyTransport(
-			'A', [sp](ReplayPlayer &p) { p.setSpeed(sp); });
+		speedLbl_->setText(QString::asprintf("%.2fx", val / 100.0));
+	});
+	connect(speed_, &QSlider::sliderReleased, this, [this]() {
+		MediaReplay::instance().setSpeed(speed_->value() / 100.0);
 	});
 	sh->addWidget(speed_, 1);
 	sh->addWidget(speedLbl_);
@@ -982,11 +969,16 @@ int64_t MultiReplayDock::markTimeNs() const
 {
 	auto &store = EventStore::instance();
 	if (store.liveMode()) {
-		int64_t now = ReplayCore::instance().masterNowNs();
-		if (now >= 0)
-			return now;
+		// the reference controller marks at the LIVE EDGE. Anchor that to the indexed footage
+		// length (the real end of recorded media), NOT the wall clock:
+		// the encoder lags real time by its startup/buffer, so wall-clock
+		// "now" would store an instant that the footage hasn't reached
+		// yet, making the saved In/Out incoherent with the recording.
+		int64_t edge = MediaReplay::instance().footageDurationNs();
+		if (edge > 0)
+			return edge;
 	}
-	return ReplayEngine::instance().channelA().position();
+	return MediaReplay::instance().position();
 }
 
 std::vector<int> MultiReplayDock::selectedEventIds() const
@@ -1003,9 +995,8 @@ std::vector<int> MultiReplayDock::selectedEventIds() const
 
 void MultiReplayDock::setAngle(int angle1Based)
 {
-	ReplayPlayer *p = ReplayEngine::instance().channel('A');
-	if (p && angle1Based >= 1 && angle1Based <= kIndexMaxCameras)
-		p->setAngle(angle1Based - 1);
+	if (angle1Based >= 1 && angle1Based <= kIndexMaxCameras)
+		MediaReplay::instance().setAngle(angle1Based - 1);
 }
 
 void MultiReplayDock::seekToFraction(double frac)
@@ -1016,10 +1007,9 @@ void MultiReplayDock::seekToFraction(double frac)
 	int64_t pos = (int64_t)(frac * (double)durationNs_);
 	if (seekableNs_ > 0 && pos > seekableNs_)
 		pos = seekableNs_;
-	auto &engine = ReplayEngine::instance();
+	auto &engine = MediaReplay::instance();
 	engine.setFollowLive(false);
-	engine.applyTransport('A',
-			      [pos](ReplayPlayer &p) { p.seekMaster(pos); });
+	engine.seekMaster(pos);
 }
 
 // ---------------------------------------------------------------------------
@@ -1029,7 +1019,7 @@ void MultiReplayDock::seekToFraction(double frac)
 void MultiReplayDock::poll()
 {
 	auto &core = ReplayCore::instance();
-	auto &engine = ReplayEngine::instance();
+	auto &engine = MediaReplay::instance();
 
 	// Keep the index fresh: pick up completed segments while recording, or
 	// lazily load the session the first time a folder is configured. Done

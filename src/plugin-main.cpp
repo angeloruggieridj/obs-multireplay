@@ -23,7 +23,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #include "plugin-support.h"
 #include "multireplay-dock.hpp"
 #include "replay-core.hpp"
-#include "replay-player.hpp"
+#include "media-replay.hpp"
 
 namespace {
 constexpr const char *kDockId = "obs-multireplay-dock";
@@ -33,7 +33,9 @@ namespace {
 // Branch Output filters are persisted ENABLED in the scene collection and
 // start recording as soon as their source becomes active. The scene
 // collection loads AFTER obs_module_post_load, so the disarm must run on
-// the frontend FINISHED_LOADING / SCENE_COLLECTION_CHANGED events.
+// the frontend FINISHED_LOADING / SCENE_COLLECTION_CHANGED events. The same
+// events are where the managed Media Source must be (re)adopted for the
+// just-loaded scene collection.
 void onFrontendEvent(enum obs_frontend_event event, void *)
 {
 	if (event == OBS_FRONTEND_EVENT_FINISHED_LOADING ||
@@ -41,13 +43,10 @@ void onFrontendEvent(enum obs_frontend_event event, void *)
 		if (!multireplay::ReplayCore::instance().isRecording())
 			multireplay::ReplayCore::instance()
 				.disarmPersistedFilters();
+		multireplay::MediaReplay::instance().ensureSource();
 	}
 }
 } // namespace
-
-namespace multireplay {
-void registerReplaySources(); // replay-source.cpp
-}
 
 OBS_DECLARE_MODULE()
 OBS_MODULE_USE_DEFAULT_LOCALE(PLUGIN_NAME, "en-US")
@@ -66,8 +65,7 @@ bool obs_module_load(void)
 	auto &core = multireplay::ReplayCore::instance();
 	core.load();
 
-	multireplay::registerReplaySources();
-	multireplay::ReplayEngine::instance().load();
+	multireplay::MediaReplay::instance().load();
 
 	obs_frontend_add_event_callback(onFrontendEvent, nullptr);
 
@@ -106,7 +104,7 @@ void obs_module_unload(void)
 {
 	obs_frontend_remove_event_callback(onFrontendEvent, nullptr);
 	obs_frontend_remove_dock(kDockId);
-	multireplay::ReplayEngine::instance().unload();
+	multireplay::MediaReplay::instance().unload();
 	multireplay::ReplayCore::instance().unload();
 	obs_log(LOG_INFO, "plugin unloaded");
 }

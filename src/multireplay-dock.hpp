@@ -3,11 +3,10 @@ obs-multireplay — broadcast-style instant replay for OBS Studio
 Copyright (C) 2026 obs-multireplay contributors
 SPDX-License-Identifier: GPL-2.0-or-later
 
-Native OBS dock panel. Replaces the former browser UI: it drives the same
-in-process engine (ReplayCore / ReplayEngine / EventStore / PlaybackCoordinator)
-directly via C++ calls instead of REST. Shows two live A/B program previews,
-a seekbar over the recorded timeline, marker controls and the searchable
-event list.
+Native OBS dock panel. Drives the in-process engine (ReplayCore / MediaReplay /
+EventStore / PlaybackCoordinator) directly via C++ calls. Shows the replay
+preview (an OBS Media Source), a seekbar over the recorded timeline, marker
+controls and the searchable, editable event list.
 */
 
 #pragma once
@@ -114,7 +113,6 @@ private:
 	QLabel *speedLbl_ = nullptr;
 	QLabel *tcLbl_ = nullptr;
 	QPushButton *playPauseBtn_ = nullptr;
-	QPushButton *reverseBtn_ = nullptr;
 	QPushButton *nowBtn_ = nullptr;
 	bool seekDragging_ = false;
 

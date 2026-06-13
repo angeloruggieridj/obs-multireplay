@@ -6,7 +6,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "playback-coordinator.hpp"
 #include "replay-core.hpp"
-#include "replay-player.hpp"
+#include "media-replay.hpp"
 #include "plugin-support.h"
 
 #include <obs-module.h>
@@ -64,7 +64,7 @@ bool PlaybackCoordinator::playEvents(const std::vector<int> &eventIds,
 	// angle in sequence) and resolve the "--" speed inheritance chain.
 	std::vector<QueueItem> items;
 	double inherited = -1.0;
-	double fallback = ReplayEngine::instance().channelA().speed();
+	double fallback = MediaReplay::instance().speed();
 	for (int id : eventIds) {
 		ReplayEvent ev;
 		if (!EventStore::instance().get(id, ev) || ev.tOutNs < 0)
@@ -103,7 +103,7 @@ bool PlaybackCoordinator::playEvents(const std::vector<int> &eventIds,
 	queuePos_ = 0;
 	toOutput_ = toOutput;
 	active_ = true;
-	ReplayEngine::instance().setFollowLive(false);
+	MediaReplay::instance().setFollowLive(false);
 
 	if (toOutput_)
 		switchToReplayScene();
@@ -126,10 +126,7 @@ bool PlaybackCoordinator::playLastEvent(bool toOutput, std::string &errorOut)
 void PlaybackCoordinator::stopEvents()
 {
 	std::lock_guard<std::mutex> lock(mutex_);
-	ReplayPlayer &a = ReplayEngine::instance().channelA();
-	a.stopEventAudio();
-	a.setStopAt(-1);
-	a.setPlaying(false);
+	MediaReplay::instance().stopEvent();
 	queue_.clear();
 	if (active_ && toOutput_)
 		restorePreviousScene();
@@ -145,24 +142,34 @@ bool PlaybackCoordinator::queueActive() const
 
 void PlaybackCoordinator::startNext()
 {
-	// mutex_ held by caller
-	const QueueItem &item = queue_[queuePos_];
-	ReplayPlayer &a = ReplayEngine::instance().channelA();
+	// mutex_ held by caller.
+	//
+	// One call drives the Media Source: seek to the in-point on the chosen
+	// angle, play at the event speed, auto-stop at the out-point. OBS owns
+	// the A/V sync, so audio just works. playEvent() returns false for an
+	// unplayable item (e.g. footage not indexed) — skip it inline rather
+	// than relying on a re-entrant onDone callback (would self-deadlock).
+	while (queuePos_ < queue_.size()) {
+		const QueueItem &item = queue_[queuePos_];
+		if (MediaReplay::instance().playEvent(
+			    item.tInNs, item.tOutNs, item.angle, item.speed,
+			    [this]() { onEventFinished(); })) {
+			obs_log(LOG_INFO,
+				"coordinator: playing event %d angle %d (%d%%) "
+				"[%zu/%zu]",
+				item.eventId, item.angle + 1,
+				(int)(item.speed * 100), queuePos_ + 1,
+				queue_.size());
+			return;
+		}
+		queuePos_++; // unplayable: advance to the next item
+	}
 
-	a.setAngle(item.angle);
-	a.setReverse(false);
-	a.setSpeed(item.speed);
-	a.seekMaster(item.tInNs);
-	// Arm the dedicated, decode-independent audio path BEFORE playing so the
-	// realtime per-tick audio is already suppressed (no double-output tick).
-	a.startEventAudio(item.angle, item.tInNs, item.tOutNs, item.speed);
-	a.setStopAt(item.tOutNs, [this]() { onEventFinished(); });
-	a.setPlaying(true);
-
-	obs_log(LOG_INFO,
-		"coordinator: playing event %d angle %d (%d%%) [%zu/%zu]",
-		item.eventId, item.angle + 1, (int)(item.speed * 100),
-		queuePos_ + 1, queue_.size());
+	// Nothing left to play.
+	active_ = false;
+	if (toOutput_)
+		restorePreviousScene();
+	setMusicMuted(true);
 }
 
 void PlaybackCoordinator::onEventFinished()
@@ -180,7 +187,6 @@ void PlaybackCoordinator::onEventFinished()
 		startNext();
 	} else {
 		active_ = false;
-		ReplayEngine::instance().channelA().stopEventAudio();
 		if (toOutput_)
 			restorePreviousScene();
 		setMusicMuted(true);

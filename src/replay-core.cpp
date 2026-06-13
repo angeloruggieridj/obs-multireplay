@@ -8,7 +8,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
 #include "branch-output-control.hpp"
 #include "event-store.hpp"
 #include "playback-coordinator.hpp"
-#include "replay-player.hpp"
+#include "media-replay.hpp"
 #include "plugin-support.h"
 
 #include <util/platform.h>
@@ -117,11 +117,13 @@ namespace {
 int64_t hotkeyMarkTimeNs()
 {
 	if (EventStore::instance().liveMode()) {
-		int64_t now = ReplayCore::instance().masterNowNs();
-		if (now >= 0)
-			return now;
+		// Live edge = indexed footage length (coherent with the media),
+		// not the wall clock (which leads the footage).
+		int64_t edge = MediaReplay::instance().footageDurationNs();
+		if (edge > 0)
+			return edge;
 	}
-	return ReplayEngine::instance().channelA().position();
+	return MediaReplay::instance().position();
 }
 
 using SimpleFn = void (*)();
@@ -157,14 +159,9 @@ const HotkeyDef kReplayHotkeys[] = {
 			 err);
 	 }},
 	{"ReplayPlayPause", "Hotkey.PlayPause",
-	 []() {
-		 auto &a = ReplayEngine::instance().channelA();
-		 a.setPlaying(!a.playing());
-	 }},
-	{"ReplayChangeDirection", "Hotkey.Direction",
-	 []() { ReplayEngine::instance().channelA().changeDirection(); }},
+	 []() { MediaReplay::instance().togglePlay(); }},
 	{"ReplayJumpToNow", "Hotkey.JumpToNow",
-	 []() { ReplayEngine::instance().channelA().jumpToEnd(); }},
+	 []() { MediaReplay::instance().jumpToEnd(); }},
 	{"ReplayStopEvents", "Hotkey.StopEvents",
 	 []() { PlaybackCoordinator::instance().stopEvents(); }},
 	{"ReplayLiveToggle", "Hotkey.LiveToggle",
@@ -177,8 +174,7 @@ const HotkeyDef kReplayHotkeys[] = {
 // Angle hotkeys need an index: lambdas can't capture, so use a template.
 template<int N> void setAngleA()
 {
-	ReplayEngine::instance().applyTransport(
-		'A', [](ReplayPlayer &p) { p.setAngle(N); });
+	MediaReplay::instance().setAngle(N);
 }
 
 const SimpleFn kAngleFns[kMaxCameras] = {
@@ -232,7 +228,7 @@ bool ReplayCore::startRecording(std::string &errorOut)
 	// Clear any stale session index so old recordings from a previous run
 	// in the same folder are not mixed into the new session. The index will
 	// be rebuilt when the user loads the session after segments are complete.
-	ReplayEngine::instance().clearSession();
+	MediaReplay::instance().clearSession();
 	if (!branch_output::available()) {
 		errorOut = "Branch Output plugin is not installed";
 		obs_log(LOG_ERROR, "startRecording: %s", errorOut.c_str());

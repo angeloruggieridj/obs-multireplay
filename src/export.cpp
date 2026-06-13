@@ -11,7 +11,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "event-store.hpp"
 #include "replay-core.hpp"
-#include "replay-player.hpp"
+#include "media-replay.hpp"
 
 extern "C" {
 #include <libavformat/avformat.h>
@@ -139,7 +139,7 @@ void ExportManager::worker()
 // Stream-copy the packets of [tIn, tOut] from the recording into a new MP4.
 bool ExportManager::runJob(Job &job)
 {
-	auto &engine = ReplayEngine::instance();
+	auto &engine = MediaReplay::instance();
 	std::string err;
 	if (!engine.sessionLoaded() &&
 	    !engine.loadSession(
@@ -159,8 +159,7 @@ bool ExportManager::runJob(Job &job)
 	{
 		// Resolve both ends; they must land in the same file.
 		std::string pathOut;
-		// engine has no direct index accessor; reuse via players'
-		// shared index through ReplayEngine::resolveForExport helper
+		// Resolve via the shared session index (MediaReplay owns it).
 		if (!engine.resolveTime(job.angle, job.tInNs, path,
 					inOffsetNs) ||
 		    !engine.resolveTime(job.angle, job.tOutNs, pathOut,
