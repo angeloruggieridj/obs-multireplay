@@ -303,7 +303,10 @@ void PreviewManager::captureAll()
 		// The GPU had a full frame interval (~50 ms at 20 fps) to
 		// complete the DMA, so this returns instantly — zero stall on
 		// the OBS render thread even during A/B 1080p playback.
+		// obs_enter_graphics() is recursive-safe; queued graphics tasks
+		// are not guaranteed to hold the context on entry.
 		if (gs.hasPending) {
+			obs_enter_graphics();
 			uint8_t *data = nullptr;
 			uint32_t linesize = 0;
 			if (gs_stagesurface_map(gs.stage[gs.pingIdx], &data,
@@ -317,6 +320,7 @@ void PreviewManager::captureAll()
 						       (size_t)row * linesize,
 					       (size_t)gs.w * 4);
 				gs_stagesurface_unmap(gs.stage[gs.pingIdx]);
+				obs_leave_graphics();
 				std::lock_guard<std::mutex> lk(rawMutex_);
 				raw_[slot].rgba = std::move(rgba);
 				raw_[slot].width = gs.w;
@@ -324,6 +328,7 @@ void PreviewManager::captureAll()
 				raw_[slot].fresh = true;
 				diagRendered_[slot]++;
 			} else {
+				obs_leave_graphics();
 				if (diagRenderFail_[slot]++ == 0)
 					obs_log(LOG_WARNING,
 						"preview: slot %d "
@@ -362,7 +367,9 @@ void PreviewManager::captureAll()
 		// STEP 2: Render source into texrender, then initiate an async
 		// GPU→RAM DMA into the OTHER surface (non-blocking). The map
 		// for this frame happens on the NEXT pass, after the GPU is done.
+		obs_enter_graphics();
 		if (!gs.resize(w, h)) {
+			obs_leave_graphics();
 			if (diagRenderFail_[slot]++ == 0)
 				obs_log(LOG_WARNING,
 					"preview: slot %d GfxSlot resize "
@@ -372,37 +379,44 @@ void PreviewManager::captureAll()
 			continue;
 		}
 
-		int freshIdx = 1 - gs.pingIdx;
-		gs_texrender_reset(gs.tr);
-		if (gs_texrender_begin(gs.tr, (uint32_t)w, (uint32_t)h)) {
-			struct vec4 clear;
-			vec4_zero(&clear);
-			gs_clear(GS_CLEAR_COLOR, &clear, 0.0f, 0);
-			gs_ortho(0.0f, (float)srcW, 0.0f, (float)srcH,
-				 -100.0f, 100.0f);
-			obs_source_video_render(src);
-			gs_texrender_end(gs.tr);
-			// Async GPU→system-RAM copy: starts DMA, returns at once.
-			gs_stage_texture(gs.stage[freshIdx],
-					 gs_texrender_get_texture(gs.tr));
-			gs.pingIdx = freshIdx;
-			gs.hasPending = true;
-		} else {
-			if (diagRenderFail_[slot]++ == 0)
-				obs_log(LOG_WARNING,
-					"preview: slot %d gs_texrender_begin "
-					"failed",
-					slot);
+		{
+			int freshIdx = 1 - gs.pingIdx;
+			gs_texrender_reset(gs.tr);
+			if (gs_texrender_begin(gs.tr, (uint32_t)w,
+					       (uint32_t)h)) {
+				struct vec4 clear;
+				vec4_zero(&clear);
+				gs_clear(GS_CLEAR_COLOR, &clear, 0.0f, 0);
+				gs_ortho(0.0f, (float)srcW, 0.0f, (float)srcH,
+					 -100.0f, 100.0f);
+				obs_source_video_render(src);
+				gs_texrender_end(gs.tr);
+				// Async GPU→RAM copy: starts DMA, no stall.
+				gs_stage_texture(
+					gs.stage[freshIdx],
+					gs_texrender_get_texture(gs.tr));
+				gs.pingIdx = freshIdx;
+				gs.hasPending = true;
+			} else {
+				if (diagRenderFail_[slot]++ == 0)
+					obs_log(LOG_WARNING,
+						"preview: slot %d "
+						"gs_texrender_begin failed",
+						slot);
+			}
 		}
+		obs_leave_graphics();
 		obs_source_release(src);
 	}
 }
 
 void PreviewManager::destroyGfx()
 {
-	// Must be called on the OBS graphics thread.
+	// Runs on the OBS graphics thread (queued from stop()).
 	if (gfx_) {
+		obs_enter_graphics();
 		gfx_->destroy();
+		obs_leave_graphics();
 		gfx_.reset();
 	}
 }
