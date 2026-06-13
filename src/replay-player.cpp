@@ -263,7 +263,7 @@ void ReplayPlayer::outputFrame(const DecodedFrame &frame)
 // `audible` = forward play at normal speed; when false we drain and discard
 // to prevent bursting a full pause-worth of audio on the next resume.
 void ReplayPlayer::outputAudio(obs_source_t *src,
-			       std::vector<SegmentDecoder::AudioChunk> chunks)
+			       std::vector<AudioChunk> chunks)
 {
 	bool audible = playing_ && !reverse_ && speed_.load() > 0.99;
 	if (!audible) {

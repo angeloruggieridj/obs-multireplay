@@ -80,7 +80,7 @@ private:
 	// Called WITHOUT stateMutex_ held. Drains and emits audio chunks from
 	// a decoder_.takeAudio() call; discards if not at audible speed.
 	void outputAudio(obs_source_t *src,
-			 std::vector<SegmentDecoder::AudioChunk> chunks);
+			 std::vector<AudioChunk> chunks);
 	void invalidateCache();
 
 	char channelId_;
