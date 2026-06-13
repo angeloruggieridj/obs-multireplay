@@ -13,6 +13,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <util/platform.h>
 
+#include <ctime>
 #include <filesystem>
 #include <system_error>
 
@@ -227,6 +228,11 @@ bool ReplayCore::startRecording(std::string &errorOut)
 		errorOut = "already recording";
 		return false;
 	}
+
+	// Clear any stale session index so old recordings from a previous run
+	// in the same folder are not mixed into the new session. The index will
+	// be rebuilt when the user loads the session after segments are complete.
+	ReplayEngine::instance().clearSession();
 	if (!branch_output::available()) {
 		errorOut = "Branch Output plugin is not installed";
 		obs_log(LOG_ERROR, "startRecording: %s", errorOut.c_str());
@@ -284,6 +290,9 @@ bool ReplayCore::startRecording(std::string &errorOut)
 		if (st.recording && st.startTimestampNs < sessionStartMinNs_)
 			sessionStartMinNs_ = st.startTimestampNs;
 	}
+	// Record wall-clock start time so SessionIndex can filter segment files
+	// from previous recording sessions that share the same folder.
+	sessionWallStartSec_ = (int64_t)::time(nullptr);
 	EventStore::instance().setSessionFolder(config_.sessionFolder);
 	EventStore::instance().setLiveMode(true); // the reference controller: recording => Live
 	writeSessionManifest();

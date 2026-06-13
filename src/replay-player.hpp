@@ -76,13 +76,19 @@ private:
 				    const std::shared_ptr<SessionIndex> &index);
 	// Must be called WITH stateMutex_ held (writes to source_).
 	// VIDEO only — audio is handled separately to avoid burst-on-resume.
-	void outputFrame(const DecodedFrame &frame);
-	// Called WITHOUT stateMutex_ held. Emits audio chunks; discards if not
-	// at audible speed or if seekOccurred (pre-roll frames from seek-to-target
-	// must not be played — they precede the event in-point).
+	// `ts` = os_gettime_ns() captured once per tick and shared with
+	// outputAudio so OBS can align audio/video on the same clock reference.
+	void outputFrame(const DecodedFrame &frame, uint64_t ts);
+	// Called WITHOUT stateMutex_ held.
+	// `nowTs` = os_gettime_ns() captured once per tick.
+	// If seekOccurred, pre-roll audio is discarded and the clock is reset.
+	// If the running audio clock has drifted >2 frames behind nowTs, it is
+	// re-anchored: without this OBS discards chunks that are too old and
+	// audio goes silent for the remainder of the event.
 	void outputAudio(obs_source_t *src,
 			 std::vector<AudioChunk> chunks,
-			 bool seekOccurred);
+			 bool seekOccurred,
+			 uint64_t nowTs);
 	void invalidateCache();
 
 	char channelId_;
@@ -113,8 +119,10 @@ private:
 	std::deque<DecodedFrame> gopCache_;
 	std::string cachedPath_;
 	int cachedAngle_ = -1;
-	// Audio clock in the os_gettime_ns() domain.  Anchored once at the
-	// start of each playback segment, then advanced by chunk duration.
+	// Audio clock in the os_gettime_ns() domain.  Anchored on the first
+	// chunk after a seek, then advanced by exact chunk duration.
+	// Re-anchored automatically if it drifts >2 frames behind wall time
+	// (slow decode) to prevent OBS discarding chunks as "too old".
 	uint64_t audioTimestamp_ = 0;
 	bool audioPrimed_ = false;
 };

@@ -15,6 +15,8 @@ extern "C" {
 }
 
 #include <algorithm>
+#include <cstdio>
+#include <ctime>
 #include <filesystem>
 #include <system_error>
 
@@ -79,6 +81,10 @@ bool SessionIndex::load(const std::string &folder)
 		return false;
 	}
 
+	// Wall-clock creation time: used by scanCamera to skip segment files
+	// left over from earlier recording runs in the same folder.
+	int64_t wallStartSec = obs_data_get_int(manifest, "createdWallClock");
+
 	int validCount = 0;
 	for (int i = 0; i < kIndexMaxCameras; i++) {
 		tracks_[i] = CameraTrack{};
@@ -86,7 +92,7 @@ bool SessionIndex::load(const std::string &folder)
 		if (!present[i])
 			continue;
 		tracks_[i].startOffsetNs = startTs[i] - minStart;
-		scanCamera(tracks_[i]);
+		scanCamera(tracks_[i], wallStartSec);
 		if (tracks_[i].valid)
 			validCount++;
 	}
@@ -96,11 +102,19 @@ bool SessionIndex::load(const std::string &folder)
 	return validCount > 0;
 }
 
-void SessionIndex::scanCamera(CameraTrack &track)
+void SessionIndex::scanCamera(CameraTrack &track, int64_t wallStartSec)
 {
-	// Files are named cam{N}_<timestamp>.mp4 (and .mp4 split suffixes);
-	// lexicographic order == chronological order with our name format.
+	// Files are named cam{N}_%CCYY-%MM-%DD_%hh-%mm-%ss[...].mp4
+	// Lexicographic order == chronological order with this naming scheme.
 	std::string prefix = "cam" + std::to_string(track.index + 1) + "_";
+
+	// When wallStartSec > 0, skip any file whose filename date is more
+	// than 30 s before the session start — those belong to an older
+	// recording run that was not cleaned up with Delete All.
+	// Filename format (after prefix): YYYY-MM-DD_HH-MM-SS[...].ext
+	// We parse only the first 19 characters of the date component.
+	constexpr size_t kDateLen = 19; // "YYYY-MM-DD_HH-MM-SS"
+	constexpr int64_t kGraceSec = 30;
 
 	std::vector<std::string> files;
 	std::error_code ec;
@@ -108,10 +122,45 @@ void SessionIndex::scanCamera(CameraTrack &track)
 		if (!entry.is_regular_file())
 			continue;
 		std::string name = entry.path().filename().string();
-		if (name.rfind(prefix, 0) == 0 &&
-		    (entry.path().extension() == ".mp4" ||
-		     entry.path().extension() == ".mov"))
-			files.push_back(entry.path().string());
+		const std::string ext = entry.path().extension().string();
+		if (name.rfind(prefix, 0) != 0)
+			continue;
+		if (ext != ".mp4" && ext != ".mov")
+			continue;
+
+		// Filter by filename date when wallStartSec is known.
+		if (wallStartSec > 0 &&
+		    name.length() > prefix.length() + kDateLen) {
+			std::string dateStr =
+				name.substr(prefix.length(), kDateLen);
+			int yr, mo, dy, hh, mm, ss;
+			if (std::sscanf(dateStr.c_str(),
+					"%4d-%2d-%2d_%2d-%2d-%2d",
+					&yr, &mo, &dy, &hh, &mm, &ss) == 6) {
+				struct tm t = {};
+				t.tm_year = yr - 1900;
+				t.tm_mon = mo - 1;
+				t.tm_mday = dy;
+				t.tm_hour = hh;
+				t.tm_min = mm;
+				t.tm_sec = ss;
+				t.tm_isdst = -1;
+				int64_t fileTime = (int64_t)::mktime(&t);
+				if (fileTime > 0 &&
+				    fileTime < wallStartSec - kGraceSec) {
+					obs_log(LOG_DEBUG,
+						"SessionIndex: skipping stale "
+						"file %s (predates session "
+						"by %lld s)",
+						name.c_str(),
+						(long long)(wallStartSec -
+							    fileTime));
+					continue; // belongs to an older session
+				}
+			}
+		}
+
+		files.push_back(entry.path().string());
 	}
 	std::sort(files.begin(), files.end());
 
@@ -138,7 +187,9 @@ void SessionIndex::refresh()
 		if (track.startOffsetNs == 0 && track.segments.empty() &&
 		    !track.valid)
 			continue;
-		scanCamera(track);
+		// Pass wallStartSec=0 on refresh: the initial load already
+		// filtered stale files; refresh only re-probes known-good tracks.
+		scanCamera(track, 0);
 	}
 }
 

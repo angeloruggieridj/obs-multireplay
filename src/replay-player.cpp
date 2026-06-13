@@ -249,7 +249,9 @@ ReplayPlayer::frameAt(int64_t masterNs,
 // Must be called with stateMutex_ held (accesses source_).
 // VIDEO ONLY — audio is handled separately in threadLoop so it can be
 // drained every tick (preventing burst-on-resume after a pause).
-void ReplayPlayer::outputFrame(const DecodedFrame &frame)
+// `ts` = os_gettime_ns() captured once per tick, shared with outputAudio
+// so OBS can align audio and video on the same clock reference.
+void ReplayPlayer::outputFrame(const DecodedFrame &frame, uint64_t ts)
 {
 	if (!source_)
 		return;
@@ -270,25 +272,26 @@ void ReplayPlayer::outputFrame(const DecodedFrame &frame)
 						    : VIDEO_RANGE_PARTIAL,
 				    out.color_matrix, out.color_range_min,
 				    out.color_range_max);
-
-	// Use the OBS wall-clock (os_gettime_ns() domain) as the frame
-	// timestamp.  OBS async sources display frames keyed on this clock;
-	// using an arbitrary counter starting near 0 would place every frame
-	// far in the past relative to OBS's audio mixer clock → audio discarded
-	// or misaligned.  The loop cadence (compensated sleep) controls the
-	// actual playback frame rate.
-	out.timestamp = (uint64_t)os_gettime_ns();
+	out.timestamp = ts;
 	obs_source_output_video(source_, &out);
 }
 
 // Called from threadLoop every tick, WITHOUT stateMutex_ held.
-// `audible` = forward play at normal speed; when false we drain and discard.
 // `seekOccurred` = a seek/angle-change happened this tick; the audio decoded
-// during seek-to-target (frames before the in-point) must be discarded so
-// we don't burst stale audio at the start of the event → skip/desync.
+// during seek-to-target (frames before the in-point) must be discarded.
+// `nowTs` = os_gettime_ns() captured once per tick (same value passed to
+// outputFrame) so video and audio are timestamped on the same reference.
+//
+// DRIFT GUARD: the internal audio clock advances by exact chunk duration.
+// When decode is slow (> one frame per tick) the clock drifts behind the
+// wall clock. OBS's audio mixer discards chunks whose end timestamp falls
+// before the current mix time (~20 ms window). Guard: if the clock has
+// fallen more than 2 video frames behind nowTs, re-anchor to nowTs. This
+// causes a brief silent gap but avoids total audio loss for the event.
 void ReplayPlayer::outputAudio(obs_source_t *src,
 			       std::vector<AudioChunk> chunks,
-			       bool seekOccurred)
+			       bool seekOccurred,
+			       uint64_t nowTs)
 {
 	bool audible = playing_ && !reverse_ && speed_.load() > 0.99;
 	if (!audible || seekOccurred) {
@@ -297,6 +300,16 @@ void ReplayPlayer::outputAudio(obs_source_t *src,
 		audioPrimed_ = false;
 		return;
 	}
+
+	// 2-frame drift guard: if the audio clock has fallen this far behind
+	// real time, re-anchor rather than emitting audio OBS will discard.
+	// 2 frames at 30 fps ≈ 66 ms.
+	constexpr uint64_t kDriftThresholdNs = 66666666ULL;
+	if (!audioPrimed_ || nowTs > audioTimestamp_ + kDriftThresholdNs) {
+		audioTimestamp_ = nowTs;
+		audioPrimed_ = true;
+	}
+
 	for (auto &chunk : chunks) {
 		if (chunk.frames <= 0)
 			continue;
@@ -307,14 +320,6 @@ void ReplayPlayer::outputAudio(obs_source_t *src,
 		audio.speakers = SPEAKERS_STEREO;
 		audio.format = AUDIO_FORMAT_FLOAT_PLANAR;
 		audio.samples_per_sec = SegmentDecoder::kAudioSampleRate;
-		// Monotonic audio clock in the os_gettime_ns() domain: anchor
-		// once to real time, then advance by exact chunk duration.
-		// Anchoring to os_gettime_ns() (not an arbitrary counter) keeps
-		// audio timestamps compatible with OBS's audio mixer clock.
-		if (!audioPrimed_) {
-			audioTimestamp_ = (uint64_t)os_gettime_ns();
-			audioPrimed_ = true;
-		}
 		audio.timestamp = audioTimestamp_;
 		audioTimestamp_ += (uint64_t)chunk.frames * 1000000000ULL /
 				   SegmentDecoder::kAudioSampleRate;
@@ -451,10 +456,16 @@ void ReplayPlayer::threadLoop()
 			// which would otherwise burst on the next resume → skip.
 			auto audioChunks = decoder_.takeAudio();
 
+			// Capture wall-clock time ONCE for both video and audio so
+			// OBS sees matching timestamps and can sync them correctly.
+			// Capturing after decode (which can take 50–200 ms) ensures
+			// the timestamp is always close to "now" → OBS won't discard.
+			const uint64_t nowTs = (uint64_t)os_gettime_ns();
+
 			if (frame) {
 				std::lock_guard<std::mutex> lock(stateMutex_);
 				if (source_) {
-					outputFrame(*frame);
+					outputFrame(*frame, nowTs);
 					lastRenderedPos = renderPos;
 				}
 			}
@@ -466,7 +477,7 @@ void ReplayPlayer::threadLoop()
 				obs_source_t *src = acquireSource();
 				if (src) {
 					outputAudio(src, std::move(audioChunks),
-						    seekOccurred);
+						    seekOccurred, nowTs);
 					obs_source_release(src);
 				}
 			}

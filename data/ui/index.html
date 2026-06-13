@@ -527,10 +527,14 @@ $("deleteAllBtn").addEventListener("click", async () => {
   if (r.ok) {
     selectedIds.clear();
     setStatus("Session wiped.");
-    // Reset timeline state immediately so the bar shows 0 duration, not the
-    // stale values from before the wipe (next refreshTransport() confirms).
+    // Full UI reset — all counters to zero/blank immediately so stale
+    // values from the previous session are never visible.
     sample = null;
     transport = null;
+    lastBarSig = "";
+    posBar.querySelectorAll(".pb-event").forEach(el => el.remove());
+    $("timecode").textContent = "--:--:--";
+    $("pbTimeL").textContent = "--:--:--";
     $("pbTimeR").textContent = "--:--:--";
     $("pbUnseek").style.width = "0";
     $("pbHeadA").style.left = "0";
@@ -643,6 +647,9 @@ async function refreshStatus() {
 $("recBtn").addEventListener("click", async () => {
   await post("/api/recording/" + (recording ? "stop" : "start"));
   refreshStatus();
+  // Immediately refresh transport so timecodes reset on start/stop
+  // without waiting for the next poll cycle.
+  refreshTransport();
 });
 
 // ---------- transport ----------
@@ -732,6 +739,9 @@ function renderBarEvents() {
   if (draggingPos) return;
   if (!transport || !transport.durationNs) return;
   const dur = transport.durationNs;
+  // Clip bars to the seekable (indexed) portion — bars must never overflow
+  // into the red zone (unindexed buffer still being written).
+  const seekable = transport.seekableNs || transport.durationNs;
   const sig = evState.events.map(e => e.id + ":" + e.tInNs + ":" + e.tOutNs).join(",") +
               "|" + [...selectedIds].join(",") + "|" + Math.round(dur / 2e9);
   if (sig === lastBarSig) return;
@@ -739,10 +749,12 @@ function renderBarEvents() {
   posBar.querySelectorAll(".pb-event").forEach(el => el.remove());
   evState.events.forEach(ev => {
     if (ev.tOutNs < 0 || ev.tInNs > dur) return;
+    const tOut = Math.min(ev.tOutNs, seekable); // clip to indexed portion
+    if (tOut <= ev.tInNs) return;               // entirely in the red zone
     const el = document.createElement("div");
     el.className = "pb-event" + (selectedIds.has(ev.id) ? " sel" : "");
     el.style.left = (ev.tInNs / dur * 100) + "%";
-    el.style.width = Math.max(0.3, (ev.tOutNs - ev.tInNs) / dur * 100) + "%";
+    el.style.width = Math.max(0.3, (tOut - ev.tInNs) / dur * 100) + "%";
     el.title = "Event " + ev.id + " — click to select";
     el.addEventListener("pointerdown", (e) => {
       e.stopPropagation();
@@ -767,7 +779,12 @@ function renderBarEvents() {
 let sample = null;
 async function refreshTransport() {
   try { transport = await api("/api/transport"); } catch { return; }
-  if (!transport.sessionLoaded) return;
+  if (!transport.sessionLoaded) {
+    // Session was cleared (Delete All, or new recording not yet loaded).
+    // Reset sample so renderSmooth() shows blank state, not stale data.
+    sample = null;
+    return;
+  }
   sample = {
     t:          performance.now(),
     durationNs: transport.durationNs,
@@ -811,15 +828,16 @@ function interpPos(chSample, elapsedMs, seekableNs) {
 
 // Reposition existing event marker <div>s using the current interpolated
 // duration — no DOM rebuild, just style updates, so it's safe at 60fps.
-function updateBarEventPositions(dur) {
+function updateBarEventPositions(dur, seekable) {
   if (!dur) return;
   const evEls = posBar.querySelectorAll(".pb-event");
   let i = 0;
   evState.events.forEach(ev => {
     if (ev.tOutNs < 0 || ev.tInNs > dur) return;
     if (i >= evEls.length) return;
+    const tOut = Math.min(ev.tOutNs, seekable || dur); // same clip as renderBarEvents
     evEls[i].style.left  = (ev.tInNs / dur * 100) + "%";
-    evEls[i].style.width = Math.max(0.3, (ev.tOutNs - ev.tInNs) / dur * 100) + "%";
+    evEls[i].style.width = Math.max(0.3, (tOut - ev.tInNs) / dur * 100) + "%";
     i++;
   });
 }
@@ -847,7 +865,7 @@ function renderSmooth() {
     const unseek = Math.max(0, (1 - sample.seekableNs / dur) * 100);
     $("pbUnseek").style.width = unseek.toFixed(2) + "%";
     // Smoothly reposition event markers as durationNs grows during recording.
-    updateBarEventPositions(dur);
+    updateBarEventPositions(dur, sample.seekableNs);
   }
   const chPos = channelTarget === "B" ? posB : posA;
   const chSpeed = (channelTarget === "B" ? sample.B : sample.A).speed;

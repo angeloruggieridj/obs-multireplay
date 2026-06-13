@@ -116,6 +116,10 @@ private:
 	Config config_;
 	bool recording_ = false;
 	uint64_t sessionStartMinNs_ = 0; // earliest camera start (monotonic)
+	// Wall-clock Unix time (seconds) of the last startRecording() call.
+	// Written into session.json so SessionIndex can filter out stale segment
+	// files from previous recording sessions that share the same folder.
+	int64_t sessionWallStartSec_ = 0;
 	std::array<CameraStatus, kMaxCameras> cameraStatus_{};
 	obs_hotkey_id startHotkey_ = OBS_INVALID_HOTKEY_ID;
 	obs_hotkey_id stopHotkey_ = OBS_INVALID_HOTKEY_ID;

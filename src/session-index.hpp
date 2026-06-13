@@ -56,7 +56,10 @@ public:
 	std::string folder() const;
 
 private:
-	void scanCamera(CameraTrack &track);
+	// `wallStartSec` = createdWallClock from session.json (Unix time, sec).
+	// Files whose filename timestamp predates this by >30 s are skipped —
+	// they belong to an older recording run in the same session folder.
+	void scanCamera(CameraTrack &track, int64_t wallStartSec);
 
 	mutable std::mutex mutex_;
 	std::string folder_;
