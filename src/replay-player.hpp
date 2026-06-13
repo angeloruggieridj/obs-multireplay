@@ -120,9 +120,9 @@ private:
 	std::string cachedPath_;
 	int cachedAngle_ = -1;
 	// Audio clock in the os_gettime_ns() domain.  Anchored on the first
-	// chunk after a seek, then advanced by exact chunk duration.
-	// Re-anchored automatically if it drifts >2 frames behind wall time
-	// (slow decode) to prevent OBS discarding chunks as "too old".
+	// chunk after a seek (using nowTs captured BEFORE frameAt() decode),
+	// then advanced by exact chunk duration.  Re-anchored only if the clock
+	// falls >500 ms behind wall time (OBS's async audio accept window).
 	uint64_t audioTimestamp_ = 0;
 	bool audioPrimed_ = false;
 };

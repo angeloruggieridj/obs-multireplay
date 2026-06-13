@@ -58,6 +58,12 @@ bool SessionIndex::load(const std::string &folder)
 	std::array<bool, kIndexMaxCameras> present{};
 	int64_t minStart = INT64_MAX;
 
+	// Read wallStartSec BEFORE releasing manifest — was previously read after
+	// obs_data_release() (use-after-free), returning 0 and silently disabling
+	// the old-file filter in scanCamera() so stale cam*.mp4 files from prior
+	// sessions were included, inflating the timeline on the next REC press.
+	int64_t wallStartSec = obs_data_get_int(manifest, "createdWallClock");
+
 	obs_data_array_t *cams = obs_data_get_array(manifest, "cameras");
 	if (cams) {
 		size_t count = obs_data_array_count(cams);
@@ -80,10 +86,6 @@ bool SessionIndex::load(const std::string &folder)
 		obs_log(LOG_WARNING, "SessionIndex: empty session manifest");
 		return false;
 	}
-
-	// Wall-clock creation time: used by scanCamera to skip segment files
-	// left over from earlier recording runs in the same folder.
-	int64_t wallStartSec = obs_data_get_int(manifest, "createdWallClock");
 
 	int validCount = 0;
 	for (int i = 0; i < kIndexMaxCameras; i++) {

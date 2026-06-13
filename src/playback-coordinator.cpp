@@ -197,11 +197,21 @@ void PlaybackCoordinator::setMusicMuted(bool muted)
 
 void PlaybackCoordinator::switchToReplayScene()
 {
-	// mutex_ held by caller
+	// mutex_ held by caller.
+	//
+	// Use wait=true so the UI thread executes switchSceneTask (which saves
+	// the current scene name into previousSceneName_) BEFORE this function
+	// returns.  Without this, for short events the event can finish and
+	// restorePreviousScene() can be called while previousSceneName_ is still
+	// empty (the async task hasn't run yet), leaving OBS stuck on the replay
+	// scene with no way to switch back.
+	//
+	// switchSceneTask does not acquire mutex_ or any lock owned by the
+	// calling thread, so wait=true cannot deadlock.
 	auto *ctx = new SceneSwitchCtx{
 		ReplayCore::instance().getConfig().outputSceneName,
 		&previousSceneName_};
-	obs_queue_task(OBS_TASK_UI, switchSceneTask, ctx, false);
+	obs_queue_task(OBS_TASK_UI, switchSceneTask, ctx, true);
 }
 
 void PlaybackCoordinator::restorePreviousScene()

@@ -301,10 +301,14 @@ void ReplayPlayer::outputAudio(obs_source_t *src,
 		return;
 	}
 
-	// 2-frame drift guard: if the audio clock has fallen this far behind
-	// real time, re-anchor rather than emitting audio OBS will discard.
-	// 2 frames at 30 fps ≈ 66 ms.
-	constexpr uint64_t kDriftThresholdNs = 66666666ULL;
+	// Drift guard: if the audio clock has fallen this far behind real time,
+	// re-anchor rather than emitting audio OBS will discard.
+	// 500 ms matches OBS's async audio accept window (~500 ms past mix time).
+	// A tight threshold (e.g. 66 ms) re-anchors on every tick when decode is
+	// slow, producing a pattern of 33 ms audio → silence → 33 ms audio.
+	// At 500 ms the clock can drift freely for ~15 ticks before a single
+	// re-anchor, giving OBS a continuous block of audio rather than fragments.
+	constexpr uint64_t kDriftThresholdNs = 500000000ULL;
 	if (!audioPrimed_ || nowTs > audioTimestamp_ + kDriftThresholdNs) {
 		audioTimestamp_ = nowTs;
 		audioPrimed_ = true;
@@ -446,6 +450,15 @@ void ReplayPlayer::threadLoop()
 				lastRenderedPos = -1; // force re-render even if pos unchanged
 			}
 
+			// Capture wall-clock time BEFORE decode so the audio
+			// anchor timestamp is the "start of this tick", not
+			// "after potentially 50–200ms of slow FFmpeg decode".
+			// With nowTs captured after decode the drift guard
+			// (kDriftThresholdNs) fired on every tick with slow
+			// hardware, re-anchoring each time and causing ~33ms
+			// of audio followed by silence repeatedly.
+			const uint64_t nowTs = (uint64_t)os_gettime_ns();
+
 			const DecodedFrame *frame =
 				frameAt(renderPos, indexSnap);
 
@@ -455,12 +468,6 @@ void ReplayPlayer::threadLoop()
 			// prevents audio accumulating during cache hits or stalls,
 			// which would otherwise burst on the next resume → skip.
 			auto audioChunks = decoder_.takeAudio();
-
-			// Capture wall-clock time ONCE for both video and audio so
-			// OBS sees matching timestamps and can sync them correctly.
-			// Capturing after decode (which can take 50–200 ms) ensures
-			// the timestamp is always close to "now" → OBS won't discard.
-			const uint64_t nowTs = (uint64_t)os_gettime_ns();
 
 			if (frame) {
 				std::lock_guard<std::mutex> lock(stateMutex_);
