@@ -65,6 +65,18 @@ public:
 	// (-1 disables). `onStop` fires once on auto-stop.
 	void setStopAt(int64_t ns, std::function<void()> onStop = nullptr);
 
+	// --- Event audio (replay-to-output) ---------------------------------
+	// Robust audio path for event playback: pre-decode the whole event's
+	// audio for `angle` off the realtime video-decode thread, then feed it
+	// to the OBS source on a dedicated clock paced slightly ahead of the
+	// wall clock. This decouples audio from per-frame decode hitches (the
+	// root cause of dropouts) and keeps it locked to the program clock.
+	// Only audible at ~1x forward (the reference controller mutes slow-mo). While active the
+	// realtime per-tick audio is suppressed to avoid double output.
+	void startEventAudio(int angle, int64_t tInNs, int64_t tOutNs,
+			     double speed);
+	void stopEventAudio();
+
 	char channelId() const { return channelId_; }
 
 private:
@@ -95,6 +107,12 @@ private:
 			 bool seekOccurred,
 			 uint64_t nowTs);
 	void invalidateCache();
+
+	// Background worker for startEventAudio(): decodes [tIn,tOut] audio for
+	// `angle` into memory, then feeds it to the source paced ahead of the
+	// wall clock. Exits early when `gen` no longer matches eventAudioGen_.
+	void eventAudioLoop(uint64_t gen, int angle, int64_t tInNs,
+			    int64_t tOutNs, std::shared_ptr<SessionIndex> index);
 
 	char channelId_;
 	std::thread thread_;
@@ -130,6 +148,13 @@ private:
 	// falls >500 ms behind wall time (OBS's async audio accept window).
 	uint64_t audioTimestamp_ = 0;
 	bool audioPrimed_ = false;
+
+	// Event-audio feeder (see startEventAudio). The thread is owned here;
+	// eventAudioGen_ is bumped to cancel the running feed, eventAudioOn_
+	// gates the realtime per-tick audio off while a feed is active.
+	std::thread eventAudioThread_;
+	std::atomic<uint64_t> eventAudioGen_{0};
+	std::atomic<bool> eventAudioOn_{false};
 };
 
 // Owns the single replay channel (A) and the shared session index.

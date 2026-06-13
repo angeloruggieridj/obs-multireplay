@@ -43,6 +43,7 @@ void ReplayPlayer::start()
 
 void ReplayPlayer::stop()
 {
+	stopEventAudio();
 	running_ = false;
 	wake_.notify_all();
 	if (thread_.joinable())
@@ -297,6 +298,13 @@ void ReplayPlayer::outputAudio(obs_source_t *src,
 			       bool seekOccurred,
 			       uint64_t nowTs)
 {
+	// The event-audio feeder owns the source's audio while active; stay out
+	// of its way so the two paths never interleave on the same source.
+	if (eventAudioOn_.load()) {
+		audioPrimed_ = false;
+		return;
+	}
+
 	bool audible = playing_ && !reverse_ && speed_.load() > 0.99;
 	if (!audible || seekOccurred) {
 		// Discard: not audible, or this is the seek pre-roll batch.
@@ -333,6 +341,155 @@ void ReplayPlayer::outputAudio(obs_source_t *src,
 				   SegmentDecoder::kAudioSampleRate;
 		obs_source_output_audio(src, &audio);
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Event audio: pre-decode + paced feed (decoupled from the video thread)
+// ---------------------------------------------------------------------------
+
+void ReplayPlayer::stopEventAudio()
+{
+	// Cancel the running feed (gen bump) and reap the thread.
+	eventAudioGen_.fetch_add(1);
+	eventAudioOn_ = false;
+	if (eventAudioThread_.joinable())
+		eventAudioThread_.join();
+}
+
+void ReplayPlayer::startEventAudio(int angle, int64_t tInNs, int64_t tOutNs,
+				   double speed)
+{
+	stopEventAudio();
+	if (tOutNs <= tInNs)
+		return;
+
+	// Suppress the realtime per-tick audio for the whole event regardless of
+	// speed (so slow-motion plays silently, matching the reference controller).
+	eventAudioOn_ = true;
+	if (speed < 0.99)
+		return; // muted: nothing to feed, just keep realtime audio off
+
+	std::shared_ptr<SessionIndex> index;
+	{
+		std::lock_guard<std::mutex> lock(stateMutex_);
+		index = index_;
+	}
+	if (!index)
+		return;
+
+	uint64_t gen = eventAudioGen_.load();
+	eventAudioThread_ = std::thread(&ReplayPlayer::eventAudioLoop, this, gen,
+					angle, tInNs, tOutNs, index);
+}
+
+void ReplayPlayer::eventAudioLoop(uint64_t gen, int angle, int64_t tInNs,
+				  int64_t tOutNs,
+				  std::shared_ptr<SessionIndex> index)
+{
+	os_set_thread_name("multireplay-evaudio");
+
+	const int64_t kRate = SegmentDecoder::kAudioSampleRate;
+	const int64_t eventDurNs = tOutNs - tInNs;
+
+	// --- 1. Decode the whole event's audio into memory (off the RT path) --
+	SegmentDecoder dec;
+	std::vector<AudioChunk> all;
+	int64_t cur = tInNs;
+	int64_t collectedNs = 0;
+
+	while (collectedNs < eventDurNs && eventAudioGen_.load() == gen) {
+		std::string path;
+		int64_t off = 0;
+		if (!index->resolve(angle, cur, path, off))
+			break;
+		if (dec.path() != path) {
+			if (!dec.open(path))
+				break;
+		}
+		dec.seekTo(off);
+		dec.clearAudio();
+
+		int64_t segFrames = 0;
+		bool sawAny = false;
+		DecodedFrame f;
+		while (eventAudioGen_.load() == gen) {
+			bool ok = dec.nextFrame(f);
+			for (auto &c : dec.takeAudio()) {
+				// Drop pre-roll audio decoded before the in-point
+				// within this segment (keyframe lands earlier).
+				if (c.ptsNs + (int64_t)c.frames * 1000000000LL /
+							  kRate <=
+				    off)
+					continue;
+				segFrames += c.frames;
+				sawAny = true;
+				all.push_back(std::move(c));
+			}
+			if (!ok)
+				break; // segment EOF
+			if (collectedNs +
+				    segFrames * 1000000000LL / kRate >=
+			    eventDurNs)
+				break;
+		}
+		if (!sawAny)
+			break;
+		int64_t segNs = segFrames * 1000000000LL / kRate;
+		collectedNs += segNs;
+		cur += segNs;
+	}
+
+	if (all.empty() || eventAudioGen_.load() != gen)
+		return;
+
+	// --- 2. Feed the source paced ahead of the wall clock -----------------
+	// Contiguous timestamps from a single base; a bounded look-ahead keeps
+	// us from overrunning OBS' async audio buffer while still front-running
+	// any video-decode jitter.
+	obs_source_t *src = acquireSource(); // add-ref: valid for the whole feed
+	if (!src)
+		return;
+
+	constexpr uint64_t kStartLeadNs = 80000000ULL;   // 80 ms primer
+	constexpr uint64_t kMaxAheadNs = 800000000ULL;    // cap buffered audio
+	const uint64_t base = (uint64_t)os_gettime_ns() + kStartLeadNs;
+	uint64_t ts = base;
+	int64_t fedNs = 0;
+
+	for (auto &chunk : all) {
+		if (eventAudioGen_.load() != gen)
+			break;
+		if (chunk.frames <= 0)
+			continue;
+
+		// Pace: don't push more than kMaxAheadNs beyond the wall clock.
+		while (eventAudioGen_.load() == gen) {
+			uint64_t now = (uint64_t)os_gettime_ns();
+			if (ts <= now + kMaxAheadNs)
+				break;
+			std::this_thread::sleep_for(
+				std::chrono::milliseconds(15));
+		}
+		if (eventAudioGen_.load() != gen)
+			break;
+
+		struct obs_source_audio audio = {};
+		audio.data[0] = (const uint8_t *)chunk.left.data();
+		audio.data[1] = (const uint8_t *)chunk.right.data();
+		audio.frames = (uint32_t)chunk.frames;
+		audio.speakers = SPEAKERS_STEREO;
+		audio.format = AUDIO_FORMAT_FLOAT_PLANAR;
+		audio.samples_per_sec = (uint32_t)kRate;
+		audio.timestamp = ts;
+		ts += (uint64_t)chunk.frames * 1000000000ULL / (uint64_t)kRate;
+		fedNs += (int64_t)chunk.frames * 1000000000LL / kRate;
+		obs_source_output_audio(src, &audio);
+
+		if (fedNs >= eventDurNs)
+			break; // trim tail decoded past the out-point
+	}
+
+	obs_source_release(src);
 }
 
 // ---------------------------------------------------------------------------

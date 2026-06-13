@@ -137,6 +137,49 @@ bool EventStore::toggleAngle(int id, int angle1Based)
 	return false;
 }
 
+bool EventStore::setAngle(int id, int angle1Based, bool enabled)
+{
+	std::lock_guard<std::mutex> lock(mutex_);
+	if (angle1Based < 1 || angle1Based > kEventAngles)
+		return false;
+	for (auto &ev : events_) {
+		if (ev.id == id) {
+			ev.angles[angle1Based - 1].enabled = enabled;
+			save();
+			return true;
+		}
+	}
+	return false;
+}
+
+bool EventStore::setDescription(int id, const std::string &note)
+{
+	std::lock_guard<std::mutex> lock(mutex_);
+	for (auto &ev : events_) {
+		if (ev.id == id) {
+			for (auto &a : ev.angles)
+				a.note = note;
+			save();
+			return true;
+		}
+	}
+	return false;
+}
+
+std::string EventStore::description(int id) const
+{
+	std::lock_guard<std::mutex> lock(mutex_);
+	for (const auto &ev : events_) {
+		if (ev.id == id) {
+			for (const auto &a : ev.angles)
+				if (!a.note.empty())
+					return a.note;
+			return {};
+		}
+	}
+	return {};
+}
+
 bool EventStore::setAngleNote(int id, int angle1Based, const std::string &note)
 {
 	std::lock_guard<std::mutex> lock(mutex_);

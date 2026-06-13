@@ -170,6 +170,24 @@ QPushButton#mrAngle:checked {
 	color: #fff;
 }
 
+/* per-event camera toggle chips inside the table */
+QToolButton#mrCamToggle {
+	background: #262b34;
+	border: 1px solid #333a45;
+	border-radius: 4px;
+	color: #6f7787;
+	font-size: 11px;
+	font-weight: 700;
+	min-width: 20px;
+	max-width: 22px;
+	min-height: 20px;
+	padding: 0;
+}
+QToolButton#mrCamToggle:hover { border-color: #4a5566; color: #aeb4c0; }
+QToolButton#mrCamToggle:checked {
+	background: #2563eb; border-color: #3b82f6; color: #fff;
+}
+
 /* small accent action buttons (Mark In/Out etc.) */
 QPushButton#mrAccent {
 	background: #1f2630; border: 1px solid #2f6ef2; color: #9cc0ff;
@@ -258,6 +276,18 @@ QSplitter::handle { background: transparent; }
 namespace {
 
 constexpr int kNCams = kIndexMaxCameras; // 8
+
+// Event table column layout.
+enum EventCol {
+	kColId = 0,
+	kColIn,
+	kColOut,
+	kColDur,
+	kColSpeed,
+	kColCams,
+	kColDesc,
+	kColCount
+};
 
 QString monoFamily()
 {
@@ -532,22 +562,28 @@ MultiReplayDock::MultiReplayDock(QWidget *parent) : QWidget(parent)
 	}
 
 	// --- vertical splitter: controls on top, event list below ---
+	// The event list is the working area, so it gets the larger share and a
+	// generous minimum; the preview/transport block stays compact and the
+	// user can drag the handle to trade space either way.
 	auto *splitter = new QSplitter(Qt::Vertical, this);
 	splitter->setChildrenCollapsible(false);
-	splitter->setHandleWidth(6);
+	splitter->setHandleWidth(8);
 
 	auto *controls = new QWidget(splitter);
 	auto *cv = new QVBoxLayout(controls);
 	cv->setContentsMargins(0, 0, 0, 0);
-	cv->setSpacing(4);
+	cv->setSpacing(8);
 	cv->addWidget(buildPreview(), 1);
 	cv->addWidget(buildTransport());
 	cv->addWidget(buildMarkers());
 
+	auto *eventsPanel = buildEvents();
+	eventsPanel->setMinimumHeight(220);
 	splitter->addWidget(controls);
-	splitter->addWidget(buildEvents());
-	splitter->setStretchFactor(0, 3);
-	splitter->setStretchFactor(1, 2);
+	splitter->addWidget(eventsPanel);
+	splitter->setStretchFactor(0, 2);
+	splitter->setStretchFactor(1, 5);
+	splitter->setSizes({260, 420});
 	root->addWidget(splitter, 1);
 
 	pollTimer_ = new QTimer(this);
@@ -575,7 +611,7 @@ QWidget *MultiReplayDock::buildPreview()
 	displayA_ = new OBSQTDisplay(this);
 	displayA_->setRenderCallback(&MultiReplayDock::drawChannelA, this);
 	displayA_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-	displayA_->setMinimumHeight(150);
+	displayA_->setMinimumHeight(120);
 	v->addWidget(displayA_, 1);
 
 	// angle selector row (cam 1..N) — segmented control
@@ -824,37 +860,37 @@ QWidget *MultiReplayDock::buildEvents()
 
 	events_ = new QTableWidget(this);
 	events_->setObjectName("mrEvents");
-	events_->setColumnCount(6);
+	events_->setColumnCount(kColCount);
 	events_->setHorizontalHeaderLabels(
 		{"#", obs_module_text("Dock.In"), obs_module_text("Dock.Out"),
-		 obs_module_text("Dock.Duration"), obs_module_text("Dock.Angles"),
-		 obs_module_text("Dock.Note")});
+		 obs_module_text("Dock.Duration"), obs_module_text("Dock.Speed"),
+		 obs_module_text("Dock.Cameras"),
+		 obs_module_text("Dock.Description")});
 	events_->setSelectionBehavior(QAbstractItemView::SelectRows);
 	events_->setSelectionMode(QAbstractItemView::ExtendedSelection);
-	events_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+	// Speed (4) and Description (6) cells are edited in place; the camera
+	// cell (5) is an inline widget. Double-click edits a cell — it no longer
+	// triggers playback (use the Play buttons instead).
+	events_->setEditTriggers(QAbstractItemView::DoubleClicked |
+				 QAbstractItemView::EditKeyPressed);
 	events_->verticalHeader()->setVisible(false);
-	events_->verticalHeader()->setDefaultSectionSize(28);
+	events_->verticalHeader()->setDefaultSectionSize(30);
 	events_->setAlternatingRowColors(true);
 	events_->setShowGrid(false);
+	events_->setWordWrap(false);
 	events_->setFrameShape(QFrame::NoFrame);
+	events_->setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
 	{
 		QHeaderView *hh = events_->horizontalHeader();
 		hh->setHighlightSections(false);
-		hh->setSectionResizeMode(0, QHeaderView::ResizeToContents);
-		hh->setSectionResizeMode(1, QHeaderView::ResizeToContents);
-		hh->setSectionResizeMode(2, QHeaderView::ResizeToContents);
-		hh->setSectionResizeMode(3, QHeaderView::ResizeToContents);
-		hh->setSectionResizeMode(4, QHeaderView::ResizeToContents);
-		hh->setSectionResizeMode(5, QHeaderView::Stretch);
+		for (int c = 0; c < kColCount; c++)
+			hh->setSectionResizeMode(c,
+						 QHeaderView::ResizeToContents);
+		hh->setSectionResizeMode(kColDesc, QHeaderView::Stretch);
+		hh->setMinimumSectionSize(34);
 	}
-	connect(events_, &QTableWidget::itemDoubleClicked, this,
-		[this](QTableWidgetItem *) {
-			std::string err;
-			if (ensureSession())
-				PlaybackCoordinator::instance().playEvents(
-					selectedEventIds(),
-					toOutputChk_->isChecked(), err);
-		});
+	connect(events_, &QTableWidget::itemChanged, this,
+		&MultiReplayDock::onEventItemChanged);
 	v->addWidget(events_, 1);
 
 	// playback controls
@@ -1088,43 +1124,53 @@ void MultiReplayDock::refreshEvents()
 		return;
 	QString needle = search_ ? search_->text().trimmed().toLower() : QString();
 
+	refreshing_ = true;
 	events_->setRowCount(0);
 	obs_data_array_t *arr = obs_data_get_array(d, "events");
-	if (!arr)
+	if (!arr) {
+		refreshing_ = false;
 		return;
+	}
+	const Qt::Alignment mid = Qt::AlignVCenter | Qt::AlignHCenter;
+
 	size_t n = obs_data_array_count(arr);
 	for (size_t i = 0; i < n; i++) {
 		obs_data_t *e = obs_data_array_item(arr, i);
 		int id = (int)obs_data_get_int(e, "id");
 		int64_t tin = obs_data_get_int(e, "tInNs");
 		int64_t tout = obs_data_get_int(e, "tOutNs");
+		double speed = obs_data_get_double(e, "speed");
 
-		QString angles, notes;
+		bool camOn[kEventAngles] = {};
+		QString anglesStr, notes;
 		obs_data_array_t *aArr = obs_data_get_array(e, "angles");
 		if (aArr) {
 			size_t na = obs_data_array_count(aArr);
-			for (size_t k = 0; k < na; k++) {
+			for (size_t k = 0; k < na && k < (size_t)kEventAngles; k++) {
 				obs_data_t *ad = obs_data_array_item(aArr, k);
-				if (obs_data_get_bool(ad, "enabled"))
-					angles += QString::number(k + 1) + " ";
-				const char *nt = obs_data_get_string(ad, "note");
-				if (nt && *nt) {
-					if (!notes.isEmpty())
-						notes += "; ";
-					notes += QString::fromUtf8(nt);
+				if (obs_data_get_bool(ad, "enabled")) {
+					camOn[k] = true;
+					anglesStr += QString::number(k + 1) + " ";
 				}
+				const char *nt = obs_data_get_string(ad, "note");
+				if (nt && *nt && notes.isEmpty())
+					notes = QString::fromUtf8(nt);
 				obs_data_release(ad);
 			}
 			obs_data_array_release(aArr);
 		}
 
 		QString dur = tout >= 0 ? formatTc(tout - tin)
-					: obs_module_text("Dock.Open");
+					: QString::fromUtf8(
+						  obs_module_text("Dock.Open"));
+		QString spStr = speed >= 0
+					? QString::number((int)(speed * 100)) + "%"
+					: QStringLiteral("--");
 
 		// search filter (id / notes / angles)
 		if (!needle.isEmpty()) {
 			QString hay = QString::number(id) + " " +
-				      notes.toLower() + " " + angles;
+				      notes.toLower() + " " + anglesStr;
 			if (!hay.contains(needle)) {
 				obs_data_release(e);
 				continue;
@@ -1133,27 +1179,97 @@ void MultiReplayDock::refreshEvents()
 
 		int row = events_->rowCount();
 		events_->insertRow(row);
-		auto set = [this, row](int col, const QString &txt,
-				       Qt::Alignment al = Qt::AlignVCenter |
-							  Qt::AlignLeft) {
+
+		auto roItem = [](const QString &txt, Qt::Alignment al) {
 			auto *it = new QTableWidgetItem(txt);
 			it->setTextAlignment(al);
-			events_->setItem(row, col, it);
+			it->setFlags(Qt::ItemIsSelectable | Qt::ItemIsEnabled);
+			return it;
 		};
-		auto *idItem = new QTableWidgetItem(QString::number(id));
+
+		auto *idItem = roItem(QString::number(id), Qt::AlignCenter);
 		idItem->setData(Qt::UserRole, id);
-		idItem->setTextAlignment(Qt::AlignCenter);
-		events_->setItem(row, 0, idItem);
-		const Qt::Alignment mid = Qt::AlignVCenter | Qt::AlignHCenter;
-		set(1, formatTc(tin), mid);
-		set(2, tout >= 0 ? formatTc(tout) : "--", mid);
-		set(3, dur, mid);
-		set(4, angles.trimmed(), mid);
-		set(5, notes);
+		events_->setItem(row, kColId, idItem);
+		events_->setItem(row, kColIn, roItem(formatTc(tin), mid));
+		events_->setItem(row, kColOut,
+				 roItem(tout >= 0 ? formatTc(tout)
+						  : QStringLiteral("--"),
+					mid));
+		events_->setItem(row, kColDur, roItem(dur, mid));
+
+		// editable speed (type "50", "50%" or blank/-- to inherit)
+		auto *spItem = new QTableWidgetItem(spStr);
+		spItem->setTextAlignment(mid);
+		spItem->setData(Qt::UserRole, id);
+		spItem->setToolTip(obs_module_text("Dock.SpeedHint"));
+		events_->setItem(row, kColSpeed, spItem);
+
+		// inline 1..8 camera toggles
+		events_->setCellWidget(row, kColCams, makeCameraCell(id, camOn));
+
+		// editable description (applies to the whole event)
+		auto *descItem = new QTableWidgetItem(notes);
+		descItem->setData(Qt::UserRole, id);
+		descItem->setToolTip(obs_module_text("Dock.DescriptionHint"));
+		events_->setItem(row, kColDesc, descItem);
 
 		obs_data_release(e);
 	}
 	obs_data_array_release(arr);
+	refreshing_ = false;
+}
+
+QWidget *MultiReplayDock::makeCameraCell(int id, const bool *enabled)
+{
+	auto *w = new QWidget(events_);
+	auto *l = new QHBoxLayout(w);
+	l->setContentsMargins(2, 1, 2, 1);
+	l->setSpacing(2);
+	for (int i = 0; i < kEventAngles; i++) {
+		auto *b = new QToolButton(w);
+		b->setObjectName("mrCamToggle");
+		b->setText(QString::number(i + 1));
+		b->setCheckable(true);
+		b->setChecked(enabled[i]);
+		b->setCursor(Qt::PointingHandCursor);
+		b->setToolTip(QString("%1 %2")
+				      .arg(obs_module_text("Dock.Angle"))
+				      .arg(i + 1));
+		int a1 = i + 1;
+		connect(b, &QToolButton::toggled, this, [id, a1](bool on) {
+			EventStore::instance().setAngle(id, a1, on);
+		});
+		l->addWidget(b);
+	}
+	l->addStretch(1);
+	return w;
+}
+
+void MultiReplayDock::onEventItemChanged(QTableWidgetItem *item)
+{
+	if (refreshing_ || !item)
+		return;
+	int id = item->data(Qt::UserRole).toInt();
+	if (id <= 0)
+		return;
+	auto &store = EventStore::instance();
+
+	if (item->column() == kColSpeed) {
+		QString t = item->text().trimmed();
+		t.remove('%');
+		if (t.isEmpty() || t == "--") {
+			store.setSpeed(id, -1.0);
+		} else {
+			bool ok = false;
+			double pct = t.toDouble(&ok);
+			if (ok)
+				store.setSpeed(id, std::clamp(pct, 1.0, 100.0) /
+							    100.0);
+		}
+		refreshEvents();
+	} else if (item->column() == kColDesc) {
+		store.setDescription(id, item->text().trimmed().toStdString());
+	}
 }
 
 // ---------------------------------------------------------------------------

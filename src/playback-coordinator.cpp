@@ -127,6 +127,7 @@ void PlaybackCoordinator::stopEvents()
 {
 	std::lock_guard<std::mutex> lock(mutex_);
 	ReplayPlayer &a = ReplayEngine::instance().channelA();
+	a.stopEventAudio();
 	a.setStopAt(-1);
 	a.setPlaying(false);
 	queue_.clear();
@@ -152,6 +153,9 @@ void PlaybackCoordinator::startNext()
 	a.setReverse(false);
 	a.setSpeed(item.speed);
 	a.seekMaster(item.tInNs);
+	// Arm the dedicated, decode-independent audio path BEFORE playing so the
+	// realtime per-tick audio is already suppressed (no double-output tick).
+	a.startEventAudio(item.angle, item.tInNs, item.tOutNs, item.speed);
 	a.setStopAt(item.tOutNs, [this]() { onEventFinished(); });
 	a.setPlaying(true);
 
@@ -176,6 +180,7 @@ void PlaybackCoordinator::onEventFinished()
 		startNext();
 	} else {
 		active_ = false;
+		ReplayEngine::instance().channelA().stopEventAudio();
 		if (toOutput_)
 			restorePreviousScene();
 		setMusicMuted(true);

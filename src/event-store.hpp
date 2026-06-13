@@ -60,7 +60,12 @@ public:
 	// --- Editing ---
 	bool remove(int id);
 	bool toggleAngle(int id, int angle1Based);
+	bool setAngle(int id, int angle1Based, bool enabled);
 	bool setAngleNote(int id, int angle1Based, const std::string &note);
+	// Event-level description: stored as the note on every angle so it is
+	// independent of which cameras are enabled and survives toggling them.
+	bool setDescription(int id, const std::string &note);
+	std::string description(int id) const; // first non-empty angle note
 	bool setSpeed(int id, double speed); // <0 = "--"
 	bool movePoint(int id, bool inPoint, int64_t deltaNs);
 	bool moveToList(int id, int list);

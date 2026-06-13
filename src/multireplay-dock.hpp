@@ -88,6 +88,8 @@ private:
 	// --- engine interaction ---
 	void poll();             // periodic transport/status refresh
 	void refreshEvents();    // reload the selected list into the table
+	void onEventItemChanged(class QTableWidgetItem *item); // edit commit
+	QWidget *makeCameraCell(int id, const bool *enabled); // 1..8 toggles
 	void openSettings();     // configuration dialog
 	int64_t markTimeNs() const; // Live=masterNow, Recorded=A playhead
 	std::vector<int> selectedEventIds() const;
@@ -122,6 +124,7 @@ private:
 	QComboBox *listCombo_ = nullptr;
 	QLineEdit *search_ = nullptr;
 	QTableWidget *events_ = nullptr;
+	bool refreshing_ = false; // guards itemChanged during table rebuilds
 	QCheckBox *toOutputChk_ = nullptr;
 	QCheckBox *loopChk_ = nullptr;
 	QCheckBox *musicChk_ = nullptr;
