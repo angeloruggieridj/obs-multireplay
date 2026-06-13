@@ -66,7 +66,7 @@ struct PreviewManager::EncCtx {
 		ctx->color_range = AVCOL_RANGE_JPEG;
 		ctx->time_base = AVRational{1, PreviewManager::kFps};
 		ctx->flags |= AV_CODEC_FLAG_QSCALE;
-		ctx->global_quality = FF_QP2LAMBDA * 6; // decent quality
+		ctx->global_quality = FF_QP2LAMBDA * 6;
 		ctx->strict_std_compliance = compliance;
 		if (avcodec_open2(ctx, codec, nullptr) < 0) {
 			avcodec_free_context(&ctx);
@@ -113,6 +113,90 @@ struct PreviewManager::EncCtx {
 	}
 };
 
+// ---- Double-buffered GPU capture context ---------------------------------
+//
+// One persistent GPU slot per preview tile. Stage surfaces are ping-ponged:
+//   frame N   → render → gs_stage_texture(stage[1-pingIdx])  [async, no stall]
+//   frame N+1 → gs_stagesurface_map(stage[pingIdx])          [instant: DMA done]
+//             → render → gs_stage_texture(stage[1-pingIdx])   ...
+//
+// At 20 fps the GPU has ~50 ms between stage and map, so map returns instantly
+// with zero stall on the OBS render thread even during A/B 1080p playback.
+
+struct GfxSlot {
+	gs_texrender_t *tr = nullptr;
+	gs_stagesurf_t *stage[2] = {};
+	int pingIdx = 0;        // surface staged last pass (ready to map)
+	bool hasPending = false; // a staged frame is waiting to be mapped
+	int w = 0, h = 0;
+
+	// Must be called on the OBS graphics thread.
+	void destroy()
+	{
+		if (tr) {
+			gs_texrender_destroy(tr);
+			tr = nullptr;
+		}
+		for (auto &s : stage) {
+			if (s) {
+				gs_stagesurface_destroy(s);
+				s = nullptr;
+			}
+		}
+		hasPending = false;
+		w = h = 0;
+	}
+
+	// Recreate GPU objects if dimensions changed. Graphics thread only.
+	bool resize(int nw, int nh)
+	{
+		if (tr && nw == w && nh == h)
+			return true;
+		destroy();
+		tr = gs_texrender_create(GS_RGBA, GS_ZS_NONE);
+		stage[0] = gs_stagesurface_create(nw, nh, GS_RGBA);
+		stage[1] = gs_stagesurface_create(nw, nh, GS_RGBA);
+		if (!tr || !stage[0] || !stage[1]) {
+			destroy();
+			return false;
+		}
+		w = nw;
+		h = nh;
+		pingIdx = 0;
+		return true;
+	}
+};
+
+struct PreviewManager::GfxCtx {
+	GfxSlot slots[kPreviewSlots];
+
+	// Must be called on the OBS graphics thread.
+	void destroy()
+	{
+		for (auto &s : slots)
+			s.destroy();
+	}
+};
+
+// ---- Graphics-thread task helpers ----------------------------------------
+
+namespace {
+
+struct CaptureTaskCtx {
+	PreviewManager *mgr;
+	void (PreviewManager::*fn)();
+	os_event_t *ev;
+};
+
+void runCaptureTask(void *param)
+{
+	auto *task = static_cast<CaptureTaskCtx *>(param);
+	(task->mgr->*(task->fn))();
+	os_event_signal(task->ev);
+}
+
+} // namespace
+
 // ---------------------------------------------------------------------------
 
 PreviewManager &PreviewManager::instance()
@@ -140,8 +224,19 @@ void PreviewManager::stop()
 	jpegCv_.notify_all();
 	if (thread_.joinable())
 		thread_.join();
-	// Destroy the event only after join so any in-flight graphics task
-	// cannot signal a dead handle.
+
+	// Destroy persistent GPU objects on the graphics thread. If the graphics
+	// thread is already gone (OBS shutdown) the timedwait expires and we
+	// accept the small leak — OBS cleans the GPU context itself.
+	if (gfx_) {
+		os_event_t *ev = nullptr;
+		os_event_init(&ev, OS_EVENT_TYPE_AUTO);
+		CaptureTaskCtx ctx{this, &PreviewManager::destroyGfx, ev};
+		obs_queue_task(OBS_TASK_GRAPHICS, runCaptureTask, &ctx, false);
+		os_event_timedwait(ev, 500);
+		os_event_destroy(ev);
+	}
+
 	if (captureEvent_) {
 		os_event_destroy(captureEvent_);
 		captureEvent_ = nullptr;
@@ -172,90 +267,22 @@ PreviewManager::waitNext(int slot, uint64_t lastSeq, uint64_t &seqOut,
 	return seq_[slot] != lastSeq ? jpeg_[slot] : nullptr;
 }
 
-namespace {
-
-struct CaptureTaskCtx {
-	PreviewManager *mgr;
-	void (PreviewManager::*fn)();
-	os_event_t *ev; // signalled when the graphics work is done
-};
-
-void runCaptureTask(void *param)
-{
-	auto *task = static_cast<CaptureTaskCtx *>(param);
-	(task->mgr->*(task->fn))();
-	os_event_signal(task->ev);
-}
-
-// Render one source scaled into an RGBA buffer. Graphics context required.
-bool renderSourceRgba(obs_source_t *src, std::vector<uint8_t> &rgba,
-		      int &wOut, int &hOut)
-{
-	uint32_t srcW = obs_source_get_width(src);
-	uint32_t srcH = obs_source_get_height(src);
-	if (!srcW || !srcH)
-		return false;
-
-	// fit in the preview box, even dimensions for 4:2:0 JPEG
-	double scale = std::min((double)PreviewManager::kMaxWidth / srcW,
-				(double)PreviewManager::kMaxHeight / srcH);
-	if (scale > 1.0)
-		scale = 1.0;
-	uint32_t w = ((uint32_t)(srcW * scale)) & ~1u;
-	uint32_t h = ((uint32_t)(srcH * scale)) & ~1u;
-	if (w < 2 || h < 2)
-		return false;
-
-	bool ok = false;
-	gs_texrender_t *tr = gs_texrender_create(GS_RGBA, GS_ZS_NONE);
-	if (gs_texrender_begin(tr, w, h)) {
-		struct vec4 clear;
-		vec4_zero(&clear);
-		gs_clear(GS_CLEAR_COLOR, &clear, 0.0f, 0);
-		gs_ortho(0.0f, (float)srcW, 0.0f, (float)srcH, -100.0f,
-			 100.0f);
-		obs_source_video_render(src);
-		gs_texrender_end(tr);
-
-		gs_stagesurf_t *stage =
-			gs_stagesurface_create(w, h, GS_RGBA);
-		gs_stage_texture(stage, gs_texrender_get_texture(tr));
-
-		uint8_t *data = nullptr;
-		uint32_t linesize = 0;
-		if (gs_stagesurface_map(stage, &data, &linesize)) {
-			rgba.resize((size_t)w * h * 4);
-			for (uint32_t row = 0; row < h; row++)
-				memcpy(rgba.data() + (size_t)row * w * 4,
-				       data + (size_t)row * linesize, w * 4);
-			gs_stagesurface_unmap(stage);
-			wOut = (int)w;
-			hOut = (int)h;
-			ok = true;
-		}
-		gs_stagesurface_destroy(stage);
-	}
-	gs_texrender_destroy(tr);
-	return ok;
-}
-
-} // namespace
-
 void PreviewManager::captureAll()
 {
-	// Graphics thread. Resolve sources fresh on every pass.
+	// Graphics thread. Lazy-init the persistent GPU context here so all
+	// gs_* allocations happen on the correct thread.
+	if (!gfx_)
+		gfx_ = std::make_unique<GfxCtx>();
+
 	auto &core = ReplayCore::instance();
 	Config cfg = core.getConfig();
-
 	diagCapturePasses_++;
 
 	for (int slot = 0; slot < kPreviewSlots; slot++) {
 		obs_source_t *src = nullptr;
 		bool wanted = false;
 		if (slot < kMaxCameras) {
-			// Camera tiles ALWAYS show the live feed (the reference controller
-			// multiview behaviour); only Replay A/B scrub with
-			// the timeline via their own sources.
+			// Camera tiles always show the live feed.
 			const std::string &name =
 				cfg.cameras[slot].sourceName;
 			if (!name.empty()) {
@@ -269,6 +296,43 @@ void PreviewManager::captureAll()
 					: ReplayEngine::instance().channelB();
 			src = player.acquireSource();
 		}
+
+		GfxSlot &gs = gfx_->slots[slot];
+
+		// STEP 1: Map the surface staged in the PREVIOUS pass.
+		// The GPU had a full frame interval (~50 ms at 20 fps) to
+		// complete the DMA, so this returns instantly — zero stall on
+		// the OBS render thread even during A/B 1080p playback.
+		if (gs.hasPending) {
+			uint8_t *data = nullptr;
+			uint32_t linesize = 0;
+			if (gs_stagesurface_map(gs.stage[gs.pingIdx], &data,
+						&linesize)) {
+				std::vector<uint8_t> rgba(
+					(size_t)gs.w * gs.h * 4);
+				for (int row = 0; row < gs.h; ++row)
+					memcpy(rgba.data() +
+						       (size_t)row * gs.w * 4,
+					       data +
+						       (size_t)row * linesize,
+					       (size_t)gs.w * 4);
+				gs_stagesurface_unmap(gs.stage[gs.pingIdx]);
+				std::lock_guard<std::mutex> lk(rawMutex_);
+				raw_[slot].rgba = std::move(rgba);
+				raw_[slot].width = gs.w;
+				raw_[slot].height = gs.h;
+				raw_[slot].fresh = true;
+				diagRendered_[slot]++;
+			} else {
+				if (diagRenderFail_[slot]++ == 0)
+					obs_log(LOG_WARNING,
+						"preview: slot %d "
+						"stagesurface_map failed",
+						slot);
+			}
+			gs.hasPending = false;
+		}
+
 		if (!src) {
 			if (wanted)
 				diagSourceMissing_[slot]++;
@@ -283,28 +347,63 @@ void PreviewManager::captureAll()
 			continue;
 		}
 
-		std::vector<uint8_t> rgba;
-		int w = 0, h = 0;
-		// Queued graphics tasks are not guaranteed to run with the
-		// gs context entered: enter it explicitly (recursive-safe).
-		obs_enter_graphics();
-		bool ok = renderSourceRgba(src, rgba, w, h);
-		obs_leave_graphics();
-		if (ok) {
-			diagRendered_[slot]++;
-			std::lock_guard<std::mutex> lock(rawMutex_);
-			raw_[slot].rgba = std::move(rgba);
-			raw_[slot].width = w;
-			raw_[slot].height = h;
-			raw_[slot].fresh = true;
+		// Compute scaled dimensions (fit in tile, even for 4:2:0 JPEG).
+		double scale = std::min((double)kMaxWidth / srcW,
+					(double)kMaxHeight / srcH);
+		if (scale > 1.0)
+			scale = 1.0;
+		int w = ((int)(srcW * scale)) & ~1;
+		int h = ((int)(srcH * scale)) & ~1;
+		if (w < 2 || h < 2) {
+			obs_source_release(src);
+			continue;
+		}
+
+		// STEP 2: Render source into texrender, then initiate an async
+		// GPU→RAM DMA into the OTHER surface (non-blocking). The map
+		// for this frame happens on the NEXT pass, after the GPU is done.
+		if (!gs.resize(w, h)) {
+			if (diagRenderFail_[slot]++ == 0)
+				obs_log(LOG_WARNING,
+					"preview: slot %d GfxSlot resize "
+					"failed (%dx%d)",
+					slot, w, h);
+			obs_source_release(src);
+			continue;
+		}
+
+		int freshIdx = 1 - gs.pingIdx;
+		gs_texrender_reset(gs.tr);
+		if (gs_texrender_begin(gs.tr, (uint32_t)w, (uint32_t)h)) {
+			struct vec4 clear;
+			vec4_zero(&clear);
+			gs_clear(GS_CLEAR_COLOR, &clear, 0.0f, 0);
+			gs_ortho(0.0f, (float)srcW, 0.0f, (float)srcH,
+				 -100.0f, 100.0f);
+			obs_source_video_render(src);
+			gs_texrender_end(gs.tr);
+			// Async GPU→system-RAM copy: starts DMA, returns at once.
+			gs_stage_texture(gs.stage[freshIdx],
+					 gs_texrender_get_texture(gs.tr));
+			gs.pingIdx = freshIdx;
+			gs.hasPending = true;
 		} else {
 			if (diagRenderFail_[slot]++ == 0)
 				obs_log(LOG_WARNING,
-					"preview: slot %d texrender/stage "
-					"failed (src %ux%u)",
-					slot, srcW, srcH);
+					"preview: slot %d gs_texrender_begin "
+					"failed",
+					slot);
 		}
 		obs_source_release(src);
+	}
+}
+
+void PreviewManager::destroyGfx()
+{
+	// Must be called on the OBS graphics thread.
+	if (gfx_) {
+		gfx_->destroy();
+		gfx_.reset();
 	}
 }
 
@@ -404,10 +503,8 @@ void PreviewManager::threadLoop()
 		auto begin = std::chrono::steady_clock::now();
 
 		// Use wait=false to avoid deadlocking when OBS shuts down the
-		// graphics thread before obs_module_unload returns.  We sync
-		// manually via captureEvent_ with a 500 ms timeout: if the
-		// graphics thread is already gone we skip encode and let
-		// running_ = false terminate the loop on the next iteration.
+		// graphics thread before obs_module_unload returns. Sync via
+		// captureEvent_ with a 500 ms timeout.
 		obs_queue_task(OBS_TASK_GRAPHICS, runCaptureTask, &captureCtx,
 			       false);
 		if (os_event_timedwait(captureEvent_, 500) == 0) {

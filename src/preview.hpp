@@ -100,6 +100,14 @@ private:
 	// with the preview thread. Allocated in start(), destroyed in stop()
 	// after join so the graphics task can never signal a dead event.
 	os_event_t *captureEvent_ = nullptr;
+
+	// Persistent per-slot GPU objects with DEFERRED readback: the stage
+	// surface is mapped one pass later, so the graphics thread never
+	// blocks waiting for the GPU (mapping right after staging stalls the
+	// whole OBS render loop and tanks its FPS).
+	struct GfxCtx;
+	std::unique_ptr<GfxCtx> gfx_;
+	void destroyGfx(); // graphics thread
 };
 
 } // namespace multireplay

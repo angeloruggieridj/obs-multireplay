@@ -685,12 +685,15 @@ function barSeek(clientX, force) {
   const now = Date.now();
   if (!force && now - lastSeekSent < 120) return; // throttle while dragging
   lastSeekSent = now;
-  // the bar spans up to NOW, but seeking is clamped to the indexed footage
+  // Use interpolated duration so the bar spans up to the true live edge,
+  // not the 400ms-stale sampled value.
+  let dur = transport.durationNs;
+  if (sample && sample.recording && dur > 0)
+    dur = dur + (performance.now() - sample.t) * 1e6;
   const maxSeek = (transport.seekableNs || transport.durationNs) - 1;
-  const ns = Math.min(Math.round(frac * transport.durationNs), Math.max(maxSeek, 0));
+  const ns = Math.min(Math.round(frac * dur), Math.max(maxSeek, 0));
   cmd("/api/transport/seek", { positionNs: ns });
-  // optimistic local update: the playhead follows the pointer instantly,
-  // without waiting for the next 400ms transport sample
+  // Optimistic local update: playhead follows the pointer instantly.
   if (sample) {
     sample.A.positionNs = ns;
     sample.B.positionNs = ns;
@@ -739,28 +742,37 @@ function renderBarEvents() {
 }
 
 // M6: the transport is SAMPLED every 400ms but RENDERED at display rate —
-// the playhead/timecode are interpolated client-side between samples, so
-// the bar and the clock move smoothly instead of jumping.
-let sample = null; // { t: performance.now(), A: {...}, B: {...}, durationNs }
+// playhead, timecode, right timecode, red zone and event marker positions
+// are all interpolated client-side at 60fps so nothing ever jumps.
+//
+// sample fields:
+//   t          – performance.now() at sample time
+//   durationNs – timeline length at sample time
+//   seekableNs – indexed portion at sample time (red zone = dur-seekable)
+//   recording  – true while REC is active (durationNs grows at 1ns/ms)
+//   A, B       – channel snapshots { positionNs, playing, reverse, speed }
+let sample = null;
 async function refreshTransport() {
   try { transport = await api("/api/transport"); } catch { return; }
   if (!transport.sessionLoaded) return;
-  sample = { t: performance.now(), durationNs: transport.durationNs,
-             A: { ...transport.A }, B: { ...transport.B } };
+  sample = {
+    t:          performance.now(),
+    durationNs: transport.durationNs,
+    seekableNs: transport.seekableNs || transport.durationNs,
+    recording:  !!transport.recording,
+    A: { ...transport.A },
+    B: { ...transport.B },
+  };
   const ch = transport[channelTarget] || transport.A;
   $("playBtn").classList.toggle("on", ch.playing && !ch.reverse);
   $("revBtn").classList.toggle("on", ch.playing && ch.reverse);
   $("pauseBtn").classList.toggle("on", !ch.playing);
   $("pbHeadB").style.display = transport.linked ? "none" : "";
   $("jumpNow").classList.toggle("on", !!transport.followLive);
-  if (transport.durationNs > 0) {
-    $("pbTimeR").textContent = fmtTimecode(transport.durationNs).slice(0, 8);
-    // shade the not-yet-seekable tail (still being recorded/indexed)
-    const unseek = Math.max(0,
-      (1 - (transport.seekableNs || transport.durationNs) / transport.durationNs) * 100);
-    $("pbUnseek").style.width = unseek.toFixed(2) + "%";
+  // DOM structural rebuild of event markers (throttled by signature —
+  // typically runs only when events are added/removed or every ~2 s).
+  if (transport.durationNs > 0)
     renderBarEvents();
-  }
   document.querySelectorAll(".ang-a").forEach(b =>
     b.classList.toggle("on", +b.dataset.angle === transport.A.angle));
   document.querySelectorAll(".ang-b").forEach(b =>
@@ -776,16 +788,42 @@ function interpPos(chSample, elapsedMs, durationNs) {
   return Math.min(Math.max(pos, 0), Math.max(durationNs - 1, 0));
 }
 
+// Reposition existing event marker <div>s using the current interpolated
+// duration — no DOM rebuild, just style updates, so it's safe at 60fps.
+function updateBarEventPositions(dur) {
+  if (!dur) return;
+  const evEls = posBar.querySelectorAll(".pb-event");
+  let i = 0;
+  evState.events.forEach(ev => {
+    if (ev.tOutNs < 0 || ev.tInNs > dur) return;
+    if (i >= evEls.length) return;
+    evEls[i].style.left  = (ev.tInNs / dur * 100) + "%";
+    evEls[i].style.width = Math.max(0.3, (ev.tOutNs - ev.tInNs) / dur * 100) + "%";
+    i++;
+  });
+}
+
 function renderSmooth() {
   requestAnimationFrame(renderSmooth);
   if (!sample || !transport || !transport.sessionLoaded) return;
   const elapsed = performance.now() - sample.t;
-  const dur = sample.durationNs;
+
+  // Interpolate durationNs: during recording it grows at exactly 1 ns/ms.
+  let dur = sample.durationNs;
+  if (sample.recording && dur > 0)
+    dur = dur + elapsed * 1e6;
+
   const posA = interpPos(sample.A, elapsed, dur);
   const posB = interpPos(sample.B, elapsed, dur);
   if (dur > 0) {
     $("pbHeadA").style.left = (posA / dur * 100) + "%";
     $("pbHeadB").style.left = (posB / dur * 100) + "%";
+    // Right timecode and red zone at display rate (was 400ms-stepped before).
+    $("pbTimeR").textContent = fmtTimecode(dur).slice(0, 8);
+    const unseek = Math.max(0, (1 - sample.seekableNs / dur) * 100);
+    $("pbUnseek").style.width = unseek.toFixed(2) + "%";
+    // Smoothly reposition event markers as durationNs grows during recording.
+    updateBarEventPositions(dur);
   }
   const chPos = channelTarget === "B" ? posB : posA;
   const chSpeed = (channelTarget === "B" ? sample.B : sample.A).speed;
