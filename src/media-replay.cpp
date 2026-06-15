@@ -141,8 +141,15 @@ void MediaReplay::ensureSource()
 
 obs_source_t *MediaReplay::acquireSource()
 {
-	std::lock_guard<std::mutex> lock(mutex_);
-	return mediaSource_ ? obs_source_get_ref(mediaSource_) : nullptr;
+	// MUST NOT block: called on the OBS render/graphics thread (draw callback).
+	// If monitorLoop holds mutex_, skip this frame rather than stall the GPU
+	// thread — a 2-second stall triggers Intel UHD TDR (black screen + mouse
+	// freeze).
+	if (!mutex_.try_lock())
+		return nullptr;
+	obs_source_t *s = mediaSource_ ? obs_source_get_ref(mediaSource_) : nullptr;
+	mutex_.unlock();
+	return s;
 }
 
 // ---------------------------------------------------------------------------

@@ -137,7 +137,13 @@ bool OBSQTDisplay::event(QEvent *e)
 	switch (e->type()) {
 	case QEvent::Show:
 	case QEvent::Expose:
+		if (display_)
+			obs_display_set_enabled(display_, true);
 		createDisplay();
+		break;
+	case QEvent::Hide:
+		if (display_)
+			obs_display_set_enabled(display_, false);
 		break;
 	case QEvent::WinIdChange:
 		// Re-docking / floating the panel gives the widget a new native
