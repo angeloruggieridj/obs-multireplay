@@ -42,6 +42,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
 #include <QSizePolicy>
 #include <QStyle>
 #include <QPainter>
+#include <QLinearGradient>
 #include <QMouseEvent>
 #include <QFontDatabase>
 
@@ -56,218 +57,249 @@ namespace multireplay {
 // of OBS' own palette. Selectors are scoped by object name / Qt class so the
 // dock styles only itself and never leaks into the rest of OBS.
 // ---------------------------------------------------------------------------
+// Broadcast amber theme.
+// Reference: hardware waveform monitors, tape counters, intercom panels —
+// amber/phosphor readouts on near-black panels. Every "active" state
+// (playing, angle selected, camera on, seek fill, marks) uses the amber
+// family; danger/recording stays red; everything else is dark and quiet.
+//
+// Palette:
+//   #0f1118  deep bg          #e8a020  amber (primary active)
+//   #161b24  surface          #f5c842  amber bright / hover
+//   #1e2430  elevated         #3a2800  amber bg (checked state)
+//   #252d3a  btn rest         #d4b868  timecode (warm phosphor cream)
+//   #2f3a4a  btn hover        #7a6838  section label (muted amber)
+//   #2a3545  border           #dc2626  recording / danger red
+//   #3a4f65  border hover     #3a0a0a  red bg (live mode indicator)
+//   #c8cdd8  text primary     #6b7688  text muted
 static const char *kDockStyle = R"QSS(
 #MultiReplayDock {
-	background: #1b1e25;
+	background: #0f1118;
 }
 #MultiReplayDock QLabel {
-	color: #d7dbe3;
+	color: #c8cdd8;
 	background: transparent;
 }
-QLabel#mrMuted { color: #8a909c; font-size: 11px; }
+QLabel#mrMuted { color: #6b7688; font-size: 11px; }
 QLabel#mrTimecode {
-	color: #eef1f6;
+	color: #d4b868;
 	font-size: 13px;
 	font-weight: 600;
 	letter-spacing: 0.5px;
 }
 QLabel#mrSectionLabel {
-	color: #7f8694;
+	color: #7a6838;
 	font-size: 10px;
 	font-weight: 700;
+	letter-spacing: 1.2px;
 }
 
 /* generic buttons */
 #MultiReplayDock QPushButton {
-	background: #2a2f3a;
-	color: #e3e6ec;
-	border: 1px solid #363c49;
+	background: #252d3a;
+	color: #c8cdd8;
+	border: 1px solid #2a3545;
 	border-radius: 5px;
 	padding: 5px 11px;
 	font-size: 12px;
 }
-#MultiReplayDock QPushButton:hover { background: #333a47; border-color: #4a5566; }
-#MultiReplayDock QPushButton:pressed { background: #3b4452; }
-#MultiReplayDock QPushButton:disabled { color: #5b616d; border-color: #2b303a; }
+#MultiReplayDock QPushButton:hover { background: #2f3a4a; border-color: #3a4f65; }
+#MultiReplayDock QPushButton:pressed { background: #1e2b3a; }
+#MultiReplayDock QPushButton:disabled { color: #4a5568; border-color: #1e2430; }
 
-/* transport icon buttons */
+/* transport step buttons */
 QPushButton#mrTransport {
-	background: #262b35;
-	border: 1px solid #343b48;
+	background: #1e2430;
+	border: 1px solid #2a3545;
 	border-radius: 6px;
 	min-width: 34px;
-	min-height: 30px;
+	min-height: 32px;
 	padding: 0;
 }
-QPushButton#mrTransport:hover { background: #323a48; }
+QPushButton#mrTransport:hover { background: #252d3a; border-color: #3a4f65; }
+
+/* play/pause — dark when paused, amber-tinted when playing */
 QPushButton#mrPlay {
-	background: #2563eb;
-	border: 1px solid #2f6ef2;
+	background: #1e2430;
+	border: 1px solid #2a3545;
 	border-radius: 6px;
 	min-width: 44px;
-	min-height: 30px;
+	min-height: 32px;
 	padding: 0;
 }
-QPushButton#mrPlay:hover { background: #2f6ef2; }
+QPushButton#mrPlay:hover { background: #252d3a; border-color: #3a4f65; }
+QPushButton#mrPlay[playing="true"] {
+	background: #3a2800;
+	border: 1px solid #e8a020;
+}
+QPushButton#mrPlay[playing="true"]:hover {
+	background: #4a3400;
+	border-color: #f5c842;
+}
 
 /* NOW / live-edge button */
 QPushButton#mrNow {
-	background: #2a2f3a;
-	border: 1px solid #3a4150;
+	background: #1e2430;
+	border: 1px solid #2a3545;
 	border-radius: 6px;
 	font-weight: 700;
 	font-size: 11px;
-	letter-spacing: 0.5px;
-	min-height: 30px;
+	letter-spacing: 1px;
+	min-height: 32px;
+	color: #6b7688;
 }
 QPushButton#mrNow[live="true"] {
-	background: #b91c1c;
-	border-color: #ef4444;
-	color: #fff;
+	background: #3a0a0a;
+	border-color: #dc2626;
+	color: #ef4444;
 }
 
 /* REC button */
 QPushButton#mrRec {
 	font-weight: 700;
 	font-size: 12px;
-	letter-spacing: 0.6px;
+	letter-spacing: 0.8px;
 	border-radius: 5px;
-	min-height: 30px;
+	min-height: 32px;
 	padding: 5px 14px;
 }
 QPushButton#mrRec[recording="false"] {
-	background: #2a2f3a; color: #ff6b6b; border: 1px solid #5a3a3f;
+	background: #1e2430; color: #e05050; border: 1px solid #3a2020;
 }
-QPushButton#mrRec[recording="false"]:hover { background: #34272b; }
+QPushButton#mrRec[recording="false"]:hover { background: #2a1a1a; border-color: #5a2525; }
 QPushButton#mrRec[recording="true"] {
-	background: #dc2626; color: #fff; border: 1px solid #ef4444;
+	background: #7a0a0a; color: #fff; border: 1px solid #dc2626;
 }
+QPushButton#mrRec[recording="true"]:hover { background: #901010; }
 
 /* settings gear */
 QToolButton#mrGear {
-	background: #2a2f3a;
-	border: 1px solid #363c49;
+	background: #1e2430;
+	border: 1px solid #2a3545;
 	border-radius: 5px;
 	padding: 4px 8px;
-	color: #d7dbe3;
+	color: #6b7688;
 	font-size: 15px;
 }
-QToolButton#mrGear:hover { background: #333a47; }
+QToolButton#mrGear:hover { background: #252d3a; color: #c8cdd8; border-color: #3a4f65; }
 
-/* angle segmented control */
+/* angle segmented control — amber when active */
 QPushButton#mrAngle {
-	background: #23272f;
-	border: 1px solid #333a45;
-	border-radius: 5px;
-	color: #aeb4c0;
-	font-weight: 600;
-	min-width: 30px;
-	min-height: 28px;
+	background: #161b24;
+	border: 1px solid #2a3545;
+	border-radius: 4px;
+	color: #4a5568;
+	font-weight: 700;
+	font-size: 11px;
+	min-width: 28px;
+	min-height: 26px;
 	padding: 0;
 }
-QPushButton#mrAngle:hover { background: #2e333d; color: #e3e6ec; }
+QPushButton#mrAngle:hover { background: #1e2430; color: #7a8898; border-color: #3a4f65; }
 QPushButton#mrAngle:checked {
-	background: #2563eb;
-	border-color: #3b82f6;
-	color: #fff;
+	background: #3a2800;
+	border-color: #e8a020;
+	color: #f5c842;
 }
 
-/* per-event camera toggle chips inside the table */
+/* per-event camera toggle chips inside the table — amber when on */
 QToolButton#mrCamToggle {
-	background: #262b34;
-	border: 1px solid #333a45;
-	border-radius: 4px;
-	color: #6f7787;
-	font-size: 11px;
+	background: #161b24;
+	border: 1px solid #2a3545;
+	border-radius: 3px;
+	color: #4a5568;
+	font-size: 10px;
 	font-weight: 700;
 	min-width: 20px;
 	max-width: 22px;
 	min-height: 20px;
 	padding: 0;
 }
-QToolButton#mrCamToggle:hover { border-color: #4a5566; color: #aeb4c0; }
+QToolButton#mrCamToggle:hover { border-color: #3a4f65; color: #7a8898; }
 QToolButton#mrCamToggle:checked {
-	background: #2563eb; border-color: #3b82f6; color: #fff;
+	background: #3a2800; border-color: #e8a020; color: #f5c842;
 }
 
-/* small accent action buttons (Mark In/Out etc.) */
+/* Mark In/Out and accent buttons */
 QPushButton#mrAccent {
-	background: #1f2630; border: 1px solid #2f6ef2; color: #9cc0ff;
+	background: #1c1e10; border: 1px solid #e8a020; color: #e8a020;
 }
-QPushButton#mrAccent:hover { background: #243247; color: #cfe0ff; }
-QPushButton#mrDanger { color: #ff7a7a; border-color: #5a3a3f; }
-QPushButton#mrDanger:hover { background: #34272b; }
+QPushButton#mrAccent:hover { background: #28280e; color: #f5c842; border-color: #f5c842; }
+QPushButton#mrDanger { color: #e05050; border-color: #3a2020; }
+QPushButton#mrDanger:hover { background: #2a1a1a; border-color: #5a2525; }
 
-/* checkboxes */
-#MultiReplayDock QCheckBox { color: #cfd3db; spacing: 6px; font-size: 12px; }
+/* checkboxes — amber tick */
+#MultiReplayDock QCheckBox { color: #b0b8c4; spacing: 6px; font-size: 12px; }
 #MultiReplayDock QCheckBox::indicator {
-	width: 15px; height: 15px; border-radius: 4px;
-	border: 1px solid #3f4654; background: #20242c;
+	width: 14px; height: 14px; border-radius: 3px;
+	border: 1px solid #2a3545; background: #161b24;
 }
 #MultiReplayDock QCheckBox::indicator:checked {
-	background: #2563eb; border-color: #3b82f6;
+	background: #e8a020; border-color: #f5c842;
 }
 
 /* inputs */
 #MultiReplayDock QComboBox, #MultiReplayDock QLineEdit {
-	background: #20242c; color: #e3e6ec;
-	border: 1px solid #343b48; border-radius: 5px;
+	background: #161b24; color: #c8cdd8;
+	border: 1px solid #2a3545; border-radius: 4px;
 	padding: 4px 8px; min-height: 22px;
 }
 #MultiReplayDock QComboBox:hover, #MultiReplayDock QLineEdit:hover {
-	border-color: #4a5566;
+	border-color: #3a4f65;
 }
 #MultiReplayDock QComboBox::drop-down { border: 0; width: 18px; }
 #MultiReplayDock QComboBox QAbstractItemView {
-	background: #20242c; color: #e3e6ec;
-	border: 1px solid #343b48; selection-background-color: #2563eb;
+	background: #161b24; color: #c8cdd8;
+	border: 1px solid #2a3545;
+	selection-background-color: #3a2800; selection-color: #f5c842;
 	outline: 0;
 }
 
-/* speed slider */
+/* speed slider — amber fill + handle */
 QSlider#mrSpeed::groove:horizontal {
-	height: 4px; background: #2c313b; border-radius: 2px;
+	height: 4px; background: #1e2430; border-radius: 2px;
 }
-QSlider#mrSpeed::sub-page:horizontal { background: #2563eb; border-radius: 2px; }
+QSlider#mrSpeed::sub-page:horizontal { background: #e8a020; border-radius: 2px; }
 QSlider#mrSpeed::handle:horizontal {
-	width: 13px; height: 13px; margin: -5px 0;
-	background: #e8ebf1; border-radius: 7px;
+	width: 12px; height: 12px; margin: -4px 0;
+	background: #f5c842; border-radius: 6px; border: 1px solid #a06014;
 }
 QSlider#mrSpeed::handle:horizontal:hover { background: #fff; }
 
 /* event table */
 QTableWidget#mrEvents {
-	background: #1d2129;
-	alternate-background-color: #20242d;
+	background: #0f1118;
+	alternate-background-color: #131720;
 	gridline-color: transparent;
-	border: 1px solid #2c313b;
+	border: 1px solid #1e2430;
 	border-radius: 6px;
-	color: #d7dbe3;
+	color: #c8cdd8;
 	outline: 0;
 }
-QTableWidget#mrEvents::item { padding: 5px 6px; border: 0; }
+QTableWidget#mrEvents::item { padding: 4px 6px; border: 0; }
 QTableWidget#mrEvents::item:selected {
-	background: #2563eb; color: #fff;
+	background: #2a1e05; color: #f5c842;
 }
 QHeaderView::section {
-	background: #242932;
-	color: #8a909c;
-	padding: 6px 6px;
+	background: #161b24;
+	color: #7a6838;
+	padding: 5px 6px;
 	border: 0;
-	border-bottom: 1px solid #2f3540;
+	border-bottom: 1px solid #2a3545;
 	font-size: 10px;
 	font-weight: 700;
+	letter-spacing: 0.8px;
 }
-QTableCornerButton::section { background: #242932; border: 0; }
+QTableCornerButton::section { background: #161b24; border: 0; }
 
 /* scrollbars */
 #MultiReplayDock QScrollBar:vertical {
-	background: transparent; width: 10px; margin: 0;
+	background: transparent; width: 8px; margin: 0;
 }
 #MultiReplayDock QScrollBar::handle:vertical {
-	background: #3a4150; border-radius: 5px; min-height: 24px;
+	background: #2a3545; border-radius: 4px; min-height: 24px;
 }
-#MultiReplayDock QScrollBar::handle:vertical:hover { background: #4a5566; }
+#MultiReplayDock QScrollBar::handle:vertical:hover { background: #3a4f65; }
 #MultiReplayDock QScrollBar::add-line, #MultiReplayDock QScrollBar::sub-line {
 	height: 0; width: 0;
 }
@@ -413,31 +445,34 @@ void SeekBar::paintEvent(QPaintEvent *)
 	const int w = width() - 2 * m;
 	const double pos = dragging_ ? dragFrac_ : positionFrac_;
 
-	// track
+	// track (deep surface)
 	QRectF track(m, y, w, h);
 	p.setPen(Qt::NoPen);
-	p.setBrush(QColor(0x2c, 0x31, 0x3b));
+	p.setBrush(QColor(0x1e, 0x24, 0x30));
 	p.drawRoundedRect(track, 3, 3);
 
-	// seekable (footage flushed to disk)
+	// seekable band — slightly lighter, shows indexed footage extent
 	if (seekableFrac_ > 0.0) {
 		QRectF s(m, y, w * seekableFrac_, h);
-		p.setBrush(QColor(0x3a, 0x41, 0x50));
+		p.setBrush(QColor(0x2a, 0x35, 0x45));
 		p.drawRoundedRect(s, 3, 3);
 	}
 
-	// played-up-to-position fill
+	// played-up-to-position fill — amber gradient (dark → bright, left → right)
 	if (pos > 0.0) {
 		QRectF f(m, y, w * pos, h);
-		p.setBrush(QColor(0x25, 0x63, 0xeb));
+		QLinearGradient grad(f.left(), 0, f.right(), 0);
+		grad.setColorAt(0.0, QColor(0xa0, 0x60, 0x14));
+		grad.setColorAt(1.0, QColor(0xe8, 0xa0, 0x20));
+		p.setBrush(grad);
 		p.drawRoundedRect(f, 3, 3);
 	}
 
-	// handle
+	// handle — amber bright; grows on hover/drag
 	double hx = m + w * pos;
 	double r = (dragging_ || underMouse()) ? 7.0 : 5.5;
-	p.setBrush(QColor(0xee, 0xf1, 0xf6));
-	p.setPen(QPen(QColor(0x12, 0x16, 0x1d), 1.0));
+	p.setBrush(QColor(0xf5, 0xc8, 0x42));
+	p.setPen(QPen(QColor(0x60, 0x3c, 0x08), 1.0));
 	p.drawEllipse(QPointF(hx, height() / 2.0), r, r);
 }
 
@@ -1099,6 +1134,10 @@ void MultiReplayDock::poll()
 		QStyle::StandardPixmap sp = playingA ? QStyle::SP_MediaPause
 						     : QStyle::SP_MediaPlay;
 		playPauseBtn_->setIcon(style()->standardIcon(sp));
+		if (playPauseBtn_->property("playing").toBool() != playingA) {
+			playPauseBtn_->setProperty("playing", playingA);
+			repolish(playPauseBtn_);
+		}
 		if (nowBtn_->property("live").toBool() != followLive) {
 			nowBtn_->setProperty("live", followLive);
 			repolish(nowBtn_);
