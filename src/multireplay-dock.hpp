@@ -26,6 +26,7 @@ class QCheckBox;
 class QTableWidget;
 class QTableWidgetItem;
 class QButtonGroup;
+class QSplitter;
 class QTimer;
 
 namespace multireplay {
@@ -89,6 +90,7 @@ private:
 	// --- engine interaction ---
 	void poll();             // periodic transport/status refresh
 	void refreshEvents();    // reload the selected list into the table
+	void refreshAngles();    // update angle button labels from camera displayName
 	void onEventItemChanged(QTableWidgetItem *item); // edit commit
 	QWidget *makeCameraCell(int id, const bool *enabled); // 1..8 toggles
 	void openSettings();     // configuration dialog
@@ -130,8 +132,11 @@ private:
 	QCheckBox *loopChk_ = nullptr;
 	QCheckBox *musicChk_ = nullptr;
 
+	QSplitter *splitter_ = nullptr;
+
 	QTimer *pollTimer_ = nullptr;
 	int pollTick_ = 0;
+	bool lastFloating_ = false;
 
 	// cached live-edge for seek mapping (ns)
 	int64_t seekableNs_ = 0;

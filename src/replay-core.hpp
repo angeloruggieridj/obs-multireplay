@@ -31,7 +31,8 @@ constexpr int kDefaultVideoBitrateKbps = 12000;
 constexpr int kDefaultAudioBitrateKbps = 256;
 
 struct CameraConfig {
-	std::string sourceName; // OBS source acting as this camera ("" = unused)
+	std::string sourceName;  // OBS source acting as this camera ("" = unused)
+	std::string displayName; // user-defined label shown on angle chips/buttons
 };
 
 struct Config {

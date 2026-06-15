@@ -39,6 +39,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
 #include <QFileDialog>
 #include <QGroupBox>
 #include <QMessageBox>
+#include <QDockWidget>
 #include <QSizePolicy>
 #include <QStyle>
 #include <QPainter>
@@ -606,14 +607,15 @@ MultiReplayDock::MultiReplayDock(QWidget *parent) : QWidget(parent)
 	}
 
 	// --- vertical splitter: controls on top, event list below ---
-	// The event list is the working area, so it gets the larger share and a
-	// generous minimum; the preview/transport block stays compact and the
-	// user can drag the handle to trade space either way.
-	auto *splitter = new QSplitter(Qt::Vertical, this);
-	splitter->setChildrenCollapsible(false);
-	splitter->setHandleWidth(8);
+	// The event list is the working area: gets 75% of available space.
+	// The preview respects the OBS canvas aspect ratio via heightForWidth so
+	// it never shows black bars on the sides. In docked (small) mode the
+	// splitter compresses the controls; in floating mode the preview expands.
+	splitter_ = new QSplitter(Qt::Vertical, this);
+	splitter_->setChildrenCollapsible(false);
+	splitter_->setHandleWidth(8);
 
-	auto *controls = new QWidget(splitter);
+	auto *controls = new QWidget(splitter_);
 	auto *cv = new QVBoxLayout(controls);
 	cv->setContentsMargins(0, 0, 0, 0);
 	cv->setSpacing(8);
@@ -622,19 +624,20 @@ MultiReplayDock::MultiReplayDock(QWidget *parent) : QWidget(parent)
 	cv->addWidget(buildMarkers());
 
 	auto *eventsPanel = buildEvents();
-	eventsPanel->setMinimumHeight(220);
-	splitter->addWidget(controls);
-	splitter->addWidget(eventsPanel);
-	splitter->setStretchFactor(0, 2);
-	splitter->setStretchFactor(1, 5);
-	splitter->setSizes({260, 420});
-	root->addWidget(splitter, 1);
+	eventsPanel->setMinimumHeight(120);
+	splitter_->addWidget(controls);
+	splitter_->addWidget(eventsPanel);
+	// events get 3× the space of controls by default; user can drag handle
+	splitter_->setStretchFactor(0, 1);
+	splitter_->setStretchFactor(1, 3);
+	root->addWidget(splitter_, 1);
 
 	pollTimer_ = new QTimer(this);
 	pollTimer_->setInterval(33); // ~30 fps — smooth seekbar + responsive transport
 	connect(pollTimer_, &QTimer::timeout, this, &MultiReplayDock::poll);
 	pollTimer_->start();
 
+	refreshAngles();
 	refreshEvents();
 	poll();
 }
@@ -654,8 +657,7 @@ QWidget *MultiReplayDock::buildPreview()
 
 	displayA_ = new OBSQTDisplay(this);
 	displayA_->setRenderCallback(&MultiReplayDock::drawChannelA, this);
-	displayA_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-	displayA_->setMinimumHeight(120);
+	displayA_->setMinimumHeight(40);
 	v->addWidget(displayA_, 1);
 
 	// angle selector row (cam 1..N) — segmented control
@@ -897,7 +899,7 @@ QWidget *MultiReplayDock::buildEvents()
 		{"#", obs_module_text("Dock.In"), obs_module_text("Dock.Out"),
 		 obs_module_text("Dock.Duration"), obs_module_text("Dock.Speed"),
 		 obs_module_text("Dock.Cameras"),
-		 obs_module_text("Dock.Description")});
+		 obs_module_text("Dock.Notes")});
 	events_->setSelectionBehavior(QAbstractItemView::SelectRows);
 	events_->setSelectionMode(QAbstractItemView::ExtendedSelection);
 	// Speed (4) and Description (6) cells are edited in place; the camera
@@ -1085,6 +1087,28 @@ void MultiReplayDock::poll()
 	auto &core = ReplayCore::instance();
 	auto &engine = MediaReplay::instance();
 
+	// Every ~1s: detect floating vs docked and adjust splitter ratio.
+	// Floating = undocked panel on second monitor → more space for preview.
+	if (pollTick_ % 30 == 0 && splitter_) {
+		bool floating = false;
+		for (QWidget *p = parentWidget(); p; p = p->parentWidget()) {
+			if (auto *dw = qobject_cast<QDockWidget *>(p)) {
+				floating = dw->isFloating();
+				break;
+			}
+		}
+		if (floating != lastFloating_) {
+			lastFloating_ = floating;
+			if (floating) {
+				splitter_->setStretchFactor(0, 2);
+				splitter_->setStretchFactor(1, 3);
+			} else {
+				splitter_->setStretchFactor(0, 1);
+				splitter_->setStretchFactor(1, 3);
+			}
+		}
+	}
+
 	// Keep the index fresh: pick up completed segments while recording, or
 	// lazily load the session the first time a folder is configured. Done
 	// ~every 2s (60 ticks at 33ms) so the seekbar grows during a take.
@@ -1190,7 +1214,32 @@ void MultiReplayDock::poll()
 	uint64_t ev = EventStore::instance().version();
 	if (ev != lastEventVersion_) {
 		lastEventVersion_ = ev;
+		refreshAngles();
 		refreshEvents();
+	}
+}
+
+void MultiReplayDock::refreshAngles()
+{
+	if (!anglesA_)
+		return;
+	Config cfg = ReplayCore::instance().getConfig();
+	for (int i = 0; i < kNCams; i++) {
+		auto *b = qobject_cast<QPushButton *>(anglesA_->button(i + 1));
+		if (!b)
+			continue;
+		const std::string &dn = cfg.cameras[i].displayName;
+		if (dn.empty()) {
+			b->setText(QString::number(i + 1));
+			b->setToolTip(
+				QString("%1 %2")
+					.arg(obs_module_text("Dock.Angle"))
+					.arg(i + 1));
+		} else {
+			// Show up to 5 chars so the button stays narrow
+			b->setText(QString::fromStdString(dn).left(5));
+			b->setToolTip(QString::fromStdString(dn));
+		}
 	}
 }
 
@@ -1299,6 +1348,7 @@ void MultiReplayDock::refreshEvents()
 
 QWidget *MultiReplayDock::makeCameraCell(int id, const bool *enabled)
 {
+	Config cfg = ReplayCore::instance().getConfig();
 	auto *w = new QWidget(events_);
 	auto *l = new QHBoxLayout(w);
 	l->setContentsMargins(2, 1, 2, 1);
@@ -1306,13 +1356,20 @@ QWidget *MultiReplayDock::makeCameraCell(int id, const bool *enabled)
 	for (int i = 0; i < kEventAngles; i++) {
 		auto *b = new QToolButton(w);
 		b->setObjectName("mrCamToggle");
-		b->setText(QString::number(i + 1));
+		const std::string &dn =
+			(i < kMaxCameras) ? cfg.cameras[i].displayName : "";
+		if (dn.empty()) {
+			b->setText(QString::number(i + 1));
+			b->setToolTip(QString("%1 %2")
+					      .arg(obs_module_text("Dock.Angle"))
+					      .arg(i + 1));
+		} else {
+			b->setText(QString::fromStdString(dn).left(5));
+			b->setToolTip(QString::fromStdString(dn));
+		}
 		b->setCheckable(true);
 		b->setChecked(enabled[i]);
 		b->setCursor(Qt::PointingHandCursor);
-		b->setToolTip(QString("%1 %2")
-				      .arg(obs_module_text("Dock.Angle"))
-				      .arg(i + 1));
 		int a1 = i + 1;
 		connect(b, &QToolButton::toggled, this, [id, a1](bool on) {
 			EventStore::instance().setAngle(id, a1, on);
@@ -1500,14 +1557,25 @@ void MultiReplayDock::openSettings()
 	autoSwitch->setChecked(cfg.autoSwitchScene);
 	form->addRow(obs_module_text("Dock.AutoSwitch"), autoSwitch);
 
-	// camera assignments
+	// camera assignments: source + display name
 	auto *camBox = new QGroupBox(obs_module_text("Dock.Cameras"), &dlg);
 	auto *camForm = new QFormLayout(camBox);
 	std::vector<QComboBox *> camCombos;
+	std::vector<QLineEdit *> camNameEdits;
 	for (int i = 0; i < kMaxCameras; i++) {
+		auto *row = new QHBoxLayout();
 		auto *c = makeSourceCombo(cfg.cameras[i].sourceName);
+		auto *nameEdit = new QLineEdit(
+			QString::fromStdString(cfg.cameras[i].displayName), &dlg);
+		nameEdit->setPlaceholderText(
+			QString(obs_module_text("Dock.CameraName"))
+				.arg(i + 1));
+		nameEdit->setFixedWidth(110);
+		row->addWidget(c, 1);
+		row->addWidget(nameEdit);
 		camCombos.push_back(c);
-		camForm->addRow(QString("Cam %1").arg(i + 1), c);
+		camNameEdits.push_back(nameEdit);
+		camForm->addRow(QString("Cam %1").arg(i + 1), row);
 	}
 	form->addRow(camBox);
 
@@ -1530,13 +1598,17 @@ void MultiReplayDock::openSettings()
 		replaySrc->currentData().toString().toStdString();
 	cfg.musicSourceName = music->currentData().toString().toStdString();
 	cfg.autoSwitchScene = autoSwitch->isChecked();
-	for (int i = 0; i < kMaxCameras; i++)
+	for (int i = 0; i < kMaxCameras; i++) {
 		cfg.cameras[i].sourceName =
 			camCombos[i]->currentData().toString().toStdString();
+		cfg.cameras[i].displayName =
+			camNameEdits[i]->text().trimmed().toStdString();
+	}
 	core.setConfig(cfg);
 	EventStore::instance().setSessionFolder(cfg.sessionFolder);
 	// Re-bind the engine to the (possibly changed) replay Media Source.
 	MediaReplay::instance().ensureSource();
+	refreshAngles();
 	refreshEvents();
 }
 

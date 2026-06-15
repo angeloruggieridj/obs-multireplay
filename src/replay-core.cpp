@@ -591,6 +591,8 @@ void ReplayCore::loadConfig()
 			obs_data_t *item = obs_data_array_item(cams, i);
 			config_.cameras[i].sourceName =
 				obs_data_get_string(item, "sourceName");
+			config_.cameras[i].displayName =
+				obs_data_get_string(item, "displayName");
 			obs_data_release(item);
 		}
 		obs_data_array_release(cams);
@@ -625,6 +627,8 @@ void ReplayCore::saveConfig() const
 		obs_data_t *item = obs_data_create();
 		obs_data_set_string(item, "sourceName",
 				    cam.sourceName.c_str());
+		obs_data_set_string(item, "displayName",
+				    cam.displayName.c_str());
 		obs_data_array_push_back(cams, item);
 		obs_data_release(item);
 	}

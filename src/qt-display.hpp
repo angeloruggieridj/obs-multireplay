@@ -39,6 +39,11 @@ public:
 	void setRenderCallback(void (*draw)(void *, uint32_t, uint32_t),
 			       void *data);
 
+	// Enforce OBS canvas aspect ratio so the layout sizes the widget
+	// correctly — no black bars on the sides.
+	bool hasHeightForWidth() const override;
+	int heightForWidth(int w) const override;
+
 protected:
 	void resizeEvent(QResizeEvent *event) override;
 	void paintEvent(QPaintEvent *event) override;
