@@ -234,12 +234,15 @@ void MediaReplay::loadFileLocked(const std::string &path, int speedPct,
 	obs_source_update(mediaSource_, s);
 	obs_data_release(s);
 
-	// Force the source back to PLAYING so it leaves any ENDED/STOPPED state.
-	// obs_source_update() alone does not reliably restart the source when the
-	// previous event played to the end (ENDED state), even with a new path.
-	// Both calls happen while the caller holds mutex_, so the monitor cannot
-	// fire between them — pendingLoad_=true is set before the lock is released.
-	obs_source_media_restart(mediaSource_);
+	// Restart is only needed when the source is in a stopped/ended state
+	// (e.g. after an event played to completion with ENDED state).
+	// For PLAYING/PAUSED sources obs_source_update() is sufficient —
+	// calling restart on an actively-rendering source triggers an Intel
+	// UHD D3D11 TDR crash (GPU timeout → black screen at OBS startup).
+	enum obs_media_state st = obs_source_media_get_state(mediaSource_);
+	if (st != OBS_MEDIA_STATE_PLAYING && st != OBS_MEDIA_STATE_PAUSED) {
+		obs_source_media_restart(mediaSource_);
+	}
 
 	loadedPath_ = path;
 	pendingLoad_ = true;
