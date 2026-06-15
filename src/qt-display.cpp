@@ -55,22 +55,6 @@ OBSQTDisplay::OBSQTDisplay(QWidget *parent) : QWidget(parent)
 	setAttribute(Qt::WA_DontCreateNativeAncestors);
 	setAttribute(Qt::WA_NativeWindow);
 	setMinimumSize(64, 36);
-	// Expand horizontally; height is derived from canvas AR via heightForWidth.
-	setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
-}
-
-bool OBSQTDisplay::hasHeightForWidth() const
-{
-	return true;
-}
-
-int OBSQTDisplay::heightForWidth(int w) const
-{
-	struct obs_video_info ovi = {};
-	if (obs_get_video_info(&ovi) && ovi.base_width > 0)
-		return (int)((double)ovi.base_height / ovi.base_width * w);
-	return w * 9 / 16; // fallback 16:9
-}
 
 OBSQTDisplay::~OBSQTDisplay()
 {

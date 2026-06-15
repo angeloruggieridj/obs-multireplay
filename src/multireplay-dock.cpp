@@ -524,9 +524,15 @@ void MultiReplayDock::drawChannelA(void *, uint32_t cx, uint32_t cy)
 		obs_source_release(src);
 		return;
 	}
-	float scale = std::min((float)cx / (float)sw, (float)cy / (float)sh);
-	int dw = (int)((float)sw * scale);
-	int dh = (int)((float)sh * scale);
+	// When the widget is wider than the source AR (typical docked panel),
+	// fill width and accept a small top/bottom clip rather than showing
+	// black bars on the sides. Fall back to height-fit only when the
+	// widget is taller than the source AR (portrait panel).
+	float scaleW = (float)cx / (float)sw;
+	float scaleH = (float)cy / (float)sh;
+	float scale = ((float)cx * sh >= (float)cy * sw) ? scaleW : scaleH;
+	int dw = std::min((int)((float)sw * scale), (int)cx);
+	int dh = std::min((int)((float)sh * scale), (int)cy);
 	int x = ((int)cx - dw) / 2;
 	int y = ((int)cy - dh) / 2;
 
@@ -657,6 +663,7 @@ QWidget *MultiReplayDock::buildPreview()
 
 	displayA_ = new OBSQTDisplay(this);
 	displayA_->setRenderCallback(&MultiReplayDock::drawChannelA, this);
+	displayA_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
 	displayA_->setMinimumHeight(40);
 	v->addWidget(displayA_, 1);
 
