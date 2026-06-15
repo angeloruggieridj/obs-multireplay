@@ -1114,6 +1114,15 @@ void MultiReplayDock::poll()
 		repolish(recBtn_);
 	}
 
+	// Sync live checkbox with engine state (startRecording sets liveMode
+	// internally without going through the checkbox).
+	bool lm = EventStore::instance().liveMode();
+	if (liveChk_ && liveChk_->isChecked() != lm) {
+		liveChk_->blockSignals(true);
+		liveChk_->setChecked(lm);
+		liveChk_->blockSignals(false);
+	}
+
 	Data st(core.statusJson());
 	if (st) {
 		QString ver = obs_data_get_string(st, "version");

@@ -234,10 +234,11 @@ void MediaReplay::loadFileLocked(const std::string &path, int speedPct,
 	obs_source_update(mediaSource_, s);
 	obs_data_release(s);
 
-	// Force the source back to PLAYING (from frame 0) so it leaves any ENDED
-	// or STOPPED state. Without this, if the previous event played to the end
-	// the source is in ENDED (durMs = 0, state ≠ PLAYING|PAUSED) and the
-	// pending-load handler in monitorLoop never fires.
+	// Force the source back to PLAYING so it leaves any ENDED/STOPPED state.
+	// obs_source_update() alone does not reliably restart the source when the
+	// previous event played to the end (ENDED state), even with a new path.
+	// Both calls happen while the caller holds mutex_, so the monitor cannot
+	// fire between them — pendingLoad_=true is set before the lock is released.
 	obs_source_media_restart(mediaSource_);
 
 	loadedPath_ = path;
