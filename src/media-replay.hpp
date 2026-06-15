@@ -123,6 +123,9 @@ private:
 	bool pendingLoad_ = false;
 	int64_t pendingSeekMs_ = 0;
 	bool pendingPlay_ = false;
+	// Incremented on every loadFileLocked(); prevents a slow monitor tick
+	// from applying a stale seek to a subsequently requested file.
+	uint64_t pendingGen_ = 0;
 
 	// Event state.
 	bool eventActive_ = false;

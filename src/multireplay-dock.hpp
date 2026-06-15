@@ -12,6 +12,7 @@ controls and the searchable, editable event list.
 #pragma once
 
 #include <QWidget>
+#include <climits>
 #include <cstdint>
 #include <vector>
 
@@ -124,11 +125,13 @@ private:
 	QLineEdit *search_ = nullptr;
 	QTableWidget *events_ = nullptr;
 	bool refreshing_ = false; // guards itemChanged during table rebuilds
+	uint64_t lastEventVersion_ = UINT64_MAX; // UINT64_MAX → refresh on first poll
 	QCheckBox *toOutputChk_ = nullptr;
 	QCheckBox *loopChk_ = nullptr;
 	QCheckBox *musicChk_ = nullptr;
 
 	QTimer *pollTimer_ = nullptr;
+	int pollTick_ = 0;
 
 	// cached live-edge for seek mapping (ns)
 	int64_t seekableNs_ = 0;

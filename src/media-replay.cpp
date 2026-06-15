@@ -229,10 +229,17 @@ void MediaReplay::loadFileLocked(const std::string &path, int speedPct,
 	obs_source_update(mediaSource_, s);
 	obs_data_release(s);
 
+	// Force the source back to PLAYING (from frame 0) so it leaves any ENDED
+	// or STOPPED state. Without this, if the previous event played to the end
+	// the source is in ENDED (durMs = 0, state ≠ PLAYING|PAUSED) and the
+	// pending-load handler in monitorLoop never fires.
+	obs_source_media_restart(mediaSource_);
+
 	loadedPath_ = path;
 	pendingLoad_ = true;
 	pendingSeekMs_ = seekMs;
 	pendingPlay_ = play;
+	pendingGen_++;
 	wake_.notify_all();
 }
 
@@ -374,7 +381,6 @@ bool MediaReplay::playEvent(int64_t tInNs, int64_t tOutNs, int angle0,
 {
 	std::lock_guard<std::mutex> lock(mutex_);
 	angle_ = std::clamp(angle0, 0, kIndexMaxCameras - 1);
-	speedPct_ = clampSpeedPct(speed);
 	followLive_ = false;
 
 	std::string path;
@@ -387,7 +393,31 @@ bool MediaReplay::playEvent(int64_t tInNs, int64_t tOutNs, int angle0,
 	eventOutNs_ = tOutNs;
 	eventOnDone_ = std::move(onDone);
 	segBaseNs_ = tInNs - off;
-	loadFileLocked(path, speedPct_.load(), off / 1000000LL, true);
+
+	int spPct = clampSpeedPct(speed);
+
+	// Fast path: same file already open and not mid-load. Skip the settings
+	// update (which causes ffmpeg_source to restart from frame 0) and seek
+	// directly. This is the critical path for consecutive plays of the same
+	// event — avoids the flash-of-frame-0 and the 20ms pending window.
+	auto st = mediaSource_
+			  ? obs_source_media_get_state(mediaSource_)
+			  : OBS_MEDIA_STATE_NONE;
+	bool sameFile = (path == loadedPath_ && !pendingLoad_ &&
+			 mediaSource_ != nullptr);
+	bool activeState = (st == OBS_MEDIA_STATE_PLAYING ||
+			    st == OBS_MEDIA_STATE_PAUSED);
+
+	if (sameFile && activeState && spPct == speedPct_.load()) {
+		// File is open + same speed: seek directly, no reload.
+		speedPct_ = spPct;
+		obs_source_media_set_time(mediaSource_, off / 1000000LL);
+		obs_source_media_play_pause(mediaSource_, false); // play
+	} else {
+		// New file, speed change, or source in bad state: go through the
+		// full load path (update + restart + pending seek).
+		loadFileLocked(path, spPct, off / 1000000LL, true);
+	}
 	return true;
 }
 
@@ -425,14 +455,22 @@ void MediaReplay::monitorLoop()
 			int64_t durMs = obs_source_media_get_duration(src);
 
 			if (pendingLoad_) {
-				// Wait until the media has opened, then apply the
-				// queued seek + play state.
-				if (durMs > 0 || st == OBS_MEDIA_STATE_PLAYING ||
-				    st == OBS_MEDIA_STATE_PAUSED) {
-					obs_source_media_set_time(
-						src, pendingSeekMs_);
-					obs_source_media_play_pause(
-						src, !pendingPlay_);
+				// Wait until the media is open (PLAYING or PAUSED
+				// after the restart we issued in loadFileLocked).
+				// Do NOT rely on durMs > 0 alone — the previous
+				// file's stale duration can trigger this too early.
+				bool ready = (st == OBS_MEDIA_STATE_PLAYING ||
+					      st == OBS_MEDIA_STATE_PAUSED);
+				if (ready) {
+					// Pause first so we don't show frames
+					// between frame-0 (auto-play after restart)
+					// and the actual in-point seek.
+					obs_source_media_play_pause(src, true);
+					obs_source_media_set_time(src,
+								  pendingSeekMs_);
+					if (pendingPlay_)
+						obs_source_media_play_pause(
+							src, false);
 					pendingLoad_ = false;
 				}
 				continue;

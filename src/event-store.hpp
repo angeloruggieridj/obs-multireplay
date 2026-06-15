@@ -78,6 +78,10 @@ public:
 	// JSON of one list's events (for the web UI).
 	std::string listJson(int list) const;
 
+	// Monotonic counter: incremented on every mutation. The dock polls this
+	// to auto-refresh the event table without a callback mechanism.
+	uint64_t version() const { return version_.load(); }
+
 private:
 	EventStore() = default;
 	void save() const; // mutex_ must be held
@@ -89,6 +93,7 @@ private:
 	int nextId_ = 1;
 	std::atomic<bool> liveMode_{true};
 	std::atomic<int> selectedList_{1};
+	mutable std::atomic<uint64_t> version_{0};
 };
 
 } // namespace multireplay

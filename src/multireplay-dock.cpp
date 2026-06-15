@@ -587,7 +587,7 @@ MultiReplayDock::MultiReplayDock(QWidget *parent) : QWidget(parent)
 	root->addWidget(splitter, 1);
 
 	pollTimer_ = new QTimer(this);
-	pollTimer_->setInterval(66); // ~15 fps transport refresh
+	pollTimer_->setInterval(33); // ~30 fps — smooth seekbar + responsive transport
 	connect(pollTimer_, &QTimer::timeout, this, &MultiReplayDock::poll);
 	pollTimer_->start();
 
@@ -953,9 +953,23 @@ QWidget *MultiReplayDock::buildEvents()
 			ExportManager::instance().exportEvent(
 				id, 0, folder.toStdString(), err);
 	});
+	auto *delAll = compactBtn(obs_module_text("Dock.DeleteAll"), this,
+				  "mrDanger");
+	connect(delAll, &QPushButton::clicked, this, [this]() {
+		if (QMessageBox::question(
+			    this, "obs-multireplay",
+			    obs_module_text("Dock.DeleteAllConfirm"),
+			    QMessageBox::Yes | QMessageBox::No,
+			    QMessageBox::No) != QMessageBox::Yes)
+			return;
+		PlaybackCoordinator::instance().stopEvents();
+		EventStore::instance().clearAll();
+		// version counter change will trigger auto-refresh in poll()
+	});
 	eb->addWidget(dup);
 	eb->addWidget(del);
 	eb->addWidget(exp);
+	eb->addWidget(delAll);
 	eb->addStretch(1);
 	v->addLayout(eb);
 
@@ -1024,9 +1038,8 @@ void MultiReplayDock::poll()
 
 	// Keep the index fresh: pick up completed segments while recording, or
 	// lazily load the session the first time a folder is configured. Done
-	// ~every 2s (30 ticks at 66 ms) so the seekbar grows during a take.
-	static int tick = 0;
-	if (++tick % 30 == 0) {
+	// ~every 2s (60 ticks at 33ms) so the seekbar grows during a take.
+	if (++pollTick_ % 60 == 0) {
 		if (engine.sessionLoaded()) {
 			if (core.isRecording())
 				engine.refreshSession();
@@ -1104,6 +1117,13 @@ void MultiReplayDock::poll()
 		else if (mins >= 0)
 			s += QString("  • ~%1 min").arg(mins);
 		statusLbl_->setText(s);
+	}
+
+	// --- auto-refresh event list on any external mutation (hotkeys, etc.) ---
+	uint64_t ev = EventStore::instance().version();
+	if (ev != lastEventVersion_) {
+		lastEventVersion_ = ev;
+		refreshEvents();
 	}
 }
 

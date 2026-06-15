@@ -40,6 +40,7 @@ void EventStore::clearAll()
 	events_.clear();
 	// the reference controller keeps settings; ids restart with the session
 	nextId_ = 1;
+	version_++; // ensure UI refresh even when folder is empty
 	save();
 }
 
@@ -327,6 +328,7 @@ std::string EventStore::listJson(int list) const
 
 void EventStore::save() const
 {
+	version_++; // notify pollers of a change before persisting
 	if (folder_.empty())
 		return;
 
