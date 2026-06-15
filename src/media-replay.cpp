@@ -186,6 +186,11 @@ void MediaReplay::clearSession()
 	pendingLoad_ = false;
 	eventActive_ = false;
 	eventOnDone_ = nullptr;
+	followLive_ = false;
+	// Pause the media source so old footage stops showing while a new
+	// recording is in progress (startRecording calls clearSession).
+	if (mediaSource_)
+		obs_source_media_play_pause(mediaSource_, true);
 }
 
 bool MediaReplay::sessionLoaded() const

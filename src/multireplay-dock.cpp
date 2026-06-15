@@ -15,6 +15,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
 #include "plugin-support.h"
 
 #include <obs-module.h>
+#include <util/platform.h>
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -984,11 +985,16 @@ int64_t MultiReplayDock::markTimeNs() const
 {
 	auto &store = EventStore::instance();
 	if (store.liveMode()) {
-		// the reference controller marks at the LIVE EDGE. Anchor that to the indexed footage
-		// length (the real end of recorded media), NOT the wall clock:
-		// the encoder lags real time by its startup/buffer, so wall-clock
-		// "now" would store an instant that the footage hasn't reached
-		// yet, making the saved In/Out incoherent with the recording.
+		auto &core = ReplayCore::instance();
+		if (core.isRecording() && core.sessionMonoStartNs() > 0) {
+			// Files still open: use elapsed monotonic time from REC
+			// start. SessionIndex origins align with this value once
+			// files are flushed (both use os_gettime_ns).
+			int64_t elapsed = (int64_t)os_gettime_ns() -
+					  core.sessionMonoStartNs();
+			return std::max<int64_t>(0, elapsed);
+		}
+		// Not recording (scrub/review mode): use indexed footage length.
 		int64_t edge = MediaReplay::instance().footageDurationNs();
 		if (edge > 0)
 			return edge;
@@ -1043,7 +1049,12 @@ void MultiReplayDock::poll()
 		if (engine.sessionLoaded()) {
 			if (core.isRecording())
 				engine.refreshSession();
-		} else if (!core.getConfig().sessionFolder.empty()) {
+		} else if (!core.isRecording() &&
+			   !core.getConfig().sessionFolder.empty()) {
+			// Don't load during recording: files are still open and
+			// not yet fully flushed; loadSession would call jumpToEnd
+			// → obs_source_media_restart which causes a visible flash
+			// of playback in the preview every 2 seconds.
 			std::string err;
 			engine.loadSession(core.getConfig().sessionFolder, err);
 		}

@@ -105,7 +105,6 @@ private:
 	void loadFileLocked(const std::string &path, int speedPct,
 			    int64_t seekMs, bool play);
 	int64_t mediaTimeNs() const; // current media time (ns), 0 if unloaded
-	void applySpeedLocked(int speedPct);
 
 	mutable std::mutex mutex_;
 	obs_source_t *mediaSource_ = nullptr; // owned (ref held)

@@ -117,8 +117,17 @@ namespace {
 int64_t hotkeyMarkTimeNs()
 {
 	if (EventStore::instance().liveMode()) {
-		// Live edge = indexed footage length (coherent with the media),
-		// not the wall clock (which leads the footage).
+		auto &core = ReplayCore::instance();
+		if (core.isRecording() && core.sessionMonoStartNs() > 0) {
+			// Files are still open: use elapsed wall time from REC
+			// start as the master-timeline position.  The SessionIndex
+			// will align to the same origin once files are flushed.
+			int64_t elapsed =
+				(int64_t)os_gettime_ns() -
+				core.sessionMonoStartNs();
+			return std::max<int64_t>(0, elapsed);
+		}
+		// Not recording: use indexed footage length (seekable live edge).
 		int64_t edge = MediaReplay::instance().footageDurationNs();
 		if (edge > 0)
 			return edge;
@@ -241,6 +250,11 @@ bool ReplayCore::startRecording(std::string &errorOut)
 
 	std::error_code ec;
 	std::filesystem::create_directories(config_.sessionFolder, ec);
+
+	// Capture the monotonic clock BEFORE arming any camera so live-mode
+	// markers during recording get timestamps coherent with the master
+	// timeline (which uses min(startTimestampNs) as its origin).
+	sessionMonoStartNs_ = (int64_t)os_gettime_ns();
 
 	int started = 0;
 	for (int i = 0; i < kMaxCameras; i++) {

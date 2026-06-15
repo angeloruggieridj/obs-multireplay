@@ -74,6 +74,9 @@ public:
 	bool startRecording(std::string &errorOut);
 	bool stopRecording();
 	bool isRecording() const { return recording_; }
+	// Monotonic ns at the moment the first camera started in the current
+	// session. Used by live-mode marker timing while files are still open.
+	int64_t sessionMonoStartNs() const { return sessionMonoStartNs_; }
 
 	// the reference controller "Delete All": wipe recordings + events in the session folder,
 	// keep all settings. Refuses while recording.
@@ -118,6 +121,11 @@ private:
 	// Written into session.json so SessionIndex can filter out stale segment
 	// files from previous recording sessions that share the same folder.
 	int64_t sessionWallStartSec_ = 0;
+	// Monotonic (os_gettime_ns) timestamp captured just before the first
+	// camera is armed. The SessionIndex master timeline origin aligns with
+	// the minimum startTimestampNs across cameras, which equals this value
+	// within the jitter of a single os_gettime_ns() call.
+	int64_t sessionMonoStartNs_ = 0;
 	std::array<CameraStatus, kMaxCameras> cameraStatus_{};
 	obs_hotkey_id startHotkey_ = OBS_INVALID_HOTKEY_ID;
 	obs_hotkey_id stopHotkey_ = OBS_INVALID_HOTKEY_ID;
