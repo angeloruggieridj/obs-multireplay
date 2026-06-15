@@ -399,7 +399,9 @@ bool MediaReplay::playEvent(int64_t tInNs, int64_t tOutNs, int angle0,
 
 	eventActive_ = true;
 	eventOutNs_ = tOutNs;
+	eventDurationNs_ = tOutNs - tInNs;
 	eventOnDone_ = std::move(onDone);
+	eventPlayStarted_ = false;
 	segBaseNs_ = tInNs - off;
 
 	int spPct = clampSpeedPct(speed);
@@ -421,9 +423,13 @@ bool MediaReplay::playEvent(int64_t tInNs, int64_t tOutNs, int angle0,
 		speedPct_ = spPct;
 		obs_source_media_set_time(mediaSource_, off / 1000000LL);
 		obs_source_media_play_pause(mediaSource_, false); // play
+		// Start wall-clock timer immediately (no pendingLoad_ path).
+		eventPlayStartWall_ = std::chrono::steady_clock::now();
+		eventPlayStarted_ = true;
 	} else {
 		// New file, speed change, or source in bad state: go through the
 		// full load path (update + restart + pending seek).
+		// eventPlayStarted_ is set by monitorLoop once pendingLoad_ clears.
 		loadFileLocked(path, spPct, off / 1000000LL, true);
 	}
 	return true;
@@ -433,6 +439,7 @@ void MediaReplay::stopEvent()
 {
 	std::lock_guard<std::mutex> lock(mutex_);
 	eventActive_ = false;
+	eventPlayStarted_ = false;
 	eventOnDone_ = nullptr;
 	eventOutNs_ = -1;
 	if (mediaSource_ && !pendingLoad_)
@@ -480,6 +487,14 @@ void MediaReplay::monitorLoop()
 						obs_source_media_play_pause(
 							src, false);
 					pendingLoad_ = false;
+					// Start OUT wall-clock after seek is applied
+					// (first event only; chaining doesn't reset it).
+					if (eventActive_ && pendingPlay_ &&
+					    !eventPlayStarted_) {
+						eventPlayStartWall_ =
+							std::chrono::steady_clock::now();
+						eventPlayStarted_ = true;
+					}
 				}
 				continue;
 			}
@@ -487,38 +502,60 @@ void MediaReplay::monitorLoop()
 			if (!eventActive_)
 				continue;
 
-			int64_t curMaster =
-				segBaseNs_ +
-				obs_source_media_get_time(src) * 1000000LL;
 			bool ended = (st == OBS_MEDIA_STATE_ENDED ||
 				      st == OBS_MEDIA_STATE_STOPPED);
 
-			if (curMaster >= eventOutNs_) {
-				obs_source_media_play_pause(src, true);
-				fireDone = std::move(eventOnDone_);
-				eventActive_ = false;
-				eventOnDone_ = nullptr;
-				eventOutNs_ = -1;
-			} else if (ended) {
-				// Segment split mid-event: chain to the next
-				// file at the boundary master time.
-				int64_t nextMaster =
-					segBaseNs_ + durMs * 1000000LL;
-				std::string path;
-				int64_t off = 0;
-				if (nextMaster < eventOutNs_ && index_ &&
-				    index_->resolve(angle_.load(), nextMaster,
-						    path, off) &&
-				    path != loadedPath_) {
-					segBaseNs_ = nextMaster - off;
-					loadFileLocked(path, speedPct_.load(),
-						       off / 1000000LL, true);
-				} else {
+			// Wall-clock OUT detection: obs_source_media_get_time()
+			// returns stale values after a seek on Intel UHD, making
+			// curMaster much lower than expected (OUT fires too late
+			// or never). Track real elapsed time instead.
+			if (eventPlayStarted_) {
+				using ns = std::chrono::nanoseconds;
+				auto elapsed = std::chrono::steady_clock::now() -
+					       eventPlayStartWall_;
+				int64_t realNs =
+					std::chrono::duration_cast<ns>(elapsed)
+						.count();
+				// Scale by speed: at 50% speed the source plays
+				// half as fast, so real time is 2× media time.
+				int64_t mediaNs =
+					realNs * (int64_t)speedPct_.load() / 100LL;
+				if (mediaNs >= eventDurationNs_) {
+					obs_source_media_play_pause(src, true);
 					fireDone = std::move(eventOnDone_);
 					eventActive_ = false;
 					eventOnDone_ = nullptr;
 					eventOutNs_ = -1;
+					eventPlayStarted_ = false;
+				} else if (ended) {
+					// Segment split: chain to the next file.
+					int64_t nextMaster =
+						segBaseNs_ + durMs * 1000000LL;
+					std::string path;
+					int64_t off = 0;
+					if (nextMaster < eventOutNs_ && index_ &&
+					    index_->resolve(angle_.load(),
+							    nextMaster, path,
+							    off) &&
+					    path != loadedPath_) {
+						segBaseNs_ = nextMaster - off;
+						loadFileLocked(path,
+							       speedPct_.load(),
+							       off / 1000000LL,
+							       true);
+					} else {
+						fireDone = std::move(eventOnDone_);
+						eventActive_ = false;
+						eventOnDone_ = nullptr;
+						eventOutNs_ = -1;
+						eventPlayStarted_ = false;
+					}
 				}
+			} else if (ended) {
+				fireDone = std::move(eventOnDone_);
+				eventActive_ = false;
+				eventOnDone_ = nullptr;
+				eventOutNs_ = -1;
 			}
 		}
 		if (fireDone)

@@ -29,6 +29,7 @@ by seeking. Slow-motion is supported (speed 5%..100%).
 #include "session-index.hpp"
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <functional>
 #include <memory>
@@ -126,7 +127,12 @@ private:
 	// Event state.
 	bool eventActive_ = false;
 	int64_t eventOutNs_ = -1;
+	int64_t eventDurationNs_ = 0;
 	std::function<void()> eventOnDone_;
+	// Wall-clock OUT detection: avoids relying on obs_source_media_get_time()
+	// which can return stale values immediately after a seek.
+	std::chrono::steady_clock::time_point eventPlayStartWall_;
+	bool eventPlayStarted_ = false;
 
 	// Monitor thread.
 	std::thread monitor_;

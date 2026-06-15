@@ -80,6 +80,9 @@ public:
 	explicit MultiReplayDock(QWidget *parent = nullptr);
 	~MultiReplayDock() override;
 
+protected:
+	void resizeEvent(QResizeEvent *e) override;
+
 private:
 	// --- UI assembly ---
 	QWidget *buildPreview();
@@ -92,7 +95,8 @@ private:
 	void refreshEvents();    // reload the selected list into the table
 	void refreshAngles();    // update angle button labels from camera displayName
 	void onEventItemChanged(QTableWidgetItem *item); // edit commit
-	QWidget *makeCameraCell(int id, const bool *enabled); // 1..8 toggles
+	QWidget *makeCameraCell(int id, const bool *enabled,
+				const std::string *notes); // 1..8 toggles
 	void openSettings();     // configuration dialog
 	int64_t markTimeNs() const; // Live=masterNow, Recorded=A playhead
 	std::vector<int> selectedEventIds() const;
@@ -133,10 +137,10 @@ private:
 	QCheckBox *musicChk_ = nullptr;
 
 	QSplitter *splitter_ = nullptr;
+	Qt::Orientation currentOrientation_ = Qt::Vertical;
 
 	QTimer *pollTimer_ = nullptr;
 	int pollTick_ = 0;
-	bool lastFloating_ = false;
 
 	// cached live-edge for seek mapping (ns)
 	int64_t seekableNs_ = 0;

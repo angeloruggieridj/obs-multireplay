@@ -46,6 +46,8 @@ SPDX-License-Identifier: GPL-2.0-or-later
 #include <QLinearGradient>
 #include <QMouseEvent>
 #include <QFontDatabase>
+#include <QInputDialog>
+#include <QResizeEvent>
 
 #include <algorithm>
 #include <string>
@@ -313,6 +315,7 @@ namespace {
 constexpr int kNCams = kIndexMaxCameras; // 8
 
 // Event table column layout.
+// Note: per-camera descriptions are edited via right-click on camera chips.
 enum EventCol {
 	kColId = 0,
 	kColIn,
@@ -320,7 +323,6 @@ enum EventCol {
 	kColDur,
 	kColSpeed,
 	kColCams,
-	kColDesc,
 	kColCount
 };
 
@@ -524,15 +526,11 @@ void MultiReplayDock::drawChannelA(void *, uint32_t cx, uint32_t cy)
 		obs_source_release(src);
 		return;
 	}
-	// When the widget is wider than the source AR (typical docked panel),
-	// fill width and accept a small top/bottom clip rather than showing
-	// black bars on the sides. Fall back to height-fit only when the
-	// widget is taller than the source AR (portrait panel).
-	float scaleW = (float)cx / (float)sw;
-	float scaleH = (float)cy / (float)sh;
-	float scale = ((float)cx * sh >= (float)cy * sw) ? scaleW : scaleH;
-	int dw = std::min((int)((float)sw * scale), (int)cx);
-	int dh = std::min((int)((float)sh * scale), (int)cy);
+	// Letterbox: fit source inside widget preserving aspect ratio.
+	// Bars (black) appear on whichever axis has excess space.
+	float scale = std::min((float)cx / (float)sw, (float)cy / (float)sh);
+	int dw = (int)((float)sw * scale);
+	int dh = (int)((float)sh * scale);
 	int x = ((int)cx - dw) / 2;
 	int y = ((int)cy - dh) / 2;
 
@@ -649,6 +647,33 @@ MultiReplayDock::MultiReplayDock(QWidget *parent) : QWidget(parent)
 }
 
 MultiReplayDock::~MultiReplayDock() = default;
+
+// Switch splitter orientation based on the dock's own aspect ratio.
+// Portrait (tall/narrow = docked): vertical stack, events get more space.
+// Landscape (wide = floating or second-monitor panel): horizontal split so
+// the preview fills the left half and the event list the right half.
+void MultiReplayDock::resizeEvent(QResizeEvent *e)
+{
+	QWidget::resizeEvent(e);
+	if (!splitter_)
+		return;
+	const QSize s = e->size();
+	Qt::Orientation desired =
+		(s.width() > s.height() + 60) ? Qt::Horizontal : Qt::Vertical;
+	if (desired != currentOrientation_) {
+		currentOrientation_ = desired;
+		splitter_->setOrientation(desired);
+		if (desired == Qt::Horizontal) {
+			// Wide: preview left (equal share), events right (equal share)
+			splitter_->setStretchFactor(0, 1);
+			splitter_->setStretchFactor(1, 1);
+		} else {
+			// Tall: controls get less space, events get more
+			splitter_->setStretchFactor(0, 1);
+			splitter_->setStretchFactor(1, 3);
+		}
+	}
+}
 
 // ---------------------------------------------------------------------------
 // Single A preview + angle selector
@@ -905,13 +930,11 @@ QWidget *MultiReplayDock::buildEvents()
 	events_->setHorizontalHeaderLabels(
 		{"#", obs_module_text("Dock.In"), obs_module_text("Dock.Out"),
 		 obs_module_text("Dock.Duration"), obs_module_text("Dock.Speed"),
-		 obs_module_text("Dock.Cameras"),
-		 obs_module_text("Dock.Notes")});
+		 obs_module_text("Dock.Cameras")});
 	events_->setSelectionBehavior(QAbstractItemView::SelectRows);
 	events_->setSelectionMode(QAbstractItemView::ExtendedSelection);
-	// Speed (4) and Description (6) cells are edited in place; the camera
-	// cell (5) is an inline widget. Double-click edits a cell — it no longer
-	// triggers playback (use the Play buttons instead).
+	// Speed cell (4) is edited in place; camera cell (5) is an inline
+	// widget. Right-click on a camera chip edits that angle's description.
 	events_->setEditTriggers(QAbstractItemView::DoubleClicked |
 				 QAbstractItemView::EditKeyPressed);
 	events_->verticalHeader()->setVisible(false);
@@ -927,7 +950,7 @@ QWidget *MultiReplayDock::buildEvents()
 		for (int c = 0; c < kColCount; c++)
 			hh->setSectionResizeMode(c,
 						 QHeaderView::ResizeToContents);
-		hh->setSectionResizeMode(kColDesc, QHeaderView::Stretch);
+		hh->setSectionResizeMode(kColCams, QHeaderView::Stretch);
 		hh->setMinimumSectionSize(34);
 	}
 	connect(events_, &QTableWidget::itemChanged, this,
@@ -1094,28 +1117,6 @@ void MultiReplayDock::poll()
 	auto &core = ReplayCore::instance();
 	auto &engine = MediaReplay::instance();
 
-	// Every ~1s: detect floating vs docked and adjust splitter ratio.
-	// Floating = undocked panel on second monitor → more space for preview.
-	if (pollTick_ % 30 == 0 && splitter_) {
-		bool floating = false;
-		for (QWidget *p = parentWidget(); p; p = p->parentWidget()) {
-			if (auto *dw = qobject_cast<QDockWidget *>(p)) {
-				floating = dw->isFloating();
-				break;
-			}
-		}
-		if (floating != lastFloating_) {
-			lastFloating_ = floating;
-			if (floating) {
-				splitter_->setStretchFactor(0, 2);
-				splitter_->setStretchFactor(1, 3);
-			} else {
-				splitter_->setStretchFactor(0, 1);
-				splitter_->setStretchFactor(1, 3);
-			}
-		}
-	}
-
 	// Keep the index fresh: pick up completed segments while recording, or
 	// lazily load the session the first time a folder is configured. Done
 	// ~every 2s (60 ticks at 33ms) so the seekbar grows during a take.
@@ -1276,7 +1277,8 @@ void MultiReplayDock::refreshEvents()
 		double speed = obs_data_get_double(e, "speed");
 
 		bool camOn[kEventAngles] = {};
-		QString anglesStr, notes;
+		std::string camNotes[kEventAngles];
+		QString anglesStr;
 		obs_data_array_t *aArr = obs_data_get_array(e, "angles");
 		if (aArr) {
 			size_t na = obs_data_array_count(aArr);
@@ -1287,8 +1289,7 @@ void MultiReplayDock::refreshEvents()
 					anglesStr += QString::number(k + 1) + " ";
 				}
 				const char *nt = obs_data_get_string(ad, "note");
-				if (nt && *nt && notes.isEmpty())
-					notes = QString::fromUtf8(nt);
+				camNotes[k] = nt ? nt : "";
 				obs_data_release(ad);
 			}
 			obs_data_array_release(aArr);
@@ -1301,10 +1302,14 @@ void MultiReplayDock::refreshEvents()
 					? QString::number((int)(speed * 100)) + "%"
 					: QStringLiteral("--");
 
-		// search filter (id / notes / angles)
+		// search filter (id / per-angle notes / angles)
 		if (!needle.isEmpty()) {
-			QString hay = QString::number(id) + " " +
-				      notes.toLower() + " " + anglesStr;
+			QString hay = QString::number(id) + " " + anglesStr;
+			for (int k = 0; k < kEventAngles; k++)
+				if (!camNotes[k].empty())
+					hay += " " + QString::fromStdString(
+							       camNotes[k])
+							       .toLower();
 			if (!hay.contains(needle)) {
 				obs_data_release(e);
 				continue;
@@ -1338,14 +1343,9 @@ void MultiReplayDock::refreshEvents()
 		spItem->setToolTip(obs_module_text("Dock.SpeedHint"));
 		events_->setItem(row, kColSpeed, spItem);
 
-		// inline 1..8 camera toggles
-		events_->setCellWidget(row, kColCams, makeCameraCell(id, camOn));
-
-		// editable description (applies to the whole event)
-		auto *descItem = new QTableWidgetItem(notes);
-		descItem->setData(Qt::UserRole, id);
-		descItem->setToolTip(obs_module_text("Dock.DescriptionHint"));
-		events_->setItem(row, kColDesc, descItem);
+		// inline 1..8 camera toggle chips with per-angle description
+		events_->setCellWidget(row, kColCams,
+				       makeCameraCell(id, camOn, camNotes));
 
 		obs_data_release(e);
 	}
@@ -1353,7 +1353,8 @@ void MultiReplayDock::refreshEvents()
 	refreshing_ = false;
 }
 
-QWidget *MultiReplayDock::makeCameraCell(int id, const bool *enabled)
+QWidget *MultiReplayDock::makeCameraCell(int id, const bool *enabled,
+					  const std::string *notes)
 {
 	Config cfg = ReplayCore::instance().getConfig();
 	auto *w = new QWidget(events_);
@@ -1365,15 +1366,29 @@ QWidget *MultiReplayDock::makeCameraCell(int id, const bool *enabled)
 		b->setObjectName("mrCamToggle");
 		const std::string &dn =
 			(i < kMaxCameras) ? cfg.cameras[i].displayName : "";
-		if (dn.empty()) {
-			b->setText(QString::number(i + 1));
-			b->setToolTip(QString("%1 %2")
-					      .arg(obs_module_text("Dock.Angle"))
-					      .arg(i + 1));
+		QString label = dn.empty() ? QString::number(i + 1)
+					   : QString::fromStdString(dn).left(5);
+
+		// Show "•" indicator and description in tooltip when note set
+		const std::string &note = notes[i];
+		if (!note.empty()) {
+			b->setText(label + "·");
+			QString tip = (dn.empty() ? QString("Cam %1").arg(i + 1)
+						  : QString::fromStdString(dn));
+			tip += ": " + QString::fromStdString(note);
+			tip += "\n[right-click to edit]";
+			b->setToolTip(tip);
 		} else {
-			b->setText(QString::fromStdString(dn).left(5));
-			b->setToolTip(QString::fromStdString(dn));
+			b->setText(label);
+			b->setToolTip((dn.empty()
+					       ? QString("%1 %2")
+							 .arg(obs_module_text(
+								 "Dock.Angle"))
+							 .arg(i + 1)
+					       : QString::fromStdString(dn)) +
+				      "\n[right-click to edit description]");
 		}
+
 		b->setCheckable(true);
 		b->setChecked(enabled[i]);
 		b->setCursor(Qt::PointingHandCursor);
@@ -1381,6 +1396,28 @@ QWidget *MultiReplayDock::makeCameraCell(int id, const bool *enabled)
 		connect(b, &QToolButton::toggled, this, [id, a1](bool on) {
 			EventStore::instance().setAngle(id, a1, on);
 		});
+
+		// Right-click to set per-angle description
+		b->setContextMenuPolicy(Qt::CustomContextMenu);
+		QString curNote = QString::fromStdString(note);
+		QString camLabel =
+			dn.empty() ? QString("Cam %1").arg(i + 1)
+				   : QString::fromStdString(dn);
+		connect(b, &QToolButton::customContextMenuRequested, this,
+			[this, id, a1, curNote, camLabel](const QPoint &) {
+				bool ok;
+				QString text = QInputDialog::getText(
+					this,
+					QString("Descrizione — %1").arg(
+						camLabel),
+					"Descrizione:", QLineEdit::Normal,
+					curNote, &ok);
+				if (ok)
+					EventStore::instance().setAngleNote(
+						id, a1,
+						text.trimmed().toStdString());
+			});
+
 		l->addWidget(b);
 	}
 	l->addStretch(1);
@@ -1409,8 +1446,6 @@ void MultiReplayDock::onEventItemChanged(QTableWidgetItem *item)
 							    100.0);
 		}
 		refreshEvents();
-	} else if (item->column() == kColDesc) {
-		store.setDescription(id, item->text().trimmed().toStdString());
 	}
 }
 
