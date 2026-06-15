@@ -47,7 +47,6 @@ SPDX-License-Identifier: GPL-2.0-or-later
 #include <QMouseEvent>
 #include <QFontDatabase>
 #include <QInputDialog>
-#include <QResizeEvent>
 
 #include <algorithm>
 #include <string>
@@ -648,33 +647,6 @@ MultiReplayDock::MultiReplayDock(QWidget *parent) : QWidget(parent)
 
 MultiReplayDock::~MultiReplayDock() = default;
 
-// Switch splitter orientation based on the dock's own aspect ratio.
-// Portrait (tall/narrow = docked): vertical stack, events get more space.
-// Landscape (wide = floating or second-monitor panel): horizontal split so
-// the preview fills the left half and the event list the right half.
-void MultiReplayDock::resizeEvent(QResizeEvent *e)
-{
-	QWidget::resizeEvent(e);
-	if (!splitter_)
-		return;
-	const QSize s = e->size();
-	Qt::Orientation desired =
-		(s.width() > s.height() + 60) ? Qt::Horizontal : Qt::Vertical;
-	if (desired != currentOrientation_) {
-		currentOrientation_ = desired;
-		splitter_->setOrientation(desired);
-		if (desired == Qt::Horizontal) {
-			// Wide: preview left (equal share), events right (equal share)
-			splitter_->setStretchFactor(0, 1);
-			splitter_->setStretchFactor(1, 1);
-		} else {
-			// Tall: controls get less space, events get more
-			splitter_->setStretchFactor(0, 1);
-			splitter_->setStretchFactor(1, 3);
-		}
-	}
-}
-
 // ---------------------------------------------------------------------------
 // Single A preview + angle selector
 // ---------------------------------------------------------------------------
@@ -1125,11 +1097,13 @@ void MultiReplayDock::poll()
 			if (core.isRecording())
 				engine.refreshSession();
 		} else if (!core.isRecording() &&
-			   !core.getConfig().sessionFolder.empty()) {
-			// Don't load during recording: files are still open and
-			// not yet fully flushed; loadSession would call jumpToEnd
-			// → obs_source_media_restart which causes a visible flash
-			// of playback in the preview every 2 seconds.
+			   !core.getConfig().sessionFolder.empty() &&
+			   pollTick_ >= 150) {
+			// Defer first loadSession until tick 150 (~5s after startup):
+			// OBS needs time to fully initialize D3D11 resources before
+			// loadFileLocked() calls obs_source_update(), otherwise the
+			// concurrent initialization causes a GPU TDR crash (black
+			// screen) on Intel UHD Graphics.
 			std::string err;
 			engine.loadSession(core.getConfig().sessionFolder, err);
 		}

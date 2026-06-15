@@ -80,9 +80,6 @@ public:
 	explicit MultiReplayDock(QWidget *parent = nullptr);
 	~MultiReplayDock() override;
 
-protected:
-	void resizeEvent(QResizeEvent *e) override;
-
 private:
 	// --- UI assembly ---
 	QWidget *buildPreview();
@@ -137,7 +134,6 @@ private:
 	QCheckBox *musicChk_ = nullptr;
 
 	QSplitter *splitter_ = nullptr;
-	Qt::Orientation currentOrientation_ = Qt::Vertical;
 
 	QTimer *pollTimer_ = nullptr;
 	int pollTick_ = 0;
