@@ -47,11 +47,15 @@ gs_window qtToGsWindow(QWindow *window)
 
 OBSQTDisplay::OBSQTDisplay(QWidget *parent) : QWidget(parent)
 {
-	// The native surface is rendered by libobs, not by Qt's paint system.
-	setAttribute(Qt::WA_PaintOnScreen);
-	setAttribute(Qt::WA_StaticContents);
+	// WA_NativeWindow: gives OBS a real HWND to render into via D3D11.
+	// WA_PaintOnScreen is intentionally OMITTED: on Windows/Intel UHD it
+	// suppresses WM_PAINT for the entire dock parent, causing the GUI to go
+	// black while DWM's cached thumbnail stays correct. Since paintEngine()
+	// returns nullptr, Qt never paints over OBS's surface anyway.
+	// WA_NoSystemBackground: prevents WM_ERASEBKGND flash before OBS renders.
+	// WA_DontCreateNativeAncestors: keeps parent chain non-native so only this
+	// widget gets a dedicated HWND.
 	setAttribute(Qt::WA_NoSystemBackground);
-	setAttribute(Qt::WA_OpaquePaintEvent);
 	setAttribute(Qt::WA_DontCreateNativeAncestors);
 	setAttribute(Qt::WA_NativeWindow);
 	setMinimumSize(64, 36);
