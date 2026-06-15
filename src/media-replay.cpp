@@ -245,7 +245,6 @@ void MediaReplay::loadFileLocked(const std::string &path, int speedPct,
 	pendingLoad_ = true;
 	pendingSeekMs_ = seekMs;
 	pendingPlay_ = play;
-	pendingGen_++;
 	wake_.notify_all();
 }
 

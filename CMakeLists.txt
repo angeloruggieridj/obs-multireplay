@@ -37,7 +37,6 @@ endif()
 # C++20 for the plugin sources (std::filesystem, designated initializers)
 target_compile_features(${CMAKE_PROJECT_NAME} PRIVATE cxx_std_20)
 
-# cpp-httplib needs a threading library
 find_package(Threads REQUIRED)
 target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE Threads::Threads)
 
@@ -55,11 +54,6 @@ target_link_libraries(
     FFmpeg::swscale
     FFmpeg::swresample
 )
-
-# cpp-httplib on Windows needs winsock
-if(WIN32)
-  target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE ws2_32)
-endif()
 
 target_sources(
   ${CMAKE_PROJECT_NAME}

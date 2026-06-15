@@ -552,6 +552,14 @@ MultiReplayDock::MultiReplayDock(QWidget *parent) : QWidget(parent)
 				MediaReplay::instance().loadSession(
 					core.getConfig().sessionFolder, err);
 			} else {
+				// Stop any event playing BEFORE starting a new
+				// recording. startRecording() calls clearSession()
+				// which resets eventActive_/onDone but does not
+				// call stopEvents() — that would deadlock because
+				// startRecording holds ReplayCore::mutex_ while
+				// stopEvents would acquire MediaReplay::mutex_ in
+				// an order that conflicts with the monitor thread.
+				PlaybackCoordinator::instance().stopEvents();
 				std::string err;
 				if (!core.startRecording(err))
 					QMessageBox::warning(
