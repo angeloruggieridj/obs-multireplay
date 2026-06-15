@@ -55,6 +55,7 @@ OBSQTDisplay::OBSQTDisplay(QWidget *parent) : QWidget(parent)
 	setAttribute(Qt::WA_DontCreateNativeAncestors);
 	setAttribute(Qt::WA_NativeWindow);
 	setMinimumSize(64, 36);
+}
 
 OBSQTDisplay::~OBSQTDisplay()
 {
