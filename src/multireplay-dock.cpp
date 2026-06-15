@@ -516,17 +516,6 @@ void SeekBar::mouseReleaseEvent(QMouseEvent *e)
 
 void MultiReplayDock::drawChannelA(void *, uint32_t cx, uint32_t cy)
 {
-	// Limit preview to ~15fps. On Intel UHD rendering at the full OBS output
-	// rate (60fps) while also recording pushes the integrated GPU past its
-	// D3D11 throughput limit → TDR (black screen + mouse freeze). Skipping
-	// 3 of 4 frames is imperceptible in a replay preview and cuts GPU load
-	// by ~75% for this display path.
-	static int64_t s_lastFrameMs = 0;
-	int64_t nowMs = (int64_t)(os_gettime_ns() / 1000000LL);
-	if (nowMs - s_lastFrameMs < 66)
-		return;
-	s_lastFrameMs = nowMs;
-
 	obs_source_t *src = MediaReplay::instance().acquireSource();
 	if (!src)
 		return;
