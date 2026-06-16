@@ -91,7 +91,20 @@ public:
 	bool resolveTime(int camIndex, int64_t masterNs, std::string &pathOut,
 			 int64_t &offsetNsOut) const;
 
-	std::string transportJson() const;
+	// Lightweight transport snapshot — avoids JSON alloc/serialize on every
+	// poll tick. Read by the dock UI at ~30fps.
+	struct TransportState {
+		bool sessionLoaded = false;
+		bool followLive = false;
+		bool recording = false;
+		int64_t seekableNs = 0;
+		int64_t durationNs = 0;
+		bool playing = false;
+		double speed = 1.0;
+		int64_t positionNs = 0;
+		int angle = 1; // 1-based
+	};
+	TransportState transportState() const;
 
 private:
 	MediaReplay() = default;

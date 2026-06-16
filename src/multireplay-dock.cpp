@@ -1098,65 +1098,53 @@ void MultiReplayDock::poll()
 				engine.refreshSession();
 		} else if (!core.isRecording() &&
 			   !core.getConfig().sessionFolder.empty() &&
-			   pollTick_ >= 150) {
-			// Defer first loadSession until tick 150 (~5s after startup):
-			// OBS needs time to fully initialize D3D11 resources before
-			// loadFileLocked() calls obs_source_update(), otherwise the
-			// concurrent initialization causes a GPU TDR crash (black
-			// screen) on Intel UHD Graphics.
+			   pollTick_ >= 30) {
+			// Brief startup delay (~1s at 33ms/tick) lets OBS finish
+			// FINISHED_LOADING and ensureSource() before we drive the
+			// media source. No longer needs 5s: hw_decode=false removes
+			// the D3D11VA contention that required the long guard.
 			std::string err;
 			engine.loadSession(core.getConfig().sessionFolder, err);
 		}
 	}
 
 	// --- transport ---
-	Data t(engine.transportJson());
-	if (t) {
-		seekableNs_ = obs_data_get_int(t, "seekableNs");
-		durationNs_ = obs_data_get_int(t, "durationNs");
-		bool followLive = obs_data_get_bool(t, "followLive");
+	auto ts = engine.transportState();
+	seekableNs_ = ts.seekableNs;
+	durationNs_ = ts.durationNs;
 
-		obs_data_t *a = obs_data_get_obj(t, "A");
-		int64_t posA = a ? obs_data_get_int(a, "positionNs") : 0;
-		bool playingA = a ? obs_data_get_bool(a, "playing") : false;
-		int angleA = a ? (int)obs_data_get_int(a, "angle") : 1;
-		double spA = a ? obs_data_get_double(a, "speed") : 1.0;
-		if (a)
-			obs_data_release(a);
-
-		if (!seekDragging_) {
-			double posFrac = durationNs_ > 0
-						 ? (double)posA / (double)durationNs_
-						 : 0.0;
-			double seekFrac = durationNs_ > 0
-						  ? (double)seekableNs_ /
-							    (double)durationNs_
-						  : 1.0;
-			seek_->setProgress(posFrac, seekFrac);
-			tcLbl_->setText(formatTc(posA) + "  /  " +
-					formatTc(durationNs_));
-		}
-
-		QStyle::StandardPixmap sp = playingA ? QStyle::SP_MediaPause
-						     : QStyle::SP_MediaPlay;
-		playPauseBtn_->setIcon(style()->standardIcon(sp));
-		if (playPauseBtn_->property("playing").toBool() != playingA) {
-			playPauseBtn_->setProperty("playing", playingA);
-			repolish(playPauseBtn_);
-		}
-		if (nowBtn_->property("live").toBool() != followLive) {
-			nowBtn_->setProperty("live", followLive);
-			repolish(nowBtn_);
-		}
-		if (!speed_->isSliderDown()) {
-			speed_->blockSignals(true);
-			speed_->setValue(std::clamp((int)(spA * 100.0), 5, 100));
-			speed_->blockSignals(false);
-		}
-
-		if (anglesA_ && anglesA_->button(angleA))
-			anglesA_->button(angleA)->setChecked(true);
+	if (!seekDragging_) {
+		double posFrac = ts.durationNs > 0
+					 ? (double)ts.positionNs /
+						   (double)ts.durationNs
+					 : 0.0;
+		double seekFrac = ts.durationNs > 0
+					  ? (double)ts.seekableNs /
+						    (double)ts.durationNs
+					  : 1.0;
+		seek_->setProgress(posFrac, seekFrac);
+		tcLbl_->setText(formatTc(ts.positionNs) + "  /  " +
+				formatTc(ts.durationNs));
 	}
+
+	QStyle::StandardPixmap sp = ts.playing ? QStyle::SP_MediaPause
+						: QStyle::SP_MediaPlay;
+	playPauseBtn_->setIcon(style()->standardIcon(sp));
+	if (playPauseBtn_->property("playing").toBool() != ts.playing) {
+		playPauseBtn_->setProperty("playing", ts.playing);
+		repolish(playPauseBtn_);
+	}
+	if (nowBtn_->property("live").toBool() != ts.followLive) {
+		nowBtn_->setProperty("live", ts.followLive);
+		repolish(nowBtn_);
+	}
+	if (!speed_->isSliderDown()) {
+		speed_->blockSignals(true);
+		speed_->setValue(std::clamp((int)(ts.speed * 100.0), 5, 100));
+		speed_->blockSignals(false);
+	}
+	if (anglesA_ && anglesA_->button(ts.angle))
+		anglesA_->button(ts.angle)->setChecked(true);
 
 	// --- recording status ---
 	bool rec = core.isRecording();

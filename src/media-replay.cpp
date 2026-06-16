@@ -59,6 +59,11 @@ void MediaReplay::unload()
 		mediaSource_ = nullptr;
 	}
 	index_.reset();
+	loadedPath_.clear();
+	pendingLoad_ = false;
+	eventActive_ = false;
+	eventPlayStarted_ = false;
+	eventOnDone_ = nullptr;
 }
 
 // ---------------------------------------------------------------------------
@@ -106,7 +111,13 @@ void MediaReplay::ensureSource()
 		obs_data_set_bool(s, "looping", false);
 		obs_data_set_bool(s, "restart_on_activate", false);
 		obs_data_set_bool(s, "close_when_inactive", false);
-		obs_data_set_bool(s, "hw_decode", true);
+		// hw_decode MUST be false: D3D11VA hardware decode accesses the D3D11
+		// device context from ffmpeg's decode thread. On Intel UHD (and any GPU
+		// where the encode pipeline also uses D3D11VA via Quick Sync) this races
+		// with the OBS render thread → GPU TDR (black screen + mouse freeze).
+		// Software decode uploads frames only via obs_enter_graphics(), which is
+		// serialised with the render thread, so no contention occurs.
+		obs_data_set_bool(s, "hw_decode", false);
 		obs_data_set_int(s, "speed_percent", 100);
 		mediaSource_ = obs_source_create("ffmpeg_source", managedName, s,
 						 nullptr);
@@ -123,11 +134,13 @@ void MediaReplay::ensureSource()
 	}
 
 	// Apply our control flags without disturbing any loaded file.
+	// hw_decode=false also applied here for adopted (user-picked) sources.
 	if (mediaSource_) {
 		obs_data_t *s = obs_source_get_settings(mediaSource_);
 		obs_data_set_bool(s, "looping", false);
 		obs_data_set_bool(s, "restart_on_activate", false);
 		obs_data_set_bool(s, "close_when_inactive", false);
+		obs_data_set_bool(s, "hw_decode", false);
 		obs_source_update(mediaSource_, s);
 		obs_data_release(s);
 
@@ -238,6 +251,7 @@ void MediaReplay::loadFileLocked(const std::string &path, int speedPct,
 	obs_data_set_bool(s, "looping", false);
 	obs_data_set_bool(s, "restart_on_activate", false);
 	obs_data_set_bool(s, "close_when_inactive", false);
+	obs_data_set_bool(s, "hw_decode", false); // see ensureSource() for rationale
 	obs_source_update(mediaSource_, s);
 	obs_data_release(s);
 
@@ -571,38 +585,31 @@ void MediaReplay::monitorLoop()
 }
 
 // ---------------------------------------------------------------------------
-// Transport JSON (consumed by the dock)
+// Transport state (consumed by the dock every poll tick)
 // ---------------------------------------------------------------------------
 
-std::string MediaReplay::transportJson() const
+MediaReplay::TransportState MediaReplay::transportState() const
 {
-	// Call out to other singletons BEFORE locking mutex_ (each of these
-	// locks internally): avoids an AB-BA deadlock with startRecording(),
-	// which holds ReplayCore's lock while calling into MediaReplay.
+	// Read other singletons BEFORE locking mutex_ (each locks internally):
+	// avoids AB-BA deadlock with startRecording(), which holds ReplayCore's
+	// lock while calling clearSession() (which then locks mutex_).
 	int64_t footage = footageDurationNs();
 	int64_t pos = position();
 	bool play = playing();
 	bool rec = ReplayCore::instance().isRecording();
 
 	std::lock_guard<std::mutex> lock(mutex_);
-	obs_data_t *root = obs_data_create();
-	obs_data_set_bool(root, "sessionLoaded", (bool)index_);
-	obs_data_set_bool(root, "followLive", followLive_);
-	obs_data_set_bool(root, "recording", rec);
-	obs_data_set_int(root, "seekableNs", footage);
-	obs_data_set_int(root, "durationNs", footage);
-
-	obs_data_t *ch = obs_data_create();
-	obs_data_set_bool(ch, "playing", play);
-	obs_data_set_double(ch, "speed", speedPct_.load() / 100.0);
-	obs_data_set_int(ch, "positionNs", pos);
-	obs_data_set_int(ch, "angle", angle_.load() + 1);
-	obs_data_set_obj(root, "A", ch);
-	obs_data_release(ch);
-
-	std::string json = obs_data_get_json(root);
-	obs_data_release(root);
-	return json;
+	TransportState t;
+	t.sessionLoaded = (bool)index_;
+	t.followLive = followLive_;
+	t.recording = rec;
+	t.seekableNs = footage;
+	t.durationNs = footage;
+	t.playing = play;
+	t.speed = speedPct_.load() / 100.0;
+	t.positionNs = pos;
+	t.angle = angle_.load() + 1; // 1-based for the UI
+	return t;
 }
 
 } // namespace multireplay
