@@ -296,6 +296,21 @@ bool ReplayCore::startRecording(std::string &errorOut)
 		return false;
 	}
 
+	// Align sessionMonoStartNs_ with the SessionIndex master-timeline origin.
+	// SessionIndex uses min(startTimestampNs) as t=0; events and liveElapsedNs
+	// must use the same origin so that marker fractions and resolve() offsets
+	// are consistent. Capture AFTER arming so the minimum is known.
+	{
+		uint64_t minTs = UINT64_MAX;
+		for (const auto &st : cameraStatus_) {
+			if (st.recording && st.startTimestampNs > 0 &&
+			    st.startTimestampNs < minTs)
+				minTs = st.startTimestampNs;
+		}
+		if (minTs != UINT64_MAX)
+			sessionMonoStartNs_ = (int64_t)minTs;
+	}
+
 	recording_ = true;
 	// Record wall-clock start time so SessionIndex can filter segment files
 	// from previous recording sessions that share the same folder.
