@@ -126,6 +126,9 @@ private:
 	void writeSessionManifest() const;
 	// Called with mutex_ held — returns recordingFolder without re-acquiring.
 	std::string recordingFolderLocked() const;
+	// Update Branch Output filter path on every configured camera source.
+	// Must be called WITHOUT mutex_ held (ensureFilter reads recordingFolder).
+	void reapplyFilterSettings();
 
 	void registerReplayHotkeys(); // full broadcast-style hotkey set
 

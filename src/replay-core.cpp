@@ -425,6 +425,9 @@ void ReplayCore::setConfig(const Config &cfg)
 		config_ = cfg;
 	}
 	saveConfig();
+	// Filters must know the new path even before the next REC press.
+	if (!recording_)
+		reapplyFilterSettings();
 }
 
 std::string ReplayCore::pickVideoEncoder() const
@@ -582,6 +585,30 @@ bool ReplayCore::branchOutputAvailable() const
 	return branch_output::available();
 }
 
+void ReplayCore::reapplyFilterSettings()
+{
+	// Snapshot camera config without holding mutex_ (ensureFilter calls
+	// recordingFolder() which would re-acquire and deadlock).
+	Config cfg;
+	{
+		std::lock_guard<std::mutex> lock(mutex_);
+		cfg = config_;
+	}
+	for (int i = 0; i < kMaxCameras; i++) {
+		if (cfg.cameras[i].sourceName.empty())
+			continue;
+		obs_source_t *target =
+			obs_get_source_by_name(cfg.cameras[i].sourceName.c_str());
+		if (!target)
+			continue;
+		obs_source_t *filter =
+			branch_output::ensureFilter(target, i, cfg);
+		if (filter)
+			obs_source_release(filter);
+		obs_source_release(target);
+	}
+}
+
 std::string ReplayCore::recordingFolderLocked() const
 {
 	if (config_.currentProjectName.empty())
@@ -635,6 +662,7 @@ bool ReplayCore::newProject(const std::string &title, std::string &errorOut)
 	}
 	EventStore::instance().setSessionFolder(path);
 	MediaReplay::instance().clearSession();
+	reapplyFilterSettings(); // redirect Branch Output path to project folder
 	obs_log(LOG_INFO, "Project created: %s", path.c_str());
 	return true;
 }
@@ -665,6 +693,7 @@ bool ReplayCore::openProject(const std::string &folderName,
 	EventStore::instance().setSessionFolder(path);
 	std::string loadErr;
 	MediaReplay::instance().loadSession(path, loadErr);
+	reapplyFilterSettings(); // redirect Branch Output path to project folder
 	obs_log(LOG_INFO, "Project opened: %s", path.c_str());
 	return true;
 }
