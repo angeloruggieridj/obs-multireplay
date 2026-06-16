@@ -8,6 +8,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
 #include "replay-core.hpp"
 #include "plugin-support.h"
 
+#include <filesystem>
 #include <string>
 
 namespace multireplay {
@@ -31,8 +32,16 @@ obs_data_t *buildSettings(int camIndex, const Config &cfg)
 
 	// --- Destination: session folder, one file series per camera ---
 	obs_data_set_bool(settings, "use_profile_recording_path", false);
-	obs_data_set_string(settings, "path",
-			    ReplayCore::instance().recordingFolder().c_str());
+	// Compute recording path from cfg directly — do NOT call
+	// ReplayCore::instance().recordingFolder() here because buildSettings()
+	// is called from ensureFilter() which is called from startRecording()
+	// while holding ReplayCore::mutex_, causing a recursive-lock deadlock.
+	std::string recPath = cfg.currentProjectName.empty()
+				      ? cfg.sessionFolder
+				      : (std::filesystem::path(cfg.sessionFolder) /
+					 cfg.currentProjectName)
+					        .string();
+	obs_data_set_string(settings, "path", recPath.c_str());
 	std::string nameFormat = "cam" + std::to_string(camIndex + 1) +
 				 "_%CCYY-%MM-%DD_%hh-%mm-%ss";
 	obs_data_set_string(settings, "filename_formatting", nameFormat.c_str());
