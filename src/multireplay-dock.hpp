@@ -12,6 +12,7 @@ controls and the searchable, editable event list.
 #pragma once
 
 #include <QWidget>
+#include <atomic>
 #include <climits>
 #include <cstdint>
 #include <utility>
@@ -146,6 +147,8 @@ private:
 
 	QTimer *pollTimer_ = nullptr;
 	int pollTick_ = 0;
+	bool prevRecording_ = false;                      // detects REC start
+	std::atomic<bool> sessionRefreshPending_{false};  // one refresh at a time
 
 	// cached live-edge for seek mapping (ns)
 	int64_t seekableNs_ = 0;

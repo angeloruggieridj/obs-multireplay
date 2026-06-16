@@ -52,6 +52,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
 #include <algorithm>
 #include <string>
 #include <cstring>
+#include <thread>
 
 namespace multireplay {
 
@@ -478,7 +479,8 @@ void SeekBar::mousePressEvent(QMouseEvent *e)
 	if (e->button() != Qt::LeftButton)
 		return;
 	dragging_ = true;
-	dragFrac_ = fracAt(e->pos().x());
+	// Clamp to seekable region so the user can't drag into unindexed territory.
+	dragFrac_ = std::min(fracAt(e->pos().x()), seekableFrac_);
 	emit scrubStateChanged(true);
 	emit scrubMoved(dragFrac_);
 	update();
@@ -488,7 +490,7 @@ void SeekBar::mouseMoveEvent(QMouseEvent *e)
 {
 	if (!dragging_)
 		return;
-	dragFrac_ = fracAt(e->pos().x());
+	dragFrac_ = std::min(fracAt(e->pos().x()), seekableFrac_);
 	emit scrubMoved(dragFrac_);
 	update();
 }
@@ -498,7 +500,7 @@ void SeekBar::mouseReleaseEvent(QMouseEvent *e)
 	if (e->button() != Qt::LeftButton || !dragging_)
 		return;
 	dragging_ = false;
-	dragFrac_ = fracAt(e->pos().x());
+	dragFrac_ = std::min(fracAt(e->pos().x()), seekableFrac_);
 	positionFrac_ = dragFrac_;
 	emit seekRequested(dragFrac_);
 	emit scrubStateChanged(false);
@@ -906,7 +908,9 @@ QWidget *MultiReplayDock::buildMarkers()
 	auto *in = compactBtn(obs_module_text("Dock.MarkIn"), this, "mrAccent");
 	auto *out = compactBtn(obs_module_text("Dock.MarkOut"), this, "mrAccent");
 	connect(in, &QPushButton::clicked, this, [this]() {
-		EventStore::instance().markIn(markTimeNs());
+		// Inherit the currently selected camera angle (0-based).
+		int a0 = MediaReplay::instance().angle();
+		EventStore::instance().markIn(markTimeNs(), a0);
 		refreshEvents();
 	});
 	connect(out, &QPushButton::clicked, this, [this]() {
@@ -922,7 +926,8 @@ QWidget *MultiReplayDock::buildMarkers()
 	for (int sec : {5, 10, 20}) {
 		auto *b = compactBtn(QString("-%1s").arg(sec), this);
 		connect(b, &QPushButton::clicked, this, [this, sec]() {
-			EventStore::instance().markInOut(markTimeNs(), sec);
+			int a0 = MediaReplay::instance().angle();
+			EventStore::instance().markInOut(markTimeNs(), sec, a0);
 			refreshEvents();
 		});
 		h->addWidget(b);
@@ -1124,15 +1129,31 @@ void MultiReplayDock::poll()
 	// ~every 2s (60 ticks at 33ms) so the seekbar grows during a take.
 	if (++pollTick_ % 60 == 0) {
 		if (engine.sessionLoaded()) {
-			if (core.isRecording())
-				engine.refreshSession();
+			if (core.isRecording()) {
+				// Refresh on a background thread: SessionIndex::refresh()
+				// reads MP4 file headers from disk and can block for
+				// hundreds of ms, freezing the UI if run inline.
+				if (!sessionRefreshPending_.exchange(true)) {
+					std::thread([this]() {
+						auto &eng =
+							MediaReplay::instance();
+						eng.refreshSession();
+						// After the index is updated, advance
+						// the preview to the new live edge so
+						// the operator always sees the most
+						// recent recorded footage.
+						if (eng.followLive())
+							eng.jumpToEnd();
+						sessionRefreshPending_.store(false);
+					}).detach();
+				}
+			}
 		} else if (!core.isRecording() &&
 			   !core.getConfig().sessionFolder.empty() &&
 			   pollTick_ >= 30) {
 			// Brief startup delay (~1s at 33ms/tick) lets OBS finish
 			// FINISHED_LOADING and ensureSource() before we drive the
-			// media source. No longer needs 5s: hw_decode=false removes
-			// the D3D11VA contention that required the long guard.
+			// media source.
 			std::string err;
 			engine.loadSession(core.getConfig().sessionFolder, err);
 		}
@@ -1254,6 +1275,13 @@ void MultiReplayDock::poll()
 
 	// --- recording status ---
 	bool rec = core.isRecording();
+
+	// Auto-follow live edge when recording starts so the preview immediately
+	// tracks the new take instead of sitting on old footage.
+	if (rec && !prevRecording_)
+		engine.setFollowLive(true);
+	prevRecording_ = rec;
+
 	recBtn_->setText(rec ? QStringLiteral("◼  STOP")
 			     : QStringLiteral("●  REC"));
 	if (recBtn_->property("recording").toBool() != rec) {

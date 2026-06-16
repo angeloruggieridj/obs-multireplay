@@ -50,7 +50,7 @@ void EventStore::selectList(int list)
 		selectedList_ = list;
 }
 
-int EventStore::markIn(int64_t tNs)
+int EventStore::markIn(int64_t tNs, int angle0Based)
 {
 	std::lock_guard<std::mutex> lock(mutex_);
 	ReplayEvent ev;
@@ -58,7 +58,7 @@ int EventStore::markIn(int64_t tNs)
 	ev.list = selectedList_;
 	ev.tInNs = std::max<int64_t>(0, tNs);
 	ev.tOutNs = -1;
-	ev.angles[0].enabled = true; // default angle: camera 1 (the reference controller default)
+	ev.angles[std::clamp(angle0Based, 0, kEventAngles - 1)].enabled = true;
 	ev.createdMode = liveMode_ ? "live" : "recorded";
 	events_.push_back(ev);
 	save();
@@ -79,7 +79,7 @@ bool EventStore::markOut(int64_t tNs)
 	return false;
 }
 
-int EventStore::markInOut(int64_t tNowNs, int seconds)
+int EventStore::markInOut(int64_t tNowNs, int seconds, int angle0Based)
 {
 	std::lock_guard<std::mutex> lock(mutex_);
 	ReplayEvent ev;
@@ -88,7 +88,7 @@ int EventStore::markInOut(int64_t tNowNs, int seconds)
 	ev.tOutNs = std::max<int64_t>(1, tNowNs);
 	ev.tInNs = std::max<int64_t>(0,
 				     ev.tOutNs - (int64_t)seconds * 1000000000);
-	ev.angles[0].enabled = true;
+	ev.angles[std::clamp(angle0Based, 0, kEventAngles - 1)].enabled = true;
 	ev.createdMode = liveMode_ ? "live" : "recorded";
 	events_.push_back(ev);
 	save();

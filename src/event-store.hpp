@@ -52,9 +52,11 @@ public:
 	int selectedList() const { return selectedList_; }
 
 	// --- Event creation (times on the master timeline) ---
-	int markIn(int64_t tNs);                    // returns event id
-	bool markOut(int64_t tNs);                  // closes last open event
-	int markInOut(int64_t tNowNs, int seconds); // -5/-10/-20 presets
+	// angle0Based: 0-based camera to enable (0 = CAM1). Replaces the old
+	// "always CAM1" default so the UI can pass the selected angle.
+	int markIn(int64_t tNs, int angle0Based = 0);                    // returns event id
+	bool markOut(int64_t tNs);                                       // closes last open event
+	int markInOut(int64_t tNowNs, int seconds, int angle0Based = 0); // -5/-10/-20 presets
 	bool markCancel();                          // deletes last open event
 
 	// --- Editing ---

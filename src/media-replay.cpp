@@ -536,6 +536,22 @@ void MediaReplay::monitorLoop()
 					pendingSeekApplied_ = false;
 					if (eventActive_ && pendingPlay_ &&
 					    !eventPlayStarted_) {
+						// Recalibrate OUT: keyframe-aligned
+						// seek may have landed before the
+						// requested IN point. Read the actual
+						// position now that the seek settled
+						// so the wall-clock OUT fires at
+						// exactly tOutNs.
+						int64_t landedMs =
+							obs_source_media_get_time(
+								src);
+						int64_t masterActual =
+							segBaseNs_ +
+							landedMs * 1000000LL;
+						if (eventOutNs_ > masterActual)
+							eventDurationNs_ =
+								eventOutNs_ -
+								masterActual;
 						eventPlayStartWall_ =
 							std::chrono::steady_clock::now();
 						eventPlayStarted_ = true;
@@ -551,6 +567,16 @@ void MediaReplay::monitorLoop()
 					obs_source_media_play_pause(src, false);
 				pendingSeekApplied_ = false;
 				if (eventActive_ && !eventPlayStarted_) {
+					// Same recalibration: read actual landed
+					// position so OUT fires at the right time.
+					int64_t landedMs =
+						obs_source_media_get_time(src);
+					int64_t masterActual =
+						segBaseNs_ +
+						landedMs * 1000000LL;
+					if (eventOutNs_ > masterActual)
+						eventDurationNs_ =
+							eventOutNs_ - masterActual;
 					eventPlayStartWall_ =
 						std::chrono::steady_clock::now();
 					eventPlayStarted_ = true;
