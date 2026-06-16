@@ -61,6 +61,7 @@ void MediaReplay::unload()
 	index_.reset();
 	loadedPath_.clear();
 	pendingLoad_ = false;
+	pendingSeekApplied_ = false;
 	eventActive_ = false;
 	eventPlayStarted_ = false;
 	eventOnDone_ = nullptr;
@@ -90,6 +91,7 @@ void MediaReplay::ensureSource()
 	}
 	loadedPath_.clear();
 	pendingLoad_ = false;
+	pendingSeekApplied_ = false;
 	eventActive_ = false;
 	eventOnDone_ = nullptr;
 
@@ -204,6 +206,7 @@ void MediaReplay::clearSession()
 	index_.reset();
 	loadedPath_.clear();
 	pendingLoad_ = false;
+	pendingSeekApplied_ = false;
 	eventActive_ = false;
 	eventOnDone_ = nullptr;
 	followLive_ = false;
@@ -288,7 +291,7 @@ void MediaReplay::setPlaying(bool playing)
 	std::lock_guard<std::mutex> lock(mutex_);
 	if (!mediaSource_)
 		return;
-	if (pendingLoad_) {
+	if (pendingLoad_ || pendingSeekApplied_) {
 		pendingPlay_ = playing;
 		return;
 	}
@@ -305,7 +308,7 @@ bool MediaReplay::playing() const
 	std::lock_guard<std::mutex> lock(mutex_);
 	if (!mediaSource_)
 		return false;
-	if (pendingLoad_)
+	if (pendingLoad_ || pendingSeekApplied_)
 		return pendingPlay_;
 	return obs_source_media_get_state(mediaSource_) ==
 	       OBS_MEDIA_STATE_PLAYING;
@@ -320,13 +323,26 @@ void MediaReplay::setSpeed(double speed)
 	speedPct_ = pct;
 	if (loadedPath_.empty() || !mediaSource_)
 		return;
-	// ffmpeg_source applies speed on (re)load; reload in place, restoring
-	// the current position and play state.
+
+	auto st = obs_source_media_get_state(mediaSource_);
+	if (!pendingLoad_ && !pendingSeekApplied_ &&
+	    (st == OBS_MEDIA_STATE_PLAYING || st == OBS_MEDIA_STATE_PAUSED)) {
+		// Update speed in-place: obs_source_update() with the same
+		// local_file only changes the decode rate in ffmpeg_source —
+		// no restart from frame 0, no pendingLoad_ / pause cycle.
+		obs_data_t *s = obs_source_get_settings(mediaSource_);
+		obs_data_set_int(s, "speed_percent", pct);
+		obs_data_set_bool(s, "hw_decode", false);
+		obs_source_update(mediaSource_, s);
+		obs_data_release(s);
+		return;
+	}
+
+	// Source not yet ready or a pending operation is in flight: reload in
+	// place, restoring the current position and play state.
 	int64_t curMs = pendingLoad_ ? pendingSeekMs_
 				     : obs_source_media_get_time(mediaSource_);
-	bool pl = pendingLoad_ ? pendingPlay_
-			       : (obs_source_media_get_state(mediaSource_) ==
-				  OBS_MEDIA_STATE_PLAYING);
+	bool pl = pendingLoad_ ? pendingPlay_ : (st == OBS_MEDIA_STATE_PLAYING);
 	loadFileLocked(loadedPath_, pct, curMs, pl);
 }
 
@@ -440,13 +456,17 @@ bool MediaReplay::playEvent(int64_t tInNs, int64_t tOutNs, int angle0,
 			    st == OBS_MEDIA_STATE_PAUSED);
 
 	if (sameFile && activeState && spPct == speedPct_.load()) {
-		// File is open + same speed: seek directly, no reload.
+		// File is open + same speed: seek directly without reload.
+		// Pause first, then seek; monitorLoop starts play one cycle later
+		// (20 ms) so the decode thread has time to process the async seek
+		// before the first frame renders — avoids a flash at frame 0.
 		speedPct_ = spPct;
+		obs_source_media_play_pause(mediaSource_, true);
 		obs_source_media_set_time(mediaSource_, off / 1000000LL);
-		obs_source_media_play_pause(mediaSource_, false); // play
-		// Start wall-clock timer immediately (no pendingLoad_ path).
-		eventPlayStartWall_ = std::chrono::steady_clock::now();
-		eventPlayStarted_ = true;
+		pendingSeekMs_ = off / 1000000LL;
+		pendingPlay_ = true;
+		pendingSeekApplied_ = true;
+		// eventPlayStarted_ / wall clock set by monitorLoop on play start.
 	} else {
 		// New file, speed change, or source in bad state: go through the
 		// full load path (update + restart + pending seek).
@@ -463,6 +483,7 @@ void MediaReplay::stopEvent()
 	eventPlayStarted_ = false;
 	eventOnDone_ = nullptr;
 	eventOutNs_ = -1;
+	pendingSeekApplied_ = false;
 	if (mediaSource_ && !pendingLoad_)
 		obs_source_media_play_pause(mediaSource_, true);
 }
@@ -491,31 +512,48 @@ void MediaReplay::monitorLoop()
 			int64_t durMs = obs_source_media_get_duration(src);
 
 			if (pendingLoad_) {
-				// Wait until the media is open (PLAYING or PAUSED
-				// after the restart we issued in loadFileLocked).
-				// Do NOT rely on durMs > 0 alone — the previous
-				// file's stale duration can trigger this too early.
 				bool ready = (st == OBS_MEDIA_STATE_PLAYING ||
 					      st == OBS_MEDIA_STATE_PAUSED);
-				if (ready) {
-					// Pause first so we don't show frames
-					// between frame-0 (auto-play after restart)
-					// and the actual in-point seek.
-					obs_source_media_play_pause(src, true);
-					obs_source_media_set_time(src,
-								  pendingSeekMs_);
+				if (!pendingSeekApplied_) {
+					// Phase 1: media is open — pause and seek.
+					// Do NOT play yet; the seek is async (posted
+					// to the decode thread) so playing immediately
+					// would show frame 0 before the seek lands.
+					if (ready) {
+						obs_source_media_play_pause(
+							src, true);
+						obs_source_media_set_time(
+							src, pendingSeekMs_);
+						pendingSeekApplied_ = true;
+					}
+				} else {
+					// Phase 2 (next cycle, ~20 ms later): seek
+					// has had time to settle — now start play.
 					if (pendingPlay_)
 						obs_source_media_play_pause(
 							src, false);
 					pendingLoad_ = false;
-					// Start OUT wall-clock after seek is applied
-					// (first event only; chaining doesn't reset it).
+					pendingSeekApplied_ = false;
 					if (eventActive_ && pendingPlay_ &&
 					    !eventPlayStarted_) {
 						eventPlayStartWall_ =
 							std::chrono::steady_clock::now();
 						eventPlayStarted_ = true;
 					}
+				}
+				continue;
+			}
+
+			// Fast-path seek (playEvent same-file branch): seek was
+			// applied last cycle; start play now.
+			if (pendingSeekApplied_) {
+				if (pendingPlay_)
+					obs_source_media_play_pause(src, false);
+				pendingSeekApplied_ = false;
+				if (eventActive_ && !eventPlayStarted_) {
+					eventPlayStartWall_ =
+						std::chrono::steady_clock::now();
+					eventPlayStarted_ = true;
 				}
 				continue;
 			}

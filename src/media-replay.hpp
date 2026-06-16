@@ -136,6 +136,11 @@ private:
 	bool pendingLoad_ = false;
 	int64_t pendingSeekMs_ = 0;
 	bool pendingPlay_ = false;
+	// True for one monitorLoop cycle after a seek is issued but before play
+	// starts. Guards against the async seek race: obs_source_media_set_time()
+	// posts to the decode thread; without this delay play() fires before the
+	// seek completes and the source briefly plays from frame 0.
+	bool pendingSeekApplied_ = false;
 
 	// Event state.
 	bool eventActive_ = false;

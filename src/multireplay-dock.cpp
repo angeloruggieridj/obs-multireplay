@@ -210,17 +210,21 @@ QToolButton#mrCamToggle {
 	border: 1px solid #2a3545;
 	border-radius: 3px;
 	color: #4a5568;
-	font-size: 10px;
+	font-size: 9px;
 	font-weight: 700;
-	min-width: 20px;
-	max-width: 22px;
-	min-height: 20px;
-	padding: 0;
+	min-width: 22px;
+	max-width: 36px;
+	min-height: 32px;
+	padding: 1px 3px;
+	text-align: center;
 }
 QToolButton#mrCamToggle:hover { border-color: #3a4f65; color: #7a8898; }
 QToolButton#mrCamToggle:checked {
 	background: #3a2800; border-color: #e8a020; color: #f5c842;
 }
+
+/* section separator line */
+QWidget#mrSepLine { background: #1e2430; }
 
 /* Mark In/Out and accent buttons */
 QPushButton#mrAccent {
@@ -407,6 +411,24 @@ void repolish(QWidget *w)
 	w->update();
 }
 
+// Creates a labeled section separator: "LABEL ─────────────" spanning the
+// full width. Keeps the dock visually organized without heavyweight group boxes.
+QWidget *sectionHeader(const char *label, QWidget *parent)
+{
+	auto *w = new QWidget(parent);
+	auto *h = new QHBoxLayout(w);
+	h->setContentsMargins(0, 6, 0, 0);
+	h->setSpacing(6);
+	auto *lbl = new QLabel(QString::fromLatin1(label), w);
+	lbl->setObjectName("mrSectionLabel");
+	h->addWidget(lbl);
+	auto *line = new QWidget(w);
+	line->setObjectName("mrSepLine");
+	line->setFixedHeight(1);
+	h->addWidget(line, 1);
+	return w;
+}
+
 } // namespace
 
 // ---------------------------------------------------------------------------
@@ -415,7 +437,7 @@ void repolish(QWidget *w)
 
 SeekBar::SeekBar(QWidget *parent) : QWidget(parent)
 {
-	setFixedHeight(20);
+	setFixedHeight(22);
 	setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
 	setCursor(Qt::PointingHandCursor);
 	setMouseTracking(false);
@@ -427,6 +449,12 @@ void SeekBar::setProgress(double positionFrac, double seekableFrac)
 	seekableFrac_ = std::clamp(seekableFrac, 0.0, 1.0);
 	if (!dragging_)
 		update();
+}
+
+void SeekBar::setEventMarkers(std::vector<std::pair<double, double>> markers)
+{
+	markers_ = std::move(markers);
+	update();
 }
 
 double SeekBar::fracAt(int x) const
@@ -442,7 +470,7 @@ void SeekBar::paintEvent(QPaintEvent *)
 	p.setRenderHint(QPainter::Antialiasing, true);
 
 	const int m = 2;
-	const int h = 6;                       // track thickness
+	const int h = 8;                       // track thickness (taller for markers)
 	const int y = (height() - h) / 2;
 	const int w = width() - 2 * m;
 	const double pos = dragging_ ? dragFrac_ : positionFrac_;
@@ -460,12 +488,25 @@ void SeekBar::paintEvent(QPaintEvent *)
 		p.drawRoundedRect(s, 3, 3);
 	}
 
+	// event markers — amber-tinted rectangles showing captured events
+	p.setPen(QPen(QColor(0xe8, 0xa0, 0x20, 0x80), 0.5));
+	for (const auto &mk : markers_) {
+		if (mk.second <= mk.first)
+			continue;
+		double x0 = m + w * mk.first;
+		double x1 = m + w * mk.second;
+		QRectF ev(x0, y + 1, std::max(x1 - x0, 2.0), h - 2);
+		p.setBrush(QColor(0x60, 0x3c, 0x08, 0xb0));
+		p.drawRoundedRect(ev, 1.5, 1.5);
+	}
+	p.setPen(Qt::NoPen);
+
 	// played-up-to-position fill — amber gradient (dark → bright, left → right)
 	if (pos > 0.0) {
 		QRectF f(m, y, w * pos, h);
 		QLinearGradient grad(f.left(), 0, f.right(), 0);
-		grad.setColorAt(0.0, QColor(0xa0, 0x60, 0x14));
-		grad.setColorAt(1.0, QColor(0xe8, 0xa0, 0x20));
+		grad.setColorAt(0.0, QColor(0xa0, 0x60, 0x14, 0xd0));
+		grad.setColorAt(1.0, QColor(0xe8, 0xa0, 0x20, 0xd0));
 		p.setBrush(grad);
 		p.drawRoundedRect(f, 3, 3);
 	}
@@ -621,9 +662,12 @@ MultiReplayDock::MultiReplayDock(QWidget *parent) : QWidget(parent)
 	auto *controls = new QWidget(splitter_);
 	auto *cv = new QVBoxLayout(controls);
 	cv->setContentsMargins(0, 0, 0, 0);
-	cv->setSpacing(8);
+	cv->setSpacing(4);
+	cv->addWidget(sectionHeader("PLAYER", controls));
 	cv->addWidget(buildPreview(), 1);
+	cv->addWidget(sectionHeader("TRANSPORT", controls));
 	cv->addWidget(buildTransport());
+	cv->addWidget(sectionHeader("MARKERS", controls));
 	cv->addWidget(buildMarkers());
 
 	auto *eventsPanel = buildEvents();
@@ -867,8 +911,10 @@ QWidget *MultiReplayDock::buildEvents()
 {
 	auto *box = new QWidget(this);
 	auto *v = new QVBoxLayout(box);
-	v->setContentsMargins(0, 0, 0, 0);
+	v->setContentsMargins(0, 4, 0, 0);
 	v->setSpacing(3);
+
+	v->addWidget(sectionHeader("EVENTS", box));
 
 	auto *top = new QHBoxLayout();
 	top->setSpacing(5);
@@ -910,7 +956,7 @@ QWidget *MultiReplayDock::buildEvents()
 	events_->setEditTriggers(QAbstractItemView::DoubleClicked |
 				 QAbstractItemView::EditKeyPressed);
 	events_->verticalHeader()->setVisible(false);
-	events_->verticalHeader()->setDefaultSectionSize(30);
+	events_->verticalHeader()->setDefaultSectionSize(38);
 	events_->setAlternatingRowColors(true);
 	events_->setShowGrid(false);
 	events_->setWordWrap(false);
@@ -1229,6 +1275,7 @@ void MultiReplayDock::refreshEvents()
 		return;
 	}
 	const Qt::Alignment mid = Qt::AlignVCenter | Qt::AlignHCenter;
+	std::vector<std::pair<double, double>> markers;
 
 	size_t n = obs_data_array_count(arr);
 	for (size_t i = 0; i < n; i++) {
@@ -1255,6 +1302,17 @@ void MultiReplayDock::refreshEvents()
 				obs_data_release(ad);
 			}
 			obs_data_array_release(aArr);
+		}
+
+		// Collect timeline marker for ALL events (regardless of search
+		// filter) so the seekbar shows full density even when filtered.
+		if (tin >= 0 && tout >= tin && durationNs_ > 0) {
+			double inFrac = std::clamp(
+				(double)tin / (double)durationNs_, 0.0, 1.0);
+			double outFrac = std::clamp(
+				(double)tout / (double)durationNs_, 0.0, 1.0);
+			if (outFrac > inFrac)
+				markers.push_back({inFrac, outFrac});
 		}
 
 		QString dur = tout >= 0 ? formatTc(tout - tin)
@@ -1313,6 +1371,8 @@ void MultiReplayDock::refreshEvents()
 	}
 	obs_data_array_release(arr);
 	refreshing_ = false;
+	if (seek_)
+		seek_->setEventMarkers(std::move(markers));
 }
 
 QWidget *MultiReplayDock::makeCameraCell(int id, const bool *enabled,
@@ -1328,28 +1388,23 @@ QWidget *MultiReplayDock::makeCameraCell(int id, const bool *enabled,
 		b->setObjectName("mrCamToggle");
 		const std::string &dn =
 			(i < kMaxCameras) ? cfg.cameras[i].displayName : "";
+		// First line: camera number or short display name
 		QString label = dn.empty() ? QString::number(i + 1)
 					   : QString::fromStdString(dn).left(5);
 
-		// Show "•" indicator and description in tooltip when note set
+		// Notes displayed inline as second line inside the chip.
+		// Double-click (or right-click) to edit.
 		const std::string &note = notes[i];
 		if (!note.empty()) {
-			b->setText(label + "·");
-			QString tip = (dn.empty() ? QString("Cam %1").arg(i + 1)
-						  : QString::fromStdString(dn));
-			tip += ": " + QString::fromStdString(note);
-			tip += "\n[right-click to edit]";
-			b->setToolTip(tip);
+			QString noteShort =
+				QString::fromStdString(note).left(6);
+			b->setText(label + "\n" + noteShort);
 		} else {
 			b->setText(label);
-			b->setToolTip((dn.empty()
-					       ? QString("%1 %2")
-							 .arg(obs_module_text(
-								 "Dock.Angle"))
-							 .arg(i + 1)
-					       : QString::fromStdString(dn)) +
-				      "\n[right-click to edit description]");
 		}
+		// Minimal tooltip: full camera name only (note already visible)
+		if (!dn.empty())
+			b->setToolTip(QString::fromStdString(dn));
 
 		b->setCheckable(true);
 		b->setChecked(enabled[i]);
@@ -1359,12 +1414,11 @@ QWidget *MultiReplayDock::makeCameraCell(int id, const bool *enabled,
 			EventStore::instance().setAngle(id, a1, on);
 		});
 
-		// Right-click to set per-angle description
+		// Right-click to edit the per-angle description
 		b->setContextMenuPolicy(Qt::CustomContextMenu);
 		QString curNote = QString::fromStdString(note);
-		QString camLabel =
-			dn.empty() ? QString("Cam %1").arg(i + 1)
-				   : QString::fromStdString(dn);
+		QString camLabel = dn.empty() ? QString("Cam %1").arg(i + 1)
+					      : QString::fromStdString(dn);
 		connect(b, &QToolButton::customContextMenuRequested, this,
 			[this, id, a1, curNote, camLabel](const QPoint &) {
 				bool ok;
@@ -1374,10 +1428,12 @@ QWidget *MultiReplayDock::makeCameraCell(int id, const bool *enabled,
 						camLabel),
 					"Descrizione:", QLineEdit::Normal,
 					curNote, &ok);
-				if (ok)
+				if (ok) {
 					EventStore::instance().setAngleNote(
 						id, a1,
 						text.trimmed().toStdString());
+					refreshEvents();
+				}
 			});
 
 		l->addWidget(b);

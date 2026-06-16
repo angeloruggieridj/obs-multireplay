@@ -14,6 +14,7 @@ controls and the searchable, editable event list.
 #include <QWidget>
 #include <climits>
 #include <cstdint>
+#include <utility>
 #include <vector>
 
 class QPushButton;
@@ -51,6 +52,9 @@ public:
 	// position/duration/seekable expressed as fractions of the timeline
 	// [0,1]; -1 (default seekableFrac) means "whole bar is seekable".
 	void setProgress(double positionFrac, double seekableFrac = 1.0);
+	// Event markers drawn on the timeline as amber rectangles.
+	// Each pair is (inFrac, outFrac) in [0,1].
+	void setEventMarkers(std::vector<std::pair<double, double>> markers);
 	bool dragging() const { return dragging_; }
 
 signals:
@@ -71,6 +75,7 @@ private:
 	double seekableFrac_ = 1.0;
 	double dragFrac_ = 0.0;
 	bool dragging_ = false;
+	std::vector<std::pair<double, double>> markers_;
 };
 
 class MultiReplayDock : public QWidget {
