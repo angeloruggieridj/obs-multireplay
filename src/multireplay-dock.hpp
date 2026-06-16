@@ -17,6 +17,7 @@ controls and the searchable, editable event list.
 #include <utility>
 #include <vector>
 
+class QEvent;
 class QPushButton;
 class QToolButton;
 class QSlider;
@@ -104,6 +105,9 @@ private:
 	std::vector<int> selectedEventIds() const;
 	void seekToFraction(double frac);
 	void setAngle(int angle1Based);
+
+	// --- event filter: double-click on note labels ---
+	bool eventFilter(QObject *watched, QEvent *event) override;
 
 	// --- preview render callback (runs on the OBS graphics thread) ---
 	static void drawChannelA(void *data, uint32_t cx, uint32_t cy);

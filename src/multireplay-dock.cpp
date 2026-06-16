@@ -210,7 +210,7 @@ QPushButton#mrDanger:hover { background: #1e1010; border-color: #442020; }
 #MultiReplayDock QComboBox::drop-down { border: 0; width: 16px; }
 #MultiReplayDock QComboBox QAbstractItemView {
 	background: #181818; color: #c0c0c0; border: 1px solid #2c2c2c;
-	selection-background-color: #081a0e; selection-color: #28b050; outline: 0;
+	selection-background-color: #1a2e52; selection-color: #d0d8f0; outline: 0;
 }
 
 /* ── speed slider — steel blue ───────────────────────────── */
@@ -231,7 +231,7 @@ QTableWidget#mrEvents {
 	border-radius: 4px; color: #c0c0c0; outline: 0;
 }
 QTableWidget#mrEvents::item { padding: 3px 5px; border: 0; }
-QTableWidget#mrEvents::item:selected { background: #0c2212; color: #28b050; }
+QTableWidget#mrEvents::item:selected { background: #1a2e52; color: #d0d8f0; }
 QHeaderView::section {
 	background: #141414; color: #909090;
 	padding: 4px 5px; border: 0;
@@ -1142,18 +1142,38 @@ void MultiReplayDock::poll()
 	seekableNs_ = ts.seekableNs;
 	durationNs_ = ts.durationNs;
 
+	// During live recording the session index isn't flushed yet, so
+	// durationNs == 0. Compute wall-clock elapsed from session start so
+	// the timecode and seekbar grow from the moment REC is pressed.
+	int64_t liveElapsedNs = 0;
+	if (ts.recording) {
+		int64_t t0 = core.sessionMonoStartNs();
+		if (t0 > 0)
+			liveElapsedNs = std::max<int64_t>(
+				0, (int64_t)os_gettime_ns() - t0);
+	}
+	// Display duration: prefer indexed footage; fall back to elapsed.
+	int64_t displayDurNs = std::max(ts.durationNs, liveElapsedNs);
+
 	if (!seekDragging_) {
-		double posFrac = ts.durationNs > 0
-					 ? (double)ts.positionNs /
-						   (double)ts.durationNs
-					 : 0.0;
-		double seekFrac = ts.durationNs > 0
+		// During recording keep the playhead at the live edge (right).
+		double posFrac = ts.recording
+					 ? 1.0
+					 : (displayDurNs > 0
+						    ? (double)ts.positionNs /
+							      (double)displayDurNs
+						    : 0.0);
+		double seekFrac = (displayDurNs > 0 && ts.seekableNs > 0)
 					  ? (double)ts.seekableNs /
-						    (double)ts.durationNs
-					  : 1.0;
+						    (double)displayDurNs
+					  : (ts.recording ? 0.0 : 1.0);
 		seek_->setProgress(posFrac, seekFrac);
-		tcLbl_->setText(formatTc(ts.positionNs) + " / " +
-				formatTc(ts.durationNs));
+		if (ts.recording)
+			tcLbl_->setText(QStringLiteral("● ") +
+					formatTc(liveElapsedNs));
+		else
+			tcLbl_->setText(formatTc(ts.positionNs) + " / " +
+					formatTc(displayDurNs));
 	}
 
 	// ⏸ U+23F8  ▶ U+25B6
@@ -1421,7 +1441,7 @@ QWidget *MultiReplayDock::makeCameraCell(int id, const bool *enabled,
 	auto *w = new QWidget(events_);
 	auto *l = new QHBoxLayout(w);
 	l->setContentsMargins(2, 1, 2, 1);
-	l->setSpacing(3);
+	l->setSpacing(4);
 
 	for (int i = 0; i < kEventAngles; i++) {
 		// Only show chips for cameras that have a source configured.
@@ -1444,49 +1464,32 @@ QWidget *MultiReplayDock::makeCameraCell(int id, const bool *enabled,
 		b->setChecked(enabled[i]);
 		b->setCursor(Qt::PointingHandCursor);
 
-		// Note label shown beside the chip (right-click button to edit)
+		// Note label beside the chip (double-click to edit)
 		const std::string &note = notes[i];
 		QString noteText = note.empty()
 					   ? QStringLiteral("--")
 					   : QString::fromStdString(note).left(10);
 		auto *noteLbl = new QLabel(noteText, w);
 		noteLbl->setObjectName("mrCamNote");
+		noteLbl->setToolTip(obs_module_text("Dock.CamNoteHint"));
 
+		// Store context on the label so eventFilter can open the dialog.
 		int a1 = i + 1;
+		noteLbl->setProperty("eventId", id);
+		noteLbl->setProperty("angle1", a1);
+		QString camLabel = dn.empty() ? QString("Cam %1").arg(i + 1)
+					      : QString::fromStdString(dn);
+		noteLbl->setProperty("camLabel", camLabel);
+		noteLbl->installEventFilter(this);
+
 		connect(b, &QToolButton::toggled, this, [id, a1](bool on) {
 			EventStore::instance().setAngle(id, a1, on);
 		});
 
-		b->setContextMenuPolicy(Qt::CustomContextMenu);
-		// curNote holds actual note text (empty string if none, not "--")
-		QString curNote = QString::fromStdString(note);
-		QString camLabel = dn.empty() ? QString("Cam %1").arg(i + 1)
-					      : QString::fromStdString(dn);
-		connect(b, &QToolButton::customContextMenuRequested, this,
-			[this, id, a1, curNote, camLabel, noteLbl](
-				const QPoint &) mutable {
-				bool ok;
-				QString text = QInputDialog::getText(
-					this,
-					QString("Descrizione — %1").arg(
-						camLabel),
-					"Descrizione:", QLineEdit::Normal,
-					curNote, &ok);
-				if (ok) {
-					curNote = text.trimmed();
-					noteLbl->setText(
-						curNote.isEmpty()
-							? QStringLiteral("--")
-							: curNote.left(10));
-					EventStore::instance().setAngleNote(
-						id, a1,
-						curNote.toStdString());
-					refreshEvents();
-				}
-			});
-
 		l->addWidget(b);
+		l->addSpacing(2);
 		l->addWidget(noteLbl);
+		l->addSpacing(6); // gap between camera pairs
 	}
 	l->addStretch(1);
 	return w;
@@ -1515,6 +1518,42 @@ void MultiReplayDock::onEventItemChanged(QTableWidgetItem *item)
 		}
 		refreshEvents();
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Event filter — double-click on note labels to edit
+// ---------------------------------------------------------------------------
+
+bool MultiReplayDock::eventFilter(QObject *watched, QEvent *event)
+{
+	if (event->type() == QEvent::MouseButtonDblClick) {
+		auto *lbl = qobject_cast<QLabel *>(watched);
+		if (lbl && lbl->objectName() == QLatin1String("mrCamNote")) {
+			int id = lbl->property("eventId").toInt();
+			int a1 = lbl->property("angle1").toInt();
+			QString camLabel = lbl->property("camLabel").toString();
+			QString curNote = lbl->text() == QStringLiteral("--")
+						  ? QString()
+						  : lbl->text();
+			bool ok;
+			QString text = QInputDialog::getText(
+				this,
+				QString("Descrizione — %1").arg(camLabel),
+				QStringLiteral("Descrizione:"),
+				QLineEdit::Normal, curNote, &ok);
+			if (ok) {
+				curNote = text.trimmed();
+				lbl->setText(curNote.isEmpty()
+						     ? QStringLiteral("--")
+						     : curNote.left(10));
+				EventStore::instance().setAngleNote(
+					id, a1, curNote.toStdString());
+				refreshEvents();
+			}
+			return true;
+		}
+	}
+	return QWidget::eventFilter(watched, event);
 }
 
 // ---------------------------------------------------------------------------
