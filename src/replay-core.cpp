@@ -121,13 +121,11 @@ int64_t hotkeyMarkTimeNs()
 	if (EventStore::instance().liveMode()) {
 		auto &core = ReplayCore::instance();
 		if (core.isRecording() && core.sessionMonoStartNs() > 0) {
-			// Files are still open: use elapsed wall time from REC
-			// start as the master-timeline position.  The SessionIndex
-			// will align to the same origin once files are flushed.
-			int64_t elapsed =
-				(int64_t)os_gettime_ns() -
-				core.sessionMonoStartNs();
-			return std::max<int64_t>(0, elapsed);
+			// Files still open: cumulative base + elapsed from arm.
+			int64_t elapsed = (int64_t)os_gettime_ns() -
+					  core.sessionMonoStartNs();
+			return std::max<int64_t>(
+				0, core.sessionBaseNs() + elapsed);
 		}
 		// Not recording: use indexed footage length (seekable live edge).
 		int64_t edge = MediaReplay::instance().footageDurationNs();
@@ -236,9 +234,13 @@ bool ReplayCore::startRecording(std::string &errorOut)
 		return false;
 	}
 
-	// Clear any stale session index so old recordings from a previous run
-	// in the same folder are not mixed into the new session. The index will
-	// be rebuilt when the user loads the session after segments are complete.
+	// Capture cumulative footage from previous sessions BEFORE clearing the
+	// index (clearSession() zeroes it). This becomes the baseNs offset for
+	// events and timecodes in the new session.
+	sessionBaseNs_ = MediaReplay::instance().footageDurationNs();
+
+	// Clear any stale session index so old recordings are not replayed until
+	// the new session's segments are flushed and loaded.
 	MediaReplay::instance().clearSession();
 	if (!branch_output::available()) {
 		errorOut = "Branch Output plugin is not installed";
@@ -408,15 +410,19 @@ bool ReplayCore::deleteAllSession(std::string &errorOut)
 	std::error_code ec;
 	int removed = 0;
 	for (const auto &entry :
-	     fs::directory_iterator(config_.sessionFolder, ec)) {
+	     fs::directory_iterator(recordingFolderLocked(), ec)) {
 		if (!entry.is_regular_file())
 			continue;
 		std::string name = entry.path().filename().string();
 		std::string ext = entry.path().extension().string();
 		bool isRecording = name.rfind("cam", 0) == 0 &&
 				   (ext == ".mp4" || ext == ".mov");
-		bool isMeta = name == "session.json" ||
-			      name == "events.json";
+		// Match both legacy session.json and numbered session_NNN.json.
+		int n = 0;
+		bool isMeta =
+			name == "session.json" || name == "events.json" ||
+			(std::sscanf(name.c_str(), "session_%d.json", &n) == 1 &&
+			 n > 0);
 		if (isRecording || isMeta) {
 			fs::remove(entry.path(), ec);
 			if (!ec)
@@ -847,13 +853,28 @@ void ReplayCore::saveConfig() const
 
 void ReplayCore::writeSessionManifest() const
 {
-	// session.json: per-camera start timestamps on the shared monotonic
-	// clock. This is the seed of the master timeline (M2 builds the full
-	// frame index on top of it).
+	// Determine the next session ID by scanning for existing session_NNN.json
+	// files in the recording folder. Numbered manifests accumulate across
+	// recording sessions within a project, enabling a cumulative timeline.
+	namespace fs = std::filesystem;
+	std::error_code ec;
+	int nextId = 1;
+	std::string recFolder = recordingFolderLocked();
+	for (const auto &entry : fs::directory_iterator(recFolder, ec)) {
+		int n = 0;
+		if (std::sscanf(entry.path().filename().string().c_str(),
+				"session_%d.json", &n) == 1 &&
+		    n >= nextId)
+			nextId = n + 1;
+	}
+
 	obs_data_t *data = obs_data_create();
-	obs_data_set_int(data, "manifestVersion", 1);
-	obs_data_set_int(data, "createdWallClock",
-			 (int64_t)time(nullptr));
+	obs_data_set_int(data, "manifestVersion", 2);
+	obs_data_set_int(data, "createdWallClock", (int64_t)time(nullptr));
+	// baseNs: cumulative footage offset at the start of this session.
+	// SessionIndex uses this to position this session's segments on the
+	// project-wide master timeline (t=0 = start of the very first session).
+	obs_data_set_int(data, "baseNs", sessionBaseNs_);
 
 	obs_data_array_t *cams = obs_data_array_create();
 	for (const auto &st : cameraStatus_) {
@@ -870,10 +891,14 @@ void ReplayCore::writeSessionManifest() const
 	obs_data_set_array(data, "cameras", cams);
 	obs_data_array_release(cams);
 
-	std::filesystem::path p(recordingFolderLocked());
-	p /= "session.json";
+	char filename[32];
+	std::snprintf(filename, sizeof(filename), "session_%03d.json", nextId);
+	fs::path p = fs::path(recFolder) / filename;
 	obs_data_save_json_safe(data, p.string().c_str(), "tmp", "bak");
 	obs_data_release(data);
+
+	obs_log(LOG_INFO, "Session manifest written: %s (baseNs=%lld)",
+		filename, (long long)sessionBaseNs_);
 }
 
 } // namespace multireplay

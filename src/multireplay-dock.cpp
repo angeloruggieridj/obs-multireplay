@@ -1101,14 +1101,14 @@ int64_t MultiReplayDock::markTimeNs() const
 	if (store.liveMode()) {
 		auto &core = ReplayCore::instance();
 		if (core.isRecording() && core.sessionMonoStartNs() > 0) {
-			// Files still open: use elapsed monotonic time from REC
-			// start. SessionIndex origins align with this value once
-			// files are flushed (both use os_gettime_ns).
+			// Files still open: elapsed from arm + cumulative base
+			// from previous sessions = absolute master-timeline now.
 			int64_t elapsed = (int64_t)os_gettime_ns() -
 					  core.sessionMonoStartNs();
-			return std::max<int64_t>(0, elapsed);
+			return std::max<int64_t>(
+				0, core.sessionBaseNs() + elapsed);
 		}
-		// Not recording (scrub/review mode): use indexed footage length.
+		// Not recording: use indexed footage length as the live edge.
 		int64_t edge = MediaReplay::instance().footageDurationNs();
 		if (edge > 0)
 			return edge;
@@ -1198,14 +1198,16 @@ void MultiReplayDock::poll()
 	durationNs_ = ts.durationNs;
 
 	// During live recording the session index isn't flushed yet, so
-	// durationNs == 0. Compute wall-clock elapsed from session start so
-	// the timecode and seekbar grow from the moment REC is pressed.
+	// durationNs == 0. Use wall-clock elapsed + cumulative base from prior
+	// sessions so the counter grows from project-start t=0, not from 0.
 	int64_t liveElapsedNs = 0;
 	if (ts.recording) {
 		int64_t t0 = core.sessionMonoStartNs();
 		if (t0 > 0)
-			liveElapsedNs = std::max<int64_t>(
-				0, (int64_t)os_gettime_ns() - t0);
+			liveElapsedNs = core.sessionBaseNs() +
+					std::max<int64_t>(
+						0, (int64_t)os_gettime_ns() -
+							   t0);
 	}
 	// Display duration: prefer indexed footage; fall back to elapsed.
 	displayDurNs_ = std::max(ts.durationNs, liveElapsedNs);
@@ -1434,6 +1436,21 @@ void MultiReplayDock::refreshEvents()
 	const Qt::Alignment mid = Qt::AlignVCenter | Qt::AlignHCenter;
 	std::vector<std::pair<int64_t, int64_t>> rawMarkers;
 
+	// Session info for divider rows between recording tranches.
+	// Only shown when more than one session exists.
+	auto sessInfos = MediaReplay::instance().sessionInfos();
+	auto sessionForTin = [&sessInfos](int64_t tin) -> int {
+		int sid = 1;
+		for (const auto &si : sessInfos) {
+			if (tin >= si.baseNs)
+				sid = si.sessionId;
+			else
+				break;
+		}
+		return sid;
+	};
+	int lastSessionId = -1;
+
 	size_t n = obs_data_array_count(arr);
 	for (size_t i = 0; i < n; i++) {
 		obs_data_t *e = obs_data_array_item(arr, i);
@@ -1486,6 +1503,26 @@ void MultiReplayDock::refreshEvents()
 			if (!hay.contains(needle)) {
 				obs_data_release(e);
 				continue;
+			}
+		}
+
+		// Insert a session divider row when we enter a new tranche.
+		if (sessInfos.size() > 1) {
+			int sid = sessionForTin(tin);
+			if (sid != lastSessionId) {
+				lastSessionId = sid;
+				int drow = events_->rowCount();
+				events_->insertRow(drow);
+				auto *div = new QTableWidgetItem(
+					QString("▸ Session %1").arg(sid));
+				div->setFlags(Qt::ItemIsEnabled);
+				div->setForeground(QColor("#607880"));
+				QFont f = div->font();
+				f.setItalic(true);
+				f.setPointSizeF(f.pointSizeF() * 0.88);
+				div->setFont(f);
+				events_->setItem(drow, kColId, div);
+				events_->setSpan(drow, kColId, 1, kColCount);
 			}
 		}
 

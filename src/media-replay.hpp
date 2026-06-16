@@ -58,6 +58,7 @@ public:
 	void clearSession(); // drop the index (stale-session guard at REC start)
 	bool sessionLoaded() const;
 	int64_t footageDurationNs() const; // indexed footage length (live edge)
+	std::vector<SessionInfo> sessionInfos() const;
 
 	// --- Live follow (the reference controller NOW) ---
 	void setFollowLive(bool follow) { followLive_ = follow; }

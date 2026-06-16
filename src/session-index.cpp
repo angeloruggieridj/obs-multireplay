@@ -30,40 +30,31 @@ int64_t probeDurationNs(const std::string &path)
 	if (avformat_open_input(&fmt, path.c_str(), nullptr, nullptr) < 0)
 		return -1;
 	int64_t durationNs = -1;
-	if (avformat_find_stream_info(fmt, nullptr) >= 0 &&
-	    fmt->duration > 0) {
-		// fmt->duration is in AV_TIME_BASE (µs) units
-		durationNs = fmt->duration * 1000;
-	}
+	if (avformat_find_stream_info(fmt, nullptr) >= 0 && fmt->duration > 0)
+		durationNs = fmt->duration * 1000; // AV_TIME_BASE (µs) → ns
 	avformat_close_input(&fmt);
 	return durationNs;
 }
 
-bool SessionIndex::load(const std::string &folder)
-{
-	std::lock_guard<std::mutex> lock(mutex_);
-	folder_ = folder;
+// ---------------------------------------------------------------------------
+// Internal helpers
+// ---------------------------------------------------------------------------
 
-	// --- session.json: per-camera start timestamps (monotonic ns) ---
-	fs::path manifestPath = fs::path(folder) / "session.json";
+bool SessionIndex::loadManifestLocked(const std::string &mPath)
+{
 	obs_data_t *manifest =
-		obs_data_create_from_json_file(manifestPath.string().c_str());
-	if (!manifest) {
-		obs_log(LOG_DEBUG, "SessionIndex: no session.json in %s "
-				   "(new or empty project folder)",
-			folder.c_str());
+		obs_data_create_from_json_file(mPath.c_str());
+	if (!manifest)
 		return false;
-	}
+
+	// baseNs: cumulative master-timeline offset written by new code.
+	// Defaults to 0 for legacy session.json files.
+	int64_t baseNs = obs_data_get_int(manifest, "baseNs");
+	int64_t wallStartSec = obs_data_get_int(manifest, "createdWallClock");
 
 	std::array<int64_t, kIndexMaxCameras> startTs{};
 	std::array<bool, kIndexMaxCameras> present{};
 	int64_t minStart = INT64_MAX;
-
-	// Read wallStartSec BEFORE releasing manifest — was previously read after
-	// obs_data_release() (use-after-free), returning 0 and silently disabling
-	// the old-file filter in scanCamera() so stale cam*.mp4 files from prior
-	// sessions were included, inflating the timeline on the next REC press.
-	int64_t wallStartSec = obs_data_get_int(manifest, "createdWallClock");
 
 	obs_data_array_t *cams = obs_data_get_array(manifest, "cameras");
 	if (cams) {
@@ -84,46 +75,44 @@ bool SessionIndex::load(const std::string &folder)
 	obs_data_release(manifest);
 
 	if (minStart == INT64_MAX) {
-		obs_log(LOG_WARNING, "SessionIndex: empty session manifest");
+		obs_log(LOG_WARNING, "SessionIndex: empty manifest %s",
+			mPath.c_str());
 		return false;
 	}
 
-	int validCount = 0;
+	SessionInfo si;
+	si.sessionId = (int)sessions_.size() + 1;
+	si.baseNs = baseNs;
+	sessions_.push_back(si);
+
+	bool anyValid = false;
 	for (int i = 0; i < kIndexMaxCameras; i++) {
-		tracks_[i] = CameraTrack{};
-		tracks_[i].index = i;
 		if (!present[i])
 			continue;
 		tracks_[i].inManifest = true;
-		tracks_[i].startOffsetNs = startTs[i] - minStart;
-		scanCamera(tracks_[i], wallStartSec);
+		// Camera's absolute start on the cumulative master timeline:
+		// project base + inter-session-camera jitter.
+		int64_t camBaseNs = baseNs + (startTs[i] - minStart);
+		appendCameraSession(tracks_[i], folder_, wallStartSec,
+				    camBaseNs);
 		if (tracks_[i].valid)
-			validCount++;
+			anyValid = true;
 	}
-
-	obs_log(LOG_INFO, "SessionIndex: %d camera track(s) indexed in %s",
-		validCount, folder.c_str());
-	return validCount > 0;
+	return anyValid;
 }
 
-void SessionIndex::scanCamera(CameraTrack &track, int64_t wallStartSec)
+void SessionIndex::appendCameraSession(CameraTrack &track,
+				       const std::string &folder,
+				       int64_t wallStartSec, int64_t baseNs)
 {
-	// Files are named cam{N}_%CCYY-%MM-%DD_%hh-%mm-%ss[...].mp4
-	// Lexicographic order == chronological order with this naming scheme.
 	std::string prefix = "cam" + std::to_string(track.index + 1) + "_";
-
-	// When wallStartSec > 0, skip any file whose filename date is more
-	// than 30 s before the session start — those belong to an older
-	// recording run that was not cleaned up with Delete All.
-	// Filename format (after prefix): YYYY-MM-DD_HH-MM-SS[...].ext
-	// We parse only the first 19 characters of the date component.
 	constexpr size_t kDateLen = 19; // "YYYY-MM-DD_HH-MM-SS"
 	constexpr int64_t kGraceSec = 30;
 
 	std::vector<std::string> files;
 	std::error_code ec;
-	for (const auto &entry : fs::directory_iterator(folder_, ec)) {
-		if (!entry.is_regular_file())
+	for (const auto &entry : fs::directory_iterator(folder, ec)) {
+		if (!entry.is_regular_file(ec))
 			continue;
 		std::string name = entry.path().filename().string();
 		const std::string ext = entry.path().extension().string();
@@ -132,15 +121,15 @@ void SessionIndex::scanCamera(CameraTrack &track, int64_t wallStartSec)
 		if (ext != ".mp4" && ext != ".mov")
 			continue;
 
-		// Filter by filename date when wallStartSec is known.
+		// Filter by filename date: skip files that predate this session.
 		if (wallStartSec > 0 &&
 		    name.length() > prefix.length() + kDateLen) {
 			std::string dateStr =
 				name.substr(prefix.length(), kDateLen);
 			int yr, mo, dy, hh, mm, ss;
 			if (std::sscanf(dateStr.c_str(),
-					"%4d-%2d-%2d_%2d-%2d-%2d",
-					&yr, &mo, &dy, &hh, &mm, &ss) == 6) {
+					"%4d-%2d-%2d_%2d-%2d-%2d", &yr, &mo,
+					&dy, &hh, &mm, &ss) == 6) {
 				struct tm t = {};
 				t.tm_year = yr - 1900;
 				t.tm_mon = mo - 1;
@@ -153,46 +142,156 @@ void SessionIndex::scanCamera(CameraTrack &track, int64_t wallStartSec)
 				if (fileTime > 0 &&
 				    fileTime < wallStartSec - kGraceSec) {
 					obs_log(LOG_DEBUG,
-						"SessionIndex: skipping stale "
-						"file %s (predates session "
-						"by %lld s)",
+						"SessionIndex: skip stale %s "
+						"(predates session by %lld s)",
 						name.c_str(),
 						(long long)(wallStartSec -
 							    fileTime));
-					continue; // belongs to an older session
+					continue;
 				}
 			}
 		}
+
+		// Skip files already included by an earlier session's append.
+		bool dup = false;
+		for (const auto &seg : track.segments)
+			if (seg.path == entry.path().string()) {
+				dup = true;
+				break;
+			}
+		if (dup)
+			continue;
 
 		files.push_back(entry.path().string());
 	}
 	std::sort(files.begin(), files.end());
 
-	track.segments.clear();
-	track.totalDurationNs = 0;
+	// Probe and build segments for this session.
+	// localElapsed: duration accumulated within THIS session so far.
+	int64_t localElapsed = 0;
 	for (const auto &path : files) {
 		int64_t dur = probeDurationNs(path);
 		if (dur <= 0)
-			continue; // growing/corrupt file: skip for now
+			continue; // growing/unfinished file: skip for now
 		Segment seg;
 		seg.path = path;
-		seg.localStartNs = track.totalDurationNs;
+		seg.localStartNs = baseNs + localElapsed;
 		seg.durationNs = dur;
 		track.segments.push_back(std::move(seg));
-		track.totalDurationNs += dur;
+		localElapsed += dur;
 	}
+
+	// Update totalDurationNs = end of the latest segment on master timeline.
+	track.totalDurationNs = 0;
+	for (const auto &seg : track.segments)
+		track.totalDurationNs = std::max(
+			track.totalDurationNs,
+			seg.localStartNs + seg.durationNs);
 	track.valid = !track.segments.empty();
+}
+
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
+
+bool SessionIndex::load(const std::string &folder)
+{
+	std::lock_guard<std::mutex> lock(mutex_);
+	folder_ = folder;
+	sessions_.clear();
+
+	// Reset all tracks.
+	for (int i = 0; i < kIndexMaxCameras; i++) {
+		tracks_[i] = CameraTrack{};
+		tracks_[i].index = i;
+	}
+
+	// Discover session manifests.
+	// Numbered session_NNN.json files (N >= 1) are the new format.
+	// The legacy session.json is treated as sort-key 0 and only used
+	// when no numbered manifests exist (backward compatibility).
+	std::vector<std::pair<int, std::string>> manifests;
+	std::error_code ec;
+	for (const auto &entry : fs::directory_iterator(folder, ec)) {
+		if (!entry.is_regular_file(ec))
+			continue;
+		std::string name = entry.path().filename().string();
+		if (name == "session.json") {
+			manifests.push_back({0, entry.path().string()});
+		} else {
+			int n = 0;
+			if (std::sscanf(name.c_str(), "session_%d.json", &n) ==
+				    1 &&
+			    n > 0)
+				manifests.push_back({n, entry.path().string()});
+		}
+	}
+
+	if (manifests.empty()) {
+		obs_log(LOG_DEBUG,
+			"SessionIndex: no session manifest in %s "
+			"(new or empty project folder)",
+			folder.c_str());
+		return false;
+	}
+
+	// Sort: legacy session.json (key 0) first, then numbered in order.
+	// If numbered sessions exist, remove the legacy session.json to avoid
+	// double-loading its footage under the new multi-session scheme.
+	bool hasNumbered = false;
+	for (const auto &[n, _] : manifests)
+		if (n > 0) {
+			hasNumbered = true;
+			break;
+		}
+	if (hasNumbered) {
+		manifests.erase(std::remove_if(manifests.begin(),
+					       manifests.end(),
+					       [](const auto &m) {
+						       return m.first == 0;
+					       }),
+				manifests.end());
+	}
+	std::sort(manifests.begin(), manifests.end());
+
+	for (const auto &[n, mPath] : manifests)
+		loadManifestLocked(mPath);
+
+	int validCount = 0;
+	for (const auto &t : tracks_)
+		if (t.valid)
+			validCount++;
+
+	obs_log(LOG_INFO,
+		"SessionIndex: %d session(s), %d camera track(s) in %s",
+		(int)sessions_.size(), validCount, folder.c_str());
+	return validCount > 0;
 }
 
 void SessionIndex::refresh()
 {
-	std::lock_guard<std::mutex> lock(mutex_);
-	for (auto &track : tracks_) {
-		if (!track.inManifest)
-			continue;
-		// Pass wallStartSec=0 on refresh: the initial load already
-		// filtered stale files; refresh only re-probes known-good tracks.
-		scanCamera(track, 0);
+	// Snapshot the folder so we can release the lock before probing.
+	std::string folder;
+	{
+		std::lock_guard<std::mutex> lock(mutex_);
+		folder = folder_;
+	}
+	if (folder.empty())
+		return;
+
+	// Rebuild the index on a FRESH SessionIndex (uses its own mutex, not ours).
+	// This means the monitor-loop's resolve() calls are never blocked by FFmpeg
+	// I/O during refresh — the shared mutex is only locked for the brief swap
+	// at the end.
+	SessionIndex fresh;
+	fresh.load(folder);
+
+	// Apply only if fresh data is non-empty (guards against transient
+	// probe failures mid-recording when files aren't yet finalized).
+	if (fresh.masterDurationNs() > 0) {
+		std::lock_guard<std::mutex> lock(mutex_);
+		tracks_ = fresh.tracks_;
+		sessions_ = fresh.sessions_;
 	}
 }
 
@@ -203,6 +302,8 @@ int64_t SessionIndex::masterDurationNs() const
 	for (const auto &track : tracks_) {
 		if (!track.valid)
 			continue;
+		// startOffsetNs is 0 (unused); totalDurationNs is the end
+		// of the last segment on the cumulative master timeline.
 		maxEnd = std::max(maxEnd,
 				  track.startOffsetNs + track.totalDurationNs);
 	}
@@ -219,13 +320,22 @@ bool SessionIndex::resolve(int camIndex, int64_t masterNs,
 	if (!track.valid)
 		return false;
 
-	int64_t localNs = masterNs - track.startOffsetNs;
+	// seg.localStartNs now carries the ABSOLUTE master-timeline position
+	// (baseNs + camera-start jitter embedded). No startOffsetNs subtraction.
+	int64_t localNs = masterNs;
 	if (localNs < 0)
 		localNs = 0;
-	if (localNs >= track.totalDurationNs)
+	if (track.totalDurationNs > 0 && localNs >= track.totalDurationNs)
 		localNs = track.totalDurationNs - 1;
 
 	for (const auto &seg : track.segments) {
+		if (localNs < seg.localStartNs) {
+			// masterNs is before this segment (gap between sessions
+			// or before the camera's first frame): clamp to start.
+			pathOut = seg.path;
+			offsetNsOut = 0;
+			return true;
+		}
 		if (localNs < seg.localStartNs + seg.durationNs) {
 			pathOut = seg.path;
 			offsetNsOut = localNs - seg.localStartNs;
@@ -246,6 +356,12 @@ std::string SessionIndex::folder() const
 {
 	std::lock_guard<std::mutex> lock(mutex_);
 	return folder_;
+}
+
+std::vector<SessionInfo> SessionIndex::sessionInfos() const
+{
+	std::lock_guard<std::mutex> lock(mutex_);
+	return sessions_;
 }
 
 } // namespace multireplay

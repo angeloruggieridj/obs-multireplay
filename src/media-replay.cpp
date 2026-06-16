@@ -175,19 +175,20 @@ bool MediaReplay::loadSession(const std::string &folder, std::string &errorOut)
 {
 	auto index = std::make_shared<SessionIndex>();
 	bool hasData = index->load(folder);
-	{
-		std::lock_guard<std::mutex> lock(mutex_);
-		// Always adopt the index — even empty — so sessionLoaded() returns
-		// true and poll() stops retrying (e.g. a new project with no
-		// recordings yet has no session.json but is a valid folder).
-		index_ = index;
-		angle_ = 0;
-		loadedPath_.clear();
-	}
 	if (!hasData) {
+		// No usable footage yet (new project, or files still being
+		// finalized after stop). The poll() will retry every ~2 s;
+		// "SessionIndex: no session manifest" is logged at DEBUG level
+		// to avoid spamming the OBS log for expected empty-folder cases.
 		errorOut = "no indexable session in folder (record something "
 			   "first, then stop or wait for a split)";
 		return false;
+	}
+	{
+		std::lock_guard<std::mutex> lock(mutex_);
+		index_ = index;
+		angle_ = 0;
+		loadedPath_.clear();
 	}
 	jumpToEnd();
 	return true;
@@ -230,6 +231,12 @@ int64_t MediaReplay::footageDurationNs() const
 {
 	std::lock_guard<std::mutex> lock(mutex_);
 	return index_ ? index_->masterDurationNs() : 0;
+}
+
+std::vector<SessionInfo> MediaReplay::sessionInfos() const
+{
+	std::lock_guard<std::mutex> lock(mutex_);
+	return index_ ? index_->sessionInfos() : std::vector<SessionInfo>{};
 }
 
 bool MediaReplay::resolveTime(int camIndex, int64_t masterNs,
