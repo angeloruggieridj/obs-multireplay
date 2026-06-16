@@ -95,17 +95,19 @@ QLabel#mrCamNote    { color: #484848; font-size: 9px; }
 /* ── transport step / icon buttons ────────────────────── */
 QPushButton#mrTransport {
 	background: #181818; border: 1px solid #2c2c2c; border-radius: 5px;
+	color: #c8c8c8; font-size: 14px;
 	min-width: 30px; min-height: 28px; padding: 0;
 }
-QPushButton#mrTransport:hover { background: #222222; border-color: #424242; }
+QPushButton#mrTransport:hover { background: #222222; border-color: #424242; color: #f0f0f0; }
 
 /* play/pause */
 QPushButton#mrPlay {
 	background: #181818; border: 1px solid #2c2c2c; border-radius: 5px;
+	color: #c8c8c8; font-size: 16px;
 	min-width: 38px; min-height: 28px; padding: 0;
 }
-QPushButton#mrPlay:hover { background: #222222; border-color: #424242; }
-QPushButton#mrPlay[playing="true"] { background: #0c2212; border-color: #1c8a38; }
+QPushButton#mrPlay:hover { background: #222222; border-color: #424242; color: #f0f0f0; }
+QPushButton#mrPlay[playing="true"] { background: #0c2212; border-color: #1c8a38; color: #28b050; }
 QPushButton#mrPlay[playing="true"]:hover { background: #102818; border-color: #22a040; }
 
 /* NOW / live-edge */
@@ -327,15 +329,14 @@ QPushButton *compactBtn(const QString &text, QWidget *parent,
 	return b;
 }
 
-// transport icon button backed by a real QStyle pixmap (no font glyphs, so it
-// always renders regardless of the platform's emoji/symbol fonts).
-QPushButton *iconBtn(QStyle::StandardPixmap sp, QWidget *parent,
-		     const QString &tip, const char *role = "mrTransport")
+// Transport button using Unicode glyphs — visible on dark backgrounds without
+// relying on QStyle pixmaps (which follow the platform icon theme and render
+// dark on dark in OBS's dark palette).
+QPushButton *transportBtn(const QString &text, QWidget *parent, const QString &tip,
+			   const char *role = "mrTransport")
 {
-	auto *b = new QPushButton(parent);
+	auto *b = new QPushButton(text, parent);
 	b->setObjectName(QString::fromLatin1(role));
-	b->setIcon(parent->style()->standardIcon(sp));
-	b->setIconSize(QSize(16, 16));
 	b->setToolTip(tip);
 	b->setCursor(Qt::PointingHandCursor);
 	b->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
@@ -514,14 +515,22 @@ void MultiReplayDock::drawChannelA(void *, uint32_t cx, uint32_t cy)
 MultiReplayDock::MultiReplayDock(QWidget *parent) : QWidget(parent)
 {
 	setObjectName("MultiReplayDock");
-	setMinimumWidth(300);
+	setMinimumSize(700, 300);
 	setStyleSheet(QString::fromUtf8(kDockStyle));
 
 	auto *root = new QVBoxLayout(this);
 	root->setContentsMargins(5, 5, 5, 5);
-	root->setSpacing(5);
+	root->setSpacing(4);
 
-	// --- top toolbar: REC + status + settings ---
+	// Helper: 1px separator line (each call returns a fresh widget).
+	auto mkSep = [this]() -> QWidget * {
+		auto *s = new QWidget(this);
+		s->setObjectName("mrSepLine");
+		s->setFixedHeight(1);
+		return s;
+	};
+
+	// ── HEADER: REC · status · ⚙ ─────────────────────────────────────
 	{
 		auto *bar = new QHBoxLayout();
 		bar->setSpacing(6);
@@ -544,8 +553,8 @@ MultiReplayDock::MultiReplayDock(QWidget *parent) : QWidget(parent)
 		bar->addWidget(gear);
 		connect(gear, &QToolButton::clicked, this,
 			&MultiReplayDock::openSettings);
-
 		root->addLayout(bar);
+
 		connect(recBtn_, &QPushButton::clicked, this, [this]() {
 			auto &core = ReplayCore::instance();
 			if (core.isRecording()) {
@@ -571,41 +580,90 @@ MultiReplayDock::MultiReplayDock(QWidget *parent) : QWidget(parent)
 			poll();
 		});
 	}
+	root->addWidget(mkSep());
 
-	// --- vertical splitter: controls on top, event list below ---
-	// The event list is the working area: gets 75% of available space.
-	// The preview respects the OBS canvas aspect ratio via heightForWidth so
-	// it never shows black bars on the sides. In docked (small) mode the
-	// splitter compresses the controls; in floating mode the preview expands.
-	splitter_ = new QSplitter(Qt::Vertical, this);
-	splitter_->setChildrenCollapsible(false);
-	splitter_->setHandleWidth(8);
+	// ── MAIN: left (preview + transport) | right (events) ─────────────
+	{
+		auto *main = new QHBoxLayout();
+		main->setSpacing(6);
+		main->setContentsMargins(0, 0, 0, 0);
 
-	auto *controls = new QWidget(splitter_);
-	auto *cv = new QVBoxLayout(controls);
-	cv->setContentsMargins(0, 0, 0, 0);
-	cv->setSpacing(0);
-	cv->addWidget(buildPreview(), 1);
+		// Left panel: preview + angle selector + seekbar + transport
+		auto *left = new QWidget(this);
+		left->setMinimumWidth(200);
+		left->setMaximumWidth(320);
+		auto *lv = new QVBoxLayout(left);
+		lv->setContentsMargins(0, 0, 0, 0);
+		lv->setSpacing(0);
+		lv->addWidget(buildPreview(), 1);
+		lv->addWidget(mkSep());
+		lv->addWidget(buildTransport());
+		main->addWidget(left, 1);
 
-	auto addSep = [&]() {
-		auto *s = new QWidget(controls);
-		s->setObjectName("mrSepLine");
-		s->setFixedHeight(1);
-		cv->addWidget(s);
-	};
-	addSep();
-	cv->addWidget(buildTransport());
-	addSep();
-	cv->addWidget(buildMarkers());
+		// Right panel: event list (list selector, search, table, playback)
+		main->addWidget(buildEvents(), 2);
 
-	auto *eventsPanel = buildEvents();
-	eventsPanel->setMinimumHeight(120);
-	splitter_->addWidget(controls);
-	splitter_->addWidget(eventsPanel);
-	// events get 3× the space of controls by default; user can drag handle
-	splitter_->setStretchFactor(0, 1);
-	splitter_->setStretchFactor(1, 3);
-	root->addWidget(splitter_, 1);
+		root->addLayout(main, 1);
+	}
+
+	// ── FOOTER: markers (left) + edit controls (right) ─────────────────
+	{
+		root->addWidget(mkSep());
+		auto *footerBox = new QWidget(this);
+		auto *fh = new QHBoxLayout(footerBox);
+		fh->setContentsMargins(0, 0, 0, 0);
+		fh->setSpacing(4);
+
+		// Marker section (Live + IN/OUT + presets + Cancel)
+		fh->addWidget(buildMarkers());
+		fh->addStretch(1);
+
+		// Edit controls (secondary — delete, duplicate, export)
+		auto *dup = compactBtn(obs_module_text("Dock.Duplicate"), this);
+		auto *del = compactBtn(obs_module_text("Dock.Delete"), this,
+				       "mrDanger");
+		auto *exp = compactBtn(obs_module_text("Dock.Export"), this);
+		auto *delAll = compactBtn(obs_module_text("Dock.DeleteAll"), this,
+					  "mrDanger");
+		connect(dup, &QPushButton::clicked, this, [this]() {
+			for (int id : selectedEventIds())
+				EventStore::instance().duplicate(id);
+			refreshEvents();
+		});
+		connect(del, &QPushButton::clicked, this, [this]() {
+			for (int id : selectedEventIds())
+				EventStore::instance().remove(id);
+			refreshEvents();
+		});
+		connect(exp, &QPushButton::clicked, this, [this]() {
+			auto ids = selectedEventIds();
+			if (ids.empty())
+				return;
+			QString folder = QFileDialog::getExistingDirectory(
+				this, obs_module_text("Dock.ExportFolder"));
+			if (folder.isEmpty())
+				return;
+			std::string err;
+			for (int id : ids)
+				ExportManager::instance().exportEvent(
+					id, 0, folder.toStdString(), err);
+		});
+		connect(delAll, &QPushButton::clicked, this, [this]() {
+			if (QMessageBox::question(
+				    this, "obs-multireplay",
+				    obs_module_text("Dock.DeleteAllConfirm"),
+				    QMessageBox::Yes | QMessageBox::No,
+				    QMessageBox::No) != QMessageBox::Yes)
+				return;
+			PlaybackCoordinator::instance().stopEvents();
+			EventStore::instance().clearAll();
+		});
+		fh->addWidget(dup);
+		fh->addWidget(del);
+		fh->addWidget(exp);
+		fh->addWidget(delAll);
+		root->addWidget(footerBox);
+	}
 
 	pollTimer_ = new QTimer(this);
 	pollTimer_->setInterval(33); // ~30 fps — smooth seekbar + responsive transport
@@ -695,12 +753,13 @@ QWidget *MultiReplayDock::buildTransport()
 	auto *tr = new QHBoxLayout();
 	tr->setSpacing(4);
 
-	auto *stepBack = iconBtn(QStyle::SP_MediaSkipBackward, this,
-				 obs_module_text("Dock.StepBack"));
-	playPauseBtn_ = iconBtn(QStyle::SP_MediaPlay, this,
-				obs_module_text("Dock.PlayPause"), "mrPlay");
-	auto *stepFwd = iconBtn(QStyle::SP_MediaSkipForward, this,
-				obs_module_text("Dock.StepFwd"));
+	// ⏮ U+23EE  ▶ U+25B6  ⏭ U+23ED
+	auto *stepBack = transportBtn(QStringLiteral("⏮"), this,
+				      obs_module_text("Dock.StepBack"));
+	playPauseBtn_ = transportBtn(QStringLiteral("▶"), this,
+				     obs_module_text("Dock.PlayPause"), "mrPlay");
+	auto *stepFwd = transportBtn(QStringLiteral("⏭"), this,
+				     obs_module_text("Dock.StepFwd"));
 	nowBtn_ = new QPushButton(QStringLiteral("NOW"), this);
 	nowBtn_->setObjectName("mrNow");
 	nowBtn_->setProperty("live", false);
@@ -812,7 +871,6 @@ QWidget *MultiReplayDock::buildMarkers()
 	connect(liveChk_, &QCheckBox::toggled, this,
 		[](bool on) { EventStore::instance().setLiveMode(on); });
 	h->addWidget(liveChk_);
-	h->addStretch(1);
 
 	auto *in = compactBtn(obs_module_text("Dock.MarkIn"), this, "mrAccent");
 	auto *out = compactBtn(obs_module_text("Dock.MarkOut"), this, "mrAccent");
@@ -962,55 +1020,6 @@ QWidget *MultiReplayDock::buildEvents()
 	pb->addWidget(musicChk_);
 	v->addLayout(pb);
 
-	// edit controls
-	auto *eb = new QHBoxLayout();
-	eb->setSpacing(3);
-	auto *dup = compactBtn(obs_module_text("Dock.Duplicate"), this);
-	auto *del = compactBtn(obs_module_text("Dock.Delete"), this, "mrDanger");
-	auto *exp = compactBtn(obs_module_text("Dock.Export"), this);
-	connect(dup, &QPushButton::clicked, this, [this]() {
-		for (int id : selectedEventIds())
-			EventStore::instance().duplicate(id);
-		refreshEvents();
-	});
-	connect(del, &QPushButton::clicked, this, [this]() {
-		for (int id : selectedEventIds())
-			EventStore::instance().remove(id);
-		refreshEvents();
-	});
-	connect(exp, &QPushButton::clicked, this, [this]() {
-		auto ids = selectedEventIds();
-		if (ids.empty())
-			return;
-		QString folder = QFileDialog::getExistingDirectory(
-			this, obs_module_text("Dock.ExportFolder"));
-		if (folder.isEmpty())
-			return;
-		std::string err;
-		for (int id : ids)
-			ExportManager::instance().exportEvent(
-				id, 0, folder.toStdString(), err);
-	});
-	auto *delAll = compactBtn(obs_module_text("Dock.DeleteAll"), this,
-				  "mrDanger");
-	connect(delAll, &QPushButton::clicked, this, [this]() {
-		if (QMessageBox::question(
-			    this, "obs-multireplay",
-			    obs_module_text("Dock.DeleteAllConfirm"),
-			    QMessageBox::Yes | QMessageBox::No,
-			    QMessageBox::No) != QMessageBox::Yes)
-			return;
-		PlaybackCoordinator::instance().stopEvents();
-		EventStore::instance().clearAll();
-		// version counter change will trigger auto-refresh in poll()
-	});
-	eb->addWidget(dup);
-	eb->addWidget(del);
-	eb->addWidget(exp);
-	eb->addWidget(delAll);
-	eb->addStretch(1);
-	v->addLayout(eb);
-
 	return box;
 }
 
@@ -1117,9 +1126,9 @@ void MultiReplayDock::poll()
 				formatTc(ts.durationNs));
 	}
 
-	QStyle::StandardPixmap sp = ts.playing ? QStyle::SP_MediaPause
-						: QStyle::SP_MediaPlay;
-	playPauseBtn_->setIcon(style()->standardIcon(sp));
+	// ⏸ U+23F8  ▶ U+25B6
+	playPauseBtn_->setText(ts.playing ? QStringLiteral("⏸")
+					  : QStringLiteral("▶"));
 	if (playPauseBtn_->property("playing").toBool() != ts.playing) {
 		playPauseBtn_->setProperty("playing", ts.playing);
 		repolish(playPauseBtn_);
