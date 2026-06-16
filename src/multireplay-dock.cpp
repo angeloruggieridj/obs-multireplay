@@ -75,12 +75,12 @@ static const char *kDockStyle = R"QSS(
 #MultiReplayDock QLabel { color: #d0d0d0; background: transparent; }
 
 /* labels */
-QLabel#mrMuted      { color: #545454; font-size: 10px; }
-QLabel#mrTimecode   { color: #c0c0c0; font-size: 12px; font-weight: 700;
+QLabel#mrMuted      { color: #787878; font-size: 10px; }
+QLabel#mrTimecode   { color: #c8c8c8; font-size: 12px; font-weight: 700;
                       letter-spacing: 0.3px; }
-QLabel#mrSectionLabel { color: #383838; font-size: 9px; font-weight: 700;
+QLabel#mrSectionLabel { color: #686868; font-size: 9px; font-weight: 700;
                         letter-spacing: 1.4px; text-transform: uppercase; }
-QLabel#mrCamNote    { color: #484848; font-size: 9px; }
+QLabel#mrCamNote    { color: #909090; font-size: 9px; }
 
 /* ── generic buttons ───────────────────────────────────── */
 #MultiReplayDock QPushButton {
@@ -233,7 +233,7 @@ QTableWidget#mrEvents {
 QTableWidget#mrEvents::item { padding: 3px 5px; border: 0; }
 QTableWidget#mrEvents::item:selected { background: #0c2212; color: #28b050; }
 QHeaderView::section {
-	background: #141414; color: #383838;
+	background: #141414; color: #909090;
 	padding: 4px 5px; border: 0;
 	border-bottom: 1px solid #2c2c2c;
 	font-size: 9px; font-weight: 700; letter-spacing: 0.8px;
@@ -252,7 +252,11 @@ QTableCornerButton::section { background: #141414; border: 0; }
 	height: 0; width: 0;
 }
 
-QSplitter::handle { background: transparent; }
+QSplitter::handle:horizontal {
+	background: #1e1e1e; width: 5px;
+}
+QSplitter::handle:horizontal:hover { background: #2e2e2e; }
+QSplitter::handle:vertical { background: transparent; }
 )QSS";
 
 namespace {
@@ -360,7 +364,7 @@ void repolish(QWidget *w)
 
 SeekBar::SeekBar(QWidget *parent) : QWidget(parent)
 {
-	setFixedHeight(22);
+	setFixedHeight(28);
 	setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
 	setCursor(Qt::PointingHandCursor);
 	setMouseTracking(false);
@@ -392,53 +396,79 @@ void SeekBar::paintEvent(QPaintEvent *)
 	QPainter p(this);
 	p.setRenderHint(QPainter::Antialiasing, true);
 
-	const int m = 2;
-	const int h = 8;                       // track thickness (taller for markers)
+	const int m = 4;                       // horizontal margin
+	const int h = 14;                      // track thickness
 	const int y = (height() - h) / 2;
 	const int w = width() - 2 * m;
 	const double pos = dragging_ ? dragFrac_ : positionFrac_;
 
-	// track (deep surface)
-	QRectF track(m, y, w, h);
+	// Track (dark base)
 	p.setPen(Qt::NoPen);
-	p.setBrush(QColor(0x18, 0x18, 0x18));
-	p.drawRoundedRect(track, 3, 3);
+	p.setBrush(QColor(0x16, 0x16, 0x16));
+	p.drawRoundedRect(QRectF(m, y, w, h), 2, 2);
 
-	// seekable band — slightly lighter, shows indexed footage extent
+	// Seekable band (slightly lighter — indexed footage extent)
 	if (seekableFrac_ > 0.0) {
-		QRectF s(m, y, w * seekableFrac_, h);
-		p.setBrush(QColor(0x24, 0x24, 0x24));
-		p.drawRoundedRect(s, 3, 3);
+		p.setBrush(QColor(0x22, 0x22, 0x22));
+		p.drawRoundedRect(QRectF(m, y, w * seekableFrac_, h), 2, 2);
 	}
 
-	// event markers — steel-blue tinted rectangles showing captured events
-	p.setPen(QPen(QColor(0x2a, 0x5a, 0x8a, 0x80), 0.5));
-	for (const auto &mk : markers_) {
+	// Event markers — alternating green / cyan.
+	// Each marker: semi-transparent fill + bright left-edge line + dim right edge.
+	static const QColor kFill[2] = {
+		QColor(0x1c, 0x8a, 0x38, 0x70), // green
+		QColor(0x1a, 0x72, 0x98, 0x70), // cyan
+	};
+	static const QColor kEdge[2] = {
+		QColor(0x28, 0xb0, 0x50),        // bright green
+		QColor(0x22, 0x9a, 0xc0),        // bright cyan
+	};
+	for (int mi = 0; mi < (int)markers_.size(); mi++) {
+		const auto &mk = markers_[mi];
 		if (mk.second <= mk.first)
 			continue;
+		const int ci = mi % 2;
 		double x0 = m + w * mk.first;
 		double x1 = m + w * mk.second;
-		QRectF ev(x0, y + 1, std::max(x1 - x0, 2.0), h - 2);
-		p.setBrush(QColor(0x18, 0x28, 0x40, 0xb0));
-		p.drawRoundedRect(ev, 1.5, 1.5);
+		double mw = std::max(x1 - x0, 2.0);
+
+		// Fill
+		p.setPen(Qt::NoPen);
+		p.setBrush(kFill[ci]);
+		p.drawRect(QRectF(x0, y, mw, h));
+
+		// Left edge (bright, 2px)
+		p.setPen(QPen(kEdge[ci], 2.0, Qt::SolidLine, Qt::FlatCap));
+		p.drawLine(QPointF(x0, y), QPointF(x0, y + h));
+
+		// Right edge (dimmer, 1px, only when wide enough)
+		if (x1 - x0 > 4) {
+			p.setPen(QPen(kEdge[ci].darker(150), 1.0,
+				      Qt::SolidLine, Qt::FlatCap));
+			p.drawLine(QPointF(x1, y), QPointF(x1, y + h));
+		}
 	}
 	p.setPen(Qt::NoPen);
 
-	// played-up-to-position fill — steel blue gradient (dark → bright)
+	// Position fill — steel blue gradient (drawn on top of markers,
+	// blends because of partial alpha)
 	if (pos > 0.0) {
 		QRectF f(m, y, w * pos, h);
 		QLinearGradient grad(f.left(), 0, f.right(), 0);
-		grad.setColorAt(0.0, QColor(0x1c, 0x3c, 0x5c, 0xd0));
-		grad.setColorAt(1.0, QColor(0x2a, 0x5e, 0x8a, 0xd0));
+		grad.setColorAt(0.0, QColor(0x1c, 0x3c, 0x5c, 0xb0));
+		grad.setColorAt(1.0, QColor(0x2a, 0x5e, 0x8a, 0xb0));
 		p.setBrush(grad);
-		p.drawRoundedRect(f, 3, 3);
+		p.drawRoundedRect(f, 2, 2);
 	}
 
-	// handle — light steel blue; grows on hover/drag
-	double hx = m + w * pos;
-	double r = (dragging_ || underMouse()) ? 7.0 : 5.5;
-	p.setBrush(QColor(0x7a, 0xab, 0xc8));
+	// Playhead: vertical line through full track + circle handle
+	const double hx = m + w * pos;
+	const double r = (dragging_ || underMouse()) ? 7.5 : 6.0;
+	p.setPen(QPen(QColor(0xe0, 0xe0, 0xe0, 0xc0), 1.5,
+		      Qt::SolidLine, Qt::FlatCap));
+	p.drawLine(QPointF(hx, y), QPointF(hx, y + h));
 	p.setPen(QPen(QColor(0x28, 0x48, 0x60), 1.0));
+	p.setBrush(QColor(0xe0, 0xe0, 0xe0));
 	p.drawEllipse(QPointF(hx, height() / 2.0), r, r);
 }
 
@@ -582,28 +612,28 @@ MultiReplayDock::MultiReplayDock(QWidget *parent) : QWidget(parent)
 	}
 	root->addWidget(mkSep());
 
-	// ── MAIN: left (preview + transport) | right (events) ─────────────
+	// ── MAIN: resizable horizontal splitter ──────────────────────────
 	{
-		auto *main = new QHBoxLayout();
-		main->setSpacing(6);
-		main->setContentsMargins(0, 0, 0, 0);
+		splitter_ = new QSplitter(Qt::Horizontal, this);
+		splitter_->setChildrenCollapsible(false);
+		splitter_->setHandleWidth(5);
 
 		// Left panel: preview + angle selector + seekbar + transport
-		auto *left = new QWidget(this);
-		left->setMinimumWidth(200);
-		left->setMaximumWidth(320);
+		auto *left = new QWidget(splitter_);
+		left->setMinimumWidth(180);
 		auto *lv = new QVBoxLayout(left);
 		lv->setContentsMargins(0, 0, 0, 0);
 		lv->setSpacing(0);
 		lv->addWidget(buildPreview(), 1);
 		lv->addWidget(mkSep());
 		lv->addWidget(buildTransport());
-		main->addWidget(left, 1);
+		splitter_->addWidget(left);
 
 		// Right panel: event list (list selector, search, table, playback)
-		main->addWidget(buildEvents(), 2);
-
-		root->addLayout(main, 1);
+		splitter_->addWidget(buildEvents());
+		splitter_->setStretchFactor(0, 1);
+		splitter_->setStretchFactor(1, 2);
+		root->addWidget(splitter_, 1);
 	}
 
 	// ── FOOTER: markers (left) + edit controls (right) ─────────────────
@@ -1416,8 +1446,10 @@ QWidget *MultiReplayDock::makeCameraCell(int id, const bool *enabled,
 
 		// Note label shown beside the chip (right-click button to edit)
 		const std::string &note = notes[i];
-		auto *noteLbl = new QLabel(
-			QString::fromStdString(note).left(10), w);
+		QString noteText = note.empty()
+					   ? QStringLiteral("--")
+					   : QString::fromStdString(note).left(10);
+		auto *noteLbl = new QLabel(noteText, w);
 		noteLbl->setObjectName("mrCamNote");
 
 		int a1 = i + 1;
@@ -1426,6 +1458,7 @@ QWidget *MultiReplayDock::makeCameraCell(int id, const bool *enabled,
 		});
 
 		b->setContextMenuPolicy(Qt::CustomContextMenu);
+		// curNote holds actual note text (empty string if none, not "--")
 		QString curNote = QString::fromStdString(note);
 		QString camLabel = dn.empty() ? QString("Cam %1").arg(i + 1)
 					      : QString::fromStdString(dn);
@@ -1442,7 +1475,9 @@ QWidget *MultiReplayDock::makeCameraCell(int id, const bool *enabled,
 				if (ok) {
 					curNote = text.trimmed();
 					noteLbl->setText(
-						curNote.left(10));
+						curNote.isEmpty()
+							? QStringLiteral("--")
+							: curNote.left(10));
 					EventStore::instance().setAngleNote(
 						id, a1,
 						curNote.toStdString());
