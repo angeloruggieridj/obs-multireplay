@@ -55,80 +55,66 @@ SPDX-License-Identifier: GPL-2.0-or-later
 namespace multireplay {
 
 // ---------------------------------------------------------------------------
-// Dock-wide stylesheet — a compact, modern dark theme that sits cleanly on top
-// of OBS' own palette. Selectors are scoped by object name / Qt class so the
-// dock styles only itself and never leaks into the rest of OBS.
-// ---------------------------------------------------------------------------
-// Broadcast amber theme.
-// Reference: hardware waveform monitors, tape counters, intercom panels —
-// amber/phosphor readouts on near-black panels. Every "active" state
-// (playing, angle selected, camera on, seek fill, marks) uses the amber
-// family; danger/recording stays red; everything else is dark and quiet.
+// Dock-wide stylesheet — professional broadcast control room palette.
+// Reference: Grass Valley, Ross Video, Viz master control panels —
+// near-black surface, neutral grey buttons, PVW green / PGM red for
+// camera state, steel blue for the seekbar progress. No amber.
 //
 // Palette:
-//   #0f1118  deep bg          #e8a020  amber (primary active)
-//   #161b24  surface          #f5c842  amber bright / hover
-//   #1e2430  elevated         #3a2800  amber bg (checked state)
-//   #252d3a  btn rest         #d4b868  timecode (warm phosphor cream)
-//   #2f3a4a  btn hover        #7a6838  section label (muted amber)
-//   #2a3545  border           #dc2626  recording / danger red
-//   #3a4f65  border hover     #3a0a0a  red bg (live mode indicator)
-//   #c8cdd8  text primary     #6b7688  text muted
+//   #0c0c0c  deep bg          #1c8a38  PVW green (preview/selected)
+//   #141414  surface          #be2020  PGM red  (program/playing)
+//   #1c1c1c  elevated         #081a0e  green bg dark
+//   #222222  btn rest         #200808  red bg dark
+//   #2c2c2c  border           #28b050  green text
+//   #424242  border hover     #de3838  red text
+//   #c0c0c0  text primary     #365e8a  steel-blue (seekbar)
+//   #484848  text muted       #c02020  danger/rec red
 static const char *kDockStyle = R"QSS(
 /* ── base ─────────────────────────────────────────────── */
-#MultiReplayDock { background: #0e1118; }
-#MultiReplayDock QLabel { color: #c8cdd8; background: transparent; }
+#MultiReplayDock { background: #0c0c0c; }
+#MultiReplayDock QLabel { color: #d0d0d0; background: transparent; }
 
 /* labels */
-QLabel#mrMuted    { color: #5a6478; font-size: 10px; }
-QLabel#mrTimecode { color: #d4b868; font-size: 12px; font-weight: 700;
-                    letter-spacing: 0.3px; }
-QLabel#mrSectionLabel { color: #60583a; font-size: 9px; font-weight: 700;
+QLabel#mrMuted      { color: #545454; font-size: 10px; }
+QLabel#mrTimecode   { color: #c0c0c0; font-size: 12px; font-weight: 700;
+                      letter-spacing: 0.3px; }
+QLabel#mrSectionLabel { color: #383838; font-size: 9px; font-weight: 700;
                         letter-spacing: 1.4px; text-transform: uppercase; }
+QLabel#mrCamNote    { color: #484848; font-size: 9px; }
 
 /* ── generic buttons ───────────────────────────────────── */
 #MultiReplayDock QPushButton {
-	background: #1f2535;
-	color: #bdc5d0;
-	border: 1px solid #283040;
-	border-radius: 4px;
-	padding: 3px 9px;
-	font-size: 11px;
-	min-height: 24px;
+	background: #1e1e1e; color: #b0b0b0;
+	border: 1px solid #2c2c2c; border-radius: 4px;
+	padding: 3px 9px; font-size: 11px; min-height: 24px;
 }
-#MultiReplayDock QPushButton:hover  { background: #28304a; border-color: #3a4f68; }
-#MultiReplayDock QPushButton:pressed { background: #182038; }
-#MultiReplayDock QPushButton:disabled { color: #3a4455; border-color: #1a2030; }
+#MultiReplayDock QPushButton:hover  { background: #282828; border-color: #424242; }
+#MultiReplayDock QPushButton:pressed { background: #141414; }
+#MultiReplayDock QPushButton:disabled { color: #303030; border-color: #1e1e1e; }
 
 /* ── transport step / icon buttons ────────────────────── */
 QPushButton#mrTransport {
-	background: #18202e;
-	border: 1px solid #283040;
-	border-radius: 5px;
-	min-width: 30px; min-height: 28px;
-	padding: 0;
+	background: #181818; border: 1px solid #2c2c2c; border-radius: 5px;
+	min-width: 30px; min-height: 28px; padding: 0;
 }
-QPushButton#mrTransport:hover { background: #1f2838; border-color: #3a4f68; }
+QPushButton#mrTransport:hover { background: #222222; border-color: #424242; }
 
 /* play/pause */
 QPushButton#mrPlay {
-	background: #18202e;
-	border: 1px solid #283040;
-	border-radius: 5px;
-	min-width: 38px; min-height: 28px;
-	padding: 0;
+	background: #181818; border: 1px solid #2c2c2c; border-radius: 5px;
+	min-width: 38px; min-height: 28px; padding: 0;
 }
-QPushButton#mrPlay:hover { background: #1f2838; border-color: #3a4f68; }
-QPushButton#mrPlay[playing="true"] { background: #32220a; border-color: #e8a020; }
-QPushButton#mrPlay[playing="true"]:hover { background: #3e2c0c; border-color: #f5c842; }
+QPushButton#mrPlay:hover { background: #222222; border-color: #424242; }
+QPushButton#mrPlay[playing="true"] { background: #0c2212; border-color: #1c8a38; }
+QPushButton#mrPlay[playing="true"]:hover { background: #102818; border-color: #22a040; }
 
 /* NOW / live-edge */
 QPushButton#mrNow {
-	background: #18202e; border: 1px solid #283040; border-radius: 5px;
+	background: #181818; border: 1px solid #2c2c2c; border-radius: 5px;
 	font-weight: 700; font-size: 10px; letter-spacing: 0.8px;
-	min-height: 28px; min-width: 36px; color: #5a6478;
+	min-height: 28px; min-width: 36px; color: #484848;
 }
-QPushButton#mrNow[live="true"] { background: #380a0a; border-color: #d42626; color: #ef4444; }
+QPushButton#mrNow[live="true"] { background: #280808; border-color: #c02020; color: #e03030; }
 
 /* REC button */
 QPushButton#mrRec {
@@ -136,119 +122,130 @@ QPushButton#mrRec {
 	border-radius: 4px; min-height: 28px; padding: 3px 14px;
 }
 QPushButton#mrRec[recording="false"] {
-	background: #1e2030; color: #d04040; border: 1px solid #3a1c1c;
+	background: #181010; color: #b03030; border: 1px solid #2c1818;
 }
-QPushButton#mrRec[recording="false"]:hover { background: #261a1a; border-color: #5a2222; }
+QPushButton#mrRec[recording="false"]:hover { background: #1e1010; border-color: #4a2020; }
 QPushButton#mrRec[recording="true"] {
-	background: #7a0a0a; color: #fff; border: 1px solid #d42626;
+	background: #640808; color: #ffffff; border: 1px solid #c02020;
 }
-QPushButton#mrRec[recording="true"]:hover { background: #8c1010; }
+QPushButton#mrRec[recording="true"]:hover { background: #740e0e; }
 
 /* settings gear */
 QToolButton#mrGear {
-	background: #18202e; border: 1px solid #283040; border-radius: 4px;
-	padding: 3px 7px; color: #5a6478; font-size: 14px;
+	background: #181818; border: 1px solid #2c2c2c; border-radius: 4px;
+	padding: 3px 7px; color: #484848; font-size: 14px;
 }
-QToolButton#mrGear:hover { background: #1f2838; color: #c8cdd8; border-color: #3a4f68; }
+QToolButton#mrGear:hover { background: #222222; color: #c0c0c0; border-color: #424242; }
 
-/* ── angle selector ─────────────────────────────────────── */
+/* ── angle selector — state drives color, not :checked ───── */
 QPushButton#mrAngle {
-	background: #141b26; border: 1px solid #283040; border-radius: 3px;
-	color: #40505e; font-weight: 700; font-size: 10px;
-	min-width: 26px; min-height: 22px; padding: 0;
+	background: #181818; border: 1px solid #2c2c2c; border-radius: 3px;
+	color: #383838; font-weight: 700; font-size: 10px;
+	min-width: 34px; min-height: 22px; padding: 0 4px;
 }
-QPushButton#mrAngle:hover { background: #1c2534; color: #7a8898; border-color: #3a4f68; }
-QPushButton#mrAngle:checked { background: #32220a; border-color: #e8a020; color: #f5c842; }
+QPushButton#mrAngle:hover { background: #202020; color: #585858; border-color: #424242; }
+QPushButton#mrAngle[state="preview"] {
+	background: #081a0e; border-color: #1c8a38; color: #28b050;
+}
+QPushButton#mrAngle[state="preview"]:hover { background: #0c2014; border-color: #22a040; }
+QPushButton#mrAngle[state="program"] {
+	background: #200808; border-color: #be2020; color: #de3838;
+}
+QPushButton#mrAngle[state="program"]:hover { background: #280c0c; border-color: #cc2828; }
 
 /* ── speed preset chips ─────────────────────────────────── */
 QPushButton#mrSpeedChip {
-	background: #141b26; border: 1px solid #283040; border-radius: 3px;
-	color: #5a6478; font-size: 9px; font-weight: 700;
+	background: #181818; border: 1px solid #2c2c2c; border-radius: 3px;
+	color: #484848; font-size: 9px; font-weight: 700;
 	min-width: 28px; min-height: 20px; padding: 1px 4px;
 }
-QPushButton#mrSpeedChip:hover { background: #1c2534; color: #c8cdd8; border-color: #3a4f68; }
-QPushButton#mrSpeedChip:pressed { background: #32220a; border-color: #e8a020; color: #f5c842; }
+QPushButton#mrSpeedChip:hover { background: #222222; color: #b0b0b0; border-color: #424242; }
+QPushButton#mrSpeedChip:pressed { background: #0c2212; border-color: #1c8a38; color: #28b050; }
 
 /* ── camera toggle chips in event table ─────────────────── */
 QToolButton#mrCamToggle {
-	background: #141b26; border: 1px solid #283040; border-radius: 3px;
-	color: #40505e; font-size: 9px; font-weight: 700;
-	min-width: 22px; max-width: 36px; min-height: 32px;
-	padding: 1px 3px; text-align: center;
+	background: #181818; border: 1px solid #2c2c2c; border-radius: 3px;
+	color: #383838; font-size: 9px; font-weight: 700;
+	min-width: 30px; max-width: 44px; min-height: 22px;
+	padding: 1px 4px; text-align: center;
 }
-QToolButton#mrCamToggle:hover  { border-color: #3a4f68; color: #7a8898; }
-QToolButton#mrCamToggle:checked { background: #32220a; border-color: #e8a020; color: #f5c842; }
+QToolButton#mrCamToggle:hover  { border-color: #424242; color: #585858; }
+QToolButton#mrCamToggle[state="preview"] {
+	background: #081a0e; border-color: #1c8a38; color: #28b050;
+}
+QToolButton#mrCamToggle[state="preview"]:hover { background: #0c2014; border-color: #22a040; }
+QToolButton#mrCamToggle[state="program"] {
+	background: #200808; border-color: #be2020; color: #de3838;
+}
+QToolButton#mrCamToggle[state="program"]:hover { background: #280c0c; border-color: #cc2828; }
 
 /* ── section separator line ─────────────────────────────── */
-QWidget#mrSepLine { background: #1e2638; }
+QWidget#mrSepLine { background: #1c1c1c; }
 
 /* ── accent / danger buttons ─────────────────────────────── */
 QPushButton#mrAccent {
-	background: #1c1e0e; border: 1px solid #c89018; color: #e8a020;
+	background: #0c1a0e; border: 1px solid #1a5a30; color: #28904a;
 }
-QPushButton#mrAccent:hover { background: #26260e; color: #f5c842; border-color: #f5c842; }
-QPushButton#mrDanger { color: #d04040; border-color: #381818; }
-QPushButton#mrDanger:hover { background: #261818; border-color: #502020; }
+QPushButton#mrAccent:hover { background: #0e2012; color: #32b058; border-color: #208040; }
+QPushButton#mrDanger { color: #b03030; border-color: #2c1818; }
+QPushButton#mrDanger:hover { background: #1e1010; border-color: #442020; }
 
 /* ── checkboxes ──────────────────────────────────────────── */
-#MultiReplayDock QCheckBox { color: #a0aab8; spacing: 5px; font-size: 11px; }
+#MultiReplayDock QCheckBox { color: #888888; spacing: 5px; font-size: 11px; }
 #MultiReplayDock QCheckBox::indicator {
 	width: 13px; height: 13px; border-radius: 3px;
-	border: 1px solid #283040; background: #141b26;
+	border: 1px solid #2c2c2c; background: #181818;
 }
-#MultiReplayDock QCheckBox::indicator:checked { background: #e8a020; border-color: #f5c842; }
+#MultiReplayDock QCheckBox::indicator:checked { background: #1c8a38; border-color: #22a040; }
 
 /* ── inputs ──────────────────────────────────────────────── */
 #MultiReplayDock QComboBox, #MultiReplayDock QLineEdit {
-	background: #141b26; color: #c8cdd8;
-	border: 1px solid #283040; border-radius: 3px;
+	background: #181818; color: #c0c0c0;
+	border: 1px solid #2c2c2c; border-radius: 3px;
 	padding: 3px 7px; min-height: 20px; font-size: 11px;
 }
-#MultiReplayDock QComboBox:hover, #MultiReplayDock QLineEdit:hover { border-color: #3a4f68; }
+#MultiReplayDock QComboBox:hover, #MultiReplayDock QLineEdit:hover { border-color: #424242; }
 #MultiReplayDock QComboBox::drop-down { border: 0; width: 16px; }
 #MultiReplayDock QComboBox QAbstractItemView {
-	background: #141b26; color: #c8cdd8; border: 1px solid #283040;
-	selection-background-color: #32220a; selection-color: #f5c842; outline: 0;
+	background: #181818; color: #c0c0c0; border: 1px solid #2c2c2c;
+	selection-background-color: #081a0e; selection-color: #28b050; outline: 0;
 }
 
-/* ── speed slider ────────────────────────────────────────── */
+/* ── speed slider — steel blue ───────────────────────────── */
 QSlider#mrSpeed::groove:horizontal {
-	height: 3px; background: #1e2638; border-radius: 2px;
+	height: 3px; background: #1e1e1e; border-radius: 2px;
 }
-QSlider#mrSpeed::sub-page:horizontal { background: #e8a020; border-radius: 2px; }
+QSlider#mrSpeed::sub-page:horizontal { background: #365e8a; border-radius: 2px; }
 QSlider#mrSpeed::handle:horizontal {
 	width: 10px; height: 10px; margin: -4px 0;
-	background: #f5c842; border-radius: 5px; border: 1px solid #a06014;
+	background: #7aabc8; border-radius: 5px; border: 1px solid #284860;
 }
-QSlider#mrSpeed::handle:horizontal:hover { background: #fff; }
+QSlider#mrSpeed::handle:horizontal:hover { background: #e0e0e0; }
 
 /* ── event table ─────────────────────────────────────────── */
 QTableWidget#mrEvents {
-	background: #0e1118;
-	alternate-background-color: #111520;
-	gridline-color: transparent;
-	border: 1px solid #1e2638;
-	border-radius: 4px;
-	color: #c8cdd8; outline: 0;
+	background: #0c0c0c; alternate-background-color: #101010;
+	gridline-color: transparent; border: 1px solid #1c1c1c;
+	border-radius: 4px; color: #c0c0c0; outline: 0;
 }
 QTableWidget#mrEvents::item { padding: 3px 5px; border: 0; }
-QTableWidget#mrEvents::item:selected { background: #28190a; color: #f5c842; }
+QTableWidget#mrEvents::item:selected { background: #0c2212; color: #28b050; }
 QHeaderView::section {
-	background: #141b26; color: #60583a;
+	background: #141414; color: #383838;
 	padding: 4px 5px; border: 0;
-	border-bottom: 1px solid #283040;
+	border-bottom: 1px solid #2c2c2c;
 	font-size: 9px; font-weight: 700; letter-spacing: 0.8px;
 }
-QTableCornerButton::section { background: #141b26; border: 0; }
+QTableCornerButton::section { background: #141414; border: 0; }
 
 /* ── scrollbars ──────────────────────────────────────────── */
 #MultiReplayDock QScrollBar:vertical {
 	background: transparent; width: 6px; margin: 0;
 }
 #MultiReplayDock QScrollBar::handle:vertical {
-	background: #283040; border-radius: 3px; min-height: 20px;
+	background: #2a2a2a; border-radius: 3px; min-height: 20px;
 }
-#MultiReplayDock QScrollBar::handle:vertical:hover { background: #3a4f68; }
+#MultiReplayDock QScrollBar::handle:vertical:hover { background: #424242; }
 #MultiReplayDock QScrollBar::add-line, #MultiReplayDock QScrollBar::sub-line {
 	height: 0; width: 0;
 }
@@ -403,44 +400,44 @@ void SeekBar::paintEvent(QPaintEvent *)
 	// track (deep surface)
 	QRectF track(m, y, w, h);
 	p.setPen(Qt::NoPen);
-	p.setBrush(QColor(0x1e, 0x24, 0x30));
+	p.setBrush(QColor(0x18, 0x18, 0x18));
 	p.drawRoundedRect(track, 3, 3);
 
 	// seekable band — slightly lighter, shows indexed footage extent
 	if (seekableFrac_ > 0.0) {
 		QRectF s(m, y, w * seekableFrac_, h);
-		p.setBrush(QColor(0x2a, 0x35, 0x45));
+		p.setBrush(QColor(0x24, 0x24, 0x24));
 		p.drawRoundedRect(s, 3, 3);
 	}
 
-	// event markers — amber-tinted rectangles showing captured events
-	p.setPen(QPen(QColor(0xe8, 0xa0, 0x20, 0x80), 0.5));
+	// event markers — steel-blue tinted rectangles showing captured events
+	p.setPen(QPen(QColor(0x2a, 0x5a, 0x8a, 0x80), 0.5));
 	for (const auto &mk : markers_) {
 		if (mk.second <= mk.first)
 			continue;
 		double x0 = m + w * mk.first;
 		double x1 = m + w * mk.second;
 		QRectF ev(x0, y + 1, std::max(x1 - x0, 2.0), h - 2);
-		p.setBrush(QColor(0x60, 0x3c, 0x08, 0xb0));
+		p.setBrush(QColor(0x18, 0x28, 0x40, 0xb0));
 		p.drawRoundedRect(ev, 1.5, 1.5);
 	}
 	p.setPen(Qt::NoPen);
 
-	// played-up-to-position fill — amber gradient (dark → bright, left → right)
+	// played-up-to-position fill — steel blue gradient (dark → bright)
 	if (pos > 0.0) {
 		QRectF f(m, y, w * pos, h);
 		QLinearGradient grad(f.left(), 0, f.right(), 0);
-		grad.setColorAt(0.0, QColor(0xa0, 0x60, 0x14, 0xd0));
-		grad.setColorAt(1.0, QColor(0xe8, 0xa0, 0x20, 0xd0));
+		grad.setColorAt(0.0, QColor(0x1c, 0x3c, 0x5c, 0xd0));
+		grad.setColorAt(1.0, QColor(0x2a, 0x5e, 0x8a, 0xd0));
 		p.setBrush(grad);
 		p.drawRoundedRect(f, 3, 3);
 	}
 
-	// handle — amber bright; grows on hover/drag
+	// handle — light steel blue; grows on hover/drag
 	double hx = m + w * pos;
 	double r = (dragging_ || underMouse()) ? 7.0 : 5.5;
-	p.setBrush(QColor(0xf5, 0xc8, 0x42));
-	p.setPen(QPen(QColor(0x60, 0x3c, 0x08), 1.0));
+	p.setBrush(QColor(0x7a, 0xab, 0xc8));
+	p.setPen(QPen(QColor(0x28, 0x48, 0x60), 1.0));
 	p.drawEllipse(QPointF(hx, height() / 2.0), r, r);
 }
 
@@ -1138,8 +1135,59 @@ void MultiReplayDock::poll()
 		speed_->blockSignals(false);
 		speedLbl_->setText(QString::asprintf("%.2f\xc3\x97", sv / 100.0));
 	}
-	if (anglesA_ && anglesA_->button(ts.angle))
-		anglesA_->button(ts.angle)->setChecked(true);
+	// Angle buttons: PVW green = selected, PGM red = event playing on it.
+	// Visual state is driven by the "state" property + QSS, not :checked.
+	if (anglesA_) {
+		bool ep = ts.eventActive && ts.playing;
+		for (int i = 1; i <= kNCams; i++) {
+			auto *b = qobject_cast<QPushButton *>(
+				anglesA_->button(i));
+			if (!b || !b->isVisible())
+				continue;
+			QString st = (ep && i == ts.angle)
+					     ? QStringLiteral("program")
+				   : (i == ts.angle)
+					     ? QStringLiteral("preview")
+					     : QString();
+			if (b->property("state").toString() != st) {
+				b->setProperty("state", st);
+				repolish(b);
+			}
+		}
+		// Keep exclusive selection in sync for click handling
+		if (anglesA_->button(ts.angle))
+			anglesA_->button(ts.angle)->setChecked(true);
+	}
+
+	// Event camera chips: PVW green = enabled, PGM red = currently playing.
+	{
+		auto ps = PlaybackCoordinator::instance().playState();
+		for (int row = 0; row < events_->rowCount(); row++) {
+			QTableWidgetItem *idItem = events_->item(row, kColId);
+			if (!idItem)
+				continue;
+			int rowEv = idItem->data(Qt::UserRole).toInt();
+			bool isActive = ps.active && (ps.eventId == rowEv);
+			QWidget *cell = events_->cellWidget(row, kColCams);
+			if (!cell)
+				continue;
+			const auto btns =
+				cell->findChildren<QToolButton *>();
+			for (QToolButton *btn : btns) {
+				int ci = btn->property("camIndex").toInt();
+				bool checked = btn->isChecked();
+				QString st;
+				if (isActive && ci == ps.angle1)
+					st = QStringLiteral("program");
+				else if (checked)
+					st = QStringLiteral("preview");
+				if (btn->property("state").toString() != st) {
+					btn->setProperty("state", st);
+					repolish(btn);
+				}
+			}
+		}
+	}
 
 	// --- recording status ---
 	bool rec = core.isRecording();
@@ -1193,15 +1241,18 @@ void MultiReplayDock::refreshAngles()
 		auto *b = qobject_cast<QPushButton *>(anglesA_->button(i + 1));
 		if (!b)
 			continue;
+		// Show button only for cameras that have a source assigned.
+		bool configured = !cfg.cameras[i].sourceName.empty();
+		b->setVisible(configured);
+		if (!configured)
+			continue;
 		const std::string &dn = cfg.cameras[i].displayName;
 		if (dn.empty()) {
 			b->setText(QString::number(i + 1));
-			b->setToolTip(
-				QString("%1 %2")
-					.arg(obs_module_text("Dock.Angle"))
-					.arg(i + 1));
+			b->setToolTip(QString("%1 %2")
+					      .arg(obs_module_text("Dock.Angle"))
+					      .arg(i + 1));
 		} else {
-			// Show up to 5 chars so the button stays narrow
 			b->setText(QString::fromStdString(dn).left(5));
 			b->setToolTip(QString::fromStdString(dn));
 		}
@@ -1331,45 +1382,47 @@ QWidget *MultiReplayDock::makeCameraCell(int id, const bool *enabled,
 	auto *w = new QWidget(events_);
 	auto *l = new QHBoxLayout(w);
 	l->setContentsMargins(2, 1, 2, 1);
-	l->setSpacing(2);
+	l->setSpacing(3);
+
 	for (int i = 0; i < kEventAngles; i++) {
-		auto *b = new QToolButton(w);
-		b->setObjectName("mrCamToggle");
-		const std::string &dn =
-			(i < kMaxCameras) ? cfg.cameras[i].displayName : "";
-		// First line: camera number or short display name
+		// Only show chips for cameras that have a source configured.
+		bool configured = (i < kMaxCameras) &&
+				  !cfg.cameras[i].sourceName.empty();
+		if (!configured)
+			continue;
+
+		const std::string &dn = cfg.cameras[i].displayName;
 		QString label = dn.empty() ? QString::number(i + 1)
 					   : QString::fromStdString(dn).left(5);
 
-		// Notes displayed inline as second line inside the chip.
-		// Double-click (or right-click) to edit.
-		const std::string &note = notes[i];
-		if (!note.empty()) {
-			QString noteShort =
-				QString::fromStdString(note).left(6);
-			b->setText(label + "\n" + noteShort);
-		} else {
-			b->setText(label);
-		}
-		// Minimal tooltip: full camera name only (note already visible)
+		auto *b = new QToolButton(w);
+		b->setObjectName("mrCamToggle");
+		b->setText(label);
+		b->setProperty("camIndex", i + 1); // 1-based; used in poll()
 		if (!dn.empty())
 			b->setToolTip(QString::fromStdString(dn));
-
 		b->setCheckable(true);
 		b->setChecked(enabled[i]);
 		b->setCursor(Qt::PointingHandCursor);
+
+		// Note label shown beside the chip (right-click button to edit)
+		const std::string &note = notes[i];
+		auto *noteLbl = new QLabel(
+			QString::fromStdString(note).left(10), w);
+		noteLbl->setObjectName("mrCamNote");
+
 		int a1 = i + 1;
 		connect(b, &QToolButton::toggled, this, [id, a1](bool on) {
 			EventStore::instance().setAngle(id, a1, on);
 		});
 
-		// Right-click to edit the per-angle description
 		b->setContextMenuPolicy(Qt::CustomContextMenu);
 		QString curNote = QString::fromStdString(note);
 		QString camLabel = dn.empty() ? QString("Cam %1").arg(i + 1)
 					      : QString::fromStdString(dn);
 		connect(b, &QToolButton::customContextMenuRequested, this,
-			[this, id, a1, curNote, camLabel](const QPoint &) {
+			[this, id, a1, curNote, camLabel, noteLbl](
+				const QPoint &) mutable {
 				bool ok;
 				QString text = QInputDialog::getText(
 					this,
@@ -1378,14 +1431,18 @@ QWidget *MultiReplayDock::makeCameraCell(int id, const bool *enabled,
 					"Descrizione:", QLineEdit::Normal,
 					curNote, &ok);
 				if (ok) {
+					curNote = text.trimmed();
+					noteLbl->setText(
+						curNote.left(10));
 					EventStore::instance().setAngleNote(
 						id, a1,
-						text.trimmed().toStdString());
+						curNote.toStdString());
 					refreshEvents();
 				}
 			});
 
 		l->addWidget(b);
+		l->addWidget(noteLbl);
 	}
 	l->addStretch(1);
 	return w;

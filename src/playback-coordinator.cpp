@@ -140,6 +140,18 @@ bool PlaybackCoordinator::queueActive() const
 	return active_;
 }
 
+PlaybackCoordinator::PlayState PlaybackCoordinator::playState() const
+{
+	std::lock_guard<std::mutex> lock(mutex_);
+	PlayState s;
+	s.active = active_;
+	if (active_ && queuePos_ < queue_.size()) {
+		s.eventId = queue_[queuePos_].eventId;
+		s.angle1 = queue_[queuePos_].angle + 1; // 0-based → 1-based
+	}
+	return s;
+}
+
 void PlaybackCoordinator::startNext()
 {
 	// mutex_ held by caller.

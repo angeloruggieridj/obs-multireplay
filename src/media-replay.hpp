@@ -102,7 +102,8 @@ public:
 		bool playing = false;
 		double speed = 1.0;
 		int64_t positionNs = 0;
-		int angle = 1; // 1-based
+		int angle = 1;              // 1-based
+		bool eventActive = false;   // event replay in progress
 	};
 	TransportState transportState() const;
 

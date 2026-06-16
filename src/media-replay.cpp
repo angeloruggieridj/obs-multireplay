@@ -647,6 +647,7 @@ MediaReplay::TransportState MediaReplay::transportState() const
 	t.speed = speedPct_.load() / 100.0;
 	t.positionNs = pos;
 	t.angle = angle_.load() + 1; // 1-based for the UI
+	t.eventActive = eventActive_;
 	return t;
 }
 

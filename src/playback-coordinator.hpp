@@ -36,6 +36,15 @@ public:
 
 	bool queueActive() const;
 
+	// Lightweight snapshot of the currently playing item, safe to call from
+	// any thread (e.g. the UI poll timer). Returns {false,0,0} when idle.
+	struct PlayState {
+		bool active = false;
+		int eventId = 0;  // id of the event being played
+		int angle1 = 0;   // 1-based camera angle currently playing, 0=none
+	};
+	PlayState playState() const;
+
 	// the reference controller Loop: when on, the queue restarts from the first event.
 	void setLoop(bool loop) { loop_ = loop; }
 	bool loop() const { return loop_; }
