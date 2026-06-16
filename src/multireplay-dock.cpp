@@ -818,13 +818,9 @@ QWidget *MultiReplayDock::buildTransport()
 	auto *tr = new QHBoxLayout();
 	tr->setSpacing(4);
 
-	// ⏮ U+23EE  ▶ U+25B6  ⏭ U+23ED
-	auto *stepBack = transportBtn(QStringLiteral("⏮"), this,
-				      obs_module_text("Dock.StepBack"));
+	// ▶ U+25B6
 	playPauseBtn_ = transportBtn(QStringLiteral("▶"), this,
 				     obs_module_text("Dock.PlayPause"), "mrPlay");
-	auto *stepFwd = transportBtn(QStringLiteral("⏭"), this,
-				     obs_module_text("Dock.StepFwd"));
 	nowBtn_ = new QPushButton(QStringLiteral("NOW"), this);
 	nowBtn_->setObjectName("mrNow");
 	nowBtn_->setProperty("live", false);
@@ -832,9 +828,7 @@ QWidget *MultiReplayDock::buildTransport()
 	nowBtn_->setToolTip(obs_module_text("Dock.JumpToNow"));
 	nowBtn_->setMinimumWidth(38);
 
-	tr->addWidget(stepBack);
 	tr->addWidget(playPauseBtn_);
-	tr->addWidget(stepFwd);
 	tr->addWidget(nowBtn_);
 	tr->addStretch(1);
 
@@ -890,18 +884,6 @@ QWidget *MultiReplayDock::buildTransport()
 	v->addLayout(sh);
 
 	// wire transport actions
-	connect(stepBack, &QPushButton::clicked, this, []() {
-		if (!ensureSession())
-			return;
-		MediaReplay::instance().setFollowLive(false);
-		MediaReplay::instance().stepFrames(-1);
-	});
-	connect(stepFwd, &QPushButton::clicked, this, []() {
-		if (!ensureSession())
-			return;
-		MediaReplay::instance().setFollowLive(false);
-		MediaReplay::instance().stepFrames(1);
-	});
 	connect(playPauseBtn_, &QPushButton::clicked, this, []() {
 		if (!ensureSession())
 			return;
@@ -1181,12 +1163,13 @@ void MultiReplayDock::poll()
 					}).detach();
 				}
 			}
-		} else if (!core.isRecording() &&
-			   !core.getConfig().sessionFolder.empty() &&
+		} else if (!core.getConfig().sessionFolder.empty() &&
 			   pollTick_ >= 30) {
 			// Brief startup delay (~1s at 33ms/tick) lets OBS finish
 			// FINISHED_LOADING and ensureSource() before we drive the
-			// media source.
+			// media source.  Also runs during recording so previous-
+			// session footage loads immediately on REC press and the
+			// preview can follow the live edge.
 			std::string err;
 			engine.loadSession(core.recordingFolder(), err);
 		}

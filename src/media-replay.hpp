@@ -75,7 +75,6 @@ public:
 	void seekMaster(int64_t masterNs);
 	int64_t position() const; // master-timeline ns
 	void jumpToEnd();
-	void stepFrames(int frames);
 
 	// --- Event playback (replay-to-output) ---
 	// Seek to `tInNs` on `angle0`, play at `speed`, auto-stop at `tOutNs`

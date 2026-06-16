@@ -18,7 +18,6 @@ SPDX-License-Identifier: GPL-2.0-or-later
 namespace multireplay {
 
 namespace {
-constexpr int64_t kFrameMs = 33; // ~30 fps step fallback
 int clampSpeedPct(double speed)
 {
 	int pct = (int)std::lround(speed * 100.0);
@@ -360,9 +359,11 @@ void MediaReplay::setSpeed(double speed)
 void MediaReplay::setAngle(int camIndex0)
 {
 	std::lock_guard<std::mutex> lock(mutex_);
-	if (!index_ || camIndex0 < 0 || camIndex0 >= kIndexMaxCameras)
+	if (camIndex0 < 0 || camIndex0 >= kIndexMaxCameras)
 		return;
 	angle_ = camIndex0;
+	if (!index_)
+		return;
 	int64_t curMaster = loadedPath_.empty() ? 0 : segBaseNs_ + mediaTimeNs();
 	std::string path;
 	int64_t off = 0;
@@ -413,19 +414,6 @@ void MediaReplay::jumpToEnd()
 	if (edge > 0)
 		seekMaster(edge - 1);
 	followLive_ = true;
-}
-
-void MediaReplay::stepFrames(int frames)
-{
-	std::lock_guard<std::mutex> lock(mutex_);
-	if (!mediaSource_ || loadedPath_.empty() || pendingLoad_)
-		return;
-	obs_source_media_play_pause(mediaSource_, true); // pause
-	int64_t durMs = obs_source_media_get_duration(mediaSource_);
-	int64_t curMs = obs_source_media_get_time(mediaSource_);
-	int64_t newMs = curMs + (int64_t)frames * kFrameMs;
-	newMs = std::clamp<int64_t>(newMs, 0, durMs > 0 ? durMs - 1 : 0);
-	obs_source_media_set_time(mediaSource_, newMs);
 }
 
 // ---------------------------------------------------------------------------
@@ -553,9 +541,15 @@ void MediaReplay::monitorLoop()
 						// position now that the seek settled
 						// so the wall-clock OUT fires at
 						// exactly tOutNs.
-						int64_t landedMs =
-							obs_source_media_get_time(
-								src);
+						// Recalibrate OUT using landed position.
+					// Guard: obs_source_media_get_time() can
+					// return stale 0 on Intel UHD immediately
+					// after a seek — only trust a value within
+					// 1500 ms (≈1 GOP) of the requested seek.
+					int64_t landedMs =
+						obs_source_media_get_time(src);
+					if (landedMs > 0 &&
+					    (pendingSeekMs_ - landedMs) < 1500LL) {
 						int64_t masterActual =
 							segBaseNs_ +
 							landedMs * 1000000LL;
@@ -563,13 +557,14 @@ void MediaReplay::monitorLoop()
 							eventDurationNs_ =
 								eventOutNs_ -
 								masterActual;
-						eventPlayStartWall_ =
-							std::chrono::steady_clock::now();
-						eventPlayStarted_ = true;
 					}
+					eventPlayStartWall_ =
+						std::chrono::steady_clock::now();
+					eventPlayStarted_ = true;
 				}
-				continue;
 			}
+			continue;
+		}
 
 			// Fast-path seek (playEvent same-file branch): seek was
 			// applied last cycle; start play now.
@@ -578,16 +573,23 @@ void MediaReplay::monitorLoop()
 					obs_source_media_play_pause(src, false);
 				pendingSeekApplied_ = false;
 				if (eventActive_ && !eventPlayStarted_) {
-					// Same recalibration: read actual landed
-					// position so OUT fires at the right time.
+					// Guard: obs_source_media_get_time() returns
+					// stale 0 on Intel UHD after seek — only
+					// recalibrate if landed pos is within 1500 ms.
 					int64_t landedMs =
 						obs_source_media_get_time(src);
-					int64_t masterActual =
-						segBaseNs_ +
-						landedMs * 1000000LL;
-					if (eventOutNs_ > masterActual)
-						eventDurationNs_ =
-							eventOutNs_ - masterActual;
+					if (landedMs > 0 &&
+					    (pendingSeekMs_ - landedMs) < 1500LL) {
+						int64_t masterActual =
+							segBaseNs_ +
+							landedMs * 1000000LL;
+						if (eventOutNs_ > masterActual)
+							eventDurationNs_ =
+								eventOutNs_ -
+								masterActual;
+					}
+					// Always arm the wall-clock timer even
+					// when get_time() returned stale 0.
 					eventPlayStartWall_ =
 						std::chrono::steady_clock::now();
 					eventPlayStarted_ = true;
