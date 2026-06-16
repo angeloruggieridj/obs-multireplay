@@ -150,6 +150,11 @@ private:
 	// cached live-edge for seek mapping (ns)
 	int64_t seekableNs_ = 0;
 	int64_t durationNs_ = 0;
+	int64_t displayDurNs_ = 0; // max(durationNs_, liveElapsed) updated every poll
+
+	// Raw ns (in, out) for each completed event — fractions computed in poll()
+	// so markers shift leftward as recording time grows.
+	std::vector<std::pair<int64_t, int64_t>> markerNs_;
 };
 
 } // namespace multireplay

@@ -45,6 +45,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
 #include <QPainter>
 #include <QLinearGradient>
 #include <QMouseEvent>
+#include <QKeyEvent>
 #include <QFontDatabase>
 #include <QInputDialog>
 
@@ -80,7 +81,7 @@ QLabel#mrTimecode   { color: #c8c8c8; font-size: 12px; font-weight: 700;
                       letter-spacing: 0.3px; }
 QLabel#mrSectionLabel { color: #686868; font-size: 9px; font-weight: 700;
                         letter-spacing: 1.4px; text-transform: uppercase; }
-QLabel#mrCamNote    { color: #909090; font-size: 9px; }
+/* mrCamNoteEdit: styled inline via setStyleSheet() on the widget */
 
 /* ── generic buttons ───────────────────────────────────── */
 #MultiReplayDock QPushButton {
@@ -770,8 +771,8 @@ QWidget *MultiReplayDock::buildTransport()
 	connect(seek_, &SeekBar::scrubStateChanged, this,
 		[this](bool dragging) { seekDragging_ = dragging; });
 	connect(seek_, &SeekBar::scrubMoved, this, [this](double frac) {
-		tcLbl_->setText(formatTc((int64_t)(frac * (double)durationNs_)) +
-				" / " + formatTc(durationNs_));
+		tcLbl_->setText(formatTc((int64_t)(frac * (double)displayDurNs_)) +
+				" / " + formatTc(displayDurNs_));
 	});
 	connect(seek_, &SeekBar::seekRequested, this,
 		[this](double frac) { seekToFraction(frac); });
@@ -1101,7 +1102,7 @@ void MultiReplayDock::seekToFraction(double frac)
 	if (!ensureSession())
 		return;
 	frac = std::clamp(frac, 0.0, 1.0);
-	int64_t pos = (int64_t)(frac * (double)durationNs_);
+	int64_t pos = (int64_t)(frac * (double)displayDurNs_);
 	if (seekableNs_ > 0 && pos > seekableNs_)
 		pos = seekableNs_;
 	auto &engine = MediaReplay::instance();
@@ -1153,27 +1154,30 @@ void MultiReplayDock::poll()
 				0, (int64_t)os_gettime_ns() - t0);
 	}
 	// Display duration: prefer indexed footage; fall back to elapsed.
-	int64_t displayDurNs = std::max(ts.durationNs, liveElapsedNs);
+	displayDurNs_ = std::max(ts.durationNs, liveElapsedNs);
 
 	if (!seekDragging_) {
-		// During recording keep the playhead at the live edge (right).
-		double posFrac = ts.recording
-					 ? 1.0
-					 : (displayDurNs > 0
-						    ? (double)ts.positionNs /
-							      (double)displayDurNs
-						    : 0.0);
-		double seekFrac = (displayDurNs > 0 && ts.seekableNs > 0)
+		// positionNs tracks the actual playhead; use displayDurNs_ as
+		// denominator so the bar reflects the full elapsed/indexed range.
+		double posFrac = (displayDurNs_ > 0)
+					 ? std::min(1.0,
+						    (double)ts.positionNs /
+							    (double)displayDurNs_)
+					 : 0.0;
+		double seekFrac = (displayDurNs_ > 0 && ts.seekableNs > 0)
 					  ? (double)ts.seekableNs /
-						    (double)displayDurNs
+						    (double)displayDurNs_
 					  : (ts.recording ? 0.0 : 1.0);
 		seek_->setProgress(posFrac, seekFrac);
+		// During recording: show "position / ● elapsed" so the user can
+		// see both where the playhead is and how long the take is.
 		if (ts.recording)
-			tcLbl_->setText(QStringLiteral("● ") +
+			tcLbl_->setText(formatTc(ts.positionNs) +
+					QStringLiteral(" / ● ") +
 					formatTc(liveElapsedNs));
 		else
 			tcLbl_->setText(formatTc(ts.positionNs) + " / " +
-					formatTc(displayDurNs));
+					formatTc(displayDurNs_));
 	}
 
 	// ⏸ U+23F8  ▶ U+25B6
@@ -1287,7 +1291,25 @@ void MultiReplayDock::poll()
 	if (ev != lastEventVersion_) {
 		lastEventVersion_ = ev;
 		refreshAngles();
-		refreshEvents();
+		refreshEvents(); // rebuilds markerNs_ (raw ns pairs)
+	}
+
+	// Recompute seekbar marker fractions every tick: during recording
+	// displayDurNs_ grows so markers shift leftward as time passes.
+	if (seek_ && displayDurNs_ > 0) {
+		std::vector<std::pair<double, double>> mf;
+		mf.reserve(markerNs_.size());
+		for (const auto &[inNs, outNs] : markerNs_) {
+			double inf = std::clamp(
+				(double)inNs / (double)displayDurNs_, 0.0, 1.0);
+			double outf = std::clamp(
+				(double)outNs / (double)displayDurNs_, 0.0, 1.0);
+			if (outf > inf)
+				mf.push_back({inf, outf});
+		}
+		seek_->setEventMarkers(std::move(mf));
+	} else if (seek_) {
+		seek_->setEventMarkers({});
 	}
 }
 
@@ -1334,7 +1356,7 @@ void MultiReplayDock::refreshEvents()
 		return;
 	}
 	const Qt::Alignment mid = Qt::AlignVCenter | Qt::AlignHCenter;
-	std::vector<std::pair<double, double>> markers;
+	std::vector<std::pair<int64_t, int64_t>> rawMarkers;
 
 	size_t n = obs_data_array_count(arr);
 	for (size_t i = 0; i < n; i++) {
@@ -1365,14 +1387,10 @@ void MultiReplayDock::refreshEvents()
 
 		// Collect timeline marker for ALL events (regardless of search
 		// filter) so the seekbar shows full density even when filtered.
-		if (tin >= 0 && tout >= tin && durationNs_ > 0) {
-			double inFrac = std::clamp(
-				(double)tin / (double)durationNs_, 0.0, 1.0);
-			double outFrac = std::clamp(
-				(double)tout / (double)durationNs_, 0.0, 1.0);
-			if (outFrac > inFrac)
-				markers.push_back({inFrac, outFrac});
-		}
+		// Store raw ns — fractions computed each poll() tick using
+		// displayDurNs_ so markers shift left as recording time grows.
+		if (tin >= 0 && tout > tin)
+			rawMarkers.push_back({tin, tout});
 
 		QString dur = tout >= 0 ? formatTc(tout - tin)
 					: QString::fromUtf8(
@@ -1430,8 +1448,8 @@ void MultiReplayDock::refreshEvents()
 	}
 	obs_data_array_release(arr);
 	refreshing_ = false;
-	if (seek_)
-		seek_->setEventMarkers(std::move(markers));
+	markerNs_ = std::move(rawMarkers);
+	// Fraction conversion happens in poll() each tick via displayDurNs_.
 }
 
 QWidget *MultiReplayDock::makeCameraCell(int id, const bool *enabled,
@@ -1464,31 +1482,53 @@ QWidget *MultiReplayDock::makeCameraCell(int id, const bool *enabled,
 		b->setChecked(enabled[i]);
 		b->setCursor(Qt::PointingHandCursor);
 
-		// Note label beside the chip (double-click to edit)
+		// Inline note field: read-only by default, editable on double-click.
 		const std::string &note = notes[i];
 		QString noteText = note.empty()
 					   ? QStringLiteral("--")
 					   : QString::fromStdString(note).left(10);
-		auto *noteLbl = new QLabel(noteText, w);
-		noteLbl->setObjectName("mrCamNote");
-		noteLbl->setToolTip(obs_module_text("Dock.CamNoteHint"));
+		auto *noteEdit = new QLineEdit(noteText, w);
+		noteEdit->setObjectName("mrCamNoteEdit");
+		noteEdit->setReadOnly(true);
+		noteEdit->setFrame(false);
+		noteEdit->setMaxLength(10);
+		noteEdit->setFixedHeight(18);
+		noteEdit->setToolTip(obs_module_text("Dock.CamNoteHint"));
+		// Override dock-wide QLineEdit style so it looks like a label.
+		noteEdit->setStyleSheet(
+			"QLineEdit { background: transparent; border: 0; "
+			"color: #909090; font-size: 9px; padding: 0; }"
+			"QLineEdit:focus { color: #c0c0c0; background: #111111; "
+			"border-bottom: 1px solid #365e8a; }");
 
-		// Store context on the label so eventFilter can open the dialog.
 		int a1 = i + 1;
-		noteLbl->setProperty("eventId", id);
-		noteLbl->setProperty("angle1", a1);
-		QString camLabel = dn.empty() ? QString("Cam %1").arg(i + 1)
-					      : QString::fromStdString(dn);
-		noteLbl->setProperty("camLabel", camLabel);
-		noteLbl->installEventFilter(this);
+		noteEdit->setProperty("eventId", id);
+		noteEdit->setProperty("angle1", a1);
+		noteEdit->installEventFilter(this);
 
 		connect(b, &QToolButton::toggled, this, [id, a1](bool on) {
 			EventStore::instance().setAngle(id, a1, on);
 		});
+		connect(noteEdit, &QLineEdit::editingFinished, this,
+			[id, a1, noteEdit]() {
+				if (noteEdit->isReadOnly())
+					return;
+				noteEdit->setReadOnly(true);
+				QString t = noteEdit->text().trimmed();
+				if (t.isEmpty()) {
+					noteEdit->setText(QStringLiteral("--"));
+					EventStore::instance().setAngleNote(
+						id, a1, "");
+				} else {
+					EventStore::instance().setAngleNote(
+						id, a1, t.toStdString());
+				}
+				// poll() detects version bump → refreshEvents()
+			});
 
 		l->addWidget(b);
 		l->addSpacing(2);
-		l->addWidget(noteLbl);
+		l->addWidget(noteEdit);
 		l->addSpacing(6); // gap between camera pairs
 	}
 	l->addStretch(1);
@@ -1526,31 +1566,30 @@ void MultiReplayDock::onEventItemChanged(QTableWidgetItem *item)
 
 bool MultiReplayDock::eventFilter(QObject *watched, QEvent *event)
 {
-	if (event->type() == QEvent::MouseButtonDblClick) {
-		auto *lbl = qobject_cast<QLabel *>(watched);
-		if (lbl && lbl->objectName() == QLatin1String("mrCamNote")) {
-			int id = lbl->property("eventId").toInt();
-			int a1 = lbl->property("angle1").toInt();
-			QString camLabel = lbl->property("camLabel").toString();
-			QString curNote = lbl->text() == QStringLiteral("--")
-						  ? QString()
-						  : lbl->text();
-			bool ok;
-			QString text = QInputDialog::getText(
-				this,
-				QString("Descrizione — %1").arg(camLabel),
-				QStringLiteral("Descrizione:"),
-				QLineEdit::Normal, curNote, &ok);
-			if (ok) {
-				curNote = text.trimmed();
-				lbl->setText(curNote.isEmpty()
-						     ? QStringLiteral("--")
-						     : curNote.left(10));
-				EventStore::instance().setAngleNote(
-					id, a1, curNote.toStdString());
-				refreshEvents();
+	auto *noteEdit = qobject_cast<QLineEdit *>(watched);
+	if (noteEdit &&
+	    noteEdit->objectName() == QLatin1String("mrCamNoteEdit")) {
+		if (event->type() == QEvent::MouseButtonDblClick) {
+			// Save original text so Escape can cancel.
+			noteEdit->setProperty("origText", noteEdit->text());
+			if (noteEdit->text() == QStringLiteral("--"))
+				noteEdit->clear();
+			noteEdit->setReadOnly(false);
+			noteEdit->selectAll();
+			return false; // let QLineEdit also handle for cursor placement
+		}
+		if (event->type() == QEvent::KeyPress) {
+			auto *ke = static_cast<QKeyEvent *>(event);
+			if (ke->key() == Qt::Key_Escape &&
+			    !noteEdit->isReadOnly()) {
+				noteEdit->blockSignals(true);
+				noteEdit->setText(
+					noteEdit->property("origText")
+						.toString());
+				noteEdit->setReadOnly(true);
+				noteEdit->blockSignals(false);
+				return true;
 			}
-			return true;
 		}
 	}
 	return QWidget::eventFilter(watched, event);
