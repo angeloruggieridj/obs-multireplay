@@ -75,237 +75,180 @@ namespace multireplay {
 //   #3a4f65  border hover     #3a0a0a  red bg (live mode indicator)
 //   #c8cdd8  text primary     #6b7688  text muted
 static const char *kDockStyle = R"QSS(
-#MultiReplayDock {
-	background: #0f1118;
-}
-#MultiReplayDock QLabel {
-	color: #c8cdd8;
-	background: transparent;
-}
-QLabel#mrMuted { color: #6b7688; font-size: 11px; }
-QLabel#mrTimecode {
-	color: #d4b868;
-	font-size: 13px;
-	font-weight: 600;
-	letter-spacing: 0.5px;
-}
-QLabel#mrSectionLabel {
-	color: #7a6838;
-	font-size: 10px;
-	font-weight: 700;
-	letter-spacing: 1.2px;
-}
+/* ── base ─────────────────────────────────────────────── */
+#MultiReplayDock { background: #0e1118; }
+#MultiReplayDock QLabel { color: #c8cdd8; background: transparent; }
 
-/* generic buttons */
+/* labels */
+QLabel#mrMuted    { color: #5a6478; font-size: 10px; }
+QLabel#mrTimecode { color: #d4b868; font-size: 12px; font-weight: 700;
+                    letter-spacing: 0.3px; }
+QLabel#mrSectionLabel { color: #60583a; font-size: 9px; font-weight: 700;
+                        letter-spacing: 1.4px; text-transform: uppercase; }
+
+/* ── generic buttons ───────────────────────────────────── */
 #MultiReplayDock QPushButton {
-	background: #252d3a;
-	color: #c8cdd8;
-	border: 1px solid #2a3545;
-	border-radius: 5px;
-	padding: 5px 11px;
-	font-size: 12px;
-}
-#MultiReplayDock QPushButton:hover { background: #2f3a4a; border-color: #3a4f65; }
-#MultiReplayDock QPushButton:pressed { background: #1e2b3a; }
-#MultiReplayDock QPushButton:disabled { color: #4a5568; border-color: #1e2430; }
-
-/* transport step buttons */
-QPushButton#mrTransport {
-	background: #1e2430;
-	border: 1px solid #2a3545;
-	border-radius: 6px;
-	min-width: 34px;
-	min-height: 32px;
-	padding: 0;
-}
-QPushButton#mrTransport:hover { background: #252d3a; border-color: #3a4f65; }
-
-/* play/pause — dark when paused, amber-tinted when playing */
-QPushButton#mrPlay {
-	background: #1e2430;
-	border: 1px solid #2a3545;
-	border-radius: 6px;
-	min-width: 44px;
-	min-height: 32px;
-	padding: 0;
-}
-QPushButton#mrPlay:hover { background: #252d3a; border-color: #3a4f65; }
-QPushButton#mrPlay[playing="true"] {
-	background: #3a2800;
-	border: 1px solid #e8a020;
-}
-QPushButton#mrPlay[playing="true"]:hover {
-	background: #4a3400;
-	border-color: #f5c842;
-}
-
-/* NOW / live-edge button */
-QPushButton#mrNow {
-	background: #1e2430;
-	border: 1px solid #2a3545;
-	border-radius: 6px;
-	font-weight: 700;
+	background: #1f2535;
+	color: #bdc5d0;
+	border: 1px solid #283040;
+	border-radius: 4px;
+	padding: 3px 9px;
 	font-size: 11px;
-	letter-spacing: 1px;
-	min-height: 32px;
-	color: #6b7688;
+	min-height: 24px;
 }
-QPushButton#mrNow[live="true"] {
-	background: #3a0a0a;
-	border-color: #dc2626;
-	color: #ef4444;
+#MultiReplayDock QPushButton:hover  { background: #28304a; border-color: #3a4f68; }
+#MultiReplayDock QPushButton:pressed { background: #182038; }
+#MultiReplayDock QPushButton:disabled { color: #3a4455; border-color: #1a2030; }
+
+/* ── transport step / icon buttons ────────────────────── */
+QPushButton#mrTransport {
+	background: #18202e;
+	border: 1px solid #283040;
+	border-radius: 5px;
+	min-width: 30px; min-height: 28px;
+	padding: 0;
 }
+QPushButton#mrTransport:hover { background: #1f2838; border-color: #3a4f68; }
+
+/* play/pause */
+QPushButton#mrPlay {
+	background: #18202e;
+	border: 1px solid #283040;
+	border-radius: 5px;
+	min-width: 38px; min-height: 28px;
+	padding: 0;
+}
+QPushButton#mrPlay:hover { background: #1f2838; border-color: #3a4f68; }
+QPushButton#mrPlay[playing="true"] { background: #32220a; border-color: #e8a020; }
+QPushButton#mrPlay[playing="true"]:hover { background: #3e2c0c; border-color: #f5c842; }
+
+/* NOW / live-edge */
+QPushButton#mrNow {
+	background: #18202e; border: 1px solid #283040; border-radius: 5px;
+	font-weight: 700; font-size: 10px; letter-spacing: 0.8px;
+	min-height: 28px; min-width: 36px; color: #5a6478;
+}
+QPushButton#mrNow[live="true"] { background: #380a0a; border-color: #d42626; color: #ef4444; }
 
 /* REC button */
 QPushButton#mrRec {
-	font-weight: 700;
-	font-size: 12px;
-	letter-spacing: 0.8px;
-	border-radius: 5px;
-	min-height: 32px;
-	padding: 5px 14px;
+	font-weight: 700; font-size: 12px; letter-spacing: 0.6px;
+	border-radius: 4px; min-height: 28px; padding: 3px 14px;
 }
 QPushButton#mrRec[recording="false"] {
-	background: #1e2430; color: #e05050; border: 1px solid #3a2020;
+	background: #1e2030; color: #d04040; border: 1px solid #3a1c1c;
 }
-QPushButton#mrRec[recording="false"]:hover { background: #2a1a1a; border-color: #5a2525; }
+QPushButton#mrRec[recording="false"]:hover { background: #261a1a; border-color: #5a2222; }
 QPushButton#mrRec[recording="true"] {
-	background: #7a0a0a; color: #fff; border: 1px solid #dc2626;
+	background: #7a0a0a; color: #fff; border: 1px solid #d42626;
 }
-QPushButton#mrRec[recording="true"]:hover { background: #901010; }
+QPushButton#mrRec[recording="true"]:hover { background: #8c1010; }
 
 /* settings gear */
 QToolButton#mrGear {
-	background: #1e2430;
-	border: 1px solid #2a3545;
-	border-radius: 5px;
-	padding: 4px 8px;
-	color: #6b7688;
-	font-size: 15px;
+	background: #18202e; border: 1px solid #283040; border-radius: 4px;
+	padding: 3px 7px; color: #5a6478; font-size: 14px;
 }
-QToolButton#mrGear:hover { background: #252d3a; color: #c8cdd8; border-color: #3a4f65; }
+QToolButton#mrGear:hover { background: #1f2838; color: #c8cdd8; border-color: #3a4f68; }
 
-/* angle segmented control — amber when active */
+/* ── angle selector ─────────────────────────────────────── */
 QPushButton#mrAngle {
-	background: #161b24;
-	border: 1px solid #2a3545;
-	border-radius: 4px;
-	color: #4a5568;
-	font-weight: 700;
-	font-size: 11px;
-	min-width: 28px;
-	min-height: 26px;
-	padding: 0;
+	background: #141b26; border: 1px solid #283040; border-radius: 3px;
+	color: #40505e; font-weight: 700; font-size: 10px;
+	min-width: 26px; min-height: 22px; padding: 0;
 }
-QPushButton#mrAngle:hover { background: #1e2430; color: #7a8898; border-color: #3a4f65; }
-QPushButton#mrAngle:checked {
-	background: #3a2800;
-	border-color: #e8a020;
-	color: #f5c842;
-}
+QPushButton#mrAngle:hover { background: #1c2534; color: #7a8898; border-color: #3a4f68; }
+QPushButton#mrAngle:checked { background: #32220a; border-color: #e8a020; color: #f5c842; }
 
-/* per-event camera toggle chips inside the table — amber when on */
+/* ── speed preset chips ─────────────────────────────────── */
+QPushButton#mrSpeedChip {
+	background: #141b26; border: 1px solid #283040; border-radius: 3px;
+	color: #5a6478; font-size: 9px; font-weight: 700;
+	min-width: 28px; min-height: 20px; padding: 1px 4px;
+}
+QPushButton#mrSpeedChip:hover { background: #1c2534; color: #c8cdd8; border-color: #3a4f68; }
+QPushButton#mrSpeedChip:pressed { background: #32220a; border-color: #e8a020; color: #f5c842; }
+
+/* ── camera toggle chips in event table ─────────────────── */
 QToolButton#mrCamToggle {
-	background: #161b24;
-	border: 1px solid #2a3545;
-	border-radius: 3px;
-	color: #4a5568;
-	font-size: 9px;
-	font-weight: 700;
-	min-width: 22px;
-	max-width: 36px;
-	min-height: 32px;
-	padding: 1px 3px;
-	text-align: center;
+	background: #141b26; border: 1px solid #283040; border-radius: 3px;
+	color: #40505e; font-size: 9px; font-weight: 700;
+	min-width: 22px; max-width: 36px; min-height: 32px;
+	padding: 1px 3px; text-align: center;
 }
-QToolButton#mrCamToggle:hover { border-color: #3a4f65; color: #7a8898; }
-QToolButton#mrCamToggle:checked {
-	background: #3a2800; border-color: #e8a020; color: #f5c842;
-}
+QToolButton#mrCamToggle:hover  { border-color: #3a4f68; color: #7a8898; }
+QToolButton#mrCamToggle:checked { background: #32220a; border-color: #e8a020; color: #f5c842; }
 
-/* section separator line */
-QWidget#mrSepLine { background: #1e2430; }
+/* ── section separator line ─────────────────────────────── */
+QWidget#mrSepLine { background: #1e2638; }
 
-/* Mark In/Out and accent buttons */
+/* ── accent / danger buttons ─────────────────────────────── */
 QPushButton#mrAccent {
-	background: #1c1e10; border: 1px solid #e8a020; color: #e8a020;
+	background: #1c1e0e; border: 1px solid #c89018; color: #e8a020;
 }
-QPushButton#mrAccent:hover { background: #28280e; color: #f5c842; border-color: #f5c842; }
-QPushButton#mrDanger { color: #e05050; border-color: #3a2020; }
-QPushButton#mrDanger:hover { background: #2a1a1a; border-color: #5a2525; }
+QPushButton#mrAccent:hover { background: #26260e; color: #f5c842; border-color: #f5c842; }
+QPushButton#mrDanger { color: #d04040; border-color: #381818; }
+QPushButton#mrDanger:hover { background: #261818; border-color: #502020; }
 
-/* checkboxes — amber tick */
-#MultiReplayDock QCheckBox { color: #b0b8c4; spacing: 6px; font-size: 12px; }
+/* ── checkboxes ──────────────────────────────────────────── */
+#MultiReplayDock QCheckBox { color: #a0aab8; spacing: 5px; font-size: 11px; }
 #MultiReplayDock QCheckBox::indicator {
-	width: 14px; height: 14px; border-radius: 3px;
-	border: 1px solid #2a3545; background: #161b24;
+	width: 13px; height: 13px; border-radius: 3px;
+	border: 1px solid #283040; background: #141b26;
 }
-#MultiReplayDock QCheckBox::indicator:checked {
-	background: #e8a020; border-color: #f5c842;
-}
+#MultiReplayDock QCheckBox::indicator:checked { background: #e8a020; border-color: #f5c842; }
 
-/* inputs */
+/* ── inputs ──────────────────────────────────────────────── */
 #MultiReplayDock QComboBox, #MultiReplayDock QLineEdit {
-	background: #161b24; color: #c8cdd8;
-	border: 1px solid #2a3545; border-radius: 4px;
-	padding: 4px 8px; min-height: 22px;
+	background: #141b26; color: #c8cdd8;
+	border: 1px solid #283040; border-radius: 3px;
+	padding: 3px 7px; min-height: 20px; font-size: 11px;
 }
-#MultiReplayDock QComboBox:hover, #MultiReplayDock QLineEdit:hover {
-	border-color: #3a4f65;
-}
-#MultiReplayDock QComboBox::drop-down { border: 0; width: 18px; }
+#MultiReplayDock QComboBox:hover, #MultiReplayDock QLineEdit:hover { border-color: #3a4f68; }
+#MultiReplayDock QComboBox::drop-down { border: 0; width: 16px; }
 #MultiReplayDock QComboBox QAbstractItemView {
-	background: #161b24; color: #c8cdd8;
-	border: 1px solid #2a3545;
-	selection-background-color: #3a2800; selection-color: #f5c842;
-	outline: 0;
+	background: #141b26; color: #c8cdd8; border: 1px solid #283040;
+	selection-background-color: #32220a; selection-color: #f5c842; outline: 0;
 }
 
-/* speed slider — amber fill + handle */
+/* ── speed slider ────────────────────────────────────────── */
 QSlider#mrSpeed::groove:horizontal {
-	height: 4px; background: #1e2430; border-radius: 2px;
+	height: 3px; background: #1e2638; border-radius: 2px;
 }
 QSlider#mrSpeed::sub-page:horizontal { background: #e8a020; border-radius: 2px; }
 QSlider#mrSpeed::handle:horizontal {
-	width: 12px; height: 12px; margin: -4px 0;
-	background: #f5c842; border-radius: 6px; border: 1px solid #a06014;
+	width: 10px; height: 10px; margin: -4px 0;
+	background: #f5c842; border-radius: 5px; border: 1px solid #a06014;
 }
 QSlider#mrSpeed::handle:horizontal:hover { background: #fff; }
 
-/* event table */
+/* ── event table ─────────────────────────────────────────── */
 QTableWidget#mrEvents {
-	background: #0f1118;
-	alternate-background-color: #131720;
+	background: #0e1118;
+	alternate-background-color: #111520;
 	gridline-color: transparent;
-	border: 1px solid #1e2430;
-	border-radius: 6px;
-	color: #c8cdd8;
-	outline: 0;
+	border: 1px solid #1e2638;
+	border-radius: 4px;
+	color: #c8cdd8; outline: 0;
 }
-QTableWidget#mrEvents::item { padding: 4px 6px; border: 0; }
-QTableWidget#mrEvents::item:selected {
-	background: #2a1e05; color: #f5c842;
-}
+QTableWidget#mrEvents::item { padding: 3px 5px; border: 0; }
+QTableWidget#mrEvents::item:selected { background: #28190a; color: #f5c842; }
 QHeaderView::section {
-	background: #161b24;
-	color: #7a6838;
-	padding: 5px 6px;
-	border: 0;
-	border-bottom: 1px solid #2a3545;
-	font-size: 10px;
-	font-weight: 700;
-	letter-spacing: 0.8px;
+	background: #141b26; color: #60583a;
+	padding: 4px 5px; border: 0;
+	border-bottom: 1px solid #283040;
+	font-size: 9px; font-weight: 700; letter-spacing: 0.8px;
 }
-QTableCornerButton::section { background: #161b24; border: 0; }
+QTableCornerButton::section { background: #141b26; border: 0; }
 
-/* scrollbars */
+/* ── scrollbars ──────────────────────────────────────────── */
 #MultiReplayDock QScrollBar:vertical {
-	background: transparent; width: 8px; margin: 0;
+	background: transparent; width: 6px; margin: 0;
 }
 #MultiReplayDock QScrollBar::handle:vertical {
-	background: #2a3545; border-radius: 4px; min-height: 24px;
+	background: #283040; border-radius: 3px; min-height: 20px;
 }
-#MultiReplayDock QScrollBar::handle:vertical:hover { background: #3a4f65; }
+#MultiReplayDock QScrollBar::handle:vertical:hover { background: #3a4f68; }
 #MultiReplayDock QScrollBar::add-line, #MultiReplayDock QScrollBar::sub-line {
 	height: 0; width: 0;
 }
@@ -409,24 +352,6 @@ void repolish(QWidget *w)
 	w->style()->unpolish(w);
 	w->style()->polish(w);
 	w->update();
-}
-
-// Creates a labeled section separator: "LABEL ─────────────" spanning the
-// full width. Keeps the dock visually organized without heavyweight group boxes.
-QWidget *sectionHeader(const char *label, QWidget *parent)
-{
-	auto *w = new QWidget(parent);
-	auto *h = new QHBoxLayout(w);
-	h->setContentsMargins(0, 6, 0, 0);
-	h->setSpacing(6);
-	auto *lbl = new QLabel(QString::fromLatin1(label), w);
-	lbl->setObjectName("mrSectionLabel");
-	h->addWidget(lbl);
-	auto *line = new QWidget(w);
-	line->setObjectName("mrSepLine");
-	line->setFixedHeight(1);
-	h->addWidget(line, 1);
-	return w;
 }
 
 } // namespace
@@ -596,8 +521,8 @@ MultiReplayDock::MultiReplayDock(QWidget *parent) : QWidget(parent)
 	setStyleSheet(QString::fromUtf8(kDockStyle));
 
 	auto *root = new QVBoxLayout(this);
-	root->setContentsMargins(8, 8, 8, 8);
-	root->setSpacing(8);
+	root->setContentsMargins(5, 5, 5, 5);
+	root->setSpacing(5);
 
 	// --- top toolbar: REC + status + settings ---
 	{
@@ -662,12 +587,18 @@ MultiReplayDock::MultiReplayDock(QWidget *parent) : QWidget(parent)
 	auto *controls = new QWidget(splitter_);
 	auto *cv = new QVBoxLayout(controls);
 	cv->setContentsMargins(0, 0, 0, 0);
-	cv->setSpacing(4);
-	cv->addWidget(sectionHeader("PLAYER", controls));
+	cv->setSpacing(0);
 	cv->addWidget(buildPreview(), 1);
-	cv->addWidget(sectionHeader("TRANSPORT", controls));
+
+	auto addSep = [&]() {
+		auto *s = new QWidget(controls);
+		s->setObjectName("mrSepLine");
+		s->setFixedHeight(1);
+		cv->addWidget(s);
+	};
+	addSep();
 	cv->addWidget(buildTransport());
-	cv->addWidget(sectionHeader("MARKERS", controls));
+	addSep();
 	cv->addWidget(buildMarkers());
 
 	auto *eventsPanel = buildEvents();
@@ -700,7 +631,7 @@ QWidget *MultiReplayDock::buildPreview()
 	auto *box = new QWidget(this);
 	auto *v = new QVBoxLayout(box);
 	v->setContentsMargins(0, 0, 0, 0);
-	v->setSpacing(6);
+	v->setSpacing(3);
 
 	displayA_ = new OBSQTDisplay(this);
 	displayA_->setRenderCallback(&MultiReplayDock::drawChannelA, this);
@@ -746,32 +677,27 @@ QWidget *MultiReplayDock::buildTransport()
 {
 	auto *box = new QWidget(this);
 	auto *v = new QVBoxLayout(box);
-	v->setContentsMargins(0, 0, 0, 0);
-	v->setSpacing(6);
+	v->setContentsMargins(4, 4, 4, 4);
+	v->setSpacing(4);
 
+	// Row 1: seekbar (full width)
 	seek_ = new SeekBar(this);
 	connect(seek_, &SeekBar::scrubStateChanged, this,
 		[this](bool dragging) { seekDragging_ = dragging; });
 	connect(seek_, &SeekBar::scrubMoved, this, [this](double frac) {
 		tcLbl_->setText(formatTc((int64_t)(frac * (double)durationNs_)) +
-				"  /  " + formatTc(durationNs_));
+				" / " + formatTc(durationNs_));
 	});
 	connect(seek_, &SeekBar::seekRequested, this,
 		[this](double frac) { seekToFraction(frac); });
 	v->addWidget(seek_);
 
-	tcLbl_ = new QLabel("00:00.000  /  00:00.000", this);
-	tcLbl_->setObjectName("mrTimecode");
-	tcLbl_->setFont(QFont(monoFamily()));
-	tcLbl_->setAlignment(Qt::AlignHCenter);
-	v->addWidget(tcLbl_);
+	// Row 2: [◀◀][▶][▶▶] [NOW]  ──stretch──  timecode
+	// Timecode is right-justified, transport buttons left-justified.
+	// One row instead of two (saves ~18px of height).
+	auto *tr = new QHBoxLayout();
+	tr->setSpacing(4);
 
-	auto *h = new QHBoxLayout();
-	h->setSpacing(6);
-	h->addStretch(1);
-
-	// Media Source has no reverse playback, so the transport is
-	// step-back / play-pause / step-fwd / NOW. Stepping is a seek.
 	auto *stepBack = iconBtn(QStyle::SP_MediaSkipBackward, this,
 				 obs_module_text("Dock.StepBack"));
 	playPauseBtn_ = iconBtn(QStyle::SP_MediaPlay, this,
@@ -783,12 +709,66 @@ QWidget *MultiReplayDock::buildTransport()
 	nowBtn_->setProperty("live", false);
 	nowBtn_->setCursor(Qt::PointingHandCursor);
 	nowBtn_->setToolTip(obs_module_text("Dock.JumpToNow"));
-	nowBtn_->setMinimumWidth(46);
-	for (auto *b : {stepBack, playPauseBtn_, stepFwd})
-		h->addWidget(b);
-	h->addWidget(nowBtn_);
-	h->addStretch(1);
+	nowBtn_->setMinimumWidth(38);
 
+	tr->addWidget(stepBack);
+	tr->addWidget(playPauseBtn_);
+	tr->addWidget(stepFwd);
+	tr->addWidget(nowBtn_);
+	tr->addStretch(1);
+
+	tcLbl_ = new QLabel(QStringLiteral("00:00.000 / 00:00.000"), this);
+	tcLbl_->setObjectName("mrTimecode");
+	tcLbl_->setFont(QFont(monoFamily()));
+	tcLbl_->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+	tr->addWidget(tcLbl_);
+	v->addLayout(tr);
+
+	// Row 3: speed chips [25%][50%][75%][1×] + slider + value label
+	// HTML-style discrete quick-access buttons for common replay speeds.
+	auto *sh = new QHBoxLayout();
+	sh->setSpacing(3);
+
+	const std::pair<int, const char *> speedPresets[] = {
+		{25, "25%"}, {50, "50%"}, {75, "75%"}, {100, "1\xc3\x97"}};
+	for (const auto &[pct, lbl] : speedPresets) {
+		auto *b = compactBtn(QString::fromUtf8(lbl), this, "mrSpeedChip");
+		connect(b, &QPushButton::clicked, this, [this, pct]() {
+			speed_->blockSignals(true);
+			speed_->setValue(pct);
+			speed_->blockSignals(false);
+			speedLbl_->setText(
+				QString::asprintf("%.2f\xc3\x97", pct / 100.0));
+			MediaReplay::instance().setSpeed(pct / 100.0);
+		});
+		sh->addWidget(b);
+	}
+
+	speed_ = new QSlider(Qt::Horizontal, this);
+	speed_->setObjectName("mrSpeed");
+	speed_->setRange(5, 100);
+	speed_->setValue(100);
+	speed_->setCursor(Qt::PointingHandCursor);
+
+	speedLbl_ = new QLabel(QStringLiteral("1.00\xc3\x97"), this);
+	speedLbl_->setObjectName("mrTimecode");
+	speedLbl_->setFont(QFont(monoFamily()));
+	speedLbl_->setMinimumWidth(42);
+	speedLbl_->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+
+	connect(speed_, &QSlider::valueChanged, this, [this](int val) {
+		speedLbl_->setText(
+			QString::asprintf("%.2f\xc3\x97", val / 100.0));
+	});
+	connect(speed_, &QSlider::sliderReleased, this, [this]() {
+		MediaReplay::instance().setSpeed(speed_->value() / 100.0);
+	});
+
+	sh->addWidget(speed_, 1);
+	sh->addWidget(speedLbl_);
+	v->addLayout(sh);
+
+	// wire transport actions
 	connect(stepBack, &QPushButton::clicked, this, []() {
 		if (!ensureSession())
 			return;
@@ -815,37 +795,6 @@ QWidget *MultiReplayDock::buildTransport()
 		MediaReplay::instance().jumpToEnd();
 	});
 
-	v->addLayout(h);
-
-	// speed row
-	auto *sh = new QHBoxLayout();
-	sh->setSpacing(8);
-	auto *spLbl = new QLabel(
-		QString::fromUtf8(obs_module_text("Dock.Speed")).toUpper(), this);
-	spLbl->setObjectName("mrSectionLabel");
-	sh->addWidget(spLbl);
-	speed_ = new QSlider(Qt::Horizontal, this);
-	speed_->setObjectName("mrSpeed");
-	speed_->setRange(5, 100); // 0.05x .. 1.00x
-	speed_->setValue(100);
-	speed_->setCursor(Qt::PointingHandCursor);
-	speedLbl_ = new QLabel("1.00x", this);
-	speedLbl_->setObjectName("mrTimecode");
-	speedLbl_->setFont(QFont(monoFamily()));
-	speedLbl_->setMinimumWidth(46);
-	speedLbl_->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-	// Live label on drag; commit the speed on release (each change reloads
-	// the Media Source, so don't thrash it while dragging).
-	connect(speed_, &QSlider::valueChanged, this, [this](int val) {
-		speedLbl_->setText(QString::asprintf("%.2fx", val / 100.0));
-	});
-	connect(speed_, &QSlider::sliderReleased, this, [this]() {
-		MediaReplay::instance().setSpeed(speed_->value() / 100.0);
-	});
-	sh->addWidget(speed_, 1);
-	sh->addWidget(speedLbl_);
-	v->addLayout(sh);
-
 	return box;
 }
 
@@ -857,8 +806,8 @@ QWidget *MultiReplayDock::buildMarkers()
 {
 	auto *box = new QWidget(this);
 	auto *h = new QHBoxLayout(box);
-	h->setContentsMargins(0, 0, 0, 0);
-	h->setSpacing(5);
+	h->setContentsMargins(4, 3, 4, 3);
+	h->setSpacing(4);
 
 	liveChk_ = new QCheckBox(obs_module_text("Dock.LiveMode"), this);
 	liveChk_->setChecked(EventStore::instance().liveMode());
@@ -913,8 +862,6 @@ QWidget *MultiReplayDock::buildEvents()
 	auto *v = new QVBoxLayout(box);
 	v->setContentsMargins(0, 4, 0, 0);
 	v->setSpacing(3);
-
-	v->addWidget(sectionHeader("EVENTS", box));
 
 	auto *top = new QHBoxLayout();
 	top->setSpacing(5);
@@ -1169,7 +1116,7 @@ void MultiReplayDock::poll()
 						    (double)ts.durationNs
 					  : 1.0;
 		seek_->setProgress(posFrac, seekFrac);
-		tcLbl_->setText(formatTc(ts.positionNs) + "  /  " +
+		tcLbl_->setText(formatTc(ts.positionNs) + " / " +
 				formatTc(ts.durationNs));
 	}
 
@@ -1185,9 +1132,11 @@ void MultiReplayDock::poll()
 		repolish(nowBtn_);
 	}
 	if (!speed_->isSliderDown()) {
+		int sv = std::clamp((int)(ts.speed * 100.0), 5, 100);
 		speed_->blockSignals(true);
-		speed_->setValue(std::clamp((int)(ts.speed * 100.0), 5, 100));
+		speed_->setValue(sv);
 		speed_->blockSignals(false);
+		speedLbl_->setText(QString::asprintf("%.2f\xc3\x97", sv / 100.0));
 	}
 	if (anglesA_ && anglesA_->button(ts.angle))
 		anglesA_->button(ts.angle)->setChecked(true);
