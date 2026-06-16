@@ -49,7 +49,8 @@ bool SessionIndex::load(const std::string &folder)
 	obs_data_t *manifest =
 		obs_data_create_from_json_file(manifestPath.string().c_str());
 	if (!manifest) {
-		obs_log(LOG_WARNING, "SessionIndex: no session.json in %s",
+		obs_log(LOG_DEBUG, "SessionIndex: no session.json in %s "
+				   "(new or empty project folder)",
 			folder.c_str());
 		return false;
 	}

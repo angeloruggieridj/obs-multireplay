@@ -174,16 +174,20 @@ obs_source_t *MediaReplay::acquireSource()
 bool MediaReplay::loadSession(const std::string &folder, std::string &errorOut)
 {
 	auto index = std::make_shared<SessionIndex>();
-	if (!index->load(folder)) {
-		errorOut = "no indexable session in folder (record something "
-			   "first, then stop or wait for a split)";
-		return false;
-	}
+	bool hasData = index->load(folder);
 	{
 		std::lock_guard<std::mutex> lock(mutex_);
+		// Always adopt the index — even empty — so sessionLoaded() returns
+		// true and poll() stops retrying (e.g. a new project with no
+		// recordings yet has no session.json but is a valid folder).
 		index_ = index;
 		angle_ = 0;
 		loadedPath_.clear();
+	}
+	if (!hasData) {
+		errorOut = "no indexable session in folder (record something "
+			   "first, then stop or wait for a split)";
+		return false;
 	}
 	jumpToEnd();
 	return true;
