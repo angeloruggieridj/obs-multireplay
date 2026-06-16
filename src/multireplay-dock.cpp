@@ -48,6 +48,10 @@ SPDX-License-Identifier: GPL-2.0-or-later
 #include <QKeyEvent>
 #include <QFontDatabase>
 #include <QInputDialog>
+#include <QMenu>
+#include <QAction>
+#include <QClipboard>
+#include <QApplication>
 
 #include <algorithm>
 #include <string>
@@ -578,14 +582,42 @@ MultiReplayDock::MultiReplayDock(QWidget *parent) : QWidget(parent)
 		statusLbl_->setObjectName("mrMuted");
 		bar->addWidget(statusLbl_, 1);
 
+		projectLbl_ = new QLabel(this);
+		projectLbl_->setObjectName("mrMuted");
+		projectLbl_->setStyleSheet(
+			"color: #487898; font-size: 9px; padding: 0 4px;");
+		projectLbl_->hide();
+		bar->addWidget(projectLbl_);
+
 		auto *gear = new QToolButton(this);
 		gear->setObjectName("mrGear");
 		gear->setText(QStringLiteral("⚙"));
 		gear->setCursor(Qt::PointingHandCursor);
 		gear->setToolTip(obs_module_text("Dock.Settings"));
+		gear->setPopupMode(QToolButton::InstantPopup);
+		{
+			auto *menu = new QMenu(gear);
+			auto *actNew = menu->addAction(
+				obs_module_text("Dock.NewProject"));
+			auto *actOpen = menu->addAction(
+				obs_module_text("Dock.OpenProject"));
+			menu->addSeparator();
+			auto *actSettings = menu->addAction(
+				obs_module_text("Dock.Settings"));
+			menu->addSeparator();
+			auto *actChapters = menu->addAction(
+				obs_module_text("Dock.YouTubeChapters"));
+			gear->setMenu(menu);
+			connect(actNew, &QAction::triggered, this,
+				&MultiReplayDock::newProjectDialog);
+			connect(actOpen, &QAction::triggered, this,
+				&MultiReplayDock::openProjectDialog);
+			connect(actSettings, &QAction::triggered, this,
+				&MultiReplayDock::openSettings);
+			connect(actChapters, &QAction::triggered, this,
+				&MultiReplayDock::copyYouTubeChapters);
+		}
 		bar->addWidget(gear);
-		connect(gear, &QToolButton::clicked, this,
-			&MultiReplayDock::openSettings);
 		root->addLayout(bar);
 
 		connect(recBtn_, &QPushButton::clicked, this, [this]() {
@@ -594,7 +626,7 @@ MultiReplayDock::MultiReplayDock(QWidget *parent) : QWidget(parent)
 				core.stopRecording();
 				std::string err;
 				MediaReplay::instance().loadSession(
-					core.getConfig().sessionFolder, err);
+					core.recordingFolder(), err);
 			} else {
 				// Stop any event playing BEFORE starting a new
 				// recording. startRecording() calls clearSession()
@@ -1133,8 +1165,9 @@ void MultiReplayDock::poll()
 				// Refresh on a background thread: SessionIndex::refresh()
 				// reads MP4 file headers from disk and can block for
 				// hundreds of ms, freezing the UI if run inline.
-				if (!sessionRefreshPending_.exchange(true)) {
-					std::thread([this]() {
+				if (!sessionRefreshPending_->exchange(true)) {
+					auto pending = sessionRefreshPending_;
+					std::thread([pending]() {
 						auto &eng =
 							MediaReplay::instance();
 						eng.refreshSession();
@@ -1144,7 +1177,7 @@ void MultiReplayDock::poll()
 						// recent recorded footage.
 						if (eng.followLive())
 							eng.jumpToEnd();
-						sessionRefreshPending_.store(false);
+						pending->store(false);
 					}).detach();
 				}
 			}
@@ -1155,7 +1188,7 @@ void MultiReplayDock::poll()
 			// FINISHED_LOADING and ensureSource() before we drive the
 			// media source.
 			std::string err;
-			engine.loadSession(core.getConfig().sessionFolder, err);
+			engine.loadSession(core.recordingFolder(), err);
 		}
 	}
 
@@ -1312,6 +1345,21 @@ void MultiReplayDock::poll()
 		else if (mins >= 0)
 			s += QString("  • ~%1 min").arg(mins);
 		statusLbl_->setText(s);
+	}
+
+	// --- project label ---
+	{
+		std::string proj = core.getConfig().currentProjectName;
+		if (projectLbl_) {
+			if (proj.empty()) {
+				projectLbl_->hide();
+			} else {
+				projectLbl_->setText(
+					QString::fromStdString("[" + proj +
+							       "]"));
+				projectLbl_->show();
+			}
+		}
 	}
 
 	// --- auto-refresh event list on any external mutation (hotkeys, etc.) ---
@@ -1821,11 +1869,88 @@ void MultiReplayDock::openSettings()
 			camNameEdits[i]->text().trimmed().toStdString();
 	}
 	core.setConfig(cfg);
-	EventStore::instance().setSessionFolder(cfg.sessionFolder);
+	// Use recordingFolder() so EventStore points to the project subfolder
+	// (if one is active) rather than the raw session folder.
+	EventStore::instance().setSessionFolder(core.recordingFolder());
 	// Re-bind the engine to the (possibly changed) replay Media Source.
 	MediaReplay::instance().ensureSource();
 	refreshAngles();
 	refreshEvents();
+}
+
+void MultiReplayDock::newProjectDialog()
+{
+	if (ReplayCore::instance().isRecording()) {
+		QMessageBox::warning(this, "obs-multireplay",
+				     obs_module_text("Dock.StopRecFirst"));
+		return;
+	}
+	bool ok;
+	QString title = QInputDialog::getText(
+		this, obs_module_text("Dock.NewProject"),
+		obs_module_text("Dock.ProjectNameLabel"), QLineEdit::Normal,
+		"", &ok);
+	if (!ok || title.trimmed().isEmpty())
+		return;
+	std::string err;
+	if (!ReplayCore::instance().newProject(title.trimmed().toStdString(),
+					       err)) {
+		QMessageBox::warning(this, "obs-multireplay",
+				     QString::fromStdString(err));
+		return;
+	}
+	refreshEvents();
+	poll();
+}
+
+void MultiReplayDock::openProjectDialog()
+{
+	if (ReplayCore::instance().isRecording()) {
+		QMessageBox::warning(this, "obs-multireplay",
+				     obs_module_text("Dock.StopRecFirst"));
+		return;
+	}
+	auto projects = ReplayCore::instance().listProjects();
+	if (projects.empty()) {
+		QMessageBox::information(
+			this, "obs-multireplay",
+			obs_module_text("Dock.NoProjectsFound"));
+		return;
+	}
+	QStringList items;
+	items.reserve((int)projects.size());
+	for (const auto &p : projects)
+		items << QString::fromStdString(p);
+	bool ok;
+	QString sel = QInputDialog::getItem(
+		this, obs_module_text("Dock.OpenProject"),
+		obs_module_text("Dock.SelectProject"), items, 0, false, &ok);
+	if (!ok || sel.isEmpty())
+		return;
+	std::string err;
+	if (!ReplayCore::instance().openProject(sel.toStdString(), err)) {
+		QMessageBox::warning(this, "obs-multireplay",
+				     QString::fromStdString(err));
+		return;
+	}
+	refreshEvents();
+	refreshAngles();
+	poll();
+}
+
+void MultiReplayDock::copyYouTubeChapters()
+{
+	int list = EventStore::instance().selectedList();
+	std::string text = EventStore::instance().chaptersText(list);
+	if (text.empty()) {
+		QMessageBox::information(
+			this, "obs-multireplay",
+			obs_module_text("Dock.NoChapters"));
+		return;
+	}
+	QApplication::clipboard()->setText(QString::fromStdString(text));
+	QMessageBox::information(this, "obs-multireplay",
+				 obs_module_text("Dock.ChaptersCopied"));
 }
 
 } // namespace multireplay

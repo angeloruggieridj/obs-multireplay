@@ -26,6 +26,7 @@ struct Segment {
 // All segments of one camera, positioned on the master timeline.
 struct CameraTrack {
 	int index = 0;            // 0-based camera index
+	bool inManifest = false;  // camera was present in session.json
 	bool valid = false;
 	int64_t startOffsetNs = 0; // camera start relative to master t=0
 	std::vector<Segment> segments;

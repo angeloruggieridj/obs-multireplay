@@ -31,7 +31,8 @@ obs_data_t *buildSettings(int camIndex, const Config &cfg)
 
 	// --- Destination: session folder, one file series per camera ---
 	obs_data_set_bool(settings, "use_profile_recording_path", false);
-	obs_data_set_string(settings, "path", cfg.sessionFolder.c_str());
+	obs_data_set_string(settings, "path",
+			    ReplayCore::instance().recordingFolder().c_str());
 	std::string nameFormat = "cam" + std::to_string(camIndex + 1) +
 				 "_%CCYY-%MM-%DD_%hh-%mm-%ss";
 	obs_data_set_string(settings, "filename_formatting", nameFormat.c_str());

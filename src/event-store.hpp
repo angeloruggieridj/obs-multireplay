@@ -80,6 +80,11 @@ public:
 	// JSON of one list's events (for the web UI).
 	std::string listJson(int list) const;
 
+	// YouTube-compatible chapter timestamps for all completed events in list.
+	// Format: "MM:SS Description\n" (or H:MM:SS if >= 1 hour).
+	// Description = first non-empty angle note (lowest-index angle).
+	std::string chaptersText(int list) const;
+
 	// Monotonic counter: incremented on every mutation. The dock polls this
 	// to auto-refresh the event table without a callback mechanism.
 	uint64_t version() const { return version_.load(); }

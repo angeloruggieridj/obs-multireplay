@@ -15,6 +15,7 @@ controls and the searchable, editable event list.
 #include <atomic>
 #include <climits>
 #include <cstdint>
+#include <memory>
 #include <utility>
 #include <vector>
 
@@ -101,7 +102,10 @@ private:
 	void onEventItemChanged(QTableWidgetItem *item); // edit commit
 	QWidget *makeCameraCell(int id, const bool *enabled,
 				const std::string *notes); // 1..8 toggles
-	void openSettings();     // configuration dialog
+	void openSettings();        // configuration dialog
+	void newProjectDialog();    // New Project... menu action
+	void openProjectDialog();   // Open Project... menu action
+	void copyYouTubeChapters(); // copy chapter timestamps to clipboard
 	int64_t markTimeNs() const; // Live=masterNow, Recorded=A playhead
 	std::vector<int> selectedEventIds() const;
 	void seekToFraction(double frac);
@@ -120,6 +124,7 @@ private:
 	// recording / status
 	QPushButton *recBtn_ = nullptr;
 	QLabel *statusLbl_ = nullptr;
+	QLabel *projectLbl_ = nullptr; // shows active project name
 
 	// transport
 	SeekBar *seek_ = nullptr;
@@ -148,7 +153,10 @@ private:
 	QTimer *pollTimer_ = nullptr;
 	int pollTick_ = 0;
 	bool prevRecording_ = false;                      // detects REC start
-	std::atomic<bool> sessionRefreshPending_{false};  // one refresh at a time
+	// shared_ptr keeps the atomic alive past dock destruction so the detached
+	// refresh thread can safely store(false) without triggering a UAF.
+	std::shared_ptr<std::atomic<bool>> sessionRefreshPending_ =
+		std::make_shared<std::atomic<bool>>(false);
 
 	// cached live-edge for seek mapping (ns)
 	int64_t seekableNs_ = 0;

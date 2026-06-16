@@ -11,6 +11,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
 #include "plugin-support.h"
 
 #include <algorithm>
+#include <cstdio>
 #include <filesystem>
 
 namespace multireplay {
@@ -324,6 +325,40 @@ std::string EventStore::listJson(int list) const
 	std::string json = obs_data_get_json(root);
 	obs_data_release(root);
 	return json;
+}
+
+std::string EventStore::chaptersText(int list) const
+{
+	std::lock_guard<std::mutex> lock(mutex_);
+	std::string out;
+	for (const auto &ev : events_) {
+		if (ev.list != list || ev.tOutNs < 0)
+			continue;
+		int64_t totalSec = ev.tInNs / 1000000000LL;
+		int h = (int)(totalSec / 3600);
+		int m = (int)((totalSec % 3600) / 60);
+		int s = (int)(totalSec % 60);
+		char ts[16];
+		if (h > 0)
+			snprintf(ts, sizeof(ts), "%d:%02d:%02d", h, m, s);
+		else
+			snprintf(ts, sizeof(ts), "%d:%02d", m, s);
+		// First non-empty angle note (lowest index = highest priority).
+		std::string desc;
+		for (const auto &a : ev.angles) {
+			if (!a.note.empty()) {
+				desc = a.note;
+				break;
+			}
+		}
+		if (desc.empty())
+			desc = "Clip " + std::to_string(ev.id);
+		out += ts;
+		out += ' ';
+		out += desc;
+		out += '\n';
+	}
+	return out;
 }
 
 void EventStore::save() const

@@ -56,7 +56,7 @@ bool ExportManager::exportEvent(int eventId, int angle1Based,
 
 	std::string folder = customFolder;
 	if (folder.empty()) {
-		fs::path p(ReplayCore::instance().getConfig().sessionFolder);
+		fs::path p(ReplayCore::instance().recordingFolder());
 		p /= "export";
 		folder = p.string();
 	}
@@ -104,23 +104,24 @@ bool ExportManager::exportLastEvent(const std::string &customFolder,
 void ExportManager::worker()
 {
 	while (true) {
-		Job *job = nullptr;
+		Job local;
+		bool found = false;
 		{
 			std::lock_guard<std::mutex> lock(mutex_);
 			for (auto &j : jobs_) {
 				if (j.state == "queued") {
 					j.state = "running";
-					job = &j;
+					local = j; // copy while vector is stable
+					found = true;
 					break;
 				}
 			}
-			if (!job) {
+			if (!found) {
 				workerRunning_ = false;
 				return;
 			}
 		}
 
-		Job local = *job;
 		bool ok = runJob(local);
 
 		std::lock_guard<std::mutex> lock(mutex_);
@@ -232,6 +233,10 @@ bool ExportManager::runJob(Job &job)
 		av_seek_frame(in, vIdx, seekTs, AVSEEK_FLAG_BACKWARD);
 
 		AVPacket *pkt = av_packet_alloc();
+		if (!pkt) {
+			job.detail = "out of memory";
+			break;
+		}
 		std::vector<int64_t> firstDts((size_t)in->nb_streams,
 					      AV_NOPTS_VALUE);
 		ok = true;
@@ -284,10 +289,13 @@ bool ExportManager::runJob(Job &job)
 	avformat_free_context(out);
 	avformat_close_input(&in);
 
-	if (ok)
+	if (ok) {
 		obs_log(LOG_INFO, "export: wrote %s", job.outPath.c_str());
-	else
+	} else {
 		obs_log(LOG_WARNING, "export failed: %s", job.detail.c_str());
+		std::error_code ec;
+		std::filesystem::remove(job.outPath, ec);
+	}
 	return ok;
 }
 

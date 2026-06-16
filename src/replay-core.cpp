@@ -13,6 +13,8 @@ SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <util/platform.h>
 
+#include <algorithm>
+#include <cctype>
 #include <ctime>
 #include <filesystem>
 #include <system_error>
@@ -249,7 +251,7 @@ bool ReplayCore::startRecording(std::string &errorOut)
 	}
 
 	std::error_code ec;
-	std::filesystem::create_directories(config_.sessionFolder, ec);
+	std::filesystem::create_directories(recordingFolderLocked(), ec);
 
 	// Capture the monotonic clock BEFORE arming any camera so live-mode
 	// markers during recording get timestamps coherent with the master
@@ -298,7 +300,7 @@ bool ReplayCore::startRecording(std::string &errorOut)
 	// Record wall-clock start time so SessionIndex can filter segment files
 	// from previous recording sessions that share the same folder.
 	sessionWallStartSec_ = (int64_t)::time(nullptr);
-	EventStore::instance().setSessionFolder(config_.sessionFolder);
+	EventStore::instance().setSessionFolder(recordingFolderLocked());
 	EventStore::instance().setLiveMode(true); // the reference controller: recording => Live
 	writeSessionManifest();
 	obs_log(LOG_INFO, "Recording started on %d camera(s)", started);
@@ -466,25 +468,61 @@ int64_t ReplayCore::estimatedMinutesRemaining() const
 
 std::string ReplayCore::statusJson() const
 {
-	std::lock_guard<std::mutex> lock(mutex_);
+	// Snapshot all config/status fields under a brief lock (no I/O inside).
+	bool rec;
+	std::string sessionFolder;
+	int videoBitrateKbps, audioBitrateKbps;
+	std::string videoEncoderStr;
+	std::array<CameraStatus, kMaxCameras> camSnap;
+	int activeCams = 0;
+	{
+		std::lock_guard<std::mutex> lock(mutex_);
+		rec = recording_;
+		sessionFolder = config_.sessionFolder;
+		videoBitrateKbps = config_.videoBitrateKbps;
+		audioBitrateKbps = config_.audioBitrateKbps;
+		videoEncoderStr = config_.videoEncoderId.empty()
+					  ? pickVideoEncoder()
+					  : config_.videoEncoderId;
+		camSnap = cameraStatus_;
+		for (const auto &cam : config_.cameras)
+			if (!cam.sourceName.empty())
+				activeCams++;
+	}
 
+	// Disk I/O outside any lock: filesystem::space() can block (network drives).
+	int64_t freeBytes = -1;
+	int64_t minsRemaining = -1;
+	if (!sessionFolder.empty()) {
+		std::error_code ec;
+		auto spaceInfo = std::filesystem::space(sessionFolder, ec);
+		if (!ec) {
+			freeBytes = static_cast<int64_t>(spaceInfo.available);
+			if (activeCams > 0) {
+				int64_t bytesPerMin =
+					static_cast<int64_t>(videoBitrateKbps +
+							     audioBitrateKbps) *
+					1000 / 8 * 60 * activeCams;
+				minsRemaining =
+					bytesPerMin > 0 ? freeBytes / bytesPerMin
+							: -1;
+			}
+		}
+	}
+
+	// Build JSON from local snapshots — no lock needed.
 	obs_data_t *root = obs_data_create();
 	obs_data_set_string(root, "version", PLUGIN_VERSION);
-	obs_data_set_bool(root, "recording", recording_);
+	obs_data_set_bool(root, "recording", rec);
 	obs_data_set_bool(root, "branchOutputAvailable",
 			  branch_output::available());
-	obs_data_set_string(root, "sessionFolder",
-			    config_.sessionFolder.c_str());
-	obs_data_set_int(root, "diskFreeBytes", diskFreeBytes());
-	obs_data_set_int(root, "estimatedMinutesRemaining",
-			 estimatedMinutesRemaining());
-	obs_data_set_string(root, "videoEncoder",
-			    config_.videoEncoderId.empty()
-				    ? pickVideoEncoder().c_str()
-				    : config_.videoEncoderId.c_str());
+	obs_data_set_string(root, "sessionFolder", sessionFolder.c_str());
+	obs_data_set_int(root, "diskFreeBytes", freeBytes);
+	obs_data_set_int(root, "estimatedMinutesRemaining", minsRemaining);
+	obs_data_set_string(root, "videoEncoder", videoEncoderStr.c_str());
 
 	obs_data_array_t *cams = obs_data_array_create();
-	for (const auto &st : cameraStatus_) {
+	for (const auto &st : camSnap) {
 		obs_data_t *item = obs_data_create();
 		obs_data_set_int(item, "index", st.index);
 		obs_data_set_string(item, "sourceName", st.sourceName.c_str());
@@ -544,6 +582,117 @@ bool ReplayCore::branchOutputAvailable() const
 	return branch_output::available();
 }
 
+std::string ReplayCore::recordingFolderLocked() const
+{
+	if (config_.currentProjectName.empty())
+		return config_.sessionFolder;
+	std::filesystem::path p(config_.sessionFolder);
+	p /= config_.currentProjectName;
+	return p.string();
+}
+
+std::string ReplayCore::recordingFolder() const
+{
+	std::lock_guard<std::mutex> lock(mutex_);
+	return recordingFolderLocked();
+}
+
+bool ReplayCore::newProject(const std::string &title, std::string &errorOut)
+{
+	std::string base, folderName;
+	{
+		std::lock_guard<std::mutex> lock(mutex_);
+		if (recording_) {
+			errorOut = "stop recording first";
+			return false;
+		}
+		if (config_.sessionFolder.empty()) {
+			errorOut = "configure session folder first";
+			return false;
+		}
+		base = config_.sessionFolder;
+		// Sanitize title: alphanum/dash/underscore kept, spaces → '_'.
+		for (unsigned char c : title) {
+			if (std::isalnum(c) || c == '-' || c == '_')
+				folderName += (char)c;
+			else if (c == ' ' && !folderName.empty())
+				folderName += '_';
+		}
+		if (folderName.empty()) {
+			errorOut = "project name contains no valid characters";
+			return false;
+		}
+		config_.currentProjectName = folderName;
+	}
+	saveConfig();
+
+	std::error_code ec;
+	std::string path = (std::filesystem::path(base) / folderName).string();
+	std::filesystem::create_directories(path, ec);
+	if (ec) {
+		errorOut = "cannot create project folder: " + ec.message();
+		return false;
+	}
+	EventStore::instance().setSessionFolder(path);
+	MediaReplay::instance().clearSession();
+	obs_log(LOG_INFO, "Project created: %s", path.c_str());
+	return true;
+}
+
+bool ReplayCore::openProject(const std::string &folderName,
+			     std::string &errorOut)
+{
+	std::string path;
+	{
+		std::lock_guard<std::mutex> lock(mutex_);
+		if (recording_) {
+			errorOut = "stop recording first";
+			return false;
+		}
+		if (config_.sessionFolder.empty()) {
+			errorOut = "configure session folder first";
+			return false;
+		}
+		path = (std::filesystem::path(config_.sessionFolder) / folderName)
+			       .string();
+		if (!std::filesystem::is_directory(path)) {
+			errorOut = "project folder not found: " + path;
+			return false;
+		}
+		config_.currentProjectName = folderName;
+	}
+	saveConfig();
+	EventStore::instance().setSessionFolder(path);
+	std::string loadErr;
+	MediaReplay::instance().loadSession(path, loadErr);
+	obs_log(LOG_INFO, "Project opened: %s", path.c_str());
+	return true;
+}
+
+std::vector<std::string> ReplayCore::listProjects() const
+{
+	std::string base;
+	{
+		std::lock_guard<std::mutex> lock(mutex_);
+		base = config_.sessionFolder;
+	}
+	std::vector<std::string> result;
+	if (base.empty())
+		return result;
+	std::error_code ec;
+	for (const auto &entry :
+	     std::filesystem::directory_iterator(base, ec)) {
+		if (entry.is_directory(ec)) {
+			std::string name =
+				entry.path().filename().string();
+			if (!name.empty() && name[0] != '.')
+				result.push_back(name);
+		}
+	}
+	std::sort(result.begin(), result.end());
+	return result;
+}
+
 void ReplayCore::loadConfig()
 {
 	char *path = obs_module_config_path(kConfigFile);
@@ -556,6 +705,8 @@ void ReplayCore::loadConfig()
 
 	std::lock_guard<std::mutex> lock(mutex_);
 	config_.sessionFolder = obs_data_get_string(data, "sessionFolder");
+	config_.currentProjectName =
+		obs_data_get_string(data, "currentProjectName");
 	if (obs_data_has_user_value(data, "port"))
 		config_.port = (int)obs_data_get_int(data, "port");
 	if (obs_data_has_user_value(data, "splitMinutes"))
@@ -582,7 +733,7 @@ void ReplayCore::loadConfig()
 		config_.recFormat = fmt;
 	if (!config_.sessionFolder.empty())
 		EventStore::instance().setSessionFolder(
-			config_.sessionFolder);
+			recordingFolderLocked());
 
 	obs_data_array_t *cams = obs_data_get_array(data, "cameras");
 	if (cams) {
@@ -607,6 +758,8 @@ void ReplayCore::saveConfig() const
 	obs_data_t *data = obs_data_create();
 	obs_data_set_string(data, "sessionFolder",
 			    config_.sessionFolder.c_str());
+	obs_data_set_string(data, "currentProjectName",
+			    config_.currentProjectName.c_str());
 	obs_data_set_int(data, "port", config_.port);
 	obs_data_set_int(data, "splitMinutes", config_.splitMinutes);
 	obs_data_set_int(data, "videoBitrateKbps", config_.videoBitrateKbps);
@@ -673,7 +826,7 @@ void ReplayCore::writeSessionManifest() const
 	obs_data_set_array(data, "cameras", cams);
 	obs_data_array_release(cams);
 
-	std::filesystem::path p(config_.sessionFolder);
+	std::filesystem::path p(recordingFolderLocked());
 	p /= "session.json";
 	obs_data_save_json_safe(data, p.string().c_str(), "tmp", "bak");
 	obs_data_release(data);

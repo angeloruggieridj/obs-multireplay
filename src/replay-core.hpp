@@ -21,6 +21,7 @@ GNU General Public License for more details.
 #include <mutex>
 #include <string>
 #include <vector>
+#include <cstdint>
 
 namespace multireplay {
 
@@ -37,6 +38,7 @@ struct CameraConfig {
 
 struct Config {
 	std::string sessionFolder;
+	std::string currentProjectName; // "" = write directly to sessionFolder
 	int port = kDefaultPort;
 	int splitMinutes = kDefaultSplitMinutes;
 	int videoBitrateKbps = kDefaultVideoBitrateKbps;
@@ -92,6 +94,16 @@ public:
 	Config getConfig() const;
 	void setConfig(const Config &cfg);
 
+	// --- Project management ---
+	// Returns sessionFolder/currentProjectName, or sessionFolder if no project.
+	std::string recordingFolder() const;
+	// Create a new project subfolder under sessionFolder; sets it as current.
+	bool newProject(const std::string &title, std::string &errorOut);
+	// Switch to an existing project subfolder; reloads events + session.
+	bool openProject(const std::string &folderName, std::string &errorOut);
+	// List non-hidden subdirectories of sessionFolder (potential projects).
+	std::vector<std::string> listProjects() const;
+
 	// --- Introspection for the web UI ---
 	std::string statusJson() const;
 	std::string sourcesJson() const;      // video sources usable as cameras
@@ -112,6 +124,8 @@ private:
 	void loadConfig();
 	void saveConfig() const;
 	void writeSessionManifest() const;
+	// Called with mutex_ held — returns recordingFolder without re-acquiring.
+	std::string recordingFolderLocked() const;
 
 	void registerReplayHotkeys(); // full broadcast-style hotkey set
 

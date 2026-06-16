@@ -93,6 +93,7 @@ bool SessionIndex::load(const std::string &folder)
 		tracks_[i].index = i;
 		if (!present[i])
 			continue;
+		tracks_[i].inManifest = true;
 		tracks_[i].startOffsetNs = startTs[i] - minStart;
 		scanCamera(tracks_[i], wallStartSec);
 		if (tracks_[i].valid)
@@ -186,8 +187,7 @@ void SessionIndex::refresh()
 {
 	std::lock_guard<std::mutex> lock(mutex_);
 	for (auto &track : tracks_) {
-		if (track.startOffsetNs == 0 && track.segments.empty() &&
-		    !track.valid)
+		if (!track.inManifest)
 			continue;
 		// Pass wallStartSec=0 on refresh: the initial load already
 		// filtered stale files; refresh only re-probes known-good tracks.
