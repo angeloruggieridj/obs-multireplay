@@ -864,14 +864,15 @@ QWidget *MultiReplayDock::buildTransport()
 	const std::pair<int, const char *> speedPresets[] = {
 		{25, "25%"}, {50, "50%"}, {75, "75%"}, {100, "1\xc3\x97"}};
 	for (const auto &[pct, lbl] : speedPresets) {
+		int p = pct; // copy: capturing a structured binding is non-portable
 		auto *b = compactBtn(QString::fromUtf8(lbl), this, "mrSpeedChip");
-		connect(b, &QPushButton::clicked, this, [this, pct]() {
+		connect(b, &QPushButton::clicked, this, [this, p]() {
 			speed_->blockSignals(true);
-			speed_->setValue(pct);
+			speed_->setValue(p);
 			speed_->blockSignals(false);
 			speedLbl_->setText(
-				QString::asprintf("%.2f\xc3\x97", pct / 100.0));
-			MediaReplay::instance().setSpeed(pct / 100.0);
+				QString::asprintf("%.2f\xc3\x97", p / 100.0));
+			applyReplaySpeed(p);
 		});
 		sh->addWidget(b);
 	}
@@ -892,9 +893,8 @@ QWidget *MultiReplayDock::buildTransport()
 		speedLbl_->setText(
 			QString::asprintf("%.2f\xc3\x97", val / 100.0));
 	});
-	connect(speed_, &QSlider::sliderReleased, this, [this]() {
-		MediaReplay::instance().setSpeed(speed_->value() / 100.0);
-	});
+	connect(speed_, &QSlider::sliderReleased, this,
+		[this]() { applyReplaySpeed(speed_->value()); });
 
 	sh->addWidget(speed_, 1);
 	sh->addWidget(speedLbl_);
@@ -1140,6 +1140,24 @@ void MultiReplayDock::setAngle(int angle1Based)
 {
 	if (angle1Based >= 1 && angle1Based <= kIndexMaxCameras)
 		MediaReplay::instance().setAngle(angle1Based - 1);
+}
+
+void MultiReplayDock::applyReplaySpeed(int pct)
+{
+	// Set the engine speed, then (re)play the clip from its IN at the new speed.
+	// Always restart from the in-point — whether a replay is currently playing
+	// or idle — so the saved IN is respected (broadcast-style). Events default to
+	// speed "--" (inherit), so they pick up the engine speed just set.
+	MediaReplay::instance().setSpeed(pct / 100.0);
+
+	auto &pc = PlaybackCoordinator::instance();
+	std::string err;
+	std::vector<int> ids = selectedEventIds();
+	bool toOut = toOutputChk_ && toOutputChk_->isChecked();
+	if (!ids.empty())
+		pc.playEvents(ids, toOut, err);
+	else
+		pc.playLastEvent(toOut, err);
 }
 
 void MultiReplayDock::seekToFraction(double frac)

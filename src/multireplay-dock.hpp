@@ -112,6 +112,10 @@ private:
 	std::vector<int> selectedEventIds() const;
 	void seekToFraction(double frac);
 	void setAngle(int angle1Based);
+	// Apply a replay speed (5..100). Updates the engine speed and, when no
+	// replay is currently playing, re-plays the selected/last event at the new
+	// speed from its in-point (broadcast-style) instead of leaving the raw file.
+	void applyReplaySpeed(int pct);
 
 	// --- event filter: double-click on note labels ---
 	bool eventFilter(QObject *watched, QEvent *event) override;

@@ -119,6 +119,12 @@ private:
 	// Caller holds mutex_.
 	void loadFileLocked(const std::string &path, int speedPct,
 			    int64_t seekMs, bool play);
+	// Arm an event hard-reopen: resolve `tInNs` on the current angle, clear the
+	// media and queue a fresh open + seek so ffmpeg re-scans the (possibly
+	// growing) file's current duration. Caller holds mutex_ and has already set
+	// the event fields (eventActive_/eventOutNs_/eventOnDone_). False if the
+	// position can't be resolved.
+	bool armEventReopenLocked(int64_t tInNs, int speedPct);
 	int64_t mediaTimeNs() const; // current media time (ns), 0 if unloaded
 
 	mutable std::mutex mutex_;

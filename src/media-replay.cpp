@@ -337,49 +337,23 @@ void MediaReplay::setSpeed(double speed)
 	std::lock_guard<std::mutex> lock(mutex_);
 	if (pct == speedPct_.load())
 		return;
-	if (loadedPath_.empty() || !mediaSource_) {
-		speedPct_ = pct;
+	speedPct_ = pct; // applied by the next (re)play
+
+	// Do NOT touch the media source here. Event playback re-plays the clip from
+	// its IN at the new speed (the dock calls playEvent again), and an in-place
+	// obs_source_update() would restart ffmpeg_source from frame 0. The only
+	// case we change rate live is a non-event source actively playing (manual
+	// scrub/preview), where there is no clip in/out to preserve.
+	if (!mediaSource_ || loadedPath_.empty() || eventActive_ ||
+	    pendingLoad_ || pendingSeekApplied_)
 		return;
-	}
-
-	auto st = obs_source_media_get_state(mediaSource_);
-
-	if (eventActive_) {
-		// A speed change restarts ffmpeg_source from frame 0. During event
-		// playback reload at the CURRENT clip position (not the file start)
-		// and clear eventPlayStarted_ so the seek-confirm re-arms: playback
-		// resumes from where it was, at the new speed, and still stops at
-		// the OUT point.
-		int64_t curMs = pendingLoad_
-					? pendingSeekMs_
-					: obs_source_media_get_time(mediaSource_);
-		eventPlayStarted_ = false;
-		seekWaitCycles_ = 0;
-		loadFileLocked(loadedPath_, pct,
-			       std::max<int64_t>(0, curMs),
-			       pendingLoad_ ? pendingPlay_ : true);
-		return;
-	}
-
-	speedPct_ = pct;
-	if (!pendingLoad_ && !pendingSeekApplied_ &&
-	    (st == OBS_MEDIA_STATE_PLAYING || st == OBS_MEDIA_STATE_PAUSED)) {
-		// Non-event (live/scrub): update speed in-place. A restart-from-0 is
-		// acceptable here since there is no clip in/out to preserve.
+	if (obs_source_media_get_state(mediaSource_) == OBS_MEDIA_STATE_PLAYING) {
 		obs_data_t *s = obs_source_get_settings(mediaSource_);
 		obs_data_set_int(s, "speed_percent", pct);
 		obs_data_set_bool(s, "hw_decode", false);
 		obs_source_update(mediaSource_, s);
 		obs_data_release(s);
-		return;
 	}
-
-	// Source not yet ready or a pending operation is in flight: reload in
-	// place, restoring the current position and play state.
-	int64_t curMs = pendingLoad_ ? pendingSeekMs_
-				     : obs_source_media_get_time(mediaSource_);
-	bool pl = pendingLoad_ ? pendingPlay_ : (st == OBS_MEDIA_STATE_PLAYING);
-	loadFileLocked(loadedPath_, pct, curMs, pl);
 }
 
 void MediaReplay::setAngle(int camIndex0)
@@ -453,38 +427,46 @@ bool MediaReplay::playEvent(int64_t tInNs, int64_t tOutNs, int angle0,
 	angle_ = std::clamp(angle0, 0, kIndexMaxCameras - 1);
 	followLive_ = false;
 
-	std::string path;
-	int64_t off = 0;
-	if (!index_ || tOutNs <= tInNs ||
-	    !index_->resolve(angle_.load(), tInNs, path, off))
+	if (!index_ || tOutNs <= tInNs)
 		return false; // caller advances its queue; onDone not invoked
-
-	obs_log(LOG_INFO,
-		"[ev] playEvent IN=%lldms OUT=%lldms dur=%lldms angle=%d -> off=%lldms edge=%lldms file=%s",
-		(long long)(tInNs / 1000000), (long long)(tOutNs / 1000000),
-		(long long)((tOutNs - tInNs) / 1000000), angle_.load(),
-		(long long)(off / 1000000),
-		(long long)(index_->masterDurationNs() / 1000000),
-		path.c_str());
 
 	eventActive_ = true;
 	eventOutNs_ = tOutNs;
 	eventDurationNs_ = tOutNs - tInNs;
 	eventOnDone_ = std::move(onDone);
+
+	if (!armEventReopenLocked(tInNs, clampSpeedPct(speed))) {
+		// Unresolvable (footage not indexed): abort without invoking onDone.
+		eventActive_ = false;
+		eventOnDone_ = nullptr;
+		eventOutNs_ = -1;
+		return false;
+	}
+	obs_log(LOG_INFO, "[ev] playEvent IN=%lldms OUT=%lldms dur=%lldms angle=%d",
+		(long long)(tInNs / 1000000), (long long)(tOutNs / 1000000),
+		(long long)((tOutNs - tInNs) / 1000000), angle_.load());
+	return true;
+}
+
+bool MediaReplay::armEventReopenLocked(int64_t tInNs, int speedPct)
+{
+	std::string path;
+	int64_t off = 0;
+	if (!index_ || !index_->resolve(angle_.load(), tInNs, path, off))
+		return false;
+
+	speedPct_ = speedPct;
 	eventPlayStarted_ = false;
 	seekWaitCycles_ = 0;
 	segBaseNs_ = tInNs - off;
 
-	speedPct_ = clampSpeedPct(speed);
-
 	// Force a genuine fresh open so ffmpeg re-scans the file's CURRENT flushed
-	// duration. This is essential for instant replay WHILE recording: the file
-	// is still growing and ffmpeg_source caches the duration seen at first open
-	// — a same-path update/restart keeps that stale value, so a seek past it
-	// lands at EOF (observed: durMs frozen at 3080 for a 10117 ms seek). Clear
-	// local_file now, let the monitor wait a few cycles for the media to tear
-	// down, then open the target fresh and seek. A cold open re-scans from
-	// scratch (as SessionIndex's probe and a first-time open both do).
+	// duration. Essential for instant replay WHILE recording: the file is still
+	// growing and ffmpeg_source caches the duration seen at first open — a
+	// same-path update/restart keeps that stale value, so a seek past it lands
+	// at EOF (observed: durMs frozen at 3080 for a 10117 ms seek). Clear
+	// local_file; the monitor waits a few cycles for the media to tear down,
+	// then opens the target fresh and seeks. A cold open re-scans from scratch.
 	if (mediaSource_) {
 		obs_data_t *s = obs_source_get_settings(mediaSource_);
 		obs_data_set_string(s, "local_file", "");
