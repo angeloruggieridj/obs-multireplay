@@ -142,6 +142,20 @@ private:
 	// posts to the decode thread; without this delay play() fires before the
 	// seek completes and the source briefly plays from frame 0.
 	bool pendingSeekApplied_ = false;
+	// Cycles spent waiting for an event seek to actually land (position within
+	// tolerance of the request) before arming the OUT timer. set_time() can
+	// take far longer than one cycle on Intel UHD; arming early made the event
+	// play from the old position. Bounded so a dropped seek can't hang.
+	int seekWaitCycles_ = 0;
+	// Hard-reopen request (event playback): the file is opened fresh so
+	// ffmpeg re-scans its CURRENT flushed duration. Essential for instant
+	// replay while recording — a same-path reopen keeps the stale duration
+	// cached at first open, so seeks past it land at EOF. The monitor clears
+	// the media, waits pendingReopenGap_ cycles for it to tear down, then
+	// opens pendingReopenPath_ and seeks to pendingReopenSeekMs_.
+	std::string pendingReopenPath_;
+	int64_t pendingReopenSeekMs_ = 0;
+	int pendingReopenGap_ = 0;
 
 	// Event state.
 	bool eventActive_ = false;

@@ -330,6 +330,12 @@ bool ReplayCore::stopRecording()
 	if (!recording_)
 		return false;
 
+	// Wall time this session ran, for replay-offset calibration (learned once
+	// the finalized footage length is known — see learnReplayOffset()).
+	stopElapsedNs_ = sessionMonoStartNs_ > 0
+				 ? (int64_t)os_gettime_ns() - sessionMonoStartNs_
+				 : 0;
+
 	for (int i = 0; i < kMaxCameras; i++) {
 		auto &st = cameraStatus_[i];
 		if (!st.recording)
@@ -355,6 +361,38 @@ bool ReplayCore::stopRecording()
 	recording_ = false;
 	obs_log(LOG_INFO, "Recording stopped");
 	return true;
+}
+
+int ReplayCore::replayOffsetMs() const
+{
+	std::lock_guard<std::mutex> lock(mutex_);
+	return config_.replayOffsetMs;
+}
+
+void ReplayCore::learnReplayOffset(int64_t indexedFootageNs)
+{
+	std::lock_guard<std::mutex> lock(mutex_);
+	if (stopElapsedNs_ <= 0)
+		return;
+	// Footage recorded in the session that just stopped (indexed total minus
+	// the cumulative base from earlier sessions of this project).
+	int64_t sessionFootageNs = indexedFootageNs - sessionBaseNs_;
+	if (sessionFootageNs <= 0)
+		return;
+	// Offset = wall time the encoder was armed but not yet writing frames.
+	int64_t offNs = stopElapsedNs_ - sessionFootageNs;
+	int offMs = (int)(offNs / 1000000LL);
+	offMs = std::clamp(offMs, 0, 2000); // sane bound for encoder startup
+	int64_t wallMs = stopElapsedNs_ / 1000000LL;
+	// Exponential smoothing so a one-off bad probe doesn't swing it.
+	int prev = config_.replayOffsetMs;
+	config_.replayOffsetMs = (prev > 0) ? (prev + offMs + 1) / 2 : offMs;
+	stopElapsedNs_ = 0; // consume; only learn once per stop
+	obs_log(LOG_INFO,
+		"replay offset calibrated: measured=%dms -> %dms (wall=%lldms footage=%lldms)",
+		offMs, config_.replayOffsetMs, (long long)wallMs,
+		(long long)(sessionFootageNs / 1000000));
+	saveConfig();
 }
 
 void ReplayCore::disarmPersistedFilters()
@@ -775,6 +813,9 @@ void ReplayCore::loadConfig()
 		obs_data_get_string(data, "replaySourceName");
 	config_.musicSourceName =
 		obs_data_get_string(data, "musicSourceName");
+	if (obs_data_has_user_value(data, "replayOffsetMs"))
+		config_.replayOffsetMs =
+			(int)obs_data_get_int(data, "replayOffsetMs");
 	if (obs_data_has_user_value(data, "autoSwitchScene"))
 		config_.autoSwitchScene =
 			obs_data_get_bool(data, "autoSwitchScene");
@@ -822,6 +863,7 @@ void ReplayCore::saveConfig() const
 			    config_.replaySourceName.c_str());
 	obs_data_set_string(data, "musicSourceName",
 			    config_.musicSourceName.c_str());
+	obs_data_set_int(data, "replayOffsetMs", config_.replayOffsetMs);
 	obs_data_set_bool(data, "autoSwitchScene", config_.autoSwitchScene);
 	obs_data_set_string(data, "recFormat", config_.recFormat.c_str());
 

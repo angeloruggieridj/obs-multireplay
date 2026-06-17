@@ -515,9 +515,26 @@ void SeekBar::mouseReleaseEvent(QMouseEvent *e)
 // Preview render callback (runs on the OBS graphics thread)
 // ---------------------------------------------------------------------------
 
-void MultiReplayDock::drawChannelA(void *, uint32_t cx, uint32_t cy)
+void MultiReplayDock::drawChannelA(void *data, uint32_t cx, uint32_t cy)
 {
-	obs_source_t *src = MediaReplay::instance().acquireSource();
+	// Live mirror: while recording + following live, render the live camera
+	// source for the selected angle (smooth, truly live). OBS' ffmpeg_source
+	// can't tail a growing Hybrid-MP4, so reading back the recording file
+	// freezes; mirroring the live input is what the reference controller shows anyway. Falls back
+	// to the replay Media Source for review/scrub and after recording stops.
+	obs_source_t *src = nullptr;
+	auto *self = static_cast<MultiReplayDock *>(data);
+	if (self && self->previewLive_.load()) {
+		std::string name;
+		{
+			std::lock_guard<std::mutex> lk(self->previewMutex_);
+			name = self->liveSourceName_;
+		}
+		if (!name.empty())
+			src = obs_get_source_by_name(name.c_str()); // add-ref'd
+	}
+	if (!src)
+		src = MediaReplay::instance().acquireSource();
 	if (!src)
 		return;
 	uint32_t sw = obs_source_get_width(src);
@@ -1087,8 +1104,23 @@ int64_t MultiReplayDock::markTimeNs() const
 			// from previous sessions = absolute master-timeline now.
 			int64_t elapsed = (int64_t)os_gettime_ns() -
 					  core.sessionMonoStartNs();
-			return std::max<int64_t>(
+			int64_t m = std::max<int64_t>(
 				0, core.sessionBaseNs() + elapsed);
+			// Subtract the encoder-startup offset: the recording file
+			// lags the wall clock by this much, so the frame the operator
+			// just saw on the live feed sits this far back in the file.
+			m = std::max<int64_t>(
+				0, m - (int64_t)core.replayOffsetMs() * 1000000LL);
+			obs_log(LOG_INFO,
+				"[ev] markTime LIVE master=%lldms base=%lldms elapsed=%lldms offset=%dms indexedEdge=%lldms",
+				(long long)(m / 1000000),
+				(long long)(core.sessionBaseNs() / 1000000),
+				(long long)(elapsed / 1000000),
+				core.replayOffsetMs(),
+				(long long)(MediaReplay::instance()
+						    .footageDurationNs() /
+					    1000000));
+			return m;
 		}
 		// Not recording: use indexed footage length as the live edge.
 		int64_t edge = MediaReplay::instance().footageDurationNs();
@@ -1150,15 +1182,14 @@ void MultiReplayDock::poll()
 				if (!sessionRefreshPending_->exchange(true)) {
 					auto pending = sessionRefreshPending_;
 					std::thread([pending]() {
-						auto &eng =
-							MediaReplay::instance();
-						eng.refreshSession();
-						// After the index is updated, advance
-						// the preview to the new live edge so
-						// the operator always sees the most
-						// recent recorded footage.
-						if (eng.followLive())
-							eng.jumpToEnd();
+						// Grow the index so the seekbar's
+						// saved-footage edge advances. The
+						// preview itself mirrors the live source
+						// during recording (drawChannelA), so we
+						// do NOT drive the replay Media Source to
+						// the live edge here.
+						MediaReplay::instance()
+							.refreshSession();
 						pending->store(false);
 					}).detach();
 				}
@@ -1196,27 +1227,39 @@ void MultiReplayDock::poll()
 	displayDurNs_ = std::max(ts.durationNs, liveElapsedNs);
 
 	if (!seekDragging_) {
-		// positionNs tracks the actual playhead; use displayDurNs_ as
-		// denominator so the bar reflects the full elapsed/indexed range.
-		double posFrac = (displayDurNs_ > 0)
-					 ? std::min(1.0,
-						    (double)ts.positionNs /
-							    (double)displayDurNs_)
-					 : 0.0;
 		double seekFrac = (displayDurNs_ > 0 && ts.seekableNs > 0)
 					  ? (double)ts.seekableNs /
 						    (double)displayDurNs_
 					  : (ts.recording ? 0.0 : 1.0);
-		seek_->setProgress(posFrac, seekFrac);
-		// During recording: show "position / ● elapsed" so the user can
-		// see both where the playhead is and how long the take is.
-		if (ts.recording)
-			tcLbl_->setText(formatTc(ts.positionNs) +
-					QStringLiteral(" / ● ") +
+		if (ts.recording && ts.followLive) {
+			// Live mirror: the preview shows the live source, so the
+			// playhead IS the live edge. Drive the counter from
+			// wall-clock elapsed (recomputed every 33ms poll tick) so it
+			// advances smoothly — not in ~3s jumps like the indexed
+			// footage edge, which only grows when refreshSession() reads
+			// a freshly flushed fragment. The seekable fill still trails
+			// at the on-disk edge to show what's been saved.
+			seek_->setProgress(1.0, seekFrac);
+			tcLbl_->setText(QStringLiteral("● ") +
 					formatTc(liveElapsedNs));
-		else
-			tcLbl_->setText(formatTc(ts.positionNs) + " / " +
-					formatTc(displayDurNs_));
+		} else {
+			// positionNs tracks the actual playhead; use displayDurNs_
+			// as denominator so the bar reflects the full range.
+			double posFrac =
+				(displayDurNs_ > 0)
+					? std::min(1.0,
+						   (double)ts.positionNs /
+							   (double)displayDurNs_)
+					: 0.0;
+			seek_->setProgress(posFrac, seekFrac);
+			if (ts.recording)
+				tcLbl_->setText(formatTc(ts.positionNs) +
+						QStringLiteral(" / ● ") +
+						formatTc(liveElapsedNs));
+			else
+				tcLbl_->setText(formatTc(ts.positionNs) + " / " +
+						formatTc(displayDurNs_));
+		}
 	}
 
 	// ⏸ U+23F8  ▶ U+25B6
@@ -1298,7 +1341,41 @@ void MultiReplayDock::poll()
 	// tracks the new take instead of sitting on old footage.
 	if (rec && !prevRecording_)
 		engine.setFollowLive(true);
+	// On REC stop: refresh the now-finalized index and park the replay source
+	// at the end of the just-recorded footage so the preview shows the take
+	// (instead of the stale frame it sat on during the live mirror).
+	if (!rec && prevRecording_) {
+		if (!sessionRefreshPending_->exchange(true)) {
+			auto pending = sessionRefreshPending_;
+			std::thread([pending]() {
+				auto &eng = MediaReplay::instance();
+				eng.refreshSession();
+				// Auto-calibrate the encoder-startup offset now that
+				// the file is finalized (full duration known).
+				ReplayCore::instance().learnReplayOffset(
+					eng.footageDurationNs());
+				if (eng.followLive())
+					eng.jumpToEnd();
+				pending->store(false);
+			}).detach();
+		}
+	}
 	prevRecording_ = rec;
+
+	// Live-mirror preview state: while recording + following live, render the
+	// live camera source for the selected angle (see drawChannelA). Resolve
+	// the source name for the current angle here on the UI thread.
+	bool live = rec && ts.followLive;
+	std::string liveName;
+	if (live) {
+		int idx = std::clamp(ts.angle - 1, 0, kMaxCameras - 1);
+		liveName = core.getConfig().cameras[idx].sourceName;
+	}
+	{
+		std::lock_guard<std::mutex> lk(previewMutex_);
+		liveSourceName_ = liveName;
+	}
+	previewLive_.store(live && !liveName.empty());
 
 	recBtn_->setText(rec ? QStringLiteral("◼  STOP")
 			     : QStringLiteral("●  REC"));

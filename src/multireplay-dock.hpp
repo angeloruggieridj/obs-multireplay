@@ -16,6 +16,8 @@ controls and the searchable, editable event list.
 #include <climits>
 #include <cstdint>
 #include <memory>
+#include <mutex>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -149,6 +151,15 @@ private:
 	QCheckBox *musicChk_ = nullptr;
 
 	QSplitter *splitter_ = nullptr;
+
+	// Live-mirror preview: while recording and following live, the preview
+	// renders the live camera source for the selected angle (smooth, truly
+	// live) instead of the replay Media Source — OBS' ffmpeg_source cannot
+	// tail a growing Hybrid-MP4. Updated by poll() (UI thread), read by
+	// drawChannelA() (graphics thread).
+	std::atomic<bool> previewLive_{false};
+	std::mutex previewMutex_;     // guards liveSourceName_
+	std::string liveSourceName_; // OBS source name for the current angle
 
 	QTimer *pollTimer_ = nullptr;
 	int pollTick_ = 0;

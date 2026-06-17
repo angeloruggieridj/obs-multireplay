@@ -73,6 +73,11 @@ bool EventStore::markOut(int64_t tNs)
 	for (auto it = events_.rbegin(); it != events_.rend(); ++it) {
 		if (it->list == selectedList_ && it->tOutNs < 0) {
 			it->tOutNs = std::max(it->tInNs + 1, tNs);
+			obs_log(LOG_INFO,
+				"[ev] markOut id=%d IN=%lldms OUT=%lldms dur=%lldms",
+				it->id, (long long)(it->tInNs / 1000000),
+				(long long)(it->tOutNs / 1000000),
+				(long long)((it->tOutNs - it->tInNs) / 1000000));
 			save();
 			return true;
 		}
