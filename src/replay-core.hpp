@@ -51,12 +51,6 @@ struct Config {
 	// Empty = the plugin's own managed "MultiReplay — Replay A" source.
 	std::string replaySourceName;
 	std::string musicSourceName; // OBS audio source unmuted during playback
-	// Encoder-startup latency (ms): the file's first frame is written this
-	// long AFTER the camera is armed, so the recording file lags the master
-	// (wall-clock) timeline by this much. Live event marks subtract it so the
-	// replayed in/out match the moment the operator saw. Auto-learned at each
-	// stopRecording() from (wall elapsed − finalized file duration).
-	int replayOffsetMs = 0;
 	bool autoSwitchScene = true; // play-to-output switches the OBS scene;
 				     // false = only feed the Replay source
 	std::array<CameraConfig, kMaxCameras> cameras;
@@ -85,11 +79,6 @@ public:
 	bool isRecording() const { return recording_; }
 	// Monotonic ns of the earliest camera arm in the current session.
 	int64_t sessionMonoStartNs() const { return sessionMonoStartNs_; }
-	// Auto-calibrate replayOffsetMs from the just-finished session: given the
-	// finalized indexed footage length, the offset ≈ wall elapsed − footage.
-	// Called after STOP once the index has been refreshed. Persists config.
-	void learnReplayOffset(int64_t indexedFootageNs);
-	int replayOffsetMs() const;
 	// Cumulative footage ns at the START of the current session (0 if first).
 	// Add to live elapsed time to get a cumulative master-timeline position.
 	int64_t sessionBaseNs() const { return sessionBaseNs_; }
@@ -159,9 +148,6 @@ private:
 	// sum of all previous sessions' footage within this project (0 for first).
 	// Captured from footageDurationNs() just before startRecording() clears.
 	int64_t sessionBaseNs_ = 0;
-	// Wall-clock ns elapsed in the current session at the moment STOP was
-	// pressed (os_gettime_ns − sessionMonoStartNs_); used to learn the offset.
-	int64_t stopElapsedNs_ = 0;
 	std::array<CameraStatus, kMaxCameras> cameraStatus_{};
 	obs_hotkey_id startHotkey_ = OBS_INVALID_HOTKEY_ID;
 	obs_hotkey_id stopHotkey_ = OBS_INVALID_HOTKEY_ID;

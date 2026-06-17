@@ -1106,17 +1106,11 @@ int64_t MultiReplayDock::markTimeNs() const
 					  core.sessionMonoStartNs();
 			int64_t m = std::max<int64_t>(
 				0, core.sessionBaseNs() + elapsed);
-			// Subtract the encoder-startup offset: the recording file
-			// lags the wall clock by this much, so the frame the operator
-			// just saw on the live feed sits this far back in the file.
-			m = std::max<int64_t>(
-				0, m - (int64_t)core.replayOffsetMs() * 1000000LL);
 			obs_log(LOG_INFO,
-				"[ev] markTime LIVE master=%lldms base=%lldms elapsed=%lldms offset=%dms indexedEdge=%lldms",
+				"[ev] markTime LIVE master=%lldms base=%lldms elapsed=%lldms indexedEdge=%lldms",
 				(long long)(m / 1000000),
 				(long long)(core.sessionBaseNs() / 1000000),
 				(long long)(elapsed / 1000000),
-				core.replayOffsetMs(),
 				(long long)(MediaReplay::instance()
 						    .footageDurationNs() /
 					    1000000));
@@ -1350,10 +1344,6 @@ void MultiReplayDock::poll()
 			std::thread([pending]() {
 				auto &eng = MediaReplay::instance();
 				eng.refreshSession();
-				// Auto-calibrate the encoder-startup offset now that
-				// the file is finalized (full duration known).
-				ReplayCore::instance().learnReplayOffset(
-					eng.footageDurationNs());
 				if (eng.followLive())
 					eng.jumpToEnd();
 				pending->store(false);
