@@ -117,6 +117,13 @@ private:
 	MediaReplay &operator=(const MediaReplay &) = delete;
 
 	void monitorLoop();
+	// Create a managed ffmpeg_source with our control flags (hw_decode off,
+	// non-looping, kept open). Add-ref'd, owned by MediaReplay.
+	obs_source_t *createManagedMediaSource(const char *name);
+	// Reveal `dest` (a prepared, already-at-IN source) by cutting/fading the
+	// transition to it and pausing the previously-shown source. fadeMs=0 = cut.
+	// Caller holds mutex_.
+	void revealLocked(obs_source_t *dest, uint32_t fadeMs);
 	// Load `path` into the media source with the given speed (one update),
 	// arming a pending seek to `seekMs` applied once the media is ready.
 	// Caller holds mutex_.
@@ -137,7 +144,16 @@ private:
 	int64_t mediaTimeNs() const; // current media time (ns), 0 if unloaded
 
 	mutable std::mutex mutex_;
-	obs_source_t *mediaSource_ = nullptr; // owned (ref held)
+	// Aux-player A/B: two managed ffmpeg_sources wrapped by a fade transition.
+	// The transition is what the dock preview / output render; it shows the
+	// ACTIVE source, and the plugin pre-buffers the next clip on the inactive
+	// one then cuts/fades to it (no black frame). `mediaSource_` aliases the
+	// ACTIVE source so the existing playback code keeps operating on it; both
+	// children are kept inc_showing so the inactive can decode while pre-buffered.
+	obs_source_t *srcA_ = nullptr;        // owned (ref held)
+	obs_source_t *srcB_ = nullptr;        // owned (ref held)
+	obs_source_t *transition_ = nullptr;  // owned (ref held); wraps A/B
+	obs_source_t *mediaSource_ = nullptr; // alias → active of A/B (not owned)
 
 	std::shared_ptr<SessionIndex> index_;
 	std::atomic<int> angle_{0};           // 0-based camera

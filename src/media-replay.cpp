@@ -53,10 +53,21 @@ void MediaReplay::unload()
 		monitor_.join();
 
 	std::lock_guard<std::mutex> lock(mutex_);
-	if (mediaSource_) {
-		obs_source_dec_showing(mediaSource_);
-		obs_source_release(mediaSource_);
-		mediaSource_ = nullptr;
+	mediaSource_ = nullptr; // alias only
+	if (transition_) {
+		obs_source_dec_showing(transition_);
+		obs_source_release(transition_);
+		transition_ = nullptr;
+	}
+	if (srcA_) {
+		obs_source_dec_showing(srcA_);
+		obs_source_release(srcA_);
+		srcA_ = nullptr;
+	}
+	if (srcB_) {
+		obs_source_dec_showing(srcB_);
+		obs_source_release(srcB_);
+		srcB_ = nullptr;
 	}
 	index_.reset();
 	loadedPath_.clear();
@@ -71,87 +82,86 @@ void MediaReplay::unload()
 // Managed Media Source lifetime
 // ---------------------------------------------------------------------------
 
+void MediaReplay::revealLocked(obs_source_t *dest, uint32_t fadeMs)
+{
+	if (!transition_ || !dest)
+		return;
+	obs_source_t *old = obs_transition_get_active_source(transition_);
+	obs_transition_start(transition_, OBS_TRANSITION_MODE_AUTO, fadeMs, dest);
+	if (old) {
+		// Pause the source we just transitioned away from so it stops
+		// consuming/advancing; it becomes the next pre-buffer target.
+		if (old != dest)
+			obs_source_media_play_pause(old, true);
+		obs_source_release(old);
+	}
+}
+
+obs_source_t *MediaReplay::createManagedMediaSource(const char *name)
+{
+	obs_data_t *s = obs_data_create();
+	obs_data_set_bool(s, "is_local_file", true);
+	obs_data_set_bool(s, "looping", false);
+	obs_data_set_bool(s, "restart_on_activate", false);
+	obs_data_set_bool(s, "close_when_inactive", false);
+	// hw_decode MUST be false: D3D11VA hardware decode accesses the D3D11
+	// device context from ffmpeg's decode thread. On Intel UHD (and any GPU
+	// where the encode pipeline also uses D3D11VA via Quick Sync) this races
+	// with the OBS render thread → GPU TDR (black screen + mouse freeze).
+	obs_data_set_bool(s, "hw_decode", false);
+	obs_data_set_int(s, "speed_percent", 100);
+	obs_source_t *src = obs_source_create("ffmpeg_source", name, s, nullptr);
+	obs_data_release(s);
+	if (!src) {
+		obs_log(LOG_ERROR, "MediaReplay: failed to create '%s'", name);
+		return nullptr;
+	}
+	// Keep it showing for the plugin's lifetime so its decode thread runs even
+	// while it is the inactive (pre-buffered) child of the transition.
+	obs_source_inc_showing(src);
+	return src;
+}
+
 void MediaReplay::ensureSource()
 {
-	// Read config BEFORE locking mutex_: startRecording() holds ReplayCore's
-	// lock while calling clearSession() (which locks mutex_), so acquiring
-	// ReplayCore's lock under mutex_ here would be the opposite order → AB-BA
-	// deadlock.
-	std::string cfgName = ReplayCore::instance().getConfig().replaySourceName;
-
 	std::lock_guard<std::mutex> lock(mutex_);
 
-	// Drop any prior ref (e.g. on scene-collection change the old instance
-	// is being torn down) and (re)adopt the named source for the current
-	// collection, creating it if the operator hasn't added one.
-	if (mediaSource_) {
-		obs_source_dec_showing(mediaSource_);
-		obs_source_release(mediaSource_);
-		mediaSource_ = nullptr;
-	}
-	loadedPath_.clear();
-	pendingLoad_ = false;
-	pendingSeekApplied_ = false;
-	eventActive_ = false;
-	eventOnDone_ = nullptr;
-
-	// Which source to drive: the one the operator picked in Settings (a
-	// Media Source they placed in their output scene), or our own managed
-	// source when nothing is picked.
-	const char *managedName = obs_module_text("ReplaySource.A");
-	std::string targetName = cfgName.empty() ? managedName : cfgName;
-
-	obs_source_t *existing = obs_get_source_by_name(targetName.c_str());
-	if (existing) {
-		// Adopt the operator's source, or our own restored from the
-		// scene collection.
-		mediaSource_ = existing; // get_source_by_name already add-ref'd
-	} else if (cfgName.empty()) {
-		// No explicit pick: create our managed Media Source.
-		obs_data_t *s = obs_data_create();
-		obs_data_set_bool(s, "is_local_file", true);
-		obs_data_set_bool(s, "looping", false);
-		obs_data_set_bool(s, "restart_on_activate", false);
-		obs_data_set_bool(s, "close_when_inactive", false);
-		// hw_decode MUST be false: D3D11VA hardware decode accesses the D3D11
-		// device context from ffmpeg's decode thread. On Intel UHD (and any GPU
-		// where the encode pipeline also uses D3D11VA via Quick Sync) this races
-		// with the OBS render thread → GPU TDR (black screen + mouse freeze).
-		// Software decode uploads frames only via obs_enter_graphics(), which is
-		// serialised with the render thread, so no contention occurs.
-		obs_data_set_bool(s, "hw_decode", false);
-		obs_data_set_int(s, "speed_percent", 100);
-		mediaSource_ = obs_source_create("ffmpeg_source", managedName, s,
-						 nullptr);
-		obs_data_release(s);
-		if (!mediaSource_)
+	// Aux-player: create the two managed media sources + the fade transition
+	// once, then keep them for the plugin's lifetime. The transition is what
+	// the dock preview (and, later, the output scene) renders.
+	if (!srcA_)
+		srcA_ = createManagedMediaSource(obs_module_text("ReplaySource.A"));
+	if (!srcB_)
+		srcB_ = createManagedMediaSource("MultiReplay — Replay B");
+	if (!transition_) {
+		transition_ = obs_source_create("fade_transition",
+						"MultiReplay — Replay",
+						nullptr, nullptr);
+		if (transition_) {
+			struct obs_video_info ovi;
+			uint32_t cx = 1920, cy = 1080;
+			if (obs_get_video_info(&ovi)) {
+				cx = ovi.base_width;
+				cy = ovi.base_height;
+			}
+			obs_transition_set_size(transition_, cx, cy);
+			obs_transition_set_alignment(transition_,
+						     OBS_ALIGN_CENTER);
+			obs_transition_set_scale_type(transition_,
+						      OBS_TRANSITION_SCALE_ASPECT);
+			obs_source_inc_showing(transition_);
+			if (srcA_)
+				obs_transition_set(transition_, srcA_);
+		} else {
 			obs_log(LOG_ERROR,
-				"MediaReplay: failed to create ffmpeg_source");
-	} else {
-		// Picked source not present yet (scene still loading) — retry on
-		// the next ensureSource()/settings change.
-		obs_log(LOG_INFO,
-			"MediaReplay: replay source '%s' not found yet",
-			cfgName.c_str());
+				"MediaReplay: failed to create fade_transition");
+		}
 	}
-
-	// Apply our control flags without disturbing any loaded file.
-	// hw_decode=false also applied here for adopted (user-picked) sources.
-	if (mediaSource_) {
-		obs_data_t *s = obs_source_get_settings(mediaSource_);
-		obs_data_set_bool(s, "looping", false);
-		obs_data_set_bool(s, "restart_on_activate", false);
-		obs_data_set_bool(s, "close_when_inactive", false);
-		obs_data_set_bool(s, "hw_decode", false);
-		obs_source_update(mediaSource_, s);
-		obs_data_release(s);
-
-		// CRITICAL: keep the source "showing" for the plugin's lifetime.
-		// A Media Source only opens its file and runs its decode thread
-		// while active; without this it never reports a duration, the
-		// pending seek never applies and nothing plays / no preview.
-		obs_source_inc_showing(mediaSource_);
-	}
+	// Active source = A on first init; existing playback code operates on
+	// mediaSource_ (a non-owning alias). Don't reset it on re-entry (e.g. a
+	// scene-collection change mid-replay).
+	if (!mediaSource_)
+		mediaSource_ = srcA_;
 }
 
 obs_source_t *MediaReplay::acquireSource()
@@ -159,10 +169,13 @@ obs_source_t *MediaReplay::acquireSource()
 	// MUST NOT block: called on the OBS render/graphics thread (draw callback).
 	// If monitorLoop holds mutex_, skip this frame rather than stall the GPU
 	// thread — a 2-second stall triggers Intel UHD TDR (black screen + mouse
-	// freeze).
+	// freeze). Returns the TRANSITION (it renders the active A/B child + fades).
 	if (!mutex_.try_lock())
 		return nullptr;
-	obs_source_t *s = mediaSource_ ? obs_source_get_ref(mediaSource_) : nullptr;
+	obs_source_t *s = transition_ ? obs_source_get_ref(transition_)
+				      : (mediaSource_ ? obs_source_get_ref(
+							  mediaSource_)
+						      : nullptr);
 	mutex_.unlock();
 	return s;
 }
@@ -217,14 +230,17 @@ void MediaReplay::clearSession()
 	eventActive_ = false;
 	eventOnDone_ = nullptr;
 	followLive_ = false;
-	// Blank the media source so no stale footage shows: pause, then clear its
+	// Blank BOTH A/B sources so no stale footage shows: pause, then clear the
 	// input. Used at REC start (startRecording) and on New Project, so a fresh
 	// project opens with an empty preview instead of the previous take's frame.
-	if (mediaSource_) {
-		obs_source_media_play_pause(mediaSource_, true);
-		obs_data_t *s = obs_source_get_settings(mediaSource_);
+	obs_source_t *both[2] = {srcA_, srcB_};
+	for (obs_source_t *src : both) {
+		if (!src)
+			continue;
+		obs_source_media_play_pause(src, true);
+		obs_data_t *s = obs_source_get_settings(src);
 		obs_data_set_string(s, "local_file", "");
-		obs_source_update(mediaSource_, s);
+		obs_source_update(src, s);
 		obs_data_release(s);
 	}
 }
@@ -449,10 +465,17 @@ bool MediaReplay::playEvent(int64_t tInNs, int64_t tOutNs, int angle0,
 	eventOnDone_ = std::move(onDone);
 
 	int spPct = clampSpeedPct(speed);
-	// Prefer a seamless soft-seek (no black) when the same finalized file is
-	// already open; otherwise do a full reopen.
-	if (!armEventSoftSeekLocked(tInNs, spPct) &&
-	    !armEventReopenLocked(tInNs, spPct)) {
+
+	// Aux-player: prepare the clip on the INACTIVE (hidden) source. The reopen
+	// + seek-confirm runs out of sight (the transition still shows the other
+	// source), so the from-0 flash and the few-seconds reopen are invisible;
+	// once the prepared source is seek-confirmed at the IN point the monitor
+	// cuts the transition to it (no black, correct speed). Always reopen on the
+	// inactive source — soft-seek would target the wrong source's cached file.
+	if (srcA_ && srcB_)
+		mediaSource_ = (mediaSource_ == srcA_) ? srcB_ : srcA_;
+
+	if (!armEventReopenLocked(tInNs, spPct)) {
 		// Unresolvable (footage not indexed): abort without invoking onDone.
 		eventActive_ = false;
 		eventOnDone_ = nullptr;
@@ -689,6 +712,9 @@ void MediaReplay::monitorLoop()
 						(long long)pendingSeekMs_,
 						(long long)(eventDurationNs_ /
 							     1000000));
+					// Reveal the prepared (hidden) source now
+					// that it is playing at IN → seamless cut.
+					revealLocked(src, 0);
 					eventPlayStartWall_ =
 						std::chrono::steady_clock::now();
 					eventPlayStarted_ = true;
