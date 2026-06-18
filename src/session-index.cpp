@@ -5,6 +5,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
 */
 
 #include "session-index.hpp"
+#include "timeline-math.hpp"
 
 // obs-module.h must come before plugin-support.h (MSVC blogva linkage).
 #include <obs-module.h>
@@ -320,29 +321,20 @@ bool SessionIndex::resolve(int camIndex, int64_t masterNs,
 	if (!track.valid)
 		return false;
 
-	// seg.localStartNs now carries the ABSOLUTE master-timeline position
-	// (baseNs + camera-start jitter embedded). No startOffsetNs subtraction.
-	int64_t localNs = masterNs;
-	if (localNs < 0)
-		localNs = 0;
-	if (track.totalDurationNs > 0 && localNs >= track.totalDurationNs)
-		localNs = track.totalDurationNs - 1;
+	// seg.localStartNs carries the ABSOLUTE master-timeline position. Map via
+	// the shared pure helper (also unit-tested) → segment index + offset.
+	std::vector<SegmentSpan> spans;
+	spans.reserve(track.segments.size());
+	for (const auto &seg : track.segments)
+		spans.push_back({seg.localStartNs, seg.durationNs});
 
-	for (const auto &seg : track.segments) {
-		if (localNs < seg.localStartNs) {
-			// masterNs is before this segment (gap between sessions
-			// or before the camera's first frame): clamp to start.
-			pathOut = seg.path;
-			offsetNsOut = 0;
-			return true;
-		}
-		if (localNs < seg.localStartNs + seg.durationNs) {
-			pathOut = seg.path;
-			offsetNsOut = localNs - seg.localStartNs;
-			return true;
-		}
-	}
-	return false;
+	size_t idx = 0;
+	int64_t off = 0;
+	if (!resolveSpan(spans, masterNs, track.totalDurationNs, idx, off))
+		return false;
+	pathOut = track.segments[idx].path;
+	offsetNsOut = off;
+	return true;
 }
 
 bool SessionIndex::cameraValid(int camIndex) const

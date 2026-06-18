@@ -76,3 +76,14 @@ target_sources(
 )
 
 set_target_properties_plugin(${CMAKE_PROJECT_NAME} PROPERTIES OUTPUT_NAME ${_name})
+
+# --- Unit smoke tests (pure timeline math, no OBS/FFmpeg deps) ---------------
+# Standalone exe; run with `ctest` from the build dir. Builds with the project.
+option(ENABLE_TESTS "Build obs-multireplay unit tests" ON)
+if(ENABLE_TESTS)
+  enable_testing()
+  add_executable(obs-multireplay-tests tests/timeline_math_test.cpp)
+  target_include_directories(obs-multireplay-tests PRIVATE src)
+  target_compile_features(obs-multireplay-tests PRIVATE cxx_std_20)
+  add_test(NAME timeline_math COMMAND obs-multireplay-tests)
+endif()

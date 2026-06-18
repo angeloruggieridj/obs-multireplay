@@ -1115,7 +1115,7 @@ int64_t MultiReplayDock::markTimeNs() const
 					  core.sessionMonoStartNs();
 			int64_t m = std::max<int64_t>(
 				0, core.sessionBaseNs() + elapsed);
-			obs_log(LOG_INFO,
+			MR_DLOG(
 				"[ev] markTime LIVE master=%lldms base=%lldms elapsed=%lldms indexedEdge=%lldms",
 				(long long)(m / 1000000),
 				(long long)(core.sessionBaseNs() / 1000000),

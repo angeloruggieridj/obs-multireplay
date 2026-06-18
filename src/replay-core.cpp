@@ -15,11 +15,21 @@ SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
 #include <cctype>
+#include <cstdlib>
 #include <ctime>
 #include <filesystem>
 #include <system_error>
 
 namespace multireplay {
+
+bool debugLoggingEnabled()
+{
+	static const bool enabled = []() {
+		const char *v = getenv("OBS_MULTIREPLAY_DEBUG");
+		return v && *v && *v != '0';
+	}();
+	return enabled;
+}
 
 namespace {
 

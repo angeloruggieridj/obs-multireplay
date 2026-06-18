@@ -6,6 +6,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "media-replay.hpp"
 #include "replay-core.hpp"
+#include "timeline-math.hpp"
 
 // obs-module.h must come before plugin-support.h (MSVC linkage).
 #include <obs-module.h>
@@ -542,7 +543,7 @@ bool MediaReplay::playEvent(int64_t tInNs, int64_t tOutNs, int angle0,
 		eventOutNs_ = -1;
 		return false;
 	}
-	obs_log(LOG_INFO, "[ev] playEvent IN=%lldms OUT=%lldms dur=%lldms angle=%d",
+	MR_DLOG( "[ev] playEvent IN=%lldms OUT=%lldms dur=%lldms angle=%d",
 		(long long)(tInNs / 1000000), (long long)(tOutNs / 1000000),
 		(long long)((tOutNs - tInNs) / 1000000), angle_.load());
 	return true;
@@ -588,7 +589,7 @@ bool MediaReplay::armEventSoftSeekLocked(int64_t tInNs, int speedPct)
 	pendingPlay_ = true;
 	pendingSeekApplied_ = true;
 	pendingLoad_ = false;
-	obs_log(LOG_INFO, "[ev] soft-seek IN file off=%lldms dur=%lldms",
+	MR_DLOG( "[ev] soft-seek IN file off=%lldms dur=%lldms",
 		(long long)(off / 1000000), (long long)durMs);
 	wake_.notify_all();
 	return true;
@@ -756,17 +757,11 @@ void MediaReplay::monitorLoop()
 					// event to ~1 s — "stops after a few seconds").
 					int64_t landedMs =
 						obs_source_media_get_time(src);
-					if (landedMs > 0 && landedMs <= pendingSeekMs_ &&
-					    (pendingSeekMs_ - landedMs) < 3000LL) {
-						int64_t masterActual =
-							segBaseNs_ +
-							landedMs * 1000000LL;
-						if (eventOutNs_ > masterActual)
-							eventDurationNs_ =
-								eventOutNs_ -
-								masterActual;
-					}
-					obs_log(LOG_INFO,
+					eventDurationNs_ = recalcEventDurationNs(
+						eventOutNs_, segBaseNs_,
+						pendingSeekMs_, landedMs,
+						eventDurationNs_);
+					MR_DLOG(
 						"[ev] play START (load) landedMs=%lld reqMs=%lld dur=%lldms",
 						(long long)landedMs,
 						(long long)pendingSeekMs_,
@@ -835,7 +830,7 @@ void MediaReplay::monitorLoop()
 					}
 					// Always arm the wall-clock timer even
 					// when get_time() returned stale 0.
-					obs_log(LOG_INFO,
+					MR_DLOG(
 						"[ev] play START (fast) landedMs=%lld reqMs=%lld segBase=%lldms dur=%lldms",
 						(long long)landedMs,
 						(long long)pendingSeekMs_,
@@ -871,7 +866,7 @@ void MediaReplay::monitorLoop()
 				int64_t mediaNs =
 					realNs * (int64_t)speedPct_.load() / 100LL;
 				if (mediaNs >= eventDurationNs_) {
-					obs_log(LOG_INFO,
+					MR_DLOG(
 						"[ev] OUT reached: mediaNs=%lldms dur=%lldms",
 						(long long)(mediaNs / 1000000),
 						(long long)(eventDurationNs_ /
@@ -893,7 +888,7 @@ void MediaReplay::monitorLoop()
 							    nextMaster, path,
 							    off) &&
 					    path != loadedPath_) {
-						obs_log(LOG_INFO,
+						MR_DLOG(
 							"[ev] EOF chain: durMs=%lld nextMaster=%lldms off=%lldms",
 							(long long)durMs,
 							(long long)(nextMaster /
@@ -906,7 +901,7 @@ void MediaReplay::monitorLoop()
 							       off / 1000000LL,
 							       true);
 					} else {
-						obs_log(LOG_INFO,
+						MR_DLOG(
 							"[ev] EOF stop (no chain): durMs=%lld nextMaster=%lldms outNs=%lldms",
 							(long long)durMs,
 							(long long)(nextMaster /
@@ -921,7 +916,7 @@ void MediaReplay::monitorLoop()
 					}
 				}
 			} else if (ended) {
-				obs_log(LOG_INFO,
+				MR_DLOG(
 					"[ev] ended before play start (durMs=%lld)",
 					(long long)durMs);
 				fireDone = std::move(eventOnDone_);

@@ -5,6 +5,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
 */
 
 #include "event-store.hpp"
+#include "replay-core.hpp" // MR_DLOG
 
 // obs-module.h must come before plugin-support.h (MSVC blogva linkage).
 #include <obs-module.h>
@@ -73,7 +74,7 @@ bool EventStore::markOut(int64_t tNs)
 	for (auto it = events_.rbegin(); it != events_.rend(); ++it) {
 		if (it->list == selectedList_ && it->tOutNs < 0) {
 			it->tOutNs = std::max(it->tInNs + 1, tNs);
-			obs_log(LOG_INFO,
+			MR_DLOG(
 				"[ev] markOut id=%d IN=%lldms OUT=%lldms dur=%lldms",
 				it->id, (long long)(it->tInNs / 1000000),
 				(long long)(it->tOutNs / 1000000),

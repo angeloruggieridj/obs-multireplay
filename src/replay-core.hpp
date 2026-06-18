@@ -25,6 +25,16 @@ GNU General Public License for more details.
 
 namespace multireplay {
 
+// Verbose [ev]/[live] tracing is gated behind the env var OBS_MULTIREPLAY_DEBUG
+// (set to anything but empty/"0"). Off by default → no per-event log spam in
+// production. Use MR_DLOG(...) exactly like obs_log's format args.
+bool debugLoggingEnabled();
+#define MR_DLOG(...)                                       \
+	do {                                               \
+		if (::multireplay::debugLoggingEnabled())  \
+			obs_log(LOG_INFO, __VA_ARGS__);    \
+	} while (0)
+
 constexpr int kMaxCameras = 8; // M5: full reference parity (was 4 in v1)
 constexpr int kDefaultPort = 8456;
 constexpr int kDefaultSplitMinutes = 20;
