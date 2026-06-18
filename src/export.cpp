@@ -237,8 +237,21 @@ bool ExportManager::runJob(Job &job)
 			job.detail = "out of memory";
 			break;
 		}
-		std::vector<int64_t> firstDts((size_t)in->nb_streams,
-					      AV_NOPTS_VALUE);
+		// Frame-accurate start without re-encoding: baseline timestamps at
+		// the IN point (not the preceding keyframe). Frames between the
+		// keyframe and IN keep NEGATIVE pts; the MP4 muxer writes an edit
+		// list that trims them, so playback begins exactly at IN (same trick
+		// as `ffmpeg -ss <t> -c copy`). Per-stream baseline in the stream's
+		// own time_base.
+		std::vector<int64_t> inBase((size_t)in->nb_streams, 0);
+		for (unsigned i = 0; i < in->nb_streams; i++) {
+			int64_t stt = in->streams[i]->start_time != AV_NOPTS_VALUE
+					      ? in->streams[i]->start_time
+					      : 0;
+			inBase[i] = av_rescale_q(inOffsetNs, nsTb,
+						 in->streams[i]->time_base) +
+				    stt;
+		}
 		ok = true;
 		while (av_read_frame(in, pkt) >= 0) {
 			int sIdx = pkt->stream_index;
@@ -256,19 +269,13 @@ bool ExportManager::runJob(Job &job)
 				av_packet_unref(pkt);
 				break;
 			}
-			if (firstDts[(size_t)sIdx] == AV_NOPTS_VALUE)
-				firstDts[(size_t)sIdx] = pkt->dts;
 
 			AVStream *ost =
 				out->streams[streamMap[(size_t)sIdx]];
-			pkt->pts = av_rescale_q(pkt->pts -
-							firstDts[(size_t)sIdx],
-						ist->time_base,
-						ost->time_base);
-			pkt->dts = av_rescale_q(pkt->dts -
-							firstDts[(size_t)sIdx],
-						ist->time_base,
-						ost->time_base);
+			pkt->pts = av_rescale_q(pkt->pts - inBase[(size_t)sIdx],
+						ist->time_base, ost->time_base);
+			pkt->dts = av_rescale_q(pkt->dts - inBase[(size_t)sIdx],
+						ist->time_base, ost->time_base);
 			pkt->duration = av_rescale_q(pkt->duration,
 						     ist->time_base,
 						     ost->time_base);

@@ -18,6 +18,7 @@ GNU General Public License for more details.
 #include <obs-module.h>
 
 #include <array>
+#include <atomic>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -94,6 +95,11 @@ public:
 	// Cumulative footage ns at the START of the current session (0 if first).
 	// Add to live elapsed time to get a cumulative master-timeline position.
 	int64_t sessionBaseNs() const { return sessionBaseNs_; }
+	// Auto-measured encoder-startup latency (ns): time from camera arm to the
+	// first recording file appearing on disk (≈ first encoded frame). The
+	// recording lags the wall clock by this, so live event marks subtract it to
+	// land on the frame the operator actually saw. 0 until measured (~1-2 s in).
+	int64_t frameLagNs() const { return frameLagNs_.load(); }
 
 	// the reference controller "Delete All": wipe recordings + events in the session folder,
 	// keep all settings. Refuses while recording.
@@ -149,6 +155,8 @@ private:
 	mutable std::mutex mutex_;
 	Config config_;
 	bool recording_ = false;
+	// Set by a background detector started in startRecording() (see frameLagNs).
+	std::atomic<int64_t> frameLagNs_{0};
 	// Wall-clock Unix time (seconds) of the last startRecording() call.
 	// Written into session.json so SessionIndex can filter out stale segment
 	// files from previous recording sessions that share the same folder.

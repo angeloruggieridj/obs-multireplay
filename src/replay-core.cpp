@@ -15,10 +15,13 @@ SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cstdlib>
 #include <ctime>
 #include <filesystem>
+#include <set>
 #include <system_error>
+#include <thread>
 
 namespace multireplay {
 
@@ -264,7 +267,20 @@ bool ReplayCore::startRecording(std::string &errorOut)
 	}
 
 	std::error_code ec;
-	std::filesystem::create_directories(recordingFolderLocked(), ec);
+	std::string recFolder = recordingFolderLocked();
+	std::filesystem::create_directories(recFolder, ec);
+
+	// Snapshot the recording-file set BEFORE arming so the latency detector can
+	// spot the first NEW cam file that appears once encoding starts.
+	frameLagNs_.store(0);
+	std::set<std::string> preFiles;
+	for (const auto &e : std::filesystem::directory_iterator(recFolder, ec)) {
+		if (e.is_regular_file(ec)) {
+			std::string n = e.path().filename().string();
+			if (n.rfind("cam", 0) == 0)
+				preFiles.insert(n);
+		}
+	}
 
 	// Capture the monotonic clock BEFORE arming any camera so live-mode
 	// markers during recording get timestamps coherent with the master
@@ -325,6 +341,42 @@ bool ReplayCore::startRecording(std::string &errorOut)
 	}
 
 	recording_ = true;
+
+	// Auto-measure the encoder-startup latency: poll for the first NEW cam file
+	// (≈ first encoded frame) and record how long after the arm it appeared.
+	// Live event marks subtract this so the replay lands on the marked moment.
+	{
+		int64_t armNs = sessionMonoStartNs_;
+		std::thread([recFolder, armNs, preFiles]() {
+			for (int i = 0; i < 160; i++) { // ~8s @ 50ms
+				std::this_thread::sleep_for(
+					std::chrono::milliseconds(50));
+				std::error_code lec;
+				for (const auto &e :
+				     std::filesystem::directory_iterator(
+					     recFolder, lec)) {
+					if (!e.is_regular_file(lec))
+						continue;
+					std::string n =
+						e.path().filename().string();
+					if (n.rfind("cam", 0) != 0 ||
+					    preFiles.count(n))
+						continue;
+					int64_t lag =
+						(int64_t)os_gettime_ns() - armNs;
+					lag = std::clamp<int64_t>(lag, 0,
+								  2000000000LL);
+					ReplayCore::instance().frameLagNs_.store(
+						lag);
+					obs_log(LOG_INFO,
+						"replay frame-lag measured: %lld ms",
+						(long long)(lag / 1000000));
+					return;
+				}
+			}
+		}).detach();
+	}
+
 	// Record wall-clock start time so SessionIndex can filter segment files
 	// from previous recording sessions that share the same folder.
 	sessionWallStartSec_ = (int64_t)::time(nullptr);

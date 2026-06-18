@@ -1113,13 +1113,18 @@ int64_t MultiReplayDock::markTimeNs() const
 			// from previous sessions = absolute master-timeline now.
 			int64_t elapsed = (int64_t)os_gettime_ns() -
 					  core.sessionMonoStartNs();
+			// Subtract the auto-measured encoder-startup lag: the file
+			// lags the wall clock by this, so the frame the operator
+			// saw live sits this far earlier in the recording.
 			int64_t m = std::max<int64_t>(
-				0, core.sessionBaseNs() + elapsed);
+				0, core.sessionBaseNs() + elapsed -
+					   core.frameLagNs());
 			MR_DLOG(
-				"[ev] markTime LIVE master=%lldms base=%lldms elapsed=%lldms indexedEdge=%lldms",
+				"[ev] markTime LIVE master=%lldms base=%lldms elapsed=%lldms lag=%lldms indexedEdge=%lldms",
 				(long long)(m / 1000000),
 				(long long)(core.sessionBaseNs() / 1000000),
 				(long long)(elapsed / 1000000),
+				(long long)(core.frameLagNs() / 1000000),
 				(long long)(MediaReplay::instance()
 						    .footageDurationNs() /
 					    1000000));
