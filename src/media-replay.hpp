@@ -88,6 +88,9 @@ public:
 
 	// --- Preview / export helpers ---
 	obs_source_t *acquireSource(); // add-ref'd, caller releases (nullptr ok)
+	// True when a clip is loaded in the replay source (so the dock preview
+	// should render it). False after clearSession/New Project → blank preview.
+	bool previewHasContent() const;
 	bool resolveTime(int camIndex, int64_t masterNs, std::string &pathOut,
 			 int64_t &offsetNsOut) const;
 
@@ -125,6 +128,12 @@ private:
 	// the event fields (eventActive_/eventOutNs_/eventOnDone_). False if the
 	// position can't be resolved.
 	bool armEventReopenLocked(int64_t tInNs, int speedPct);
+	// Try to start the event with a plain seek (no local_file clear → no black
+	// frame between clips) when the already-open file is the same and finalized
+	// (its known duration covers the OUT). Returns false if a real open is
+	// needed (different file, or still-growing file whose cached duration is
+	// too short); the caller then falls back to armEventReopenLocked.
+	bool armEventSoftSeekLocked(int64_t tInNs, int speedPct);
 	int64_t mediaTimeNs() const; // current media time (ns), 0 if unloaded
 
 	mutable std::mutex mutex_;
@@ -132,7 +141,8 @@ private:
 
 	std::shared_ptr<SessionIndex> index_;
 	std::atomic<int> angle_{0};           // 0-based camera
-	std::atomic<int> speedPct_{100};      // 5..100
+	std::atomic<int> speedPct_{100};      // 5..100 (resolved/default)
+	int appliedSpeedPct_ = 100;           // speed_percent currently on the source
 	std::atomic<bool> followLive_{true};
 
 	// Currently loaded segment: master ns at media time 0, and its path.

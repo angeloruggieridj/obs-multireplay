@@ -217,16 +217,28 @@ void MediaReplay::clearSession()
 	eventActive_ = false;
 	eventOnDone_ = nullptr;
 	followLive_ = false;
-	// Pause the media source so old footage stops showing while a new
-	// recording is in progress (startRecording calls clearSession).
-	if (mediaSource_)
+	// Blank the media source so no stale footage shows: pause, then clear its
+	// input. Used at REC start (startRecording) and on New Project, so a fresh
+	// project opens with an empty preview instead of the previous take's frame.
+	if (mediaSource_) {
 		obs_source_media_play_pause(mediaSource_, true);
+		obs_data_t *s = obs_source_get_settings(mediaSource_);
+		obs_data_set_string(s, "local_file", "");
+		obs_source_update(mediaSource_, s);
+		obs_data_release(s);
+	}
 }
 
 bool MediaReplay::sessionLoaded() const
 {
 	std::lock_guard<std::mutex> lock(mutex_);
 	return (bool)index_;
+}
+
+bool MediaReplay::previewHasContent() const
+{
+	std::lock_guard<std::mutex> lock(mutex_);
+	return !loadedPath_.empty();
 }
 
 int64_t MediaReplay::footageDurationNs() const
@@ -264,6 +276,7 @@ void MediaReplay::loadFileLocked(const std::string &path, int speedPct,
 	pendingReopenGap_ = 0;
 	pendingReopenPath_.clear();
 	speedPct_ = speedPct;
+	appliedSpeedPct_ = speedPct; // speed now baked into the (re)opened source
 	obs_data_t *s = obs_source_get_settings(mediaSource_);
 	obs_data_set_bool(s, "is_local_file", true);
 	obs_data_set_string(s, "local_file", path.c_str());
@@ -435,7 +448,11 @@ bool MediaReplay::playEvent(int64_t tInNs, int64_t tOutNs, int angle0,
 	eventDurationNs_ = tOutNs - tInNs;
 	eventOnDone_ = std::move(onDone);
 
-	if (!armEventReopenLocked(tInNs, clampSpeedPct(speed))) {
+	int spPct = clampSpeedPct(speed);
+	// Prefer a seamless soft-seek (no black) when the same finalized file is
+	// already open; otherwise do a full reopen.
+	if (!armEventSoftSeekLocked(tInNs, spPct) &&
+	    !armEventReopenLocked(tInNs, spPct)) {
 		// Unresolvable (footage not indexed): abort without invoking onDone.
 		eventActive_ = false;
 		eventOnDone_ = nullptr;
@@ -445,6 +462,52 @@ bool MediaReplay::playEvent(int64_t tInNs, int64_t tOutNs, int angle0,
 	obs_log(LOG_INFO, "[ev] playEvent IN=%lldms OUT=%lldms dur=%lldms angle=%d",
 		(long long)(tInNs / 1000000), (long long)(tOutNs / 1000000),
 		(long long)((tOutNs - tInNs) / 1000000), angle_.load());
+	return true;
+}
+
+bool MediaReplay::armEventSoftSeekLocked(int64_t tInNs, int speedPct)
+{
+	if (!index_ || !mediaSource_ || loadedPath_.empty() || pendingLoad_ ||
+	    pendingSeekApplied_)
+		return false;
+	std::string path;
+	int64_t off = 0;
+	if (!index_->resolve(angle_.load(), tInNs, path, off))
+		return false;
+	if (path != loadedPath_)
+		return false; // different file → needs a real open
+
+	enum obs_media_state st = obs_source_media_get_state(mediaSource_);
+	if (st != OBS_MEDIA_STATE_PLAYING && st != OBS_MEDIA_STATE_PAUSED)
+		return false;
+
+	// A speed change can't be soft: updating speed_percent restarts
+	// ffmpeg_source from 0, racing the seek (clip landed at 0 / wrong speed).
+	// Only soft-seek when the speed is unchanged; otherwise return false so the
+	// caller reopens (loadFileLocked bakes the speed in and seeks reliably).
+	if (speedPct != appliedSpeedPct_)
+		return false;
+
+	// Only seek-in-place if the open file already covers the OUT offset. While
+	// recording the cached duration is stale (small) → fall back to a reopen.
+	int64_t outOffMs = (off + (eventOutNs_ - tInNs)) / 1000000LL;
+	int64_t durMs = obs_source_media_get_duration(mediaSource_);
+	if (durMs <= 0 || durMs < outOffMs)
+		return false;
+
+	speedPct_ = speedPct;
+	eventPlayStarted_ = false;
+	seekWaitCycles_ = 0;
+	segBaseNs_ = tInNs - off;
+	obs_source_media_play_pause(mediaSource_, true);
+	obs_source_media_set_time(mediaSource_, off / 1000000LL);
+	pendingSeekMs_ = off / 1000000LL;
+	pendingPlay_ = true;
+	pendingSeekApplied_ = true;
+	pendingLoad_ = false;
+	obs_log(LOG_INFO, "[ev] soft-seek IN file off=%lldms dur=%lldms",
+		(long long)(off / 1000000), (long long)durMs);
+	wake_.notify_all();
 	return true;
 }
 

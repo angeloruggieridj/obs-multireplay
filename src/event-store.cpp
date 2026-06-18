@@ -216,6 +216,23 @@ bool EventStore::setSpeed(int id, double speed)
 	return false;
 }
 
+bool EventStore::setAngleSpeed(int id, int angle1Based, double speed)
+{
+	std::lock_guard<std::mutex> lock(mutex_);
+	if (angle1Based < 1 || angle1Based > kEventAngles)
+		return false;
+	for (auto &ev : events_) {
+		if (ev.id == id) {
+			ev.angles[angle1Based - 1].speed =
+				speed < 0 ? -1.0
+					  : std::clamp(speed, 0.01, 1.0);
+			save();
+			return true;
+		}
+	}
+	return false;
+}
+
 bool EventStore::movePoint(int id, bool inPoint, int64_t deltaNs)
 {
 	std::lock_guard<std::mutex> lock(mutex_);
@@ -316,6 +333,7 @@ std::string EventStore::listJson(int list) const
 			obs_data_t *ad = obs_data_create();
 			obs_data_set_bool(ad, "enabled", a.enabled);
 			obs_data_set_string(ad, "note", a.note.c_str());
+			obs_data_set_double(ad, "speed", a.speed);
 			obs_data_array_push_back(angles, ad);
 			obs_data_release(ad);
 		}
@@ -388,6 +406,7 @@ void EventStore::save() const
 			obs_data_t *ad = obs_data_create();
 			obs_data_set_bool(ad, "enabled", a.enabled);
 			obs_data_set_string(ad, "note", a.note.c_str());
+			obs_data_set_double(ad, "speed", a.speed);
 			obs_data_array_push_back(angles, ad);
 			obs_data_release(ad);
 		}
@@ -445,6 +464,12 @@ void EventStore::load()
 					ev.angles[j].note =
 						obs_data_get_string(ad,
 								    "note");
+					ev.angles[j].speed =
+						obs_data_has_user_value(ad,
+									"speed")
+							? obs_data_get_double(
+								  ad, "speed")
+							: -1.0;
 					obs_data_release(ad);
 				}
 				obs_data_array_release(angles);

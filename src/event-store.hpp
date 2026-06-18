@@ -29,6 +29,7 @@ struct ReplayEvent {
 	struct Angle {
 		bool enabled = false;
 		std::string note;
+		double speed = -1.0; // -1 = inherit event/default speed, else 0..1
 	};
 	std::array<Angle, kEventAngles> angles;
 	std::string createdMode; // "live" | "recorded"
@@ -68,7 +69,9 @@ public:
 	// independent of which cameras are enabled and survives toggling them.
 	bool setDescription(int id, const std::string &note);
 	std::string description(int id) const; // first non-empty angle note
-	bool setSpeed(int id, double speed); // <0 = "--"
+	bool setSpeed(int id, double speed); // event default; <0 = "--"
+	// Per-angle speed override; <0 = inherit the event/default speed.
+	bool setAngleSpeed(int id, int angle1Based, double speed);
 	bool movePoint(int id, bool inPoint, int64_t deltaNs);
 	bool moveToList(int id, int list);
 	int duplicate(int id); // copy gets a new id (the reference controller behaviour)

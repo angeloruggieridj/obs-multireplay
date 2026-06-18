@@ -12,6 +12,8 @@ SPDX-License-Identifier: GPL-2.0-or-later
 #include <obs-module.h>
 #include <obs-frontend-api.h>
 
+#include <algorithm>
+
 namespace multireplay {
 
 namespace {
@@ -56,36 +58,36 @@ PlaybackCoordinator &PlaybackCoordinator::instance()
 }
 
 bool PlaybackCoordinator::playEvents(const std::vector<int> &eventIds,
-				     bool toOutput, std::string &errorOut)
+				     int angle0, bool toOutput,
+				     std::string &errorOut)
 {
 	std::lock_guard<std::mutex> lock(mutex_);
 
-	// Expand into one item per enabled angle (the reference controller plays every checked
-	// angle in sequence) and resolve the "--" speed inheritance chain.
+	// One item per selected event, all on the given angle (the dock's current
+	// angle). Speed = that angle's per-angle override if set, else the default
+	// (slider) speed. There is no event-level speed.
+	int ang = std::clamp(angle0, 0, kEventAngles - 1);
+	double def = MediaReplay::instance().speed();
 	std::vector<QueueItem> items;
-	double inherited = -1.0;
-	double fallback = MediaReplay::instance().speed();
 	for (int id : eventIds) {
 		ReplayEvent ev;
 		if (!EventStore::instance().get(id, ev) || ev.tOutNs < 0)
 			continue;
-		double speed = ev.speed >= 0
-				       ? ev.speed
-				       : (inherited >= 0 ? inherited
-							 : fallback);
-		if (ev.speed >= 0)
-			inherited = ev.speed;
-		bool anyAngle = false;
-		for (int a = 0; a < kEventAngles; a++) {
-			if (ev.angles[a].enabled) {
-				items.push_back({ev.id, ev.tInNs, ev.tOutNs,
-						 a, speed});
-				anyAngle = true;
+		// Never play a DISABLED angle: if the requested angle isn't enabled
+		// for this event, use its first enabled angle. (If none are enabled,
+		// fall back to the requested one.)
+		int useAng = ang;
+		if (!ev.angles[ang].enabled) {
+			for (int a = 0; a < kEventAngles; a++) {
+				if (ev.angles[a].enabled) {
+					useAng = a;
+					break;
+				}
 			}
 		}
-		if (!anyAngle)
-			items.push_back({ev.id, ev.tInNs, ev.tOutNs, 0,
-					 speed});
+		double sp = ev.angles[useAng].speed >= 0 ? ev.angles[useAng].speed
+							 : def;
+		items.push_back({ev.id, ev.tInNs, ev.tOutNs, useAng, sp});
 	}
 	if (items.empty()) {
 		errorOut = "no playable (completed) events selected";
@@ -113,14 +115,15 @@ bool PlaybackCoordinator::playEvents(const std::vector<int> &eventIds,
 	return true;
 }
 
-bool PlaybackCoordinator::playLastEvent(bool toOutput, std::string &errorOut)
+bool PlaybackCoordinator::playLastEvent(int angle0, bool toOutput,
+				       std::string &errorOut)
 {
 	int id = EventStore::instance().lastEventId();
 	if (id == 0) {
 		errorOut = "no completed events yet";
 		return false;
 	}
-	return playEvents({id}, toOutput, errorOut);
+	return playEvents({id}, angle0, toOutput, errorOut);
 }
 
 void PlaybackCoordinator::stopEvents()

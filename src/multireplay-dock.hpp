@@ -103,7 +103,8 @@ private:
 	void refreshAngles();    // update angle button labels from camera displayName
 	void onEventItemChanged(QTableWidgetItem *item); // edit commit
 	QWidget *makeCameraCell(int id, const bool *enabled,
-				const std::string *notes); // 1..8 toggles
+				const std::string *notes,
+				const double *speeds); // 1..8 toggles
 	void openSettings();        // configuration dialog
 	void newProjectDialog();    // New Project... menu action
 	void openProjectDialog();   // Open Project... menu action
@@ -112,6 +113,9 @@ private:
 	std::vector<int> selectedEventIds() const;
 	void seekToFraction(double frac);
 	void setAngle(int angle1Based);
+	// (Re)play the selected (or last) completed event from its IN on the
+	// current angle at the resolved speed. No-op while recording.
+	void replayCurrent();
 	// Apply a replay speed (5..100). Updates the engine speed and, when no
 	// replay is currently playing, re-plays the selected/last event at the new
 	// speed from its in-point (broadcast-style) instead of leaving the raw file.
@@ -133,6 +137,7 @@ private:
 	QLabel *projectLbl_ = nullptr; // shows active project name
 
 	// transport
+	int currentAngle1_ = 1; // dock-selected angle (1-based) for replay/preview
 	SeekBar *seek_ = nullptr;
 	QSlider *speed_ = nullptr;
 	QLabel *speedLbl_ = nullptr;
@@ -150,6 +155,10 @@ private:
 	QTableWidget *events_ = nullptr;
 	bool refreshing_ = false; // guards itemChanged during table rebuilds
 	uint64_t lastEventVersion_ = UINT64_MAX; // UINT64_MAX → refresh on first poll
+	// Largest event id seen: when a newer one appears (a fresh mark), the table
+	// auto-selects it so "Riproduci selezionati" is one click; otherwise the
+	// user's current selection is preserved across refreshes.
+	int lastMaxEventId_ = 0;
 	QCheckBox *toOutputChk_ = nullptr;
 	QCheckBox *loopChk_ = nullptr;
 	QCheckBox *musicChk_ = nullptr;

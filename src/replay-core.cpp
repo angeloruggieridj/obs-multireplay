@@ -164,6 +164,7 @@ const HotkeyDef kReplayHotkeys[] = {
 	 []() {
 		 std::string err;
 		 PlaybackCoordinator::instance().playLastEvent(
+			 MediaReplay::instance().angle(),
 			 ReplayCore::instance().getConfig().autoSwitchScene,
 			 err);
 	 }},

@@ -26,10 +26,12 @@ class PlaybackCoordinator {
 public:
 	static PlaybackCoordinator &instance();
 
-	// Play one or more events (in the given order) on channel A.
-	bool playEvents(const std::vector<int> &eventIds, bool toOutput,
-			std::string &errorOut);
-	bool playLastEvent(bool toOutput, std::string &errorOut);
+	// Play one or more events (in the given order), all on `angle0` (0-based,
+	// the dock's current angle). Speed = the angle's per-angle override if set,
+	// else the default (slider) speed.
+	bool playEvents(const std::vector<int> &eventIds, int angle0,
+			bool toOutput, std::string &errorOut);
+	bool playLastEvent(int angle0, bool toOutput, std::string &errorOut);
 
 	// broadcast replayStopEvents.
 	void stopEvents();

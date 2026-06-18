@@ -37,6 +37,8 @@ SPDX-License-Identifier: GPL-2.0-or-later
 #include <QFormLayout>
 #include <QSpinBox>
 #include <QFileDialog>
+#include <QFile>
+#include <QDir>
 #include <QGroupBox>
 #include <QMessageBox>
 #include <QDockWidget>
@@ -276,8 +278,7 @@ enum EventCol {
 	kColIn,
 	kColOut,
 	kColDur,
-	kColSpeed,
-	kColCams,
+	kColCams, // per-angle: [cam toggle] [comment] [speed%]
 	kColCount
 };
 
@@ -533,8 +534,15 @@ void MultiReplayDock::drawChannelA(void *data, uint32_t cx, uint32_t cy)
 		if (!name.empty())
 			src = obs_get_source_by_name(name.c_str()); // add-ref'd
 	}
-	if (!src)
+	if (!src) {
+		// Not live: only render the replay source when it actually has a
+		// clip loaded. After New Project / clearSession there is no content,
+		// so render nothing (black) instead of the previous project's last
+		// frame.
+		if (!MediaReplay::instance().previewHasContent())
+			return;
 		src = MediaReplay::instance().acquireSource();
+	}
 	if (!src)
 		return;
 	uint32_t sw = obs_source_get_width(src);
@@ -1016,8 +1024,8 @@ QWidget *MultiReplayDock::buildEvents()
 	events_->setColumnCount(kColCount);
 	events_->setHorizontalHeaderLabels(
 		{"#", obs_module_text("Dock.In"), obs_module_text("Dock.Out"),
-		 obs_module_text("Dock.Duration"), obs_module_text("Dock.Speed"),
-		 obs_module_text("Dock.Cameras")});
+		 obs_module_text("Dock.Duration"),
+		 obs_module_text("Dock.AnglesHeader")});
 	events_->setSelectionBehavior(QAbstractItemView::SelectRows);
 	events_->setSelectionMode(QAbstractItemView::ExtendedSelection);
 	// Speed cell (4) is edited in place; camera cell (5) is an inline
@@ -1025,7 +1033,7 @@ QWidget *MultiReplayDock::buildEvents()
 	events_->setEditTriggers(QAbstractItemView::DoubleClicked |
 				 QAbstractItemView::EditKeyPressed);
 	events_->verticalHeader()->setVisible(false);
-	events_->verticalHeader()->setDefaultSectionSize(38);
+	events_->verticalHeader()->setDefaultSectionSize(46);
 	events_->setAlternatingRowColors(true);
 	events_->setShowGrid(false);
 	events_->setWordWrap(false);
@@ -1055,7 +1063,8 @@ QWidget *MultiReplayDock::buildEvents()
 		std::string err;
 		if (ensureSession() &&
 		    !PlaybackCoordinator::instance().playEvents(
-			    selectedEventIds(), toOutputChk_->isChecked(), err))
+			    selectedEventIds(), currentAngle1_ - 1,
+			    toOutputChk_->isChecked(), err))
 			QMessageBox::warning(this, "obs-multireplay",
 					     QString::fromStdString(err));
 	});
@@ -1063,7 +1072,7 @@ QWidget *MultiReplayDock::buildEvents()
 		std::string err;
 		if (ensureSession() &&
 		    !PlaybackCoordinator::instance().playLastEvent(
-			    toOutputChk_->isChecked(), err))
+			    currentAngle1_ - 1, toOutputChk_->isChecked(), err))
 			QMessageBox::warning(this, "obs-multireplay",
 					     QString::fromStdString(err));
 	});
@@ -1138,26 +1147,41 @@ std::vector<int> MultiReplayDock::selectedEventIds() const
 
 void MultiReplayDock::setAngle(int angle1Based)
 {
-	if (angle1Based >= 1 && angle1Based <= kIndexMaxCameras)
-		MediaReplay::instance().setAngle(angle1Based - 1);
+	if (angle1Based < 1 || angle1Based > kIndexMaxCameras)
+		return;
+	currentAngle1_ = angle1Based;
+	MediaReplay::instance().setAngle(angle1Based - 1); // preview/mark angle
+	// Re-cue the current clip on the chosen angle: re-play the selected (or
+	// last) completed event from its IN on this angle, at the angle's resolved
+	// speed. So switching angle during a replay shows the SAME clip from the
+	// same in-point on the new camera (not the raw file).
+	replayCurrent();
 }
 
 void MultiReplayDock::applyReplaySpeed(int pct)
 {
-	// Set the engine speed, then (re)play the clip from its IN at the new speed.
-	// Always restart from the in-point — whether a replay is currently playing
-	// or idle — so the saved IN is respected (broadcast-style). Events default to
-	// speed "--" (inherit), so they pick up the engine speed just set.
+	// Default (slider) speed; then re-play the current clip from its IN at the
+	// resolved speed (per-angle override, else this default). Always restart
+	// from the in-point so the saved IN is respected (broadcast-style).
 	MediaReplay::instance().setSpeed(pct / 100.0);
+	replayCurrent();
+}
 
+void MultiReplayDock::replayCurrent()
+{
+	// During recording the angle buttons just select the live-mirror angle;
+	// they must not start a file replay.
+	if (ReplayCore::instance().isRecording())
+		return;
 	auto &pc = PlaybackCoordinator::instance();
 	std::string err;
 	std::vector<int> ids = selectedEventIds();
 	bool toOut = toOutputChk_ && toOutputChk_->isChecked();
+	int a0 = currentAngle1_ - 1;
 	if (!ids.empty())
-		pc.playEvents(ids, toOut, err);
+		pc.playEvents(ids, a0, toOut, err);
 	else
-		pc.playLastEvent(toOut, err);
+		pc.playLastEvent(a0, toOut, err);
 }
 
 void MultiReplayDock::seekToFraction(double frac)
@@ -1494,6 +1518,18 @@ void MultiReplayDock::refreshEvents()
 		return;
 	QString needle = search_ ? search_->text().trimmed().toLower() : QString();
 
+	// Remember the user's current selection so it survives the rebuild.
+	int prevSel = 0;
+	{
+		auto sel = events_->selectionModel()->selectedRows();
+		if (!sel.empty()) {
+			QTableWidgetItem *it = events_->item(sel.first().row(),
+							     kColId);
+			if (it)
+				prevSel = it->data(Qt::UserRole).toInt();
+		}
+	}
+
 	refreshing_ = true;
 	events_->setRowCount(0);
 	obs_data_array_t *arr = obs_data_get_array(d, "events");
@@ -1525,10 +1561,12 @@ void MultiReplayDock::refreshEvents()
 		int id = (int)obs_data_get_int(e, "id");
 		int64_t tin = obs_data_get_int(e, "tInNs");
 		int64_t tout = obs_data_get_int(e, "tOutNs");
-		double speed = obs_data_get_double(e, "speed");
 
 		bool camOn[kEventAngles] = {};
 		std::string camNotes[kEventAngles];
+		double camSpeeds[kEventAngles];
+		for (int k = 0; k < kEventAngles; k++)
+			camSpeeds[k] = -1.0;
 		QString anglesStr;
 		obs_data_array_t *aArr = obs_data_get_array(e, "angles");
 		if (aArr) {
@@ -1541,6 +1579,10 @@ void MultiReplayDock::refreshEvents()
 				}
 				const char *nt = obs_data_get_string(ad, "note");
 				camNotes[k] = nt ? nt : "";
+				camSpeeds[k] = obs_data_has_user_value(ad, "speed")
+						       ? obs_data_get_double(ad,
+									     "speed")
+						       : -1.0;
 				obs_data_release(ad);
 			}
 			obs_data_array_release(aArr);
@@ -1556,9 +1598,6 @@ void MultiReplayDock::refreshEvents()
 		QString dur = tout >= 0 ? formatTc(tout - tin)
 					: QString::fromUtf8(
 						  obs_module_text("Dock.Open"));
-		QString spStr = speed >= 0
-					? QString::number((int)(speed * 100)) + "%"
-					: QStringLiteral("--");
 
 		// search filter (id / per-angle notes / angles)
 		if (!needle.isEmpty()) {
@@ -1614,16 +1653,10 @@ void MultiReplayDock::refreshEvents()
 					mid));
 		events_->setItem(row, kColDur, roItem(dur, mid));
 
-		// editable speed (type "50", "50%" or blank/-- to inherit)
-		auto *spItem = new QTableWidgetItem(spStr);
-		spItem->setTextAlignment(mid);
-		spItem->setData(Qt::UserRole, id);
-		spItem->setToolTip(obs_module_text("Dock.SpeedHint"));
-		events_->setItem(row, kColSpeed, spItem);
-
 		// inline 1..8 camera toggle chips with per-angle description
 		events_->setCellWidget(row, kColCams,
-				       makeCameraCell(id, camOn, camNotes));
+				       makeCameraCell(id, camOn, camNotes,
+						      camSpeeds));
 
 		obs_data_release(e);
 	}
@@ -1631,10 +1664,34 @@ void MultiReplayDock::refreshEvents()
 	refreshing_ = false;
 	markerNs_ = std::move(rawMarkers);
 	// Fraction conversion happens in poll() each tick via displayDurNs_.
+
+	// Keep exactly one event selected: when a newer event appears (a fresh
+	// mark), auto-select it so "Riproduci selezionati" is one click; otherwise
+	// preserve the user's selection across the rebuild.
+	int maxId = 0;
+	for (int r = 0; r < events_->rowCount(); r++) {
+		QTableWidgetItem *it = events_->item(r, kColId);
+		if (it)
+			maxId = std::max(maxId, it->data(Qt::UserRole).toInt());
+	}
+	int target = (maxId > lastMaxEventId_) ? maxId
+		     : (prevSel > 0)           ? prevSel
+					       : maxId;
+	lastMaxEventId_ = maxId;
+	if (target > 0) {
+		for (int r = 0; r < events_->rowCount(); r++) {
+			QTableWidgetItem *it = events_->item(r, kColId);
+			if (it && it->data(Qt::UserRole).toInt() == target) {
+				events_->selectRow(r);
+				break;
+			}
+		}
+	}
 }
 
 QWidget *MultiReplayDock::makeCameraCell(int id, const bool *enabled,
-					  const std::string *notes)
+					  const std::string *notes,
+					  const double *speeds)
 {
 	Config cfg = ReplayCore::instance().getConfig();
 	auto *w = new QWidget(events_);
@@ -1651,9 +1708,21 @@ QWidget *MultiReplayDock::makeCameraCell(int id, const bool *enabled,
 
 		const std::string &dn = cfg.cameras[i].displayName;
 		QString label = dn.empty() ? QString::number(i + 1)
-					   : QString::fromStdString(dn).left(5);
+					   : QString::fromStdString(dn).left(8);
 
-		auto *b = new QToolButton(w);
+		// One compact "card" per camera: toggle on top, then the comment
+		// field, then the speed field — vertically stacked and clearly
+		// labelled (placeholders) so it reads as cam · commento · vel%.
+		auto *card = new QWidget(w);
+		card->setObjectName("mrCamCard");
+		card->setStyleSheet(
+			"QWidget#mrCamCard { background: #161616; "
+			"border: 1px solid #2c2c2c; border-radius: 4px; }");
+		auto *cl = new QVBoxLayout(card);
+		cl->setContentsMargins(4, 2, 4, 2);
+		cl->setSpacing(1);
+
+		auto *b = new QToolButton(card);
 		b->setObjectName("mrCamToggle");
 		b->setText(label);
 		b->setProperty("camIndex", i + 1); // 1-based; used in poll()
@@ -1664,16 +1733,18 @@ QWidget *MultiReplayDock::makeCameraCell(int id, const bool *enabled,
 		b->setCursor(Qt::PointingHandCursor);
 
 		// Inline note field: read-only by default, editable on double-click.
+		// Empty → greyed "commento" placeholder so its purpose is clear.
 		const std::string &note = notes[i];
 		QString noteText = note.empty()
-					   ? QStringLiteral("--")
+					   ? QString()
 					   : QString::fromStdString(note).left(10);
-		auto *noteEdit = new QLineEdit(noteText, w);
+		auto *noteEdit = new QLineEdit(noteText, card);
 		noteEdit->setObjectName("mrCamNoteEdit");
+		noteEdit->setPlaceholderText(QStringLiteral("commento"));
 		noteEdit->setReadOnly(true);
 		noteEdit->setFrame(false);
 		noteEdit->setMaxLength(10);
-		noteEdit->setFixedHeight(18);
+		noteEdit->setFixedHeight(16);
 		noteEdit->setToolTip(obs_module_text("Dock.CamNoteHint"));
 		// Override dock-wide QLineEdit style so it looks like a label.
 		noteEdit->setStyleSheet(
@@ -1697,7 +1768,7 @@ QWidget *MultiReplayDock::makeCameraCell(int id, const bool *enabled,
 				noteEdit->setReadOnly(true);
 				QString t = noteEdit->text().trimmed();
 				if (t.isEmpty()) {
-					noteEdit->setText(QStringLiteral("--"));
+					noteEdit->clear(); // show placeholder
 					EventStore::instance().setAngleNote(
 						id, a1, "");
 				} else {
@@ -1707,10 +1778,61 @@ QWidget *MultiReplayDock::makeCameraCell(int id, const bool *enabled,
 				// poll() detects version bump → refreshEvents()
 			});
 
-		l->addWidget(b);
-		l->addSpacing(2);
-		l->addWidget(noteEdit);
-		l->addSpacing(6); // gap between camera pairs
+		// Inline per-angle speed override (percent). Empty → greyed "vel%"
+		// placeholder; means "use the default/slider speed".
+		double sp = speeds[i];
+		QString spText = sp >= 0 ? QString::number((int)(sp * 100))
+					 : QString();
+		auto *spEdit = new QLineEdit(spText, card);
+		spEdit->setObjectName("mrCamSpeedEdit");
+		spEdit->setPlaceholderText(QStringLiteral("vel%"));
+		spEdit->setReadOnly(true);
+		spEdit->setFrame(false);
+		spEdit->setMaxLength(3);
+		spEdit->setFixedHeight(16);
+		spEdit->setFixedWidth(30);
+		spEdit->setAlignment(Qt::AlignCenter);
+		spEdit->setToolTip(obs_module_text("Dock.AngleSpeedHint"));
+		spEdit->setStyleSheet(
+			"QLineEdit { background: transparent; border: 0; "
+			"color: #8aa0b0; font-size: 9px; padding: 0; }"
+			"QLineEdit:focus { color: #c0c0c0; background: #111111; "
+			"border-bottom: 1px solid #365e8a; }");
+		spEdit->setProperty("eventId", id);
+		spEdit->setProperty("angle1", a1);
+		spEdit->installEventFilter(this);
+		connect(spEdit, &QLineEdit::editingFinished, this,
+			[id, a1, spEdit]() {
+				if (spEdit->isReadOnly())
+					return;
+				spEdit->setReadOnly(true);
+				QString t = spEdit->text().trimmed();
+				t.remove('%');
+				bool ok = false;
+				int v = t.toInt(&ok);
+				if (!ok || t.isEmpty()) {
+					spEdit->clear(); // show placeholder
+					EventStore::instance().setAngleSpeed(
+						id, a1, -1.0);
+				} else {
+					v = std::clamp(v, 1, 100);
+					EventStore::instance().setAngleSpeed(
+						id, a1, v / 100.0);
+					spEdit->setText(QString::number(v));
+				}
+			});
+
+		b->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+		cl->addWidget(b);
+		// Second line: comment (flex) + speed (small badge).
+		auto *row = new QHBoxLayout();
+		row->setContentsMargins(0, 0, 0, 0);
+		row->setSpacing(3);
+		row->addWidget(noteEdit, 1);
+		row->addWidget(spEdit, 0);
+		cl->addLayout(row);
+		card->setFixedWidth(96);
+		l->addWidget(card);
 	}
 	l->addStretch(1);
 	return w;
@@ -1718,27 +1840,9 @@ QWidget *MultiReplayDock::makeCameraCell(int id, const bool *enabled,
 
 void MultiReplayDock::onEventItemChanged(QTableWidgetItem *item)
 {
-	if (refreshing_ || !item)
-		return;
-	int id = item->data(Qt::UserRole).toInt();
-	if (id <= 0)
-		return;
-	auto &store = EventStore::instance();
-
-	if (item->column() == kColSpeed) {
-		QString t = item->text().trimmed();
-		t.remove('%');
-		if (t.isEmpty() || t == "--") {
-			store.setSpeed(id, -1.0);
-		} else {
-			bool ok = false;
-			double pct = t.toDouble(&ok);
-			if (ok)
-				store.setSpeed(id, std::clamp(pct, 1.0, 100.0) /
-							    100.0);
-		}
-		refreshEvents();
-	}
+	// No editable text columns remain (speed is per-angle in the camera cell,
+	// in/out/duration are read-only). Kept as a no-op hook for future columns.
+	(void)item;
 }
 
 // ---------------------------------------------------------------------------
@@ -1749,11 +1853,13 @@ bool MultiReplayDock::eventFilter(QObject *watched, QEvent *event)
 {
 	auto *noteEdit = qobject_cast<QLineEdit *>(watched);
 	if (noteEdit &&
-	    noteEdit->objectName() == QLatin1String("mrCamNoteEdit")) {
+	    (noteEdit->objectName() == QLatin1String("mrCamNoteEdit") ||
+	     noteEdit->objectName() == QLatin1String("mrCamSpeedEdit"))) {
 		if (event->type() == QEvent::MouseButtonDblClick) {
 			// Save original text so Escape can cancel.
 			noteEdit->setProperty("origText", noteEdit->text());
-			if (noteEdit->text() == QStringLiteral("--"))
+			if (noteEdit->text() == QStringLiteral("--") ||
+			    noteEdit->text() == QString::fromUtf8("\xe2\x80\x94"))
 				noteEdit->clear();
 			noteEdit->setReadOnly(false);
 			noteEdit->selectAll();
@@ -2054,8 +2160,29 @@ void MultiReplayDock::copyYouTubeChapters()
 		return;
 	}
 	QApplication::clipboard()->setText(QString::fromStdString(text));
-	QMessageBox::information(this, "obs-multireplay",
-				 obs_module_text("Dock.ChaptersCopied"));
+
+	// Also write a physical file in the project folder so the chapter list is
+	// persisted next to the recordings (not only on the clipboard).
+	QString folder = QString::fromStdString(
+		ReplayCore::instance().recordingFolder());
+	QString fpath = folder.isEmpty()
+				? QString()
+				: QDir(folder).filePath("youtube-chapters.txt");
+	bool wrote = false;
+	if (!fpath.isEmpty()) {
+		QFile f(fpath);
+		if (f.open(QIODevice::WriteOnly | QIODevice::Text |
+			   QIODevice::Truncate)) {
+			f.write(text.c_str());
+			f.close();
+			wrote = true;
+		}
+	}
+	QMessageBox::information(
+		this, "obs-multireplay",
+		wrote ? (QString(obs_module_text("Dock.ChaptersCopied")) +
+			 "\n" + fpath)
+		      : QString(obs_module_text("Dock.ChaptersCopied")));
 }
 
 } // namespace multireplay
