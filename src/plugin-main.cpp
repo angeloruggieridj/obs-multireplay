@@ -44,6 +44,10 @@ void onFrontendEvent(enum obs_frontend_event event, void *)
 			multireplay::ReplayCore::instance()
 				.disarmPersistedFilters();
 		multireplay::MediaReplay::instance().ensureSource();
+		multireplay::MediaReplay::instance().setFadeMs(
+			multireplay::ReplayCore::instance()
+				.getConfig()
+				.replayFadeMs);
 	}
 }
 } // namespace

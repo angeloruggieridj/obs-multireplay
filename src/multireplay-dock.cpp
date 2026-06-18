@@ -1931,6 +1931,14 @@ void MultiReplayDock::openSettings()
 	abr->setSuffix(" kbps");
 	form->addRow(obs_module_text("Dock.AudioBitrate"), abr);
 
+	auto *fade = new QSpinBox(&dlg);
+	fade->setRange(0, 2000);
+	fade->setSingleStep(50);
+	fade->setValue(cfg.replayFadeMs);
+	fade->setSuffix(" ms");
+	fade->setToolTip(obs_module_text("Dock.ReplayFadeHint"));
+	form->addRow(obs_module_text("Dock.ReplayFade"), fade);
+
 	// encoder combo
 	auto *enc = new QComboBox(&dlg);
 	enc->addItem(obs_module_text("Dock.AutoEncoder"), "");
@@ -2072,6 +2080,7 @@ void MultiReplayDock::openSettings()
 	cfg.replaySourceName =
 		replaySrc->currentData().toString().toStdString();
 	cfg.musicSourceName = music->currentData().toString().toStdString();
+	cfg.replayFadeMs = fade->value();
 	cfg.autoSwitchScene = autoSwitch->isChecked();
 	for (int i = 0; i < kMaxCameras; i++) {
 		cfg.cameras[i].sourceName =
@@ -2080,6 +2089,7 @@ void MultiReplayDock::openSettings()
 			camNameEdits[i]->text().trimmed().toStdString();
 	}
 	core.setConfig(cfg);
+	MediaReplay::instance().setFadeMs(cfg.replayFadeMs);
 	// Use recordingFolder() so EventStore points to the project subfolder
 	// (if one is active) rather than the raw session folder.
 	EventStore::instance().setSessionFolder(core.recordingFolder());

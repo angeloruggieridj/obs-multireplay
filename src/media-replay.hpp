@@ -91,6 +91,11 @@ public:
 	// True when a clip is loaded in the replay source (so the dock preview
 	// should render it). False after clearSession/New Project → blank preview.
 	bool previewHasContent() const;
+	// Name of the plugin-managed scene that holds the A/B transition; "to
+	// output" switches Program to it. Empty until ensureSource() created it.
+	std::string replaySceneName() const;
+	// Crossfade duration (ms) applied when cutting between clips (0 = hard cut).
+	void setFadeMs(int ms) { fadeMs_.store(ms < 0 ? 0 : ms); }
 	bool resolveTime(int camIndex, int64_t masterNs, std::string &pathOut,
 			 int64_t &offsetNsOut) const;
 
@@ -154,6 +159,9 @@ private:
 	obs_source_t *srcB_ = nullptr;        // owned (ref held)
 	obs_source_t *transition_ = nullptr;  // owned (ref held); wraps A/B
 	obs_source_t *mediaSource_ = nullptr; // alias → active of A/B (not owned)
+	obs_source_t *outSceneSource_ = nullptr; // owned; managed scene holding the
+						 // transition (used for "to output")
+	std::atomic<int> fadeMs_{0};          // crossfade duration on cut (0 = cut)
 
 	std::shared_ptr<SessionIndex> index_;
 	std::atomic<int> angle_{0};           // 0-based camera

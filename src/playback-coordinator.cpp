@@ -94,10 +94,9 @@ bool PlaybackCoordinator::playEvents(const std::vector<int> &eventIds,
 		return false;
 	}
 
-	std::string sceneName =
-		ReplayCore::instance().getConfig().outputSceneName;
-	if (toOutput && sceneName.empty()) {
-		errorOut = "no output scene configured in settings";
+	if (toOutput && MediaReplay::instance().replaySceneName().empty() &&
+	    ReplayCore::instance().getConfig().outputSceneName.empty()) {
+		errorOut = "replay output scene not ready";
 		return false;
 	}
 
@@ -234,9 +233,13 @@ void PlaybackCoordinator::switchToReplayScene()
 	//
 	// switchSceneTask does not acquire mutex_ or any lock owned by the
 	// calling thread, so wait=true cannot deadlock.
-	auto *ctx = new SceneSwitchCtx{
-		ReplayCore::instance().getConfig().outputSceneName,
-		&previousSceneName_};
+	// Switch Program to the plugin-managed replay scene (holds the A/B
+	// transition) so the seamless replay reaches output. Fall back to the
+	// operator's configured output scene if the managed one isn't ready.
+	std::string scene = MediaReplay::instance().replaySceneName();
+	if (scene.empty())
+		scene = ReplayCore::instance().getConfig().outputSceneName;
+	auto *ctx = new SceneSwitchCtx{scene, &previousSceneName_};
 	obs_queue_task(OBS_TASK_UI, switchSceneTask, ctx, true);
 }
 

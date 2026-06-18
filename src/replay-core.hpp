@@ -51,6 +51,8 @@ struct Config {
 	// Empty = the plugin's own managed "MultiReplay — Replay A" source.
 	std::string replaySourceName;
 	std::string musicSourceName; // OBS audio source unmuted during playback
+	// Crossfade duration (ms) between replay clips/angles (0 = hard cut).
+	int replayFadeMs = 0;
 	bool autoSwitchScene = true; // play-to-output switches the OBS scene;
 				     // false = only feed the Replay source
 	std::array<CameraConfig, kMaxCameras> cameras;

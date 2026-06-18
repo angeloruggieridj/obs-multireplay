@@ -54,6 +54,10 @@ void MediaReplay::unload()
 
 	std::lock_guard<std::mutex> lock(mutex_);
 	mediaSource_ = nullptr; // alias only
+	if (outSceneSource_) {
+		obs_source_release(outSceneSource_);
+		outSceneSource_ = nullptr;
+	}
 	if (transition_) {
 		obs_source_dec_showing(transition_);
 		obs_source_release(transition_);
@@ -110,7 +114,14 @@ obs_source_t *MediaReplay::createManagedMediaSource(const char *name)
 	// with the OBS render thread → GPU TDR (black screen + mouse freeze).
 	obs_data_set_bool(s, "hw_decode", false);
 	obs_data_set_int(s, "speed_percent", 100);
-	obs_source_t *src = obs_source_create("ffmpeg_source", name, s, nullptr);
+	// Adopt an existing same-named source (restored from the scene collection)
+	// rather than fail on a duplicate name; otherwise create it fresh.
+	obs_source_t *src = obs_get_source_by_name(name);
+	if (src) {
+		obs_source_update(src, s);
+	} else {
+		src = obs_source_create("ffmpeg_source", name, s, nullptr);
+	}
 	obs_data_release(s);
 	if (!src) {
 		obs_log(LOG_ERROR, "MediaReplay: failed to create '%s'", name);
@@ -133,17 +144,17 @@ void MediaReplay::ensureSource()
 		srcA_ = createManagedMediaSource(obs_module_text("ReplaySource.A"));
 	if (!srcB_)
 		srcB_ = createManagedMediaSource("MultiReplay — Replay B");
+	struct obs_video_info ovi;
+	uint32_t cx = 1920, cy = 1080;
+	if (obs_get_video_info(&ovi)) {
+		cx = ovi.base_width;
+		cy = ovi.base_height;
+	}
 	if (!transition_) {
 		transition_ = obs_source_create("fade_transition",
-						"MultiReplay — Replay",
+						"MultiReplay Replay Mix",
 						nullptr, nullptr);
 		if (transition_) {
-			struct obs_video_info ovi;
-			uint32_t cx = 1920, cy = 1080;
-			if (obs_get_video_info(&ovi)) {
-				cx = ovi.base_width;
-				cy = ovi.base_height;
-			}
 			obs_transition_set_size(transition_, cx, cy);
 			obs_transition_set_alignment(transition_,
 						     OBS_ALIGN_CENTER);
@@ -156,6 +167,46 @@ void MediaReplay::ensureSource()
 			obs_log(LOG_ERROR,
 				"MediaReplay: failed to create fade_transition");
 		}
+	}
+
+	// Managed output scene: a plugin-owned scene whose single item is the
+	// transition, fit to the canvas. "to output" switches Program to it, so the
+	// seamless A/B replay reaches the broadcast transparently (the operator does
+	// not place anything). Adopt an existing one (restored from the collection).
+	if (transition_ && !outSceneSource_) {
+		const char *sceneName = "MultiReplay — Replay";
+		obs_source_t *existing = obs_get_source_by_name(sceneName);
+		obs_scene_t *scene = nullptr;
+		if (existing &&
+		    obs_source_get_type(existing) == OBS_SOURCE_TYPE_SCENE) {
+			outSceneSource_ = existing; // already add-ref'd
+			scene = obs_scene_from_source(existing);
+		} else {
+			if (existing)
+				obs_source_release(existing);
+			scene = obs_scene_create(sceneName);
+			if (scene)
+				outSceneSource_ = obs_source_get_ref(
+					obs_scene_get_source(scene));
+		}
+		if (scene &&
+		    !obs_scene_find_source(scene, "MultiReplay Replay Mix")) {
+			obs_sceneitem_t *item = obs_scene_add(scene, transition_);
+			if (item) {
+				struct vec2 pos = {0.0f, 0.0f};
+				struct vec2 bounds = {(float)cx, (float)cy};
+				obs_sceneitem_set_alignment(
+					item, OBS_ALIGN_TOP | OBS_ALIGN_LEFT);
+				obs_sceneitem_set_bounds_type(
+					item, OBS_BOUNDS_SCALE_INNER);
+				obs_sceneitem_set_bounds(item, &bounds);
+				obs_sceneitem_set_pos(item, &pos);
+			}
+		}
+		// obs_scene_create returns an owned scene ref; outSceneSource_ now
+		// holds a source ref that keeps it alive — release the create ref.
+		if (scene && !existing)
+			obs_scene_release(scene);
 	}
 	// Active source = A on first init; existing playback code operates on
 	// mediaSource_ (a non-owning alias). Don't reset it on re-entry (e.g. a
@@ -255,6 +306,15 @@ bool MediaReplay::previewHasContent() const
 {
 	std::lock_guard<std::mutex> lock(mutex_);
 	return !loadedPath_.empty();
+}
+
+std::string MediaReplay::replaySceneName() const
+{
+	std::lock_guard<std::mutex> lock(mutex_);
+	if (!outSceneSource_)
+		return {};
+	const char *n = obs_source_get_name(outSceneSource_);
+	return n ? n : std::string();
 }
 
 int64_t MediaReplay::footageDurationNs() const
@@ -713,8 +773,9 @@ void MediaReplay::monitorLoop()
 						(long long)(eventDurationNs_ /
 							     1000000));
 					// Reveal the prepared (hidden) source now
-					// that it is playing at IN → seamless cut.
-					revealLocked(src, 0);
+					// that it is playing at IN → seamless cut
+					// (or crossfade if fadeMs_ > 0).
+					revealLocked(src, (uint32_t)fadeMs_.load());
 					eventPlayStartWall_ =
 						std::chrono::steady_clock::now();
 					eventPlayStarted_ = true;
