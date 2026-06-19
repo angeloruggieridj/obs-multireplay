@@ -60,6 +60,12 @@ private:
 	PlaybackCoordinator() = default;
 	void startNext();        // plays queue_[queuePos_]
 	void onEventFinished();  // stop-at-out callback from the player
+	// The engine crossfaded into the prefetched next clip: advance the queue
+	// position to it and prefetch the following one. mutex_ NOT held on entry.
+	void onClipPromoted();
+	// Ask the engine to prefetch queue_[queuePos_+1] for a centered crossfade
+	// (no-op in the engine when the fade is 0). Caller holds mutex_.
+	void maybePrefetchLocked();
 	void switchToReplayScene();
 	void restorePreviousScene();
 	void setMusicMuted(bool muted);

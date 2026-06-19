@@ -174,6 +174,10 @@ void PlaybackCoordinator::startNext()
 				item.eventId, item.angle + 1,
 				(int)(item.speed * 100), queuePos_ + 1,
 				queue_.size());
+			// Pre-roll the next clip on the inactive source so the
+			// engine can crossfade to it centered on the OUT (no-op
+			// when the configured fade is 0 → plain hard cut).
+			maybePrefetchLocked();
 			return;
 		}
 		queuePos_++; // unplayable: advance to the next item
@@ -184,6 +188,35 @@ void PlaybackCoordinator::startNext()
 	if (toOutput_)
 		restorePreviousScene();
 	setMusicMuted(true);
+}
+
+void PlaybackCoordinator::maybePrefetchLocked()
+{
+	// mutex_ held by caller. Prefetch the immediate next item (no wrap: the
+	// loop-restart at the end uses the plain hard-cut path).
+	size_t nextPos = queuePos_ + 1;
+	if (nextPos >= queue_.size())
+		return;
+	const QueueItem &n = queue_[nextPos];
+	MediaReplay::instance().prefetchNext(
+		n.tInNs, n.tOutNs, n.angle, n.speed,
+		[this]() { onEventFinished(); },
+		[this]() { onClipPromoted(); });
+}
+
+void PlaybackCoordinator::onClipPromoted()
+{
+	std::lock_guard<std::mutex> lock(mutex_);
+	if (!active_)
+		return;
+	// The engine has crossfaded to the prefetched next clip and is playing it;
+	// advance our position to match, then pre-roll the one after it.
+	if (queuePos_ + 1 < queue_.size())
+		queuePos_++;
+	obs_log(LOG_INFO, "coordinator: crossfaded to event %d [%zu/%zu]",
+		queuePos_ < queue_.size() ? queue_[queuePos_].eventId : 0,
+		queuePos_ + 1, queue_.size());
+	maybePrefetchLocked();
 }
 
 void PlaybackCoordinator::onEventFinished()

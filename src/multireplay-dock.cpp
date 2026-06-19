@@ -29,6 +29,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
 #include <QComboBox>
 #include <QCheckBox>
 #include <QTableWidget>
+#include <QItemSelectionModel>
 #include <QHeaderView>
 #include <QButtonGroup>
 #include <QTimer>
@@ -1033,7 +1034,7 @@ QWidget *MultiReplayDock::buildEvents()
 	events_->setEditTriggers(QAbstractItemView::DoubleClicked |
 				 QAbstractItemView::EditKeyPressed);
 	events_->verticalHeader()->setVisible(false);
-	events_->verticalHeader()->setDefaultSectionSize(46);
+	events_->verticalHeader()->setDefaultSectionSize(24);
 	events_->setAlternatingRowColors(true);
 	events_->setShowGrid(false);
 	events_->setWordWrap(false);
@@ -1051,6 +1052,22 @@ QWidget *MultiReplayDock::buildEvents()
 	connect(events_, &QTableWidget::itemChanged, this,
 		&MultiReplayDock::onEventItemChanged);
 	v->addWidget(events_, 1);
+
+	// Inspector panel: per-angle toggle · comment · vel% for the selected event.
+	// Rebuilt on every selection change (and after a refresh) by
+	// populateInspector(). Keeps the table itself compact (it only shows an
+	// enabled-angles summary now).
+	inspector_ = new QGroupBox(obs_module_text("Dock.AnglesHeader"), this);
+	inspector_->setObjectName("mrInspector");
+	inspectorLayout_ = new QVBoxLayout(inspector_);
+	inspectorLayout_->setContentsMargins(6, 4, 6, 4);
+	inspectorLayout_->setSpacing(2);
+	v->addWidget(inspector_, 0);
+	connect(events_->selectionModel(),
+		&QItemSelectionModel::selectionChanged, this, [this]() {
+			auto ids = selectedEventIds();
+			populateInspector(ids.empty() ? 0 : ids.front());
+		});
 
 	// playback controls
 	auto *pb = new QHBoxLayout();
@@ -1345,32 +1362,23 @@ void MultiReplayDock::poll()
 			anglesA_->button(ts.angle)->setChecked(true);
 	}
 
-	// Event camera chips: PVW green = enabled, PGM red = currently playing.
+	// Highlight the angles-summary cell of the event currently playing (PGM
+	// red); others use the default colour. Per-angle editing/state now lives
+	// in the inspector panel, so the table only needs this row-level cue.
 	{
 		auto ps = PlaybackCoordinator::instance().playState();
 		for (int row = 0; row < events_->rowCount(); row++) {
 			QTableWidgetItem *idItem = events_->item(row, kColId);
-			if (!idItem)
+			QTableWidgetItem *camItem = events_->item(row, kColCams);
+			if (!idItem || !camItem)
 				continue;
 			int rowEv = idItem->data(Qt::UserRole).toInt();
 			bool isActive = ps.active && (ps.eventId == rowEv);
-			QWidget *cell = events_->cellWidget(row, kColCams);
-			if (!cell)
-				continue;
-			const auto btns =
-				cell->findChildren<QToolButton *>();
-			for (QToolButton *btn : btns) {
-				int ci = btn->property("camIndex").toInt();
-				bool checked = btn->isChecked();
-				QString st;
-				if (isActive && ci == ps.angle1)
-					st = QStringLiteral("program");
-				else if (checked)
-					st = QStringLiteral("preview");
-				if (btn->property("state").toString() != st) {
-					btn->setProperty("state", st);
-					repolish(btn);
-				}
+			if (camItem->data(Qt::UserRole + 1).toBool() != isActive) {
+				camItem->setData(Qt::UserRole + 1, isActive);
+				camItem->setForeground(
+					isActive ? QBrush(QColor("#e0604a"))
+						 : QBrush());
 			}
 		}
 	}
@@ -1658,10 +1666,25 @@ void MultiReplayDock::refreshEvents()
 					mid));
 		events_->setItem(row, kColDur, roItem(dur, mid));
 
-		// inline 1..8 camera toggle chips with per-angle description
-		events_->setCellWidget(row, kColCams,
-				       makeCameraCell(id, camOn, camNotes,
-						      camSpeeds));
+		// Compact summary of enabled angles (full editing is in the
+		// inspector panel below): "1  3·50%  5✎". A trailing ✎ marks a
+		// per-angle comment; ·NN% marks a per-angle speed override.
+		QString summary;
+		for (int k = 0; k < kEventAngles; k++) {
+			if (!camOn[k])
+				continue;
+			QString tok = QString::number(k + 1);
+			if (camSpeeds[k] >= 0)
+				tok += QString("·%1%").arg(
+					(int)(camSpeeds[k] * 100));
+			if (!camNotes[k].empty())
+				tok += QStringLiteral("✎");
+			if (!summary.isEmpty())
+				summary += QStringLiteral("  ");
+			summary += tok;
+		}
+		auto *camItem = roItem(summary, Qt::AlignVCenter | Qt::AlignLeft);
+		events_->setItem(row, kColCams, camItem);
 
 		obs_data_release(e);
 	}
@@ -1692,155 +1715,119 @@ void MultiReplayDock::refreshEvents()
 			}
 		}
 	}
+	// Rebuild the inspector for the selected event. Done explicitly because
+	// selectRow() above does not emit selectionChanged when the same row was
+	// already selected (e.g. after an inspector edit bumped the version).
+	populateInspector(target);
 }
 
-QWidget *MultiReplayDock::makeCameraCell(int id, const bool *enabled,
-					  const std::string *notes,
-					  const double *speeds)
+void MultiReplayDock::populateInspector(int eventId)
 {
-	Config cfg = ReplayCore::instance().getConfig();
-	auto *w = new QWidget(events_);
-	auto *l = new QHBoxLayout(w);
-	l->setContentsMargins(2, 1, 2, 1);
-	l->setSpacing(4);
+	if (!inspector_ || !inspectorLayout_)
+		return;
+	inspectorEventId_ = eventId;
 
+	// Tear down the previous rows.
+	QLayoutItem *child;
+	while ((child = inspectorLayout_->takeAt(0)) != nullptr) {
+		if (child->widget())
+			child->widget()->deleteLater();
+		delete child;
+	}
+
+	auto addHint = [this](const char *key) {
+		auto *hint = new QLabel(obs_module_text(key), inspector_);
+		hint->setStyleSheet("color: #707070; font-style: italic;");
+		inspectorLayout_->addWidget(hint);
+	};
+
+	ReplayEvent ev;
+	if (eventId <= 0 || !EventStore::instance().get(eventId, ev)) {
+		inspector_->setTitle(obs_module_text("Dock.AnglesHeader"));
+		addHint("Dock.SelectEvent");
+		return;
+	}
+	inspector_->setTitle(QString("%1 — #%2")
+				     .arg(obs_module_text("Dock.AnglesHeader"))
+				     .arg(eventId));
+
+	Config cfg = ReplayCore::instance().getConfig();
+	bool any = false;
 	for (int i = 0; i < kEventAngles; i++) {
-		// Only show chips for cameras that have a source configured.
+		// Only show rows for cameras that have a source configured.
 		bool configured = (i < kMaxCameras) &&
 				  !cfg.cameras[i].sourceName.empty();
 		if (!configured)
 			continue;
+		any = true;
+		int a1 = i + 1;
 
 		const std::string &dn = cfg.cameras[i].displayName;
-		QString label = dn.empty() ? QString::number(i + 1)
-					   : QString::fromStdString(dn).left(8);
+		QString label = dn.empty() ? QString("Cam %1").arg(a1)
+					   : QString::fromStdString(dn);
 
-		// One compact "card" per camera: toggle on top, then the comment
-		// field, then the speed field — vertically stacked and clearly
-		// labelled (placeholders) so it reads as cam · commento · vel%.
-		auto *card = new QWidget(w);
-		card->setObjectName("mrCamCard");
-		card->setStyleSheet(
-			"QWidget#mrCamCard { background: #161616; "
-			"border: 1px solid #2c2c2c; border-radius: 4px; }");
-		auto *cl = new QVBoxLayout(card);
-		cl->setContentsMargins(4, 2, 4, 2);
-		cl->setSpacing(1);
+		auto *rowW = new QWidget(inspector_);
+		auto *row = new QHBoxLayout(rowW);
+		row->setContentsMargins(0, 0, 0, 0);
+		row->setSpacing(6);
 
-		auto *b = new QToolButton(card);
-		b->setObjectName("mrCamToggle");
-		b->setText(label);
-		b->setProperty("camIndex", i + 1); // 1-based; used in poll()
+		// Enable toggle (the camera name doubles as the label).
+		auto *chk = new QCheckBox(label, rowW);
+		chk->setMinimumWidth(96);
+		chk->setChecked(ev.angles[i].enabled);
 		if (!dn.empty())
-			b->setToolTip(QString::fromStdString(dn));
-		b->setCheckable(true);
-		b->setChecked(enabled[i]);
-		b->setCursor(Qt::PointingHandCursor);
-
-		// Inline note field: read-only by default, editable on double-click.
-		// Empty → greyed "commento" placeholder so its purpose is clear.
-		const std::string &note = notes[i];
-		QString noteText = note.empty()
-					   ? QString()
-					   : QString::fromStdString(note).left(10);
-		auto *noteEdit = new QLineEdit(noteText, card);
-		noteEdit->setObjectName("mrCamNoteEdit");
-		noteEdit->setPlaceholderText(QStringLiteral("commento"));
-		noteEdit->setReadOnly(true);
-		noteEdit->setFrame(false);
-		noteEdit->setMaxLength(10);
-		noteEdit->setFixedHeight(16);
-		noteEdit->setToolTip(obs_module_text("Dock.CamNoteHint"));
-		// Override dock-wide QLineEdit style so it looks like a label.
-		noteEdit->setStyleSheet(
-			"QLineEdit { background: transparent; border: 0; "
-			"color: #909090; font-size: 9px; padding: 0; }"
-			"QLineEdit:focus { color: #c0c0c0; background: #111111; "
-			"border-bottom: 1px solid #365e8a; }");
-
-		int a1 = i + 1;
-		noteEdit->setProperty("eventId", id);
-		noteEdit->setProperty("angle1", a1);
-		noteEdit->installEventFilter(this);
-
-		connect(b, &QToolButton::toggled, this, [id, a1](bool on) {
-			EventStore::instance().setAngle(id, a1, on);
+			chk->setToolTip(QString::fromStdString(dn));
+		connect(chk, &QCheckBox::toggled, this, [eventId, a1](bool on) {
+			EventStore::instance().setAngle(eventId, a1, on);
 		});
-		connect(noteEdit, &QLineEdit::editingFinished, this,
-			[id, a1, noteEdit]() {
-				if (noteEdit->isReadOnly())
-					return;
-				noteEdit->setReadOnly(true);
-				QString t = noteEdit->text().trimmed();
-				if (t.isEmpty()) {
-					noteEdit->clear(); // show placeholder
-					EventStore::instance().setAngleNote(
-						id, a1, "");
-				} else {
-					EventStore::instance().setAngleNote(
-						id, a1, t.toStdString());
-				}
-				// poll() detects version bump → refreshEvents()
+
+		// Comment (free text). Commit on focus-out / Enter.
+		auto *note = new QLineEdit(
+			QString::fromStdString(ev.angles[i].note), rowW);
+		note->setPlaceholderText(QStringLiteral("commento"));
+		note->setToolTip(obs_module_text("Dock.CamNoteHint"));
+		connect(note, &QLineEdit::editingFinished, this,
+			[eventId, a1, note]() {
+				EventStore::instance().setAngleNote(
+					eventId, a1,
+					note->text().trimmed().toStdString());
 			});
 
-		// Inline per-angle speed override (percent). Empty → greyed "vel%"
-		// placeholder; means "use the default/slider speed".
-		double sp = speeds[i];
-		QString spText = sp >= 0 ? QString::number((int)(sp * 100))
-					 : QString();
-		auto *spEdit = new QLineEdit(spText, card);
-		spEdit->setObjectName("mrCamSpeedEdit");
-		spEdit->setPlaceholderText(QStringLiteral("vel%"));
-		spEdit->setReadOnly(true);
-		spEdit->setFrame(false);
-		spEdit->setMaxLength(3);
-		spEdit->setFixedHeight(16);
-		spEdit->setFixedWidth(30);
-		spEdit->setAlignment(Qt::AlignCenter);
-		spEdit->setToolTip(obs_module_text("Dock.AngleSpeedHint"));
-		spEdit->setStyleSheet(
-			"QLineEdit { background: transparent; border: 0; "
-			"color: #8aa0b0; font-size: 9px; padding: 0; }"
-			"QLineEdit:focus { color: #c0c0c0; background: #111111; "
-			"border-bottom: 1px solid #365e8a; }");
-		spEdit->setProperty("eventId", id);
-		spEdit->setProperty("angle1", a1);
-		spEdit->installEventFilter(this);
-		connect(spEdit, &QLineEdit::editingFinished, this,
-			[id, a1, spEdit]() {
-				if (spEdit->isReadOnly())
-					return;
-				spEdit->setReadOnly(true);
-				QString t = spEdit->text().trimmed();
+		// Per-angle speed override (percent); empty = use default speed.
+		auto *sp = new QLineEdit(rowW);
+		sp->setPlaceholderText(QStringLiteral("vel%"));
+		sp->setToolTip(obs_module_text("Dock.AngleSpeedHint"));
+		sp->setFixedWidth(56);
+		sp->setMaxLength(4);
+		sp->setAlignment(Qt::AlignCenter);
+		if (ev.angles[i].speed >= 0)
+			sp->setText(QString::number(
+				(int)(ev.angles[i].speed * 100)));
+		connect(sp, &QLineEdit::editingFinished, this,
+			[eventId, a1, sp]() {
+				QString t = sp->text().trimmed();
 				t.remove('%');
 				bool ok = false;
 				int v = t.toInt(&ok);
 				if (!ok || t.isEmpty()) {
-					spEdit->clear(); // show placeholder
 					EventStore::instance().setAngleSpeed(
-						id, a1, -1.0);
+						eventId, a1, -1.0);
+					sp->clear();
 				} else {
 					v = std::clamp(v, 1, 100);
 					EventStore::instance().setAngleSpeed(
-						id, a1, v / 100.0);
-					spEdit->setText(QString::number(v));
+						eventId, a1, v / 100.0);
+					sp->setText(QString::number(v));
 				}
 			});
 
-		b->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-		cl->addWidget(b);
-		// Second line: comment (flex) + speed (small badge).
-		auto *row = new QHBoxLayout();
-		row->setContentsMargins(0, 0, 0, 0);
-		row->setSpacing(3);
-		row->addWidget(noteEdit, 1);
-		row->addWidget(spEdit, 0);
-		cl->addLayout(row);
-		card->setFixedWidth(96);
-		l->addWidget(card);
+		row->addWidget(chk, 0);
+		row->addWidget(note, 1);
+		row->addWidget(sp, 0);
+		inspectorLayout_->addWidget(rowW);
 	}
-	l->addStretch(1);
-	return w;
+	if (!any)
+		addHint("Dock.NoCameras");
 }
 
 void MultiReplayDock::onEventItemChanged(QTableWidgetItem *item)
@@ -1856,34 +1843,9 @@ void MultiReplayDock::onEventItemChanged(QTableWidgetItem *item)
 
 bool MultiReplayDock::eventFilter(QObject *watched, QEvent *event)
 {
-	auto *noteEdit = qobject_cast<QLineEdit *>(watched);
-	if (noteEdit &&
-	    (noteEdit->objectName() == QLatin1String("mrCamNoteEdit") ||
-	     noteEdit->objectName() == QLatin1String("mrCamSpeedEdit"))) {
-		if (event->type() == QEvent::MouseButtonDblClick) {
-			// Save original text so Escape can cancel.
-			noteEdit->setProperty("origText", noteEdit->text());
-			if (noteEdit->text() == QStringLiteral("--") ||
-			    noteEdit->text() == QString::fromUtf8("\xe2\x80\x94"))
-				noteEdit->clear();
-			noteEdit->setReadOnly(false);
-			noteEdit->selectAll();
-			return false; // let QLineEdit also handle for cursor placement
-		}
-		if (event->type() == QEvent::KeyPress) {
-			auto *ke = static_cast<QKeyEvent *>(event);
-			if (ke->key() == Qt::Key_Escape &&
-			    !noteEdit->isReadOnly()) {
-				noteEdit->blockSignals(true);
-				noteEdit->setText(
-					noteEdit->property("origText")
-						.toString());
-				noteEdit->setReadOnly(true);
-				noteEdit->blockSignals(false);
-				return true;
-			}
-		}
-	}
+	// The inspector panel uses always-editable fields (commit on focus-out),
+	// so no per-widget event filtering is needed anymore. Kept as a thin
+	// override hook for future use.
 	return QWidget::eventFilter(watched, event);
 }
 
@@ -2002,42 +1964,11 @@ void MultiReplayDock::openSettings()
 		return c;
 	};
 
-	auto *outScene = makeSourceCombo(cfg.outputSceneName);
-	form->addRow(obs_module_text("Dock.OutputScene"), outScene);
-
-	// Replay Media Source: list the Media Sources present, plus "(auto)".
-	auto *replaySrc = new QComboBox(&dlg);
-	replaySrc->addItem(obs_module_text("Dock.AutoReplaySource"), "");
-	{
-		Data md(core.sourcesJson());
-		obs_data_array_t *arr =
-			md ? obs_data_get_array(md, "sources") : nullptr;
-		if (arr) {
-			size_t n = obs_data_array_count(arr);
-			for (size_t i = 0; i < n; i++) {
-				obs_data_t *it = obs_data_array_item(arr, i);
-				const char *id = obs_data_get_string(it, "id");
-				const char *nm = obs_data_get_string(it, "name");
-				// Only Media-type sources can play a recording.
-				if (id &&
-				    (strcmp(id, "ffmpeg_source") == 0 ||
-				     strcmp(id, "vlc_source") == 0))
-					replaySrc->addItem(QString::fromUtf8(nm),
-							   QString::fromUtf8(nm));
-				obs_data_release(it);
-			}
-			obs_data_array_release(arr);
-		}
-	}
-	{
-		int idx = replaySrc->findData(
-			QString::fromStdString(cfg.replaySourceName));
-		if (idx >= 0)
-			replaySrc->setCurrentIndex(idx);
-	}
-	replaySrc->setToolTip(obs_module_text("Dock.ReplaySourceHint"));
-	form->addRow(obs_module_text("Dock.ReplaySource"), replaySrc);
-
+	// Output scene and replay Media Source are no longer operator-configurable:
+	// the aux-player owns a managed transition ("MultiReplay Replay Mix") inside
+	// a managed scene ("MultiReplay — Replay"). "To output" switches Program to
+	// that scene automatically. The legacy cfg.outputSceneName /
+	// cfg.replaySourceName fields are kept only for back-compat on load/save.
 	auto *music = makeSourceCombo(cfg.musicSourceName);
 	form->addRow(obs_module_text("Dock.MusicSource"), music);
 
@@ -2081,9 +2012,6 @@ void MultiReplayDock::openSettings()
 	cfg.videoBitrateKbps = vbr->value();
 	cfg.audioBitrateKbps = abr->value();
 	cfg.videoEncoderId = enc->currentData().toString().toStdString();
-	cfg.outputSceneName = outScene->currentData().toString().toStdString();
-	cfg.replaySourceName =
-		replaySrc->currentData().toString().toStdString();
 	cfg.musicSourceName = music->currentData().toString().toStdString();
 	cfg.replayFadeMs = fade->value();
 	cfg.autoSwitchScene = autoSwitch->isChecked();

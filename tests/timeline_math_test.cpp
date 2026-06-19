@@ -73,6 +73,33 @@ static void test_resolve_multi_segment_and_gap()
 	CHECK(!resolveSpan(empty, 0, 0, idx, off));
 }
 
+static void test_resolve_total_past_last_segment()
+{
+	// Robustness: when totalDurationNs is LARGER than the last segment's end
+	// (a trailing inter-session gap, or a sum-of-durations total), a query
+	// that lands past the last segment must clamp to its last valid frame —
+	// NOT return false. (Production always passes total == last-seg-end, so
+	// this guards the contract against a future caller getting it wrong.)
+	std::vector<SegmentSpan> segs = {{0, 5000000000LL},
+					 {8000000000LL, 5000000000LL}};
+	size_t idx = 99;
+	int64_t off = -1;
+
+	// total claims 20s but footage ends at 13s; ask for 18s.
+	CHECK(resolveSpan(segs, 18000000000LL, 20000000000LL, idx, off));
+	CHECK(idx == 1 && off == 5000000000LL - 1); // last frame of segment 1
+
+	// Same with a single segment and an oversized total.
+	std::vector<SegmentSpan> one = {{0, 4000000000LL}};
+	CHECK(resolveSpan(one, 9000000000LL, 10000000000LL, idx, off));
+	CHECK(idx == 0 && off == 4000000000LL - 1);
+
+	// A zero-length last segment clamps the offset to 0, not -1.
+	std::vector<SegmentSpan> zero = {{0, 0}};
+	CHECK(resolveSpan(zero, 100, 50, idx, off));
+	CHECK(idx == 0 && off == 0);
+}
+
 static void test_recalc_out_duration()
 {
 	const int64_t MS = 1000000LL;
@@ -105,6 +132,7 @@ int main()
 {
 	test_resolve_single_segment();
 	test_resolve_multi_segment_and_gap();
+	test_resolve_total_past_last_segment();
 	test_recalc_out_duration();
 	if (g_fail == 0)
 		std::printf("OK: all timeline-math smoke tests passed\n");

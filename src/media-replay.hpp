@@ -86,6 +86,20 @@ public:
 		       std::function<void()> onDone);
 	void stopEvent();
 
+	// Crossfade prefetch (only active when the configured fade > 0): prepare the
+	// NEXT queued clip on the inactive A/B source while the current one plays, so
+	// the monitor can crossfade to it CENTERED on the OUT (fade starts at
+	// OUT - fadeMs/2; half on the tail of the current clip, half on the head of
+	// the next) with no frozen frame. `onDone` is the next clip's normal
+	// end-callback (used if it later ends without its own prefetch ready);
+	// `onPromoted` fires (async) the moment the engine crossfades to it, so the
+	// coordinator advances its queue position and prefetches the following clip.
+	// No-op when the fade is 0 — playback then uses the unchanged hard-cut path.
+	void prefetchNext(int64_t tInNs, int64_t tOutNs, int angle0, double speed,
+			  std::function<void()> onDone,
+			  std::function<void()> onPromoted);
+	void cancelPrefetch(); // drop any in-flight prefetch (stop / new selection)
+
 	// --- Preview / export helpers ---
 	obs_source_t *acquireSource(); // add-ref'd, caller releases (nullptr ok)
 	// True when a clip is loaded in the replay source (so the dock preview
@@ -147,6 +161,10 @@ private:
 	// too short); the caller then falls back to armEventReopenLocked.
 	bool armEventSoftSeekLocked(int64_t tInNs, int speedPct);
 	int64_t mediaTimeNs() const; // current media time (ns), 0 if unloaded
+	// Advance the crossfade prefetch state machine on the inactive source one
+	// step (open → seek → confirm → pause-at-IN → ready). Caller holds mutex_.
+	void servicePrefetchLocked();
+	void resetPrefetchLocked(); // clear all prefetch state (caller holds mutex_)
 
 	mutable std::mutex mutex_;
 	// Aux-player A/B: two managed ffmpeg_sources wrapped by a fade transition.
@@ -206,6 +224,30 @@ private:
 	// which can return stale values immediately after a seek.
 	std::chrono::steady_clock::time_point eventPlayStartWall_;
 	bool eventPlayStarted_ = false;
+
+	// --- Crossfade prefetch (next clip on the inactive A/B source) ---
+	bool preActive_ = false;     // a prefetch was requested
+	bool preReady_ = false;      // inactive source seeked + paused at IN
+	bool preCleared_ = false;    // inactive source's input cleared (pre-open)
+	bool preOpened_ = false;     // file opened on the inactive source
+	bool preSeekApplied_ = false;
+	int preGap_ = 0;             // cycles before clearing (waits out a fade tail)
+	int preWaitCycles_ = 0;      // seek-confirm budget
+	obs_source_t *preSrc_ = nullptr; // the inactive source being prepped (alias)
+	std::string prePath_;
+	int64_t preSeekMs_ = 0;
+	int prePct_ = 100;
+	int preAngle_ = 0;           // 0-based angle of the prefetched clip
+	int64_t preInNs_ = 0;
+	int64_t preOutNs_ = -1;
+	int64_t preSegBaseNs_ = 0;
+	int64_t preDurationNs_ = 0;  // recalibrated media duration at confirm
+	std::function<void()> preOnDone_;    // next clip's normal end-callback
+	std::function<void()> preOnPromoted_; // fired when the engine crossfades in
+	// After a crossfade promotion the OLD (outgoing) source keeps PLAYING for the
+	// fade tail, then is paused here so it stops advancing and can be reused.
+	obs_source_t *fadeOldSrc_ = nullptr;
+	std::chrono::steady_clock::time_point fadeOldPauseWall_;
 
 	// Monitor thread.
 	std::thread monitor_;

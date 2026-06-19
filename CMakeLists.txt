@@ -86,4 +86,20 @@ if(ENABLE_TESTS)
   target_include_directories(obs-multireplay-tests PRIVATE src)
   target_compile_features(obs-multireplay-tests PRIVATE cxx_std_20)
   add_test(NAME timeline_math COMMAND obs-multireplay-tests)
+
+  # EventStore logic test: compiles the REAL src/event-store.cpp against a tiny
+  # fake obs surface (tests/fakeobs) + no-op stubs. No libobs/FFmpeg needed, so
+  # it runs everywhere the timeline-math test does. tests/fakeobs is PRIVATE to
+  # this target only and never reaches the plugin build.
+  add_executable(
+    obs-multireplay-eventstore-tests
+    tests/standalone/event_store_test.cpp
+    tests/standalone/obs_stub.cpp
+    src/event-store.cpp
+  )
+  target_include_directories(
+    obs-multireplay-eventstore-tests PRIVATE tests/fakeobs src
+  )
+  target_compile_features(obs-multireplay-eventstore-tests PRIVATE cxx_std_20)
+  add_test(NAME event_store COMMAND obs-multireplay-eventstore-tests)
 endif()

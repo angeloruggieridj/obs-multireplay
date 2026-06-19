@@ -54,6 +54,8 @@ void MediaReplay::unload()
 		monitor_.join();
 
 	std::lock_guard<std::mutex> lock(mutex_);
+	resetPrefetchLocked();   // aliases into srcA_/srcB_ — drop before release
+	fadeOldSrc_ = nullptr;
 	mediaSource_ = nullptr; // alias only
 	if (outSceneSource_) {
 		obs_source_release(outSceneSource_);
@@ -282,6 +284,8 @@ void MediaReplay::clearSession()
 	eventActive_ = false;
 	eventOnDone_ = nullptr;
 	followLive_ = false;
+	resetPrefetchLocked();
+	fadeOldSrc_ = nullptr;
 	// Blank BOTH A/B sources so no stale footage shows: pause, then clear the
 	// input. Used at REC start (startRecording) and on New Project, so a fresh
 	// project opens with an empty preview instead of the previous take's frame.
@@ -517,6 +521,15 @@ bool MediaReplay::playEvent(int64_t tInNs, int64_t tOutNs, int angle0,
 	angle_ = std::clamp(angle0, 0, kIndexMaxCameras - 1);
 	followLive_ = false;
 
+	// A fresh direct event supersedes any in-flight crossfade prefetch (the
+	// prefetch may even target the source we are about to take over). Also stop
+	// any lingering fade-tail so we don't repurpose a source mid-fade.
+	resetPrefetchLocked();
+	if (fadeOldSrc_) {
+		obs_source_media_play_pause(fadeOldSrc_, true);
+		fadeOldSrc_ = nullptr;
+	}
+
 	if (!index_ || tOutNs <= tInNs)
 		return false; // caller advances its queue; onDone not invoked
 
@@ -640,8 +653,160 @@ void MediaReplay::stopEvent()
 	eventOutNs_ = -1;
 	pendingSeekApplied_ = false;
 	seekWaitCycles_ = 0;
+	resetPrefetchLocked();
+	if (fadeOldSrc_) {
+		obs_source_media_play_pause(fadeOldSrc_, true);
+		fadeOldSrc_ = nullptr;
+	}
 	if (mediaSource_ && !pendingLoad_)
 		obs_source_media_play_pause(mediaSource_, true);
+}
+
+// ---------------------------------------------------------------------------
+// Crossfade prefetch (next clip on the inactive A/B source)
+// ---------------------------------------------------------------------------
+
+void MediaReplay::resetPrefetchLocked()
+{
+	preActive_ = false;
+	preReady_ = false;
+	preCleared_ = false;
+	preOpened_ = false;
+	preSeekApplied_ = false;
+	preGap_ = 0;
+	preWaitCycles_ = 0;
+	preSrc_ = nullptr;
+	prePath_.clear();
+	preSeekMs_ = 0;
+	prePct_ = 100;
+	preAngle_ = 0;
+	preInNs_ = 0;
+	preOutNs_ = -1;
+	preSegBaseNs_ = 0;
+	preDurationNs_ = 0;
+	preOnDone_ = nullptr;
+	preOnPromoted_ = nullptr;
+}
+
+void MediaReplay::cancelPrefetch()
+{
+	std::lock_guard<std::mutex> lock(mutex_);
+	resetPrefetchLocked();
+}
+
+void MediaReplay::prefetchNext(int64_t tInNs, int64_t tOutNs, int angle0,
+			       double speed, std::function<void()> onDone,
+			       std::function<void()> onPromoted)
+{
+	std::lock_guard<std::mutex> lock(mutex_);
+	// Only meaningful with a fade configured and the two-source aux-player up.
+	if (fadeMs_.load() <= 0 || !srcA_ || !srcB_ || !index_ ||
+	    tOutNs <= tInNs)
+		return;
+	int spPct = clampSpeedPct(speed);
+	int ang = std::clamp(angle0, 0, kIndexMaxCameras - 1);
+	std::string path;
+	int64_t off = 0;
+	if (!index_->resolve(ang, tInNs, path, off))
+		return;
+
+	resetPrefetchLocked();
+	// Prepare on the source that is NOT currently active (shown).
+	preSrc_ = (mediaSource_ == srcA_) ? srcB_ : srcA_;
+	if (!preSrc_)
+		return;
+	preActive_ = true;
+	prePath_ = path;
+	preSeekMs_ = off / 1000000LL;
+	prePct_ = spPct;
+	preAngle_ = ang;
+	preInNs_ = tInNs;
+	preOutNs_ = tOutNs;
+	preSegBaseNs_ = tInNs - off;
+	preDurationNs_ = tOutNs - tInNs;
+	preOnDone_ = std::move(onDone);
+	preOnPromoted_ = std::move(onPromoted);
+	// If the chosen source is still playing out a fade tail (it was the previous
+	// outgoing clip), wait for that to finish before clearing/reopening it so the
+	// crossfade isn't interrupted. Otherwise a short gap suffices.
+	bool reusingFadeTail = (preSrc_ == fadeOldSrc_);
+	preGap_ = reusingFadeTail ? (fadeMs_.load() / 20 + 4) : 2;
+	wake_.notify_all();
+}
+
+void MediaReplay::servicePrefetchLocked()
+{
+	if (!preActive_ || preReady_ || !preSrc_)
+		return;
+	obs_source_t *src = preSrc_;
+	if (preGap_ > 0) {
+		preGap_--;
+		return;
+	}
+	// Step 1: clear the input so a same-path growing file is re-scanned on open
+	// (ffmpeg_source caches the duration seen at first open).
+	if (!preCleared_) {
+		obs_data_t *s = obs_source_get_settings(src);
+		obs_data_set_string(s, "local_file", "");
+		obs_source_update(src, s);
+		obs_data_release(s);
+		preCleared_ = true;
+		return; // one cycle for the media to tear down
+	}
+	// Step 2: open the target file fresh (speed baked in).
+	if (!preOpened_) {
+		obs_data_t *s = obs_source_get_settings(src);
+		obs_data_set_bool(s, "is_local_file", true);
+		obs_data_set_string(s, "local_file", prePath_.c_str());
+		obs_data_set_int(s, "speed_percent", prePct_);
+		obs_data_set_bool(s, "looping", false);
+		obs_data_set_bool(s, "restart_on_activate", false);
+		obs_data_set_bool(s, "close_when_inactive", false);
+		obs_data_set_bool(s, "hw_decode", false);
+		obs_source_update(src, s);
+		obs_data_release(s);
+		enum obs_media_state st0 = obs_source_media_get_state(src);
+		if (st0 != OBS_MEDIA_STATE_PLAYING &&
+		    st0 != OBS_MEDIA_STATE_PAUSED)
+			obs_source_media_restart(src);
+		preOpened_ = true;
+		preSeekApplied_ = false;
+		preWaitCycles_ = 0;
+		return;
+	}
+	enum obs_media_state st = obs_source_media_get_state(src);
+	bool ready = (st == OBS_MEDIA_STATE_PLAYING ||
+		      st == OBS_MEDIA_STATE_PAUSED);
+	if (!ready)
+		return;
+	// Step 3: seek to IN. The source must be PLAYING for the decode thread to
+	// process the seek (Intel UHD does not seek while paused).
+	if (!preSeekApplied_) {
+		obs_source_media_play_pause(src, false);
+		obs_source_media_set_time(src, preSeekMs_);
+		preSeekApplied_ = true;
+		preWaitCycles_ = 0;
+		return;
+	}
+	// Step 4: poll until the position actually reaches IN, then pause AT IN.
+	int64_t nowMs = obs_source_media_get_time(src);
+	if (std::llabs(nowMs - preSeekMs_) >= 1100LL && preWaitCycles_ < 75) {
+		if (st != OBS_MEDIA_STATE_PLAYING)
+			obs_source_media_play_pause(src, false);
+		if ((preWaitCycles_ % 8) == 0)
+			obs_source_media_set_time(src, preSeekMs_);
+		preWaitCycles_++;
+		return;
+	}
+	int64_t landedMs = obs_source_media_get_time(src);
+	obs_source_media_play_pause(src, true); // hold at IN, hidden, until promoted
+	preDurationNs_ = recalcEventDurationNs(preOutNs_, preSegBaseNs_,
+					       preSeekMs_, landedMs,
+					       preOutNs_ - preInNs_);
+	preReady_ = true;
+	MR_DLOG("[ev] prefetch READY off=%lldms landed=%lldms dur=%lldms",
+		(long long)preSeekMs_, (long long)landedMs,
+		(long long)(preDurationNs_ / 1000000));
 }
 
 // ---------------------------------------------------------------------------
@@ -654,11 +819,24 @@ void MediaReplay::monitorLoop()
 	using namespace std::chrono_literals;
 	while (running_) {
 		std::function<void()> fireDone;
+		std::function<void()> firePromoted;
 		{
 			std::unique_lock<std::mutex> lock(mutex_);
 			wake_.wait_for(lock, 20ms);
 			if (!running_)
 				break;
+
+			// Crossfade prefetch: advance the next clip's prep on the
+			// inactive source, and pause a finished fade's outgoing
+			// source once its tail has played out.
+			servicePrefetchLocked();
+			if (fadeOldSrc_ &&
+			    std::chrono::steady_clock::now() >=
+				    fadeOldPauseWall_) {
+				obs_source_media_play_pause(fadeOldSrc_, true);
+				fadeOldSrc_ = nullptr;
+			}
+
 			obs_source_t *src = mediaSource_;
 			if (!src)
 				continue;
@@ -818,16 +996,13 @@ void MediaReplay::monitorLoop()
 					// read previously shortened the event to ~1 s.
 					int64_t landedMs =
 						obs_source_media_get_time(src);
-					if (landedMs > 0 && landedMs <= pendingSeekMs_ &&
-					    (pendingSeekMs_ - landedMs) < 3000LL) {
-						int64_t masterActual =
-							segBaseNs_ +
-							landedMs * 1000000LL;
-						if (eventOutNs_ > masterActual)
-							eventDurationNs_ =
-								eventOutNs_ -
-								masterActual;
-					}
+					// Same recalibration as the reopen path —
+					// share the unit-tested helper so the two
+					// branches can't diverge.
+					eventDurationNs_ = recalcEventDurationNs(
+						eventOutNs_, segBaseNs_,
+						pendingSeekMs_, landedMs,
+						eventDurationNs_);
 					// Always arm the wall-clock timer even
 					// when get_time() returned stale 0.
 					MR_DLOG(
@@ -865,6 +1040,61 @@ void MediaReplay::monitorLoop()
 				// half as fast, so real time is 2× media time.
 				int64_t mediaNs =
 					realNs * (int64_t)speedPct_.load() / 100LL;
+
+				// Centered crossfade: when the next clip is
+				// prefetched and ready, start the fade at
+				// OUT - fadeMs/2 (half on this clip's tail, half
+				// on the next clip's head). The outgoing source
+				// keeps playing through the fade tail, so there is
+				// no frozen frame. Promote it to the active event.
+				int fade = fadeMs_.load();
+				if (fade > 0 && preActive_ && preReady_ &&
+				    preSrc_ && transition_) {
+					int64_t outWallNs =
+						eventDurationNs_ * 100 /
+						std::max(1, speedPct_.load());
+					int64_t trigNs =
+						outWallNs -
+						(int64_t)(fade / 2) * 1000000LL;
+					if (trigNs < 0)
+						trigNs = 0;
+					if (realNs >= trigNs) {
+						obs_source_media_play_pause(
+							preSrc_, false);
+						obs_transition_start(
+							transition_,
+							OBS_TRANSITION_MODE_AUTO,
+							(uint32_t)fade, preSrc_);
+						fadeOldSrc_ = mediaSource_;
+						fadeOldPauseWall_ =
+							std::chrono::steady_clock::
+								now() +
+							std::chrono::milliseconds(
+								fade);
+						mediaSource_ = preSrc_;
+						loadedPath_ = prePath_;
+						segBaseNs_ = preSegBaseNs_;
+						speedPct_ = prePct_;
+						appliedSpeedPct_ = prePct_;
+						angle_ = preAngle_;
+						eventActive_ = true;
+						eventOutNs_ = preOutNs_;
+						eventDurationNs_ = preDurationNs_;
+						eventOnDone_ =
+							std::move(preOnDone_);
+						eventPlayStartWall_ =
+							std::chrono::steady_clock::
+								now();
+						eventPlayStarted_ = true;
+						firePromoted = std::move(
+							preOnPromoted_);
+						resetPrefetchLocked();
+						MR_DLOG(
+							"[ev] crossfade promote: fade=%dms",
+							fade);
+						continue;
+					}
+				}
 				if (mediaNs >= eventDurationNs_) {
 					MR_DLOG(
 						"[ev] OUT reached: mediaNs=%lldms dur=%lldms",
@@ -925,6 +1155,8 @@ void MediaReplay::monitorLoop()
 				eventOutNs_ = -1;
 			}
 		}
+		if (firePromoted)
+			firePromoted(); // crossfade in: coordinator advances queue
 		if (fireDone)
 			fireDone(); // outside the lock: may call back into us
 	}

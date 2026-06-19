@@ -34,6 +34,8 @@ class QTableWidgetItem;
 class QButtonGroup;
 class QSplitter;
 class QTimer;
+class QVBoxLayout;
+class QGroupBox;
 
 namespace multireplay {
 
@@ -102,9 +104,9 @@ private:
 	void refreshEvents();    // reload the selected list into the table
 	void refreshAngles();    // update angle button labels from camera displayName
 	void onEventItemChanged(QTableWidgetItem *item); // edit commit
-	QWidget *makeCameraCell(int id, const bool *enabled,
-				const std::string *notes,
-				const double *speeds); // 1..8 toggles
+	// Inspector panel below the table: per-angle toggle · comment · vel% for the
+	// currently selected event (replaces the cramped in-table camera cards).
+	void populateInspector(int eventId);
 	void openSettings();        // configuration dialog
 	void newProjectDialog();    // New Project... menu action
 	void openProjectDialog();   // Open Project... menu action
@@ -153,6 +155,10 @@ private:
 	QComboBox *listCombo_ = nullptr;
 	QLineEdit *search_ = nullptr;
 	QTableWidget *events_ = nullptr;
+	// Inspector: framed panel under the table; its rows are rebuilt per selection.
+	QGroupBox *inspector_ = nullptr;
+	QVBoxLayout *inspectorLayout_ = nullptr;
+	int inspectorEventId_ = 0;
 	bool refreshing_ = false; // guards itemChanged during table rebuilds
 	uint64_t lastEventVersion_ = UINT64_MAX; // UINT64_MAX → refresh on first poll
 	// Largest event id seen: when a newer one appears (a fresh mark), the table

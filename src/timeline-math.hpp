@@ -50,7 +50,15 @@ inline bool resolveSpan(const std::vector<SegmentSpan> &segs, int64_t masterNs,
 			return true;
 		}
 	}
-	return false;
+	// Past the end of the last segment (only reachable if totalDurationNs is
+	// larger than the last segment's end — e.g. a trailing inter-session gap,
+	// or a caller passing a sum-of-durations total). Clamp to the last valid
+	// frame instead of failing, honouring the [0, total-1] contract so an
+	// in-range query never returns false.
+	const SegmentSpan &last = segs.back();
+	idxOut = segs.size() - 1;
+	offsetOut = last.durationNs > 0 ? last.durationNs - 1 : 0;
+	return true;
 }
 
 // Recalibrate an event's media-duration from where the seek actually landed so
