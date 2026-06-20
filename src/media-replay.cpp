@@ -154,22 +154,48 @@ void MediaReplay::ensureSource()
 		cy = ovi.base_height;
 	}
 	if (!transition_) {
-		transition_ = obs_source_create("fade_transition",
-						"MultiReplay Replay Mix",
-						nullptr, nullptr);
+		// Adopt-or-create: the transition is saved in the scene collection
+		// (it lives in the managed scene), so on reload a source with this
+		// name already exists. obs_source_create() would FAIL on the duplicate
+		// name → transition_ stays null → acquireSource() falls back to the raw
+		// child (the recorded file at its native, possibly smaller, resolution)
+		// → the replay shows un-scaled/shrunk. Adopt the existing one instead.
+		obs_source_t *existingTr =
+			obs_get_source_by_name("MultiReplay Replay Mix");
+		if (existingTr && obs_source_get_type(existingTr) ==
+					  OBS_SOURCE_TYPE_TRANSITION) {
+			transition_ = existingTr; // already add-ref'd
+		} else {
+			if (existingTr)
+				obs_source_release(existingTr);
+			transition_ = obs_source_create("fade_transition",
+							"MultiReplay Replay Mix",
+							nullptr, nullptr);
+		}
 		if (transition_) {
-			obs_transition_set_size(transition_, cx, cy);
-			obs_transition_set_alignment(transition_,
-						     OBS_ALIGN_CENTER);
-			obs_transition_set_scale_type(transition_,
-						      OBS_TRANSITION_SCALE_ASPECT);
 			obs_source_inc_showing(transition_);
-			if (srcA_)
+			// Wire our A child as the active source if the (adopted)
+			// transition has none — never disturb a live one.
+			obs_source_t *act =
+				obs_transition_get_active_source(transition_);
+			if (!act && srcA_)
 				obs_transition_set(transition_, srcA_);
+			if (act)
+				obs_source_release(act);
 		} else {
 			obs_log(LOG_ERROR,
-				"MediaReplay: failed to create fade_transition");
+				"MediaReplay: failed to create/adopt fade_transition");
 		}
+	}
+	// Always (re)apply the fixed canvas size + aspect scaling. The transition
+	// upscales a smaller child to fill — without a fixed size it would report
+	// the child's native size (e.g. 720p) and a 1080p consumer would show it
+	// small. Re-applying every call also honours a canvas-resolution change.
+	if (transition_) {
+		obs_transition_set_size(transition_, cx, cy);
+		obs_transition_set_alignment(transition_, OBS_ALIGN_CENTER);
+		obs_transition_set_scale_type(transition_,
+					      OBS_TRANSITION_SCALE_ASPECT);
 	}
 
 	// Managed output scene: a plugin-owned scene whose single item is the
@@ -192,9 +218,16 @@ void MediaReplay::ensureSource()
 				outSceneSource_ = obs_source_get_ref(
 					obs_scene_get_source(scene));
 		}
-		if (scene &&
-		    !obs_scene_find_source(scene, "MultiReplay Replay Mix")) {
-			obs_sceneitem_t *item = obs_scene_add(scene, transition_);
+		// Find-or-add the transition item, then ALWAYS (re)apply its transform
+		// to fill the canvas. A scene restored from the collection keeps its
+		// SAVED item transform — if that was stale (older build, or saved when
+		// the transition reported a child's native size) the replay renders
+		// shrunk/offset. Re-applying bounds every adopt fixes it.
+		if (scene) {
+			obs_sceneitem_t *item = obs_scene_find_source(
+				scene, "MultiReplay Replay Mix");
+			if (!item)
+				item = obs_scene_add(scene, transition_);
 			if (item) {
 				struct vec2 pos = {0.0f, 0.0f};
 				struct vec2 bounds = {(float)cx, (float)cy};
