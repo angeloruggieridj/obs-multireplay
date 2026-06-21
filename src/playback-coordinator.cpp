@@ -210,9 +210,15 @@ void PlaybackCoordinator::onClipPromoted()
 	if (!active_)
 		return;
 	// The engine has crossfaded to the prefetched next clip and is playing it;
-	// advance our position to match, then pre-roll the one after it.
+	// advance our position to match, then pre-roll the one after it. A
+	// promotion only ever fires for a clip the engine was asked to prefetch,
+	// which only happens when a next item exists — so this never runs past end.
 	if (queuePos_ + 1 < queue_.size())
 		queuePos_++;
+	else
+		obs_log(LOG_WARNING,
+			"coordinator: promotion past queue end (pos=%zu size=%zu)",
+			queuePos_, queue_.size());
 	obs_log(LOG_INFO, "coordinator: crossfaded to event %d [%zu/%zu]",
 		queuePos_ < queue_.size() ? queue_[queuePos_].eventId : 0,
 		queuePos_ + 1, queue_.size());

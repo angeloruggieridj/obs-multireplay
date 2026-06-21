@@ -140,6 +140,39 @@ void MediaReplay::ensureSource()
 {
 	std::lock_guard<std::mutex> lock(mutex_);
 
+	// On SCENE_COLLECTION_CHANGED this runs again WITHOUT an intervening
+	// unload(): our held srcA_/srcB_/transition_/outSceneSource_ still point at
+	// the OLD collection's objects, while the just-loaded collection contains
+	// fresh same-named duplicates (the managed sources are persisted). If we
+	// kept the old refs, the preview would render the stale transition and
+	// "to output" (which resolves the scene by NAME) would switch to a
+	// different object graph than the engine drives. Release the held managed
+	// refs so the adopt-or-create paths below re-bind to the live collection.
+	// (On the first call after load these are all null → this is a no-op.)
+	// Balances the single inc_showing/ref per object per load.
+	resetPrefetchLocked();
+	fadeOldSrc_ = nullptr;
+	mediaSource_ = nullptr; // alias
+	if (outSceneSource_) {
+		obs_source_release(outSceneSource_);
+		outSceneSource_ = nullptr;
+	}
+	if (transition_) {
+		obs_source_dec_showing(transition_);
+		obs_source_release(transition_);
+		transition_ = nullptr;
+	}
+	if (srcA_) {
+		obs_source_dec_showing(srcA_);
+		obs_source_release(srcA_);
+		srcA_ = nullptr;
+	}
+	if (srcB_) {
+		obs_source_dec_showing(srcB_);
+		obs_source_release(srcB_);
+		srcB_ = nullptr;
+	}
+
 	// Aux-player: create the two managed media sources + the fade transition
 	// once, then keep them for the plugin's lifetime. The transition is what
 	// the dock preview (and, later, the output scene) renders.
@@ -1080,6 +1113,7 @@ void MediaReplay::monitorLoop()
 				// on the next clip's head). The outgoing source
 				// keeps playing through the fade tail, so there is
 				// no frozen frame. Promote it to the active event.
+				bool didPromote = false;
 				int fade = fadeMs_.load();
 				if (fade > 0 && preActive_ && preReady_ &&
 				    preSrc_ && transition_) {
@@ -1098,6 +1132,14 @@ void MediaReplay::monitorLoop()
 							transition_,
 							OBS_TRANSITION_MODE_AUTO,
 							(uint32_t)fade, preSrc_);
+						// Pause a still-pending previous fade
+						// tail before reusing the slot, so a
+						// back-to-back short fade can't leave an
+						// outgoing source PLAYING forever.
+						if (fadeOldSrc_ &&
+						    fadeOldSrc_ != mediaSource_)
+							obs_source_media_play_pause(
+								fadeOldSrc_, true);
 						fadeOldSrc_ = mediaSource_;
 						fadeOldPauseWall_ =
 							std::chrono::steady_clock::
@@ -1122,13 +1164,18 @@ void MediaReplay::monitorLoop()
 						firePromoted = std::move(
 							preOnPromoted_);
 						resetPrefetchLocked();
+						didPromote = true;
 						MR_DLOG(
 							"[ev] crossfade promote: fade=%dms",
 							fade);
-						continue;
 					}
 				}
-				if (mediaNs >= eventDurationNs_) {
+				if (didPromote) {
+					// Promoted this tick: the OUT/ended handling
+					// below applies to the OLD clip and must be
+					// skipped (the new clip's timer is fresh). Fall
+					// through so firePromoted() dispatches below.
+				} else if (mediaNs >= eventDurationNs_) {
 					MR_DLOG(
 						"[ev] OUT reached: mediaNs=%lldms dur=%lldms",
 						(long long)(mediaNs / 1000000),

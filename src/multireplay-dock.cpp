@@ -1161,8 +1161,13 @@ std::vector<int> MultiReplayDock::selectedEventIds() const
 	auto rows = events_->selectionModel()->selectedRows();
 	for (const auto &idx : rows) {
 		QTableWidgetItem *it = events_->item(idx.row(), 0);
-		if (it)
-			ids.push_back(it->data(Qt::UserRole).toInt());
+		if (!it)
+			continue;
+		// Skip non-event rows (e.g. session dividers carry no UserRole id,
+		// so toInt() yields 0): never inject a spurious id 0 into play/edit.
+		int id = it->data(Qt::UserRole).toInt();
+		if (id > 0)
+			ids.push_back(id);
 	}
 	return ids;
 }
@@ -1544,6 +1549,11 @@ void MultiReplayDock::refreshEvents()
 	}
 
 	refreshing_ = true;
+	// Block selection signals during the rebuild: setRowCount(0) clears the
+	// selection and selectRow() below re-sets it, each of which would otherwise
+	// emit selectionChanged → populateInspector(). We rebuild the inspector once,
+	// explicitly, at the end instead (avoids a 2-3× teardown storm per refresh).
+	QSignalBlocker selBlock(events_->selectionModel());
 	events_->setRowCount(0);
 	obs_data_array_t *arr = obs_data_get_array(d, "events");
 	if (!arr) {
@@ -1725,6 +1735,18 @@ void MultiReplayDock::populateInspector(int eventId)
 {
 	if (!inspector_ || !inspectorLayout_)
 		return;
+
+	// Don't tear the panel down (and steal focus) on a SAME-event refresh while
+	// the user is editing one of its fields: their own commit bumps the store
+	// version, which triggers refreshEvents() ~33ms later → a rebuild would
+	// destroy the field they just tabbed into. Values are already persisted, so
+	// skipping the rebuild is safe. A real selection change (different id) still
+	// rebuilds (focus moves anyway).
+	if (eventId == inspectorEventId_) {
+		QWidget *fw = QApplication::focusWidget();
+		if (fw && inspector_->isAncestorOf(fw))
+			return;
+	}
 	inspectorEventId_ = eventId;
 
 	// Tear down the previous rows.
