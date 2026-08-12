@@ -9,6 +9,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
 #include "event-store.hpp"
 #include "playback-coordinator.hpp"
 #include "media-replay.hpp"
+#include "packet-tap.hpp"
 #include "plugin-support.h"
 
 #include <util/platform.h>
@@ -342,6 +343,17 @@ bool ReplayCore::startRecording(std::string &errorOut)
 
 	recording_ = true;
 
+	// M0: attach the live packet tap to the encoders Branch Output just
+	// started. Branch Output builds its infrastructure asynchronously, so
+	// this only arms a retry loop; it never blocks REC and never fails it
+	// (fail-SOFT in M0, fail-CLOSED from M1 once the ring is authoritative).
+	{
+		std::array<bool, kMaxTapChannels> wantTap{};
+		for (int i = 0; i < kMaxCameras && i < kMaxTapChannels; i++)
+			wantTap[i] = cameraStatus_[i].recording;
+		PacketTap::instance().armAsync(wantTap);
+	}
+
 	// Auto-measure the encoder-startup latency: poll for the first NEW cam file
 	// (≈ first encoded frame) and record how long after the arm it appeared.
 	// Live event marks subtract this so the replay lands on the marked moment.
@@ -392,6 +404,14 @@ bool ReplayCore::stopRecording()
 	std::lock_guard<std::mutex> lock(mutex_);
 	if (!recording_)
 		return false;
+
+	// Log the M0 evidence while the tap is still attached, then detach
+	// BEFORE the filters are disabled: Branch Output frees its encoder in
+	// releaseInfrastructureIfIdle() once its own outputs go idle, and we
+	// must not be holding it (let alone still running it) at that point.
+	if (PacketTap::instance().anyAttached())
+		obs_log(LOG_INFO, "%s", PacketTap::instance().report().c_str());
+	PacketTap::instance().detachAll();
 
 	for (int i = 0; i < kMaxCameras; i++) {
 		auto &st = cameraStatus_[i];

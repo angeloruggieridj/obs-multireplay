@@ -24,6 +24,8 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #include "multireplay-dock.hpp"
 #include "replay-core.hpp"
 #include "media-replay.hpp"
+#include "packet-tap.hpp"
+#include "selftest.hpp"
 
 namespace {
 constexpr const char *kDockId = "obs-multireplay-dock";
@@ -48,6 +50,8 @@ void onFrontendEvent(enum obs_frontend_event event, void *)
 			multireplay::ReplayCore::instance()
 				.getConfig()
 				.replayFadeMs);
+		// No-op unless OBS_MULTIREPLAY_SELFTEST is set.
+		multireplay::maybeRunSelfTest();
 	}
 }
 } // namespace
@@ -68,6 +72,9 @@ bool obs_module_load(void)
 
 	auto &core = multireplay::ReplayCore::instance();
 	core.load();
+
+	// Register the packet-tap output types before anything can arm them.
+	multireplay::PacketTap::instance().load();
 
 	multireplay::MediaReplay::instance().load();
 
@@ -108,6 +115,8 @@ void obs_module_unload(void)
 {
 	obs_frontend_remove_event_callback(onFrontendEvent, nullptr);
 	obs_frontend_remove_dock(kDockId);
+	// Detach from Branch Output's encoders before anything else tears down.
+	multireplay::PacketTap::instance().unload();
 	multireplay::MediaReplay::instance().unload();
 	multireplay::ReplayCore::instance().unload();
 	obs_log(LOG_INFO, "plugin unloaded");
