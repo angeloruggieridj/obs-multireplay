@@ -78,6 +78,8 @@ target_sources(
     src/segment-anchor.hpp
     src/segment-index.cpp
     src/segment-index.hpp
+    src/segment-reader.cpp
+    src/segment-reader.hpp
     # Scripted M0 gate (no-op unless OBS_MULTIREPLAY_SELFTEST is set)
     src/selftest.cpp
     src/selftest.hpp

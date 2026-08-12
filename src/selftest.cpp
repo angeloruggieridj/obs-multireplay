@@ -479,6 +479,9 @@ void runSelfTest()
 	bool playsIntoObs = false;
 	bool audioPlays = false;
 	bool slowMotionPaced = false;
+	bool filePlaysFromDisk = false;
+	bool fileMatchesRing = false;
+	int fileFrames = 0;
 	int playedFrames = 0;
 	int audioBuffers = 0;
 	int64_t playElapsedMs = 0;
@@ -565,6 +568,49 @@ void runSelfTest()
 					perr.c_str());
 			}
 
+			// Pass 3 - the same footage again, but read from the
+			// recording files instead of the ring. Two independent
+			// paths must land on the same frame, or one of them is
+			// lying. The window sits well back from the live edge so
+			// it is certainly flushed to disk.
+			const int64_t fileInNs = clipOutNs - 15'000'000'000LL;
+			const int64_t fileOutNs = fileInNs + 5'000'000'000LL;
+
+			std::vector<LivePacket> refClip;
+			int64_t refIn = 0, refOut = 0;
+			const bool haveRef = PacketTap::instance().resolveRange(
+				firstCam, fileInNs, fileOutNs, refClip, refIn,
+				refOut);
+
+			if (chan.play(firstCam, fileInNs, fileOutNs, 100, perr,
+				      ReplayChannel::Source::Segments)) {
+				while (chan.playing())
+					std::this_thread::sleep_for(
+						std::chrono::milliseconds(50));
+				const auto st = chan.stats();
+				fileFrames = (int)st.framesPushed;
+				const int expected =
+					(int)(5.0 * (canvasFps > 0 ? canvasFps : 30.0));
+				filePlaysFromDisk =
+					st.lastRunCompleted &&
+					fileFrames >= expected * 9 / 10;
+				// The decisive comparison: the file path must
+				// present the very frame the ring would have.
+				fileMatchesRing =
+					haveRef && st.firstFrameNs == refIn;
+				obs_log(LOG_INFO,
+					"[selftest] from disk: %d frames, first=%lld ms; "
+					"ring would present %lld ms (match: %s)",
+					fileFrames,
+					(long long)(st.firstFrameNs / 1000000),
+					(long long)(refIn / 1000000),
+					fileMatchesRing ? "yes" : "NO");
+			} else {
+				obs_log(LOG_ERROR,
+					"[selftest] file playback failed: %s",
+					perr.c_str());
+			}
+
 			obs_source_dec_showing(src);
 			obs_source_dec_active(src);
 		}
@@ -643,7 +689,8 @@ void runSelfTest()
 			  passLatency && passSkew && passImpact && passClean &&
 			  ringLast5s && passRingCrossAngle && decodeOk &&
 			  startsOnMarkedFrame && playsIntoObs && audioPlays &&
-			  slowMotionPaced && segmentsOk;
+			  slowMotionPaced && segmentsOk && filePlaysFromDisk &&
+			  fileMatchesRing;
 
 	// --- Report -----------------------------------------------------------
 	obs_data_t *root = obs_data_create();
@@ -676,6 +723,9 @@ void runSelfTest()
 	// timeline exactly; anything left unanchored is footage we would refuse
 	// to play rather than guess the position of.
 	obs_data_set_bool(checks, "segments_anchored", segmentsOk);
+	obs_data_set_bool(checks, "plays_from_disk", filePlaysFromDisk);
+	obs_data_set_bool(checks, "disk_matches_ring", fileMatchesRing);
+	obs_data_set_int(root, "disk_played_frames", fileFrames);
 	obs_data_set_obj(root, "checks", checks);
 	obs_data_release(checks);
 

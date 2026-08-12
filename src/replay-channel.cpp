@@ -13,6 +13,7 @@ See replay-channel.hpp.
 #include "packet-tap.hpp"
 #include "plugin-support.h"
 #include "replay-decoder.hpp"
+#include "segment-reader.hpp"
 
 #include <media-io/video-io.h>
 #include <util/platform.h>
@@ -201,7 +202,7 @@ void ReplayChannel::joinWorker()
 }
 
 bool ReplayChannel::play(int camIndex, int64_t inNs, int64_t outNs, int speedPct,
-			 std::string &errorOut)
+			 std::string &errorOut, Source source)
 {
 	if (outNs <= inNs) {
 		errorOut = "the range is empty";
@@ -209,14 +210,28 @@ bool ReplayChannel::play(int camIndex, int64_t inNs, int64_t outNs, int speedPct
 	}
 
 	std::vector<LivePacket> clip;
+	StreamConfig cfg;
 	int64_t presentIn = 0, presentOut = 0;
-	if (!PacketTap::instance().resolveRange(camIndex, inNs, outNs, clip,
-						presentIn, presentOut)) {
-		errorOut = "that range is not held in full on this camera";
-		return false;
-	}
+	bool got = false;
 
-	const StreamConfig cfg = PacketTap::instance().streamConfig(camIndex);
+	if (source != Source::Segments) {
+		got = PacketTap::instance().resolveRange(camIndex, inNs, outNs,
+							 clip, presentIn,
+							 presentOut);
+		if (got)
+			cfg = PacketTap::instance().streamConfig(camIndex);
+		else
+			errorOut = "that range is not held in full in the ring";
+	}
+	if (!got && source != Source::Ring) {
+		// Older than the RAM window: the same clip, read out of the
+		// files Branch Output already wrote.
+		got = segment_reader::readRange(camIndex, inNs, outNs, clip, cfg,
+						presentIn, presentOut, errorOut);
+	}
+	if (!got)
+		return false;
+
 	if (!cfg.videoUsable()) {
 		errorOut = "the camera has no usable video configuration";
 		return false;

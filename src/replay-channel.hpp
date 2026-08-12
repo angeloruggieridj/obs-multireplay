@@ -54,11 +54,17 @@ public:
 	// The OBS input name the operator will look for.
 	static const char *sourceName();
 
+	// Where the clip comes from. Auto prefers the ring (no I/O, always
+	// exact) and falls back to the recording files for anything older;
+	// the explicit values exist so both paths can be exercised and
+	// compared, which is how we know they agree.
+	enum class Source { Auto, Ring, Segments };
+
 	// Play [inNs, outNs] of `camIndex` at `speedPct` (5..100; 100 = 1x).
 	// Replaces anything already playing. Returns false if the range cannot
-	// be served exactly — the ring refuses rather than clamps.
+	// be served exactly — both sources refuse rather than clamp.
 	bool play(int camIndex, int64_t inNs, int64_t outNs, int speedPct,
-		  std::string &errorOut);
+		  std::string &errorOut, Source source = Source::Auto);
 	void stop();
 	bool playing() const { return playing_.load(); }
 
