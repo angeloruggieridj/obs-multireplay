@@ -11,7 +11,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "event-store.hpp"
 #include "replay-core.hpp"
-#include "media-replay.hpp"
+#include "segment-index.hpp"
 
 extern "C" {
 #include <libavformat/avformat.h>
@@ -140,32 +140,23 @@ void ExportManager::worker()
 // Stream-copy the packets of [tIn, tOut] from the recording into a new MP4.
 bool ExportManager::runJob(Job &job)
 {
-	auto &engine = MediaReplay::instance();
-	std::string err;
-	if (!engine.sessionLoaded() &&
-	    !engine.loadSession(
-		    ReplayCore::instance().getConfig().sessionFolder, err)) {
-		job.detail = err;
-		return false;
-	}
-	engine.refreshSession();
-
+	// Which recorded file holds those instants, and where inside it. This is
+	// the same anchored index the replay reads from, so an export and a replay
+	// of the same event necessarily cut at the same frame.
+	//
 	// M4 limitation: a clip must live inside one 20-minute segment
 	// (events spanning a split are rare; documented).
-	// Resolve the segment + local offsets via the shared index. We need
-	// the index internals only through resolve().
-	// NOTE: uses channel-A's index indirectly; resolve is thread-safe.
 	std::string path;
 	int64_t inOffsetNs = 0, outOffsetNs = 0;
 	{
 		// Resolve both ends; they must land in the same file.
 		std::string pathOut;
-		// Resolve via the shared session index (MediaReplay owns it).
-		if (!engine.resolveTime(job.angle, job.tInNs, path,
-					inOffsetNs) ||
-		    !engine.resolveTime(job.angle, job.tOutNs, pathOut,
-					outOffsetNs)) {
-			job.detail = "cannot resolve event time on angle";
+		auto &index = SegmentIndex::instance();
+		if (!index.resolve(job.angle, job.tInNs, path, inOffsetNs) ||
+		    !index.resolve(job.angle, job.tOutNs, pathOut,
+				   outOffsetNs)) {
+			job.detail = "cannot resolve event time on angle "
+				     "(no anchored recording covers it)";
 			return false;
 		}
 		if (path != pathOut) {

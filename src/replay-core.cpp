@@ -8,9 +8,9 @@ SPDX-License-Identifier: GPL-2.0-or-later
 #include "branch-output-control.hpp"
 #include "event-store.hpp"
 #include "playback-coordinator.hpp"
-#include "media-replay.hpp"
 #include "packet-tap.hpp"
 #include "plugin-support.h"
+#include "replay-channel.hpp"
 #include "segment-index.hpp"
 
 #include <util/platform.h>
@@ -19,11 +19,8 @@ SPDX-License-Identifier: GPL-2.0-or-later
 #include <cctype>
 #include <chrono>
 #include <cstdlib>
-#include <ctime>
 #include <filesystem>
-#include <set>
 #include <system_error>
-#include <thread>
 
 namespace multireplay {
 
@@ -133,21 +130,17 @@ namespace {
 
 int64_t hotkeyMarkTimeNs()
 {
+	// The live edge is MEASURED now: the newest packet the tap captured off
+	// the encoder, on the shared system clock. No arm timestamp, no
+	// encoder-startup guess to subtract — a mark lands on the frame that was
+	// on screen, and the same value means the same instant on every angle.
 	if (EventStore::instance().liveMode()) {
-		auto &core = ReplayCore::instance();
-		if (core.isRecording() && core.sessionMonoStartNs() > 0) {
-			// Files still open: cumulative base + elapsed from arm.
-			int64_t elapsed = (int64_t)os_gettime_ns() -
-					  core.sessionMonoStartNs();
-			return std::max<int64_t>(
-				0, core.sessionBaseNs() + elapsed);
-		}
-		// Not recording: use indexed footage length (seekable live edge).
-		int64_t edge = MediaReplay::instance().footageDurationNs();
-		if (edge > 0)
-			return edge;
+		int64_t now = PacketTap::instance().newestNs(
+			ReplayCore::instance().currentAngle());
+		if (now > 0)
+			return now;
 	}
-	return MediaReplay::instance().position();
+	return ReplayChannel::instance().positionNs();
 }
 
 using SimpleFn = void (*)();
@@ -179,14 +172,30 @@ const HotkeyDef kReplayHotkeys[] = {
 	 []() {
 		 std::string err;
 		 PlaybackCoordinator::instance().playLastEvent(
-			 MediaReplay::instance().angle(),
+			 ReplayCore::instance().currentAngle(),
 			 ReplayCore::instance().getConfig().autoSwitchScene,
 			 err);
 	 }},
+	// There is no free-running playhead to pause any more: the engine plays a
+	// clip. So this stops what is playing, or re-cues the last event.
 	{"ReplayPlayPause", "Hotkey.PlayPause",
-	 []() { MediaReplay::instance().togglePlay(); }},
+	 []() {
+		 if (ReplayChannel::instance().playing()) {
+			 PlaybackCoordinator::instance().stopEvents();
+			 return;
+		 }
+		 std::string err;
+		 PlaybackCoordinator::instance().playLastEvent(
+			 ReplayCore::instance().currentAngle(),
+			 ReplayCore::instance().getConfig().autoSwitchScene,
+			 err);
+	 }},
+	// the reference controller NOW: drop the replay and go back to watching the live edge.
 	{"ReplayJumpToNow", "Hotkey.JumpToNow",
-	 []() { MediaReplay::instance().jumpToEnd(); }},
+	 []() {
+		 PlaybackCoordinator::instance().stopEvents();
+		 ReplayCore::instance().setFollowLive(true);
+	 }},
 	{"ReplayStopEvents", "Hotkey.StopEvents",
 	 []() { PlaybackCoordinator::instance().stopEvents(); }},
 	{"ReplayLiveToggle", "Hotkey.LiveToggle",
@@ -199,7 +208,7 @@ const HotkeyDef kReplayHotkeys[] = {
 // Angle hotkeys need an index: lambdas can't capture, so use a template.
 template<int N> void setAngleA()
 {
-	MediaReplay::instance().setAngle(N);
+	ReplayCore::instance().setCurrentAngle(N);
 }
 
 const SimpleFn kAngleFns[kMaxCameras] = {
@@ -250,14 +259,6 @@ bool ReplayCore::startRecording(std::string &errorOut)
 		return false;
 	}
 
-	// Capture cumulative footage from previous sessions BEFORE clearing the
-	// index (clearSession() zeroes it). This becomes the baseNs offset for
-	// events and timecodes in the new session.
-	sessionBaseNs_ = MediaReplay::instance().footageDurationNs();
-
-	// Clear any stale session index so old recordings are not replayed until
-	// the new session's segments are flushed and loaded.
-	MediaReplay::instance().clearSession();
 	if (!branch_output::available()) {
 		errorOut = "Branch Output plugin is not installed";
 		obs_log(LOG_ERROR, "startRecording: %s", errorOut.c_str());
@@ -271,23 +272,6 @@ bool ReplayCore::startRecording(std::string &errorOut)
 	std::error_code ec;
 	std::string recFolder = recordingFolderLocked();
 	std::filesystem::create_directories(recFolder, ec);
-
-	// Snapshot the recording-file set BEFORE arming so the latency detector can
-	// spot the first NEW cam file that appears once encoding starts.
-	frameLagNs_.store(0);
-	std::set<std::string> preFiles;
-	for (const auto &e : std::filesystem::directory_iterator(recFolder, ec)) {
-		if (e.is_regular_file(ec)) {
-			std::string n = e.path().filename().string();
-			if (n.rfind("cam", 0) == 0)
-				preFiles.insert(n);
-		}
-	}
-
-	// Capture the monotonic clock BEFORE arming any camera so live-mode
-	// markers during recording get timestamps coherent with the master
-	// timeline (which uses min(startTimestampNs) as its origin).
-	sessionMonoStartNs_ = (int64_t)os_gettime_ns();
 
 	int started = 0;
 	for (int i = 0; i < kMaxCameras; i++) {
@@ -327,21 +311,6 @@ bool ReplayCore::startRecording(std::string &errorOut)
 		return false;
 	}
 
-	// Align sessionMonoStartNs_ with the SessionIndex master-timeline origin.
-	// SessionIndex uses min(startTimestampNs) as t=0; events and liveElapsedNs
-	// must use the same origin so that marker fractions and resolve() offsets
-	// are consistent. Capture AFTER arming so the minimum is known.
-	{
-		uint64_t minTs = UINT64_MAX;
-		for (const auto &st : cameraStatus_) {
-			if (st.recording && st.startTimestampNs > 0 &&
-			    st.startTimestampNs < minTs)
-				minTs = st.startTimestampNs;
-		}
-		if (minTs != UINT64_MAX)
-			sessionMonoStartNs_ = (int64_t)minTs;
-	}
-
 	recording_ = true;
 
 	// M0: attach the live packet tap to the encoders Branch Output just
@@ -373,47 +342,12 @@ bool ReplayCore::startRecording(std::string &errorOut)
 					       epochWallNs);
 	}
 
-	// Auto-measure the encoder-startup latency: poll for the first NEW cam file
-	// (≈ first encoded frame) and record how long after the arm it appeared.
-	// Live event marks subtract this so the replay lands on the marked moment.
-	{
-		int64_t armNs = sessionMonoStartNs_;
-		std::thread([recFolder, armNs, preFiles]() {
-			for (int i = 0; i < 160; i++) { // ~8s @ 50ms
-				std::this_thread::sleep_for(
-					std::chrono::milliseconds(50));
-				std::error_code lec;
-				for (const auto &e :
-				     std::filesystem::directory_iterator(
-					     recFolder, lec)) {
-					if (!e.is_regular_file(lec))
-						continue;
-					std::string n =
-						e.path().filename().string();
-					if (n.rfind("cam", 0) != 0 ||
-					    preFiles.count(n))
-						continue;
-					int64_t lag =
-						(int64_t)os_gettime_ns() - armNs;
-					lag = std::clamp<int64_t>(lag, 0,
-								  2000000000LL);
-					ReplayCore::instance().frameLagNs_.store(
-						lag);
-					obs_log(LOG_INFO,
-						"replay frame-lag measured: %lld ms",
-						(long long)(lag / 1000000));
-					return;
-				}
-			}
-		}).detach();
-	}
-
-	// Record wall-clock start time so SessionIndex can filter segment files
-	// from previous recording sessions that share the same folder.
-	sessionWallStartSec_ = (int64_t)::time(nullptr);
+	// The encoder-startup latency detector is gone with the file-based engine:
+	// packets carry sys_dts_usec, so the first captured instant IS the first
+	// encoded frame. Nothing left to measure or subtract.
 	EventStore::instance().setSessionFolder(recordingFolderLocked());
 	EventStore::instance().setLiveMode(true); // the reference controller: recording => Live
-	writeSessionManifest();
+	followLive_.store(true);                  // a new take starts at the live edge
 	obs_log(LOG_INFO, "Recording started on %d camera(s)", started);
 	return true;
 }
@@ -520,10 +454,13 @@ bool ReplayCore::deleteAllSession(std::string &errorOut)
 		std::string ext = entry.path().extension().string();
 		bool isRecording = name.rfind("cam", 0) == 0 &&
 				   (ext == ".mp4" || ext == ".mov");
-		// Match both legacy session.json and numbered session_NNN.json.
+		// anchors.json belongs to the recordings being deleted; the
+		// session*.json manifests are the legacy engine's and are only
+		// matched here so Delete All still cleans them up.
 		int n = 0;
 		bool isMeta =
-			name == "session.json" || name == "events.json" ||
+			name == "anchors.json" || name == "session.json" ||
+			name == "events.json" ||
 			(std::sscanf(name.c_str(), "session_%d.json", &n) == 1 &&
 			 n > 0);
 		if (isRecording || isMeta) {
@@ -785,7 +722,6 @@ bool ReplayCore::newProject(const std::string &title, std::string &errorOut)
 		return false;
 	}
 	EventStore::instance().setSessionFolder(path);
-	MediaReplay::instance().clearSession();
 	reapplyFilterSettings(); // redirect Branch Output path to project folder
 	obs_log(LOG_INFO, "Project created: %s", path.c_str());
 	return true;
@@ -815,8 +751,9 @@ bool ReplayCore::openProject(const std::string &folderName,
 	}
 	saveConfig();
 	EventStore::instance().setSessionFolder(path);
-	std::string loadErr;
-	MediaReplay::instance().loadSession(path, loadErr);
+	// The footage of a project recorded in an EARLIER OBS run is not reachable
+	// until it is recorded again: SegmentIndex only watches the folder REC
+	// armed it on. Events load, playback of that old footage does not.
 	reapplyFilterSettings(); // redirect Branch Output path to project folder
 	obs_log(LOG_INFO, "Project opened: %s", path.c_str());
 	return true;
@@ -878,8 +815,6 @@ void ReplayCore::loadConfig()
 		obs_data_get_string(data, "replaySourceName");
 	config_.musicSourceName =
 		obs_data_get_string(data, "musicSourceName");
-	if (obs_data_has_user_value(data, "replayFadeMs"))
-		config_.replayFadeMs = (int)obs_data_get_int(data, "replayFadeMs");
 	if (obs_data_has_user_value(data, "autoSwitchScene"))
 		config_.autoSwitchScene =
 			obs_data_get_bool(data, "autoSwitchScene");
@@ -927,7 +862,6 @@ void ReplayCore::saveConfig() const
 			    config_.replaySourceName.c_str());
 	obs_data_set_string(data, "musicSourceName",
 			    config_.musicSourceName.c_str());
-	obs_data_set_int(data, "replayFadeMs", config_.replayFadeMs);
 	obs_data_set_bool(data, "autoSwitchScene", config_.autoSwitchScene);
 	obs_data_set_string(data, "recFormat", config_.recFormat.c_str());
 
@@ -955,56 +889,6 @@ void ReplayCore::saveConfig() const
 		bfree(path);
 	}
 	obs_data_release(data);
-}
-
-void ReplayCore::writeSessionManifest() const
-{
-	// Determine the next session ID by scanning for existing session_NNN.json
-	// files in the recording folder. Numbered manifests accumulate across
-	// recording sessions within a project, enabling a cumulative timeline.
-	namespace fs = std::filesystem;
-	std::error_code ec;
-	int nextId = 1;
-	std::string recFolder = recordingFolderLocked();
-	for (const auto &entry : fs::directory_iterator(recFolder, ec)) {
-		int n = 0;
-		if (std::sscanf(entry.path().filename().string().c_str(),
-				"session_%d.json", &n) == 1 &&
-		    n >= nextId)
-			nextId = n + 1;
-	}
-
-	obs_data_t *data = obs_data_create();
-	obs_data_set_int(data, "manifestVersion", 2);
-	obs_data_set_int(data, "createdWallClock", (int64_t)time(nullptr));
-	// baseNs: cumulative footage offset at the start of this session.
-	// SessionIndex uses this to position this session's segments on the
-	// project-wide master timeline (t=0 = start of the very first session).
-	obs_data_set_int(data, "baseNs", sessionBaseNs_);
-
-	obs_data_array_t *cams = obs_data_array_create();
-	for (const auto &st : cameraStatus_) {
-		if (!st.recording)
-			continue;
-		obs_data_t *item = obs_data_create();
-		obs_data_set_int(item, "camera", st.index + 1);
-		obs_data_set_string(item, "sourceName", st.sourceName.c_str());
-		obs_data_set_int(item, "startTimestampNs",
-				 static_cast<int64_t>(st.startTimestampNs));
-		obs_data_array_push_back(cams, item);
-		obs_data_release(item);
-	}
-	obs_data_set_array(data, "cameras", cams);
-	obs_data_array_release(cams);
-
-	char filename[32];
-	std::snprintf(filename, sizeof(filename), "session_%03d.json", nextId);
-	fs::path p = fs::path(recFolder) / filename;
-	obs_data_save_json_safe(data, p.string().c_str(), "tmp", "bak");
-	obs_data_release(data);
-
-	obs_log(LOG_INFO, "Session manifest written: %s (baseNs=%lld)",
-		filename, (long long)sessionBaseNs_);
 }
 
 } // namespace multireplay

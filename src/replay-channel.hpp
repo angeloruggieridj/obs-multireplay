@@ -29,6 +29,7 @@ no re-encoding, no reopening, no seeking.
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
+#include <functional>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -81,6 +82,21 @@ public:
 	};
 	PlaybackStats stats() const;
 
+	// Master-timeline instant of the last frame handed to OBS, 0 if nothing
+	// has played yet. This is the playhead the dock draws — there is no
+	// free-running position any more, only the clip that is playing.
+	int64_t positionNs() const { return stats().lastFrameNs; }
+
+	// Called once when a clip reaches its natural end, from the playback
+	// thread, with no lock held. It does NOT fire when playback was replaced
+	// or stopped: those are the caller's own doing, and firing there would
+	// make a queue advance itself while it is being torn down.
+	//
+	// The callee must not call play()/stop() inline: both join the very
+	// thread that is invoking the callback. Hand the work to another thread
+	// (PlaybackCoordinator posts it to the OBS UI task queue).
+	void setOnFinished(std::function<void()> fn);
+
 private:
 	ReplayChannel() = default;
 	~ReplayChannel();
@@ -100,6 +116,9 @@ private:
 	int64_t presentInNs_ = 0;
 	int64_t presentOutNs_ = 0;
 	int speedPct_ = 100;
+	// Snapshotted by the worker when it starts, so a clip always fires the
+	// callback that was installed for IT, never a later one.
+	std::function<void()> onFinished_;
 
 	std::thread worker_;
 	std::atomic<bool> playing_{false};

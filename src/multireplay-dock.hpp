@@ -3,10 +3,16 @@ obs-multireplay — broadcast-style instant replay for OBS Studio
 Copyright (C) 2026 obs-multireplay contributors
 SPDX-License-Identifier: GPL-2.0-or-later
 
-Native OBS dock panel. Drives the in-process engine (ReplayCore / MediaReplay /
+Native OBS dock panel. Drives the in-process engine (ReplayCore / ReplayChannel /
 EventStore / PlaybackCoordinator) directly via C++ calls. Shows the replay
-preview (an OBS Media Source), a seekbar over the recorded timeline, marker
+preview (the "Replay A" OBS input), a seekbar over the live timeline, marker
 controls and the searchable, editable event list.
+
+The timeline it draws is the MEASURED one: its live edge is the newest packet
+the tap captured, and its start is the oldest instant still replayable (the
+recorded files reach further back than the RAM ring). Every time the dock shows
+or stores is an absolute master-timeline instant, displayed relative to that
+start.
 */
 
 #pragma once
@@ -15,7 +21,6 @@ controls and the searchable, editable event list.
 #include <atomic>
 #include <climits>
 #include <cstdint>
-#include <memory>
 #include <mutex>
 #include <string>
 #include <utility>
@@ -111,16 +116,17 @@ private:
 	void newProjectDialog();    // New Project... menu action
 	void openProjectDialog();   // Open Project... menu action
 	void copyYouTubeChapters(); // copy chapter timestamps to clipboard
-	int64_t markTimeNs() const; // Live=masterNow, Recorded=A playhead
+	int64_t markTimeNs() const; // Live=live edge, Recorded=replay playhead
 	std::vector<int> selectedEventIds() const;
 	void seekToFraction(double frac);
 	void setAngle(int angle1Based);
 	// (Re)play the selected (or last) completed event from its IN on the
-	// current angle at the resolved speed. No-op while recording.
+	// current angle at the resolved speed. No-op while following live (the
+	// angle buttons then only pick which camera the preview mirrors).
 	void replayCurrent();
-	// Apply a replay speed (5..100). Updates the engine speed and, when no
-	// replay is currently playing, re-plays the selected/last event at the new
-	// speed from its in-point (broadcast-style) instead of leaving the raw file.
+	// Apply a replay speed (5..100): becomes the default for events without a
+	// per-angle override, and re-cues the current clip from its in-point at
+	// the new speed (broadcast-style).
 	void applyReplaySpeed(int pct);
 
 	// --- event filter: double-click on note labels ---
@@ -140,6 +146,9 @@ private:
 
 	// transport
 	int currentAngle1_ = 1; // dock-selected angle (1-based) for replay/preview
+	// Default replay speed (slider). The engine has no speed of its own any
+	// more: it is told the speed of the clip it is asked to play.
+	int speedPct_ = 100;
 	SeekBar *seek_ = nullptr;
 	QSlider *speed_ = nullptr;
 	QLabel *speedLbl_ = nullptr;
@@ -172,26 +181,26 @@ private:
 	QSplitter *splitter_ = nullptr;
 
 	// Live-mirror preview: while recording and following live, the preview
-	// renders the live camera source for the selected angle (smooth, truly
-	// live) instead of the replay Media Source — OBS' ffmpeg_source cannot
-	// tail a growing Hybrid-MP4. Updated by poll() (UI thread), read by
-	// drawChannelA() (graphics thread).
+	// renders the live camera source for the selected angle (zero latency,
+	// exactly what the reference controller shows) instead of the replay input, which only has
+	// pictures while a clip is playing. Updated by poll() (UI thread), read
+	// by drawChannelA() (graphics thread).
 	std::atomic<bool> previewLive_{false};
 	std::mutex previewMutex_;     // guards liveSourceName_
 	std::string liveSourceName_; // OBS source name for the current angle
+	// False until something has been captured: keeps the preview black after a
+	// fresh start instead of showing the last frame of the previous clip.
+	std::atomic<bool> previewHasContent_{false};
 
 	QTimer *pollTimer_ = nullptr;
-	int pollTick_ = 0;
-	bool prevRecording_ = false;                      // detects REC start
-	// shared_ptr keeps the atomic alive past dock destruction so the detached
-	// refresh thread can safely store(false) without triggering a UAF.
-	std::shared_ptr<std::atomic<bool>> sessionRefreshPending_ =
-		std::make_shared<std::atomic<bool>>(false);
+	bool prevRecording_ = false; // detects REC start
 
-	// cached live-edge for seek mapping (ns)
-	int64_t seekableNs_ = 0;
-	int64_t durationNs_ = 0;
-	int64_t displayDurNs_ = 0; // max(durationNs_, liveElapsed) updated every poll
+	// Master-timeline window currently drawn on the seekbar (ns).
+	int64_t timelineStartNs_ = 0; // oldest replayable instant, 0 = nothing
+	int64_t displayDurNs_ = 0;    // live edge - timelineStartNs_
+	// Origin the event table was last rendered against, so poll() can tell
+	// when the columns need redrawing (see poll()).
+	int64_t tableOriginNs_ = 0;
 
 	// Raw ns (in, out) for each completed event — fractions computed in poll()
 	// so markers shift leftward as recording time grows.

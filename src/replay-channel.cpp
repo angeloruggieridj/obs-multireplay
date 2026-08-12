@@ -193,6 +193,12 @@ obs_source_t *ReplayChannel::acquireSource()
 	return source_ ? obs_source_get_ref(source_) : nullptr;
 }
 
+void ReplayChannel::setOnFinished(std::function<void()> fn)
+{
+	std::lock_guard<std::mutex> lock(mutex_);
+	onFinished_ = std::move(fn);
+}
+
 void ReplayChannel::joinWorker()
 {
 	abort_.store(true);
@@ -274,6 +280,7 @@ void ReplayChannel::playbackLoop()
 	int64_t presentIn = 0;
 	double speed = 1.0;
 	obs_source_t *source = nullptr;
+	std::function<void()> onFinished;
 
 	{
 		std::lock_guard<std::mutex> lock(mutex_);
@@ -282,6 +289,9 @@ void ReplayChannel::playbackLoop()
 		presentIn = presentInNs_;
 		speed = speedPct_ / 100.0;
 		source = source_ ? obs_source_get_ref(source_) : nullptr;
+		// Taken at START, not at the end: a later play() may already have
+		// installed the next clip's callback by the time we get there.
+		onFinished = onFinished_;
 	}
 	if (!source) {
 		playing_.store(false);
@@ -294,6 +304,10 @@ void ReplayChannel::playbackLoop()
 		obs_log(LOG_ERROR, "[channel] %s", err.c_str());
 		obs_source_release(source);
 		playing_.store(false);
+		// The clip is over before it began — report it, or a queue waiting
+		// on this clip would sit there forever.
+		if (onFinished)
+			onFinished();
 		return;
 	}
 
@@ -436,6 +450,11 @@ void ReplayChannel::playbackLoop()
 
 	obs_source_release(source);
 	playing_.store(false);
+
+	// Only a clip that reached its own end reports back: an aborted run was
+	// replaced or stopped by the caller, who already knows.
+	if (completed && onFinished)
+		onFinished();
 }
 
 ReplayChannel::PlaybackStats ReplayChannel::stats() const

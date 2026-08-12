@@ -351,14 +351,17 @@ std::string EventStore::listJson(int list) const
 	return json;
 }
 
-std::string EventStore::chaptersText(int list) const
+std::string EventStore::chaptersText(int list, int64_t originNs) const
 {
 	std::lock_guard<std::mutex> lock(mutex_);
 	std::string out;
 	for (const auto &ev : events_) {
 		if (ev.list != list || ev.tOutNs < 0)
 			continue;
-		int64_t totalSec = ev.tInNs / 1000000000LL;
+		int64_t relNs = ev.tInNs - originNs;
+		if (relNs < 0)
+			relNs = 0; // marked before the video starts
+		int64_t totalSec = relNs / 1000000000LL;
 		int h = (int)(totalSec / 3600);
 		int m = (int)((totalSec % 3600) / 60);
 		int s = (int)(totalSec % 60);

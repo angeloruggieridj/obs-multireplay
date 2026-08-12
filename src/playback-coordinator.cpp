@@ -6,13 +6,15 @@ SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "playback-coordinator.hpp"
 #include "replay-core.hpp"
-#include "media-replay.hpp"
+#include "replay-channel.hpp"
 #include "plugin-support.h"
 
 #include <obs-module.h>
 #include <obs-frontend-api.h>
 
 #include <algorithm>
+#include <cmath>
+#include <mutex>
 
 namespace multireplay {
 
@@ -49,12 +51,35 @@ void switchSceneTask(void *param)
 	delete ctx;
 }
 
+// The engine reports the end of a clip from its playback thread, and
+// ReplayChannel::play() joins that very thread — so advancing the queue inline
+// would join self. Hop onto the UI task queue instead, which is where the
+// scene switching has to happen anyway.
+void finishedTask(void *param)
+{
+	const uint64_t gen = (uint64_t)(uintptr_t)param;
+	PlaybackCoordinator::instance().onClipFinished(gen);
+}
+
 } // namespace
 
 PlaybackCoordinator &PlaybackCoordinator::instance()
 {
 	static PlaybackCoordinator coordinator;
 	return coordinator;
+}
+
+void PlaybackCoordinator::setDefaultSpeedPct(int pct)
+{
+	defaultSpeedPct_.store(std::clamp(pct, 5, 400));
+}
+
+void PlaybackCoordinator::onClipFinished(uint64_t gen)
+{
+	std::lock_guard<std::mutex> lock(mutex_);
+	if (!active_ || gen != playGen_)
+		return; // the queue this belonged to is gone
+	onEventFinished();
 }
 
 bool PlaybackCoordinator::playEvents(const std::vector<int> &eventIds,
@@ -67,7 +92,7 @@ bool PlaybackCoordinator::playEvents(const std::vector<int> &eventIds,
 	// angle). Speed = that angle's per-angle override if set, else the default
 	// (slider) speed. There is no event-level speed.
 	int ang = std::clamp(angle0, 0, kEventAngles - 1);
-	double def = MediaReplay::instance().speed();
+	const int defPct = defaultSpeedPct_.load();
 	std::vector<QueueItem> items;
 	for (int id : eventIds) {
 		ReplayEvent ev;
@@ -85,18 +110,14 @@ bool PlaybackCoordinator::playEvents(const std::vector<int> &eventIds,
 				}
 			}
 		}
-		double sp = ev.angles[useAng].speed >= 0 ? ev.angles[useAng].speed
-							 : def;
-		items.push_back({ev.id, ev.tInNs, ev.tOutNs, useAng, sp});
+		int pct = ev.angles[useAng].speed >= 0
+				  ? (int)std::lround(ev.angles[useAng].speed * 100.0)
+				  : defPct;
+		items.push_back({ev.id, ev.tInNs, ev.tOutNs, useAng,
+				 std::clamp(pct, 5, 400)});
 	}
 	if (items.empty()) {
 		errorOut = "no playable (completed) events selected";
-		return false;
-	}
-
-	if (toOutput && MediaReplay::instance().replaySceneName().empty() &&
-	    ReplayCore::instance().getConfig().outputSceneName.empty()) {
-		errorOut = "replay output scene not ready";
 		return false;
 	}
 
@@ -104,7 +125,9 @@ bool PlaybackCoordinator::playEvents(const std::vector<int> &eventIds,
 	queuePos_ = 0;
 	toOutput_ = toOutput;
 	active_ = true;
-	MediaReplay::instance().setFollowLive(false);
+	// Reviewing, not watching the live edge: the preview must show the replay
+	// source from here on.
+	ReplayCore::instance().setFollowLive(false);
 
 	if (toOutput_)
 		switchToReplayScene();
@@ -128,7 +151,8 @@ bool PlaybackCoordinator::playLastEvent(int angle0, bool toOutput,
 void PlaybackCoordinator::stopEvents()
 {
 	std::lock_guard<std::mutex> lock(mutex_);
-	MediaReplay::instance().stopEvent();
+	ReplayChannel::instance().stop();
+	playGen_++; // any finish callback still in flight is now stale
 	queue_.clear();
 	if (active_ && toOutput_)
 		restorePreviousScene();
@@ -158,28 +182,35 @@ void PlaybackCoordinator::startNext()
 {
 	// mutex_ held by caller.
 	//
-	// One call drives the Media Source: seek to the in-point on the chosen
-	// angle, play at the event speed, auto-stop at the out-point. OBS owns
-	// the A/V sync, so audio just works. playEvent() returns false for an
-	// unplayable item (e.g. footage not indexed) — skip it inline rather
-	// than relying on a re-entrant onDone callback (would self-deadlock).
+	// One call is the whole thing now: the packets for [in, out] on that
+	// camera are pulled from the ring (or the recorded files), decoded and
+	// paced into the Replay A input. play() returns false when the range
+	// cannot be served EXACTLY — the engine refuses rather than clamping, so
+	// an unplayable item is skipped inline instead of putting the wrong
+	// footage on air.
 	while (queuePos_ < queue_.size()) {
 		const QueueItem &item = queue_[queuePos_];
-		if (MediaReplay::instance().playEvent(
-			    item.tInNs, item.tOutNs, item.angle, item.speed,
-			    [this]() { onEventFinished(); })) {
+		const uint64_t gen = ++playGen_;
+		// Installed before play() so the worker picks up the callback that
+		// belongs to THIS clip.
+		ReplayChannel::instance().setOnFinished([gen]() {
+			obs_queue_task(OBS_TASK_UI, finishedTask,
+				       (void *)(uintptr_t)gen, false);
+		});
+		std::string err;
+		if (ReplayChannel::instance().play(item.angle, item.tInNs,
+						   item.tOutNs, item.speedPct,
+						   err)) {
 			obs_log(LOG_INFO,
 				"coordinator: playing event %d angle %d (%d%%) "
 				"[%zu/%zu]",
-				item.eventId, item.angle + 1,
-				(int)(item.speed * 100), queuePos_ + 1,
-				queue_.size());
-			// Pre-roll the next clip on the inactive source so the
-			// engine can crossfade to it centered on the OUT (no-op
-			// when the configured fade is 0 → plain hard cut).
-			maybePrefetchLocked();
+				item.eventId, item.angle + 1, item.speedPct,
+				queuePos_ + 1, queue_.size());
 			return;
 		}
+		obs_log(LOG_WARNING,
+			"coordinator: event %d angle %d not playable: %s",
+			item.eventId, item.angle + 1, err.c_str());
 		queuePos_++; // unplayable: advance to the next item
 	}
 
@@ -190,46 +221,9 @@ void PlaybackCoordinator::startNext()
 	setMusicMuted(true);
 }
 
-void PlaybackCoordinator::maybePrefetchLocked()
-{
-	// mutex_ held by caller. Prefetch the immediate next item (no wrap: the
-	// loop-restart at the end uses the plain hard-cut path).
-	size_t nextPos = queuePos_ + 1;
-	if (nextPos >= queue_.size())
-		return;
-	const QueueItem &n = queue_[nextPos];
-	MediaReplay::instance().prefetchNext(
-		n.tInNs, n.tOutNs, n.angle, n.speed,
-		[this]() { onEventFinished(); },
-		[this]() { onClipPromoted(); });
-}
-
-void PlaybackCoordinator::onClipPromoted()
-{
-	std::lock_guard<std::mutex> lock(mutex_);
-	if (!active_)
-		return;
-	// The engine has crossfaded to the prefetched next clip and is playing it;
-	// advance our position to match, then pre-roll the one after it. A
-	// promotion only ever fires for a clip the engine was asked to prefetch,
-	// which only happens when a next item exists — so this never runs past end.
-	if (queuePos_ + 1 < queue_.size())
-		queuePos_++;
-	else
-		obs_log(LOG_WARNING,
-			"coordinator: promotion past queue end (pos=%zu size=%zu)",
-			queuePos_, queue_.size());
-	obs_log(LOG_INFO, "coordinator: crossfaded to event %d [%zu/%zu]",
-		queuePos_ < queue_.size() ? queue_[queuePos_].eventId : 0,
-		queuePos_ + 1, queue_.size());
-	maybePrefetchLocked();
-}
-
 void PlaybackCoordinator::onEventFinished()
 {
-	std::lock_guard<std::mutex> lock(mutex_);
-	if (!active_)
-		return;
+	// mutex_ held by caller.
 	queuePos_++;
 	if (queuePos_ < queue_.size()) {
 		// hard cut between events (overlap transitions: future work)
@@ -272,12 +266,19 @@ void PlaybackCoordinator::switchToReplayScene()
 	//
 	// switchSceneTask does not acquire mutex_ or any lock owned by the
 	// calling thread, so wait=true cannot deadlock.
-	// Switch Program to the plugin-managed replay scene (holds the A/B
-	// transition) so the seamless replay reaches output. Fall back to the
-	// operator's configured output scene if the managed one isn't ready.
-	std::string scene = MediaReplay::instance().replaySceneName();
-	if (scene.empty())
-		scene = ReplayCore::instance().getConfig().outputSceneName;
+	//
+	// There is no plugin-managed scene any more: "MultiReplay - Replay A" is
+	// an ordinary OBS input the operator puts where he wants it, so the only
+	// thing to switch to is the scene he configured. With none configured the
+	// clip still plays into the input — we just don't take program from him.
+	std::string scene = ReplayCore::instance().getConfig().outputSceneName;
+	if (scene.empty()) {
+		obs_log(LOG_INFO,
+			"coordinator: no output scene configured — playing "
+			"into '%s' without switching program",
+			ReplayChannel::sourceName());
+		return;
+	}
 	auto *ctx = new SceneSwitchCtx{scene, &previousSceneName_};
 	obs_queue_task(OBS_TASK_UI, switchSceneTask, ctx, true);
 }

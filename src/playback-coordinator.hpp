@@ -9,19 +9,23 @@ SPDX-License-Identifier: GPL-2.0-or-later
 #include "event-store.hpp"
 
 #include <atomic>
+#include <cstdint>
 #include <mutex>
 #include <string>
 #include <vector>
 
 namespace multireplay {
 
-// Plays events on channel A (the reference controller: ReplayPlayEvent / PlaySelectedEvent /
+// Plays events on Replay A (the reference controller: ReplayPlayEvent / PlaySelectedEvent /
 // PlayLastEvent, with the optional ...ToOutput scene switch).
 //
-// "To output" uses obs-frontend-api: the configured replay scene is put in
-// program, the events play back-to-back (hard cut between events in M3;
-// configurable transitions are M4) and the previous scene is restored when
-// the queue completes (the reference controller basic replay flow).
+// One clip at a time: ReplayChannel is handed an explicit (camera, in, out,
+// speed) and reports back when that clip reaches its end, which is when the
+// queue advances. The A/B pre-roll and crossfade machinery is gone with the
+// ffmpeg_source pair it existed to work around — there is one source now.
+//
+// "To output" uses obs-frontend-api: the configured output scene is put in
+// program and the previous scene is restored when the queue completes.
 class PlaybackCoordinator {
 public:
 	static PlaybackCoordinator &instance();
@@ -56,29 +60,34 @@ public:
 	void setMusicEnabled(bool enabled) { musicEnabled_ = enabled; }
 	bool musicEnabled() const { return musicEnabled_; }
 
+	// Default replay speed (the dock's slider), used for every angle that has
+	// no per-angle override. Lives here because the hotkeys queue events too,
+	// and they cannot reach the dock.
+	void setDefaultSpeedPct(int pct);
+	int defaultSpeedPct() const { return defaultSpeedPct_.load(); }
+
+	// Invoked (via the OBS UI task queue) when the playing clip ends by
+	// itself. `gen` identifies the queue generation it belongs to, so a
+	// callback that outlived its queue is dropped instead of advancing a
+	// newer one.
+	void onClipFinished(uint64_t gen);
+
 private:
 	PlaybackCoordinator() = default;
-	void startNext();        // plays queue_[queuePos_]
-	void onEventFinished();  // stop-at-out callback from the player
-	// The engine crossfaded into the prefetched next clip: advance the queue
-	// position to it and prefetch the following one. mutex_ NOT held on entry.
-	void onClipPromoted();
-	// Ask the engine to prefetch queue_[queuePos_+1] for a centered crossfade
-	// (no-op in the engine when the fade is 0). Caller holds mutex_.
-	void maybePrefetchLocked();
+	void startNext();       // plays queue_[queuePos_]
+	void onEventFinished(); // queue advance; caller holds mutex_
 	void switchToReplayScene();
 	void restorePreviousScene();
 	void setMusicMuted(bool muted);
 
-	// One queue item per (event, enabled angle): the reference controller plays every checked
-	// angle of an event back-to-back. Speed is resolved at queue-build
-	// time ("--" inheritance chain).
+	// One queue item per event, on the angle the operator selected. Speed is
+	// resolved at queue-build time (per-angle override, else the default).
 	struct QueueItem {
 		int eventId;
 		int64_t tInNs;
 		int64_t tOutNs;
-		int angle; // 0-based
-		double speed;
+		int angle;    // 0-based
+		int speedPct; // 5..400, 100 = 1x
 	};
 
 	mutable std::mutex mutex_;
@@ -86,8 +95,12 @@ private:
 	size_t queuePos_ = 0;
 	bool active_ = false;
 	bool toOutput_ = false;
+	// Bumped on every clip start and on every stop: a finish callback that
+	// carries an older generation belongs to a queue that no longer exists.
+	uint64_t playGen_ = 0;
 	std::atomic<bool> loop_{false};
 	std::atomic<bool> musicEnabled_{false};
+	std::atomic<int> defaultSpeedPct_{100};
 	std::string previousSceneName_;
 };
 

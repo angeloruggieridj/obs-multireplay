@@ -86,7 +86,10 @@ public:
 	// YouTube-compatible chapter timestamps for all completed events in list.
 	// Format: "MM:SS Description\n" (or H:MM:SS if >= 1 hour).
 	// Description = first non-empty angle note (lowest-index angle).
-	std::string chaptersText(int list) const;
+	// `originNs` is the master-timeline instant that counts as 0:00 — marks
+	// are absolute instants on a clock that starts with OBS, not offsets into
+	// a recording, so the caller says where the video begins.
+	std::string chaptersText(int list, int64_t originNs = 0) const;
 
 	// Monotonic counter: incremented on every mutation. The dock polls this
 	// to auto-refresh the event table without a callback mechanism.

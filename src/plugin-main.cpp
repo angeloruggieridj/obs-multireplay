@@ -23,7 +23,6 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #include "plugin-support.h"
 #include "multireplay-dock.hpp"
 #include "replay-core.hpp"
-#include "media-replay.hpp"
 #include "packet-tap.hpp"
 #include "replay-channel.hpp"
 #include "selftest.hpp"
@@ -37,8 +36,8 @@ namespace {
 // start recording as soon as their source becomes active. The scene
 // collection loads AFTER obs_module_post_load, so the disarm must run on
 // the frontend FINISHED_LOADING / SCENE_COLLECTION_CHANGED events. The same
-// events are where the managed Media Source must be (re)adopted for the
-// just-loaded scene collection.
+// events are where the replay input must be (re)adopted for the just-loaded
+// scene collection.
 void onFrontendEvent(enum obs_frontend_event event, void *)
 {
 	if (event == OBS_FRONTEND_EVENT_FINISHED_LOADING ||
@@ -46,12 +45,7 @@ void onFrontendEvent(enum obs_frontend_event event, void *)
 		if (!multireplay::ReplayCore::instance().isRecording())
 			multireplay::ReplayCore::instance()
 				.disarmPersistedFilters();
-		multireplay::MediaReplay::instance().ensureSource();
 		multireplay::ReplayChannel::instance().ensureSource();
-		multireplay::MediaReplay::instance().setFadeMs(
-			multireplay::ReplayCore::instance()
-				.getConfig()
-				.replayFadeMs);
 		// No-op unless OBS_MULTIREPLAY_SELFTEST is set.
 		multireplay::maybeRunSelfTest();
 	}
@@ -79,8 +73,6 @@ bool obs_module_load(void)
 	// and the replay source type before a scene collection can reference it.
 	multireplay::PacketTap::instance().load();
 	multireplay::ReplayChannel::instance().load();
-
-	multireplay::MediaReplay::instance().load();
 
 	obs_frontend_add_event_callback(onFrontendEvent, nullptr);
 
@@ -122,7 +114,6 @@ void obs_module_unload(void)
 	// Detach from Branch Output's encoders before anything else tears down.
 	multireplay::PacketTap::instance().unload();
 	multireplay::ReplayChannel::instance().unload();
-	multireplay::MediaReplay::instance().unload();
 	multireplay::ReplayCore::instance().unload();
 	obs_log(LOG_INFO, "plugin unloaded");
 }

@@ -57,13 +57,11 @@ struct Config {
 	std::string videoEncoderId; // "" = auto-detect best hardware encoder
 	std::string recFormat = "hybrid_mp4";
 	std::string outputSceneName; // scene switched to program on "to output"
-	// OBS Media Source the plugin drives for replay. Put one in the output
-	// scene and pick it here, so the replay actually feeds that scene.
-	// Empty = the plugin's own managed "MultiReplay — Replay A" source.
+	// Legacy: the replay is a plugin-provided OBS input the operator places
+	// himself, so nothing drives a Media Source any more. Kept so an existing
+	// config.json round-trips unchanged.
 	std::string replaySourceName;
 	std::string musicSourceName; // OBS audio source unmuted during playback
-	// Crossfade duration (ms) between replay clips/angles (0 = hard cut).
-	int replayFadeMs = 0;
 	bool autoSwitchScene = true; // play-to-output switches the OBS scene;
 				     // false = only feed the Replay source
 	std::array<CameraConfig, kMaxCameras> cameras;
@@ -90,16 +88,23 @@ public:
 	bool startRecording(std::string &errorOut);
 	bool stopRecording();
 	bool isRecording() const { return recording_; }
-	// Monotonic ns of the earliest camera arm in the current session.
-	int64_t sessionMonoStartNs() const { return sessionMonoStartNs_; }
-	// Cumulative footage ns at the START of the current session (0 if first).
-	// Add to live elapsed time to get a cumulative master-timeline position.
-	int64_t sessionBaseNs() const { return sessionBaseNs_; }
-	// Auto-measured encoder-startup latency (ns): time from camera arm to the
-	// first recording file appearing on disk (≈ first encoded frame). The
-	// recording lags the wall clock by this, so live event marks subtract it to
-	// land on the frame the operator actually saw. 0 until measured (~1-2 s in).
-	int64_t frameLagNs() const { return frameLagNs_.load(); }
+
+	// --- Operator state shared by the dock, the hotkeys and the coordinator ---
+	// The playback engine holds none of this any more: ReplayChannel is told an
+	// explicit (camera, in, out, speed) and knows nothing about "the current
+	// angle" or "following live". Both are plain UI state, but the hotkeys have
+	// to reach them without going through the dock, so they live here.
+	int currentAngle() const { return currentAngle_.load(); } // 0-based
+	void setCurrentAngle(int angle0)
+	{
+		currentAngle_.store(angle0 < 0 ? 0
+					       : (angle0 >= kMaxCameras
+							  ? kMaxCameras - 1
+							  : angle0));
+	}
+	// the reference controller NOW: the preview mirrors the live camera instead of the replay.
+	bool followLive() const { return followLive_.load(); }
+	void setFollowLive(bool follow) { followLive_.store(follow); }
 
 	// the reference controller "Delete All": wipe recordings + events in the session folder,
 	// keep all settings. Refuses while recording.
@@ -143,7 +148,6 @@ private:
 
 	void loadConfig();
 	void saveConfig() const;
-	void writeSessionManifest() const;
 	// Called with mutex_ held — returns recordingFolder without re-acquiring.
 	std::string recordingFolderLocked() const;
 	// Update Branch Output filter path on every configured camera source.
@@ -155,19 +159,8 @@ private:
 	mutable std::mutex mutex_;
 	Config config_;
 	bool recording_ = false;
-	// Set by a background detector started in startRecording() (see frameLagNs).
-	std::atomic<int64_t> frameLagNs_{0};
-	// Wall-clock Unix time (seconds) of the last startRecording() call.
-	// Written into session.json so SessionIndex can filter out stale segment
-	// files from previous recording sessions that share the same folder.
-	int64_t sessionWallStartSec_ = 0;
-	// Monotonic (os_gettime_ns) timestamp of the earliest camera arm in the
-	// current recording session. Aligns with SessionIndex minStart.
-	int64_t sessionMonoStartNs_ = 0;
-	// Cumulative master-timeline offset at the START of the current session:
-	// sum of all previous sessions' footage within this project (0 for first).
-	// Captured from footageDurationNs() just before startRecording() clears.
-	int64_t sessionBaseNs_ = 0;
+	std::atomic<int> currentAngle_{0};   // 0-based, see currentAngle()
+	std::atomic<bool> followLive_{true}; // see followLive()
 	std::array<CameraStatus, kMaxCameras> cameraStatus_{};
 	obs_hotkey_id startHotkey_ = OBS_INVALID_HOTKEY_ID;
 	obs_hotkey_id stopHotkey_ = OBS_INVALID_HOTKEY_ID;

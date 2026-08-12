@@ -7,15 +7,15 @@ SPDX-License-Identifier: GPL-2.0-or-later
 #include "multireplay-dock.hpp"
 #include "qt-display.hpp"
 #include "replay-core.hpp"
-#include "media-replay.hpp"
 #include "event-store.hpp"
+#include "packet-tap.hpp"
 #include "playback-coordinator.hpp"
 #include "export.hpp"
-#include "session-index.hpp"
+#include "replay-channel.hpp"
+#include "segment-index.hpp"
 #include "plugin-support.h"
 
 #include <obs-module.h>
-#include <util/platform.h>
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -59,7 +59,6 @@ SPDX-License-Identifier: GPL-2.0-or-later
 #include <algorithm>
 #include <string>
 #include <cstring>
-#include <thread>
 
 namespace multireplay {
 
@@ -270,7 +269,13 @@ QSplitter::handle:vertical { background: transparent; }
 
 namespace {
 
-constexpr int kNCams = kIndexMaxCameras; // 8
+constexpr int kNCams = kMaxCameras; // 8
+
+// Scrubbing means "review from here": the engine plays a range, it has no
+// playhead to park. The window is capped because play() materialises every
+// packet of the range in RAM, and an uncapped "from here to now" would be a
+// multi-gigabyte copy on a long session.
+constexpr int64_t kScrubReviewNs = 10'000'000'000LL; // 10 s
 
 // Event table column layout.
 // Note: per-camera descriptions are edited via right-click on camera chips.
@@ -316,16 +321,6 @@ struct Data {
 	}
 	operator obs_data_t *() const { return d; }
 };
-
-bool ensureSession()
-{
-	auto &engine = MediaReplay::instance();
-	if (engine.sessionLoaded())
-		return true;
-	std::string err;
-	return engine.loadSession(ReplayCore::instance().getConfig().sessionFolder,
-				  err);
-}
 
 // small compact marker/action button. `role` maps to a QSS object name so the
 // stylesheet can theme it ("" = default, "mrAccent", "mrDanger").
@@ -520,10 +515,10 @@ void SeekBar::mouseReleaseEvent(QMouseEvent *e)
 void MultiReplayDock::drawChannelA(void *data, uint32_t cx, uint32_t cy)
 {
 	// Live mirror: while recording + following live, render the live camera
-	// source for the selected angle (smooth, truly live). OBS' ffmpeg_source
-	// can't tail a growing Hybrid-MP4, so reading back the recording file
-	// freezes; mirroring the live input is what the reference controller shows anyway. Falls back
-	// to the replay Media Source for review/scrub and after recording stops.
+	// source for the selected angle. That is what the reference controller shows, and it is the
+	// only zero-latency picture available — the replay input only carries
+	// frames while a clip is actually playing. Falls back to the replay input
+	// for review/scrub and after recording stops.
 	obs_source_t *src = nullptr;
 	auto *self = static_cast<MultiReplayDock *>(data);
 	if (self && self->previewLive_.load()) {
@@ -536,13 +531,11 @@ void MultiReplayDock::drawChannelA(void *data, uint32_t cx, uint32_t cy)
 			src = obs_get_source_by_name(name.c_str()); // add-ref'd
 	}
 	if (!src) {
-		// Not live: only render the replay source when it actually has a
-		// clip loaded. After New Project / clearSession there is no content,
-		// so render nothing (black) instead of the previous project's last
-		// frame.
-		if (!MediaReplay::instance().previewHasContent())
+		// Nothing captured yet: render black rather than whatever the
+		// replay input last held.
+		if (!self || !self->previewHasContent_.load())
 			return;
-		src = MediaReplay::instance().acquireSource();
+		src = ReplayChannel::instance().acquireSource();
 	}
 	if (!src)
 		return;
@@ -650,17 +643,10 @@ MultiReplayDock::MultiReplayDock(QWidget *parent) : QWidget(parent)
 			auto &core = ReplayCore::instance();
 			if (core.isRecording()) {
 				core.stopRecording();
-				std::string err;
-				MediaReplay::instance().loadSession(
-					core.recordingFolder(), err);
 			} else {
-				// Stop any event playing BEFORE starting a new
-				// recording. startRecording() calls clearSession()
-				// which resets eventActive_/onDone but does not
-				// call stopEvents() — that would deadlock because
-				// startRecording holds ReplayCore::mutex_ while
-				// stopEvents would acquire MediaReplay::mutex_ in
-				// an order that conflicts with the monitor thread.
+				// Stop any event playing BEFORE arming: a new take
+				// must not start while a clip is still being paced
+				// into the replay input.
 				PlaybackCoordinator::instance().stopEvents();
 				std::string err;
 				if (!core.startRecording(err))
@@ -910,18 +896,20 @@ QWidget *MultiReplayDock::buildTransport()
 	v->addLayout(sh);
 
 	// wire transport actions
-	connect(playPauseBtn_, &QPushButton::clicked, this, []() {
-		if (!ensureSession())
+	connect(playPauseBtn_, &QPushButton::clicked, this, [this]() {
+		// There is no free-running playhead to pause any more: the engine
+		// plays a clip. ▶ re-cues the selected event, ⏸ stops it.
+		if (ReplayChannel::instance().playing()) {
+			PlaybackCoordinator::instance().stopEvents();
 			return;
-		auto &engine = MediaReplay::instance();
-		if (!engine.playing())
-			engine.setFollowLive(false);
-		engine.togglePlay();
+		}
+		ReplayCore::instance().setFollowLive(false);
+		replayCurrent();
 	});
 	connect(nowBtn_, &QPushButton::clicked, this, []() {
-		if (!ensureSession())
-			return;
-		MediaReplay::instance().jumpToEnd();
+		// the reference controller NOW: drop the replay and watch the live edge again.
+		PlaybackCoordinator::instance().stopEvents();
+		ReplayCore::instance().setFollowLive(true);
 	});
 
 	return box;
@@ -949,8 +937,7 @@ QWidget *MultiReplayDock::buildMarkers()
 	auto *out = compactBtn(obs_module_text("Dock.MarkOut"), this, "mrAccent");
 	connect(in, &QPushButton::clicked, this, [this]() {
 		// Inherit the currently selected camera angle (0-based).
-		int a0 = MediaReplay::instance().angle();
-		EventStore::instance().markIn(markTimeNs(), a0);
+		EventStore::instance().markIn(markTimeNs(), currentAngle1_ - 1);
 		refreshEvents();
 	});
 	connect(out, &QPushButton::clicked, this, [this]() {
@@ -966,8 +953,8 @@ QWidget *MultiReplayDock::buildMarkers()
 	for (int sec : {5, 10, 20}) {
 		auto *b = compactBtn(QString("-%1s").arg(sec), this);
 		connect(b, &QPushButton::clicked, this, [this, sec]() {
-			int a0 = MediaReplay::instance().angle();
-			EventStore::instance().markInOut(markTimeNs(), sec, a0);
+			EventStore::instance().markInOut(markTimeNs(), sec,
+							 currentAngle1_ - 1);
 			refreshEvents();
 		});
 		h->addWidget(b);
@@ -1078,8 +1065,7 @@ QWidget *MultiReplayDock::buildEvents()
 	auto *stop = compactBtn(obs_module_text("Dock.Stop"), this, "mrDanger");
 	connect(playSel, &QPushButton::clicked, this, [this]() {
 		std::string err;
-		if (ensureSession() &&
-		    !PlaybackCoordinator::instance().playEvents(
+		if (!PlaybackCoordinator::instance().playEvents(
 			    selectedEventIds(), currentAngle1_ - 1,
 			    toOutputChk_->isChecked(), err))
 			QMessageBox::warning(this, "obs-multireplay",
@@ -1087,8 +1073,7 @@ QWidget *MultiReplayDock::buildEvents()
 	});
 	connect(playLast, &QPushButton::clicked, this, [this]() {
 		std::string err;
-		if (ensureSession() &&
-		    !PlaybackCoordinator::instance().playLastEvent(
+		if (!PlaybackCoordinator::instance().playLastEvent(
 			    currentAngle1_ - 1, toOutputChk_->isChecked(), err))
 			QMessageBox::warning(this, "obs-multireplay",
 					     QString::fromStdString(err));
@@ -1122,37 +1107,20 @@ QWidget *MultiReplayDock::buildEvents()
 
 int64_t MultiReplayDock::markTimeNs() const
 {
-	auto &store = EventStore::instance();
-	if (store.liveMode()) {
-		auto &core = ReplayCore::instance();
-		if (core.isRecording() && core.sessionMonoStartNs() > 0) {
-			// Files still open: elapsed from arm + cumulative base
-			// from previous sessions = absolute master-timeline now.
-			int64_t elapsed = (int64_t)os_gettime_ns() -
-					  core.sessionMonoStartNs();
-			// Subtract the auto-measured encoder-startup lag: the file
-			// lags the wall clock by this, so the frame the operator
-			// saw live sits this far earlier in the recording.
-			int64_t m = std::max<int64_t>(
-				0, core.sessionBaseNs() + elapsed -
-					   core.frameLagNs());
-			MR_DLOG(
-				"[ev] markTime LIVE master=%lldms base=%lldms elapsed=%lldms lag=%lldms indexedEdge=%lldms",
-				(long long)(m / 1000000),
-				(long long)(core.sessionBaseNs() / 1000000),
-				(long long)(elapsed / 1000000),
-				(long long)(core.frameLagNs() / 1000000),
-				(long long)(MediaReplay::instance()
-						    .footageDurationNs() /
-					    1000000));
-			return m;
+	// Live: the newest instant the tap actually captured on this angle. It is
+	// measured off the encoder on the shared system clock, so the mark lands
+	// on the frame that was on screen and means the same instant on every
+	// other angle — no arm timestamp, no encoder-startup lag to subtract.
+	if (EventStore::instance().liveMode()) {
+		int64_t now = PacketTap::instance().newestNs(currentAngle1_ - 1);
+		if (now > 0) {
+			MR_DLOG("[ev] markTime LIVE master=%lldms (cam %d)",
+				(long long)(now / 1000000), currentAngle1_);
+			return now;
 		}
-		// Not recording: use indexed footage length as the live edge.
-		int64_t edge = MediaReplay::instance().footageDurationNs();
-		if (edge > 0)
-			return edge;
 	}
-	return MediaReplay::instance().position();
+	// Reviewing: the last frame the replay actually put on screen.
+	return ReplayChannel::instance().positionNs();
 }
 
 std::vector<int> MultiReplayDock::selectedEventIds() const
@@ -1174,31 +1142,35 @@ std::vector<int> MultiReplayDock::selectedEventIds() const
 
 void MultiReplayDock::setAngle(int angle1Based)
 {
-	if (angle1Based < 1 || angle1Based > kIndexMaxCameras)
+	if (angle1Based < 1 || angle1Based > kNCams)
 		return;
 	currentAngle1_ = angle1Based;
-	MediaReplay::instance().setAngle(angle1Based - 1); // preview/mark angle
+	// Shared with the hotkeys, which have no way to reach the dock.
+	ReplayCore::instance().setCurrentAngle(angle1Based - 1);
 	// Re-cue the current clip on the chosen angle: re-play the selected (or
 	// last) completed event from its IN on this angle, at the angle's resolved
 	// speed. So switching angle during a replay shows the SAME clip from the
-	// same in-point on the new camera (not the raw file).
+	// same in-point on the new camera.
 	replayCurrent();
 }
 
 void MultiReplayDock::applyReplaySpeed(int pct)
 {
-	// Default (slider) speed; then re-play the current clip from its IN at the
-	// resolved speed (per-angle override, else this default). Always restart
-	// from the in-point so the saved IN is respected (broadcast-style).
-	MediaReplay::instance().setSpeed(pct / 100.0);
+	// Default speed for every angle without an override — the coordinator
+	// resolves it when it builds the queue, including for the hotkeys.
+	speedPct_ = std::clamp(pct, 5, 100);
+	PlaybackCoordinator::instance().setDefaultSpeedPct(speedPct_);
+	// Always restart from the in-point so the saved IN is respected (the reference controller).
 	replayCurrent();
 }
 
 void MultiReplayDock::replayCurrent()
 {
-	// During recording the angle buttons just select the live-mirror angle;
-	// they must not start a file replay.
-	if (ReplayCore::instance().isRecording())
+	// While following live the angle buttons only pick which camera the
+	// preview mirrors; they must not start a replay. Once the operator plays
+	// something (which clears follow-live) they re-cue it — including during
+	// recording, which the ring makes possible and is the whole point.
+	if (ReplayCore::instance().followLive())
 		return;
 	auto &pc = PlaybackCoordinator::instance();
 	std::string err;
@@ -1213,15 +1185,25 @@ void MultiReplayDock::replayCurrent()
 
 void MultiReplayDock::seekToFraction(double frac)
 {
-	if (!ensureSession())
+	if (timelineStartNs_ <= 0 || displayDurNs_ <= 0)
 		return;
 	frac = std::clamp(frac, 0.0, 1.0);
-	int64_t pos = (int64_t)(frac * (double)displayDurNs_);
-	if (seekableNs_ > 0 && pos > seekableNs_)
-		pos = seekableNs_;
-	auto &engine = MediaReplay::instance();
-	engine.setFollowLive(false);
-	engine.seekMaster(pos);
+	const int64_t inNs =
+		timelineStartNs_ + (int64_t)(frac * (double)displayDurNs_);
+	const int64_t edge = timelineStartNs_ + displayDurNs_;
+	const int64_t outNs = std::min(edge, inNs + kScrubReviewNs);
+	if (outNs <= inNs)
+		return;
+
+	// Scrubbing is "review from here" (see kScrubReviewNs): the engine has no
+	// playhead to park, it plays ranges. Stop the queue first so its own
+	// finish callback cannot cut in over the review clip.
+	PlaybackCoordinator::instance().stopEvents();
+	ReplayCore::instance().setFollowLive(false);
+	std::string err;
+	if (!ReplayChannel::instance().play(currentAngle1_ - 1, inNs, outNs,
+					    speedPct_, err))
+		MR_DLOG("[dock] scrub review unavailable: %s", err.c_str());
 }
 
 // ---------------------------------------------------------------------------
@@ -1231,130 +1213,102 @@ void MultiReplayDock::seekToFraction(double frac)
 void MultiReplayDock::poll()
 {
 	auto &core = ReplayCore::instance();
-	auto &engine = MediaReplay::instance();
+	auto &chan = ReplayChannel::instance();
+	auto &tap = PacketTap::instance();
 
-	// Keep the index fresh: pick up completed segments while recording, or
-	// lazily load the session the first time a folder is configured. Done
-	// ~every 2s (60 ticks at 33ms) so the seekbar grows during a take.
-	if (++pollTick_ % 60 == 0) {
-		if (engine.sessionLoaded()) {
-			if (core.isRecording()) {
-				// Refresh on a background thread: SessionIndex::refresh()
-				// reads MP4 file headers from disk and can block for
-				// hundreds of ms, freezing the UI if run inline.
-				if (!sessionRefreshPending_->exchange(true)) {
-					auto pending = sessionRefreshPending_;
-					std::thread([pending]() {
-						// Grow the index so the seekbar's
-						// saved-footage edge advances. The
-						// preview itself mirrors the live source
-						// during recording (drawChannelA), so we
-						// do NOT drive the replay Media Source to
-						// the live edge here.
-						MediaReplay::instance()
-							.refreshSession();
-						pending->store(false);
-					}).detach();
-				}
-			}
-		} else if (!core.getConfig().sessionFolder.empty() &&
-			   pollTick_ >= 30) {
-			// Brief startup delay (~1s at 33ms/tick) lets OBS finish
-			// FINISHED_LOADING and ensureSource() before we drive the
-			// media source.  Also runs during recording so previous-
-			// session footage loads immediately on REC press and the
-			// preview can follow the live edge.
-			std::string err;
-			engine.loadSession(core.recordingFolder(), err);
-		}
+	// The hotkeys change the angle without going through the dock.
+	const int hotAngle1 = core.currentAngle() + 1;
+	if (hotAngle1 >= 1 && hotAngle1 <= kNCams)
+		currentAngle1_ = hotAngle1;
+	const int cam0 = currentAngle1_ - 1;
+
+	const bool rec = core.isRecording();
+	const bool followLive = core.followLive();
+	const bool playing = chan.playing();
+	const bool eventActive =
+		PlaybackCoordinator::instance().playState().active;
+
+	// --- timeline window ---
+	// Nothing is "indexed" any more: the live edge is the newest packet the
+	// tap captured, and the timeline starts at the oldest instant that can
+	// still be replayed. The recorded files reach further back than the RAM
+	// ring, so they win when they have anything.
+	const int64_t liveEdgeNs = tap.newestNs(cam0);
+	int64_t startNs = SegmentIndex::instance().oldestNs(cam0);
+	if (startNs <= 0)
+		startNs = tap.oldestReplayableNs(cam0);
+	timelineStartNs_ = startNs;
+	displayDurNs_ = (startNs > 0 && liveEdgeNs > startNs)
+				? liveEdgeNs - startNs
+				: 0;
+	previewHasContent_.store(liveEdgeNs > 0);
+
+	// The event columns are drawn relative to that origin, so a moved origin
+	// has to redraw them — it moves once for real, when the first anchored
+	// recording replaces the ring's (constantly evicted) oldest instant. The
+	// 1 s of slack is what keeps the ring's drift from rebuilding the table
+	// thirty times a second.
+	if (timelineStartNs_ > 0 &&
+	    std::abs(timelineStartNs_ - tableOriginNs_) > 1'000'000'000LL) {
+		tableOriginNs_ = timelineStartNs_;
+		refreshEvents();
 	}
 
-	// --- transport ---
-	auto ts = engine.transportState();
-	seekableNs_ = ts.seekableNs;
-	durationNs_ = ts.durationNs;
-
-	// During live recording the session index isn't flushed yet, so
-	// durationNs == 0. Use wall-clock elapsed + cumulative base from prior
-	// sessions so the counter grows from project-start t=0, not from 0.
-	int64_t liveElapsedNs = 0;
-	if (ts.recording) {
-		int64_t t0 = core.sessionMonoStartNs();
-		if (t0 > 0)
-			liveElapsedNs = core.sessionBaseNs() +
-					std::max<int64_t>(
-						0, (int64_t)os_gettime_ns() -
-							   t0);
-	}
-	// Display duration: prefer indexed footage; fall back to elapsed.
-	displayDurNs_ = std::max(ts.durationNs, liveElapsedNs);
+	// Everything inside that window is playable (ring or files), so unlike the
+	// file-tailing engine there is no trailing "not yet flushed" region.
+	const int64_t posNs = chan.positionNs();
+	const int64_t relPosNs =
+		(posNs > startNs && startNs > 0) ? posNs - startNs : 0;
 
 	if (!seekDragging_) {
-		double seekFrac = (displayDurNs_ > 0 && ts.seekableNs > 0)
-					  ? (double)ts.seekableNs /
-						    (double)displayDurNs_
-					  : (ts.recording ? 0.0 : 1.0);
-		if (ts.recording && ts.followLive) {
-			// Live mirror: the preview shows the live source, so the
-			// playhead IS the live edge. Drive the counter from
-			// wall-clock elapsed (recomputed every 33ms poll tick) so it
-			// advances smoothly — not in ~3s jumps like the indexed
-			// footage edge, which only grows when refreshSession() reads
-			// a freshly flushed fragment. The seekable fill still trails
-			// at the on-disk edge to show what's been saved.
-			seek_->setProgress(1.0, seekFrac);
+		if (rec && followLive) {
+			// Watching the live edge: the playhead IS the edge.
+			seek_->setProgress(1.0, 1.0);
 			tcLbl_->setText(QStringLiteral("● ") +
-					formatTc(liveElapsedNs));
+					formatTc(displayDurNs_));
 		} else {
-			// positionNs tracks the actual playhead; use displayDurNs_
-			// as denominator so the bar reflects the full range.
-			double posFrac =
-				(displayDurNs_ > 0)
-					? std::min(1.0,
-						   (double)ts.positionNs /
-							   (double)displayDurNs_)
-					: 0.0;
-			seek_->setProgress(posFrac, seekFrac);
-			if (ts.recording)
-				tcLbl_->setText(formatTc(ts.positionNs) +
+			double posFrac = displayDurNs_ > 0
+						 ? std::min(1.0,
+							    (double)relPosNs /
+								    (double)displayDurNs_)
+						 : 0.0;
+			seek_->setProgress(posFrac, 1.0);
+			if (rec)
+				tcLbl_->setText(formatTc(relPosNs) +
 						QStringLiteral(" / ● ") +
-						formatTc(liveElapsedNs));
+						formatTc(displayDurNs_));
 			else
-				tcLbl_->setText(formatTc(ts.positionNs) + " / " +
+				tcLbl_->setText(formatTc(relPosNs) + " / " +
 						formatTc(displayDurNs_));
 		}
 	}
 
 	// ⏸ U+23F8  ▶ U+25B6
-	playPauseBtn_->setText(ts.playing ? QStringLiteral("⏸")
-					  : QStringLiteral("▶"));
-	if (playPauseBtn_->property("playing").toBool() != ts.playing) {
-		playPauseBtn_->setProperty("playing", ts.playing);
+	playPauseBtn_->setText(playing ? QStringLiteral("⏸")
+				       : QStringLiteral("▶"));
+	if (playPauseBtn_->property("playing").toBool() != playing) {
+		playPauseBtn_->setProperty("playing", playing);
 		repolish(playPauseBtn_);
 	}
-	if (nowBtn_->property("live").toBool() != ts.followLive) {
-		nowBtn_->setProperty("live", ts.followLive);
+	if (nowBtn_->property("live").toBool() != followLive) {
+		nowBtn_->setProperty("live", followLive);
 		repolish(nowBtn_);
 	}
-	if (!speed_->isSliderDown()) {
-		int sv = std::clamp((int)(ts.speed * 100.0), 5, 100);
-		speed_->blockSignals(true);
-		speed_->setValue(sv);
-		speed_->blockSignals(false);
-		speedLbl_->setText(QString::asprintf("%.2f\xc3\x97", sv / 100.0));
-	}
+	// The speed slider is the dock's own state (the engine has none), so it is
+	// never written back here — only read when a clip is queued.
+
 	// Angle buttons: PVW green = selected, PGM red = event playing on it.
 	// Visual state is driven by the "state" property + QSS, not :checked.
 	if (anglesA_) {
-		bool ep = ts.eventActive && ts.playing;
+		bool ep = eventActive && playing;
 		for (int i = 1; i <= kNCams; i++) {
 			auto *b = qobject_cast<QPushButton *>(
 				anglesA_->button(i));
 			if (!b || !b->isVisible())
 				continue;
-			QString st = (ep && i == ts.angle)
+			QString st = (ep && i == currentAngle1_)
 					     ? QStringLiteral("program")
-				   : (i == ts.angle)
+				   : (i == currentAngle1_)
 					     ? QStringLiteral("preview")
 					     : QString();
 			if (b->property("state").toString() != st) {
@@ -1363,8 +1317,8 @@ void MultiReplayDock::poll()
 			}
 		}
 		// Keep exclusive selection in sync for click handling
-		if (anglesA_->button(ts.angle))
-			anglesA_->button(ts.angle)->setChecked(true);
+		if (anglesA_->button(currentAngle1_))
+			anglesA_->button(currentAngle1_)->setChecked(true);
 	}
 
 	// Highlight the angles-summary cell of the event currently playing (PGM
@@ -1389,38 +1343,19 @@ void MultiReplayDock::poll()
 	}
 
 	// --- recording status ---
-	bool rec = core.isRecording();
-
-	// Auto-follow live edge when recording starts so the preview immediately
-	// tracks the new take instead of sitting on old footage.
+	// Auto-follow the live edge when recording starts so the preview tracks
+	// the new take instead of sitting on the last clip that played.
 	if (rec && !prevRecording_)
-		engine.setFollowLive(true);
-	// On REC stop: refresh the now-finalized index and park the replay source
-	// at the end of the just-recorded footage so the preview shows the take
-	// (instead of the stale frame it sat on during the live mirror).
-	if (!rec && prevRecording_) {
-		if (!sessionRefreshPending_->exchange(true)) {
-			auto pending = sessionRefreshPending_;
-			std::thread([pending]() {
-				auto &eng = MediaReplay::instance();
-				eng.refreshSession();
-				if (eng.followLive())
-					eng.jumpToEnd();
-				pending->store(false);
-			}).detach();
-		}
-	}
+		core.setFollowLive(true);
 	prevRecording_ = rec;
 
 	// Live-mirror preview state: while recording + following live, render the
 	// live camera source for the selected angle (see drawChannelA). Resolve
 	// the source name for the current angle here on the UI thread.
-	bool live = rec && ts.followLive;
+	bool live = rec && followLive;
 	std::string liveName;
-	if (live) {
-		int idx = std::clamp(ts.angle - 1, 0, kMaxCameras - 1);
-		liveName = core.getConfig().cameras[idx].sourceName;
-	}
+	if (live)
+		liveName = core.getConfig().cameras[cam0].sourceName;
 	{
 		std::lock_guard<std::mutex> lk(previewMutex_);
 		liveSourceName_ = liveName;
@@ -1482,16 +1417,19 @@ void MultiReplayDock::poll()
 		refreshEvents(); // rebuilds markerNs_ (raw ns pairs)
 	}
 
-	// Recompute seekbar marker fractions every tick: during recording
-	// displayDurNs_ grows so markers shift leftward as time passes.
+	// Recompute seekbar marker fractions every tick: the window slides (the
+	// live edge grows, the ring drops its oldest), so markers move even when
+	// the events themselves do not change.
 	if (seek_ && displayDurNs_ > 0) {
 		std::vector<std::pair<double, double>> mf;
 		mf.reserve(markerNs_.size());
 		for (const auto &[inNs, outNs] : markerNs_) {
-			double inf = std::clamp(
-				(double)inNs / (double)displayDurNs_, 0.0, 1.0);
-			double outf = std::clamp(
-				(double)outNs / (double)displayDurNs_, 0.0, 1.0);
+			double inf = std::clamp((double)(inNs - timelineStartNs_) /
+							(double)displayDurNs_,
+						0.0, 1.0);
+			double outf = std::clamp((double)(outNs - timelineStartNs_) /
+							 (double)displayDurNs_,
+						 0.0, 1.0);
 			if (outf > inf)
 				mf.push_back({inf, outf});
 		}
@@ -1563,20 +1501,12 @@ void MultiReplayDock::refreshEvents()
 	const Qt::Alignment mid = Qt::AlignVCenter | Qt::AlignHCenter;
 	std::vector<std::pair<int64_t, int64_t>> rawMarkers;
 
-	// Session info for divider rows between recording tranches.
-	// Only shown when more than one session exists.
-	auto sessInfos = MediaReplay::instance().sessionInfos();
-	auto sessionForTin = [&sessInfos](int64_t tin) -> int {
-		int sid = 1;
-		for (const auto &si : sessInfos) {
-			if (tin >= si.baseNs)
-				sid = si.sessionId;
-			else
-				break;
-		}
-		return sid;
+	// Marks are absolute master-timeline instants; the columns show them
+	// relative to the same origin the seekbar uses, so the two agree.
+	const int64_t originNs = timelineStartNs_;
+	auto relTc = [originNs](int64_t ns) {
+		return formatTc(ns > originNs ? ns - originNs : 0);
 	};
-	int lastSessionId = -1;
 
 	size_t n = obs_data_array_count(arr);
 	for (size_t i = 0; i < n; i++) {
@@ -1636,26 +1566,6 @@ void MultiReplayDock::refreshEvents()
 			}
 		}
 
-		// Insert a session divider row when we enter a new tranche.
-		if (sessInfos.size() > 1) {
-			int sid = sessionForTin(tin);
-			if (sid != lastSessionId) {
-				lastSessionId = sid;
-				int drow = events_->rowCount();
-				events_->insertRow(drow);
-				auto *div = new QTableWidgetItem(
-					QString("▸ Session %1").arg(sid));
-				div->setFlags(Qt::ItemIsEnabled);
-				div->setForeground(QColor("#607880"));
-				QFont f = div->font();
-				f.setItalic(true);
-				f.setPointSizeF(f.pointSizeF() * 0.88);
-				div->setFont(f);
-				events_->setItem(drow, kColId, div);
-				events_->setSpan(drow, kColId, 1, kColCount);
-			}
-		}
-
 		int row = events_->rowCount();
 		events_->insertRow(row);
 
@@ -1669,9 +1579,9 @@ void MultiReplayDock::refreshEvents()
 		auto *idItem = roItem(QString::number(id), Qt::AlignCenter);
 		idItem->setData(Qt::UserRole, id);
 		events_->setItem(row, kColId, idItem);
-		events_->setItem(row, kColIn, roItem(formatTc(tin), mid));
+		events_->setItem(row, kColIn, roItem(relTc(tin), mid));
 		events_->setItem(row, kColOut,
-				 roItem(tout >= 0 ? formatTc(tout)
+				 roItem(tout >= 0 ? relTc(tout)
 						  : QStringLiteral("--"),
 					mid));
 		events_->setItem(row, kColDur, roItem(dur, mid));
@@ -1920,13 +1830,9 @@ void MultiReplayDock::openSettings()
 	abr->setSuffix(" kbps");
 	form->addRow(obs_module_text("Dock.AudioBitrate"), abr);
 
-	auto *fade = new QSpinBox(&dlg);
-	fade->setRange(0, 2000);
-	fade->setSingleStep(50);
-	fade->setValue(cfg.replayFadeMs);
-	fade->setSuffix(" ms");
-	fade->setToolTip(obs_module_text("Dock.ReplayFadeHint"));
-	form->addRow(obs_module_text("Dock.ReplayFade"), fade);
+	// Clip crossfade is gone with the A/B ffmpeg_source pair it belonged to:
+	// there is a single replay input now, and a transition between clips is
+	// the operator's own (OBS transitions on the scene that holds it).
 
 	// encoder combo
 	auto *enc = new QComboBox(&dlg);
@@ -1986,11 +1892,10 @@ void MultiReplayDock::openSettings()
 		return c;
 	};
 
-	// Output scene and replay Media Source are no longer operator-configurable:
-	// the aux-player owns a managed transition ("MultiReplay Replay Mix") inside
-	// a managed scene ("MultiReplay — Replay"). "To output" switches Program to
-	// that scene automatically. The legacy cfg.outputSceneName /
-	// cfg.replaySourceName fields are kept only for back-compat on load/save.
+	// No replay-source selector: "MultiReplay - Replay A" is a plugin-provided
+	// OBS input the operator drops into whatever scene he likes, exactly like
+	// a capture card. cfg.replaySourceName / cfg.outputSceneName survive only
+	// for back-compat on load/save.
 	auto *music = makeSourceCombo(cfg.musicSourceName);
 	form->addRow(obs_module_text("Dock.MusicSource"), music);
 
@@ -2035,7 +1940,6 @@ void MultiReplayDock::openSettings()
 	cfg.audioBitrateKbps = abr->value();
 	cfg.videoEncoderId = enc->currentData().toString().toStdString();
 	cfg.musicSourceName = music->currentData().toString().toStdString();
-	cfg.replayFadeMs = fade->value();
 	cfg.autoSwitchScene = autoSwitch->isChecked();
 	for (int i = 0; i < kMaxCameras; i++) {
 		cfg.cameras[i].sourceName =
@@ -2044,12 +1948,11 @@ void MultiReplayDock::openSettings()
 			camNameEdits[i]->text().trimmed().toStdString();
 	}
 	core.setConfig(cfg);
-	MediaReplay::instance().setFadeMs(cfg.replayFadeMs);
 	// Use recordingFolder() so EventStore points to the project subfolder
 	// (if one is active) rather than the raw session folder.
 	EventStore::instance().setSessionFolder(core.recordingFolder());
-	// Re-bind the engine to the (possibly changed) replay Media Source.
-	MediaReplay::instance().ensureSource();
+	// Cheap safety net: recreate the replay input if the operator deleted it.
+	ReplayChannel::instance().ensureSource();
 	refreshAngles();
 	refreshEvents();
 }
@@ -2117,7 +2020,10 @@ void MultiReplayDock::openProjectDialog()
 void MultiReplayDock::copyYouTubeChapters()
 {
 	int list = EventStore::instance().selectedList();
-	std::string text = EventStore::instance().chaptersText(list);
+	// Chapter 0:00 is the start of the timeline the dock is showing, which is
+	// the oldest instant still replayable — the same origin as the seekbar.
+	std::string text =
+		EventStore::instance().chaptersText(list, timelineStartNs_);
 	if (text.empty()) {
 		QMessageBox::information(
 			this, "obs-multireplay",

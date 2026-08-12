@@ -61,7 +61,6 @@ target_sources(
     src/plugin-main.cpp
     src/replay-core.cpp
     src/branch-output-control.cpp
-    src/session-index.cpp
     # M0: live encoded-packet tap on Branch Output's existing encoders
     src/packet-tap.cpp
     src/packet-tap.hpp
@@ -83,9 +82,6 @@ target_sources(
     # Scripted M0 gate (no-op unless OBS_MULTIREPLAY_SELFTEST is set)
     src/selftest.cpp
     src/selftest.hpp
-    # Playback engine: OBS Media Source (ffmpeg_source) driver
-    src/media-replay.cpp
-    src/media-replay.hpp
     src/event-store.cpp
     src/playback-coordinator.cpp
     src/export.cpp
