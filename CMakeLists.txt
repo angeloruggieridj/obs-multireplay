@@ -75,6 +75,7 @@ target_sources(
     src/replay-decoder.hpp
     src/replay-channel.cpp
     src/replay-channel.hpp
+    src/segment-anchor.hpp
     # Scripted M0 gate (no-op unless OBS_MULTIREPLAY_SELFTEST is set)
     src/selftest.cpp
     src/selftest.hpp

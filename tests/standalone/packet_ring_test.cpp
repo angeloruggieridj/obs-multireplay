@@ -16,6 +16,7 @@ subtly wrong on air. So the properties pinned here are:
 
 #include "master-timeline.hpp"
 #include "packet-ring.hpp"
+#include "segment-anchor.hpp"
 
 #include <cstdint>
 #include <cstdio>
@@ -296,6 +297,94 @@ static void test_ring_handles_interleaved_audio()
 	CHECK(r.last >= 2);
 }
 
+// --- segment anchoring ------------------------------------------------------
+
+// Ring of `n` video packets, 40 ms apart, with sizes that vary the way real
+// encoded frames do.
+static std::vector<AnchorSample> anchorRing(int n, int64_t startNs = 0)
+{
+	std::vector<AnchorSample> v;
+	v.reserve((size_t)n);
+	for (int i = 0; i < n; i++) {
+		AnchorSample s;
+		s.masterNs = startNs + (int64_t)i * ms(40);
+		// Deterministic but non-repeating within any short run.
+		s.size = 4000 + (uint32_t)((i * 7919) % 5000);
+		v.push_back(s);
+	}
+	return v;
+}
+
+static std::vector<uint32_t> sizesFrom(const std::vector<AnchorSample> &ring,
+				       size_t at, size_t count)
+{
+	std::vector<uint32_t> out;
+	for (size_t i = at; i < ring.size() && out.size() < count; i++)
+		out.push_back(ring[i].size);
+	return out;
+}
+
+static void test_anchor_finds_exact_position()
+{
+	const auto ring = anchorRing(400);
+	// A file whose first packets are the ones at ring index 137.
+	const auto fileSizes = sizesFrom(ring, 137, kAnchorFingerprintLen + 4);
+
+	int64_t anchor = -1;
+	CHECK(findAnchor(ring, fileSizes, anchor) == AnchorResult::Found);
+	CHECK(anchor == ring[137].masterNs);
+
+	// Matching right at both ends must work too.
+	const auto atStart = sizesFrom(ring, 0, kAnchorFingerprintLen);
+	CHECK(findAnchor(ring, atStart, anchor) == AnchorResult::Found);
+	CHECK(anchor == ring[0].masterNs);
+
+	const auto atEnd = sizesFrom(ring, ring.size() - kAnchorFingerprintLen,
+				     kAnchorFingerprintLen);
+	CHECK(findAnchor(ring, atEnd, anchor) == AnchorResult::Found);
+	CHECK(anchor == ring[ring.size() - kAnchorFingerprintLen].masterNs);
+}
+
+static void test_anchor_refuses_when_absent()
+{
+	const auto ring = anchorRing(200);
+	// A fingerprint that simply is not in this ring: the file's opening has
+	// already been evicted, so the anchor is unknowable - say so.
+	std::vector<uint32_t> foreign(kAnchorFingerprintLen, 123456u);
+
+	int64_t anchor = -1;
+	CHECK(findAnchor(ring, foreign, anchor) == AnchorResult::NotFound);
+	CHECK(anchor == -1); // untouched
+}
+
+static void test_anchor_refuses_when_ambiguous()
+{
+	// Static content (a colour bar, a frozen camera) compresses to nearly
+	// identical frames, so many positions tie. Guessing one would put the
+	// replay minutes away from the marker; refusing is the only safe answer.
+	std::vector<AnchorSample> flat;
+	for (int i = 0; i < 100; i++)
+		flat.push_back({(int64_t)i * ms(40), 2048u});
+
+	std::vector<uint32_t> fileSizes(kAnchorFingerprintLen, 2048u);
+	int64_t anchor = -1;
+	CHECK(findAnchor(flat, fileSizes, anchor) == AnchorResult::Ambiguous);
+}
+
+static void test_anchor_needs_enough_evidence()
+{
+	const auto ring = anchorRing(50);
+	int64_t anchor = -1;
+
+	std::vector<uint32_t> tooShort = sizesFrom(ring, 0, 3);
+	CHECK(findAnchor(ring, tooShort, anchor) == AnchorResult::TooFewSamples);
+
+	const auto tinyRing = anchorRing(4);
+	const auto enoughFile = sizesFrom(ring, 0, kAnchorFingerprintLen);
+	CHECK(findAnchor(tinyRing, enoughFile, anchor) ==
+	      AnchorResult::TooFewSamples);
+}
+
 int main()
 {
 	test_rescale();
@@ -312,6 +401,11 @@ int main()
 	test_ring_evicts_by_duration();
 	test_ring_keeps_a_single_oversized_gop();
 	test_ring_handles_interleaved_audio();
+
+	test_anchor_finds_exact_position();
+	test_anchor_refuses_when_absent();
+	test_anchor_refuses_when_ambiguous();
+	test_anchor_needs_enough_evidence();
 
 	if (g_fail == 0)
 		std::printf("OK: all packet-ring / master-timeline tests passed\n");
