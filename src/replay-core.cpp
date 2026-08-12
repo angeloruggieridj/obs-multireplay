@@ -351,7 +351,10 @@ bool ReplayCore::startRecording(std::string &errorOut)
 		std::array<bool, kMaxTapChannels> wantTap{};
 		for (int i = 0; i < kMaxCameras && i < kMaxTapChannels; i++)
 			wantTap[i] = cameraStatus_[i].recording;
-		PacketTap::instance().armAsync(wantTap);
+		RingBudget budget;
+		budget.kbpsPerCamera =
+			config_.videoBitrateKbps + config_.audioBitrateKbps;
+		PacketTap::instance().armAsync(wantTap, budget);
 	}
 
 	// Auto-measure the encoder-startup latency: poll for the first NEW cam file

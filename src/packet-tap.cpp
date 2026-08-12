@@ -144,6 +144,45 @@ void PacketTap::tapEncodedPacket(void *data, struct encoder_packet *packet)
 		ch->audioPackets.fetch_add(1, std::memory_order_relaxed);
 		ch->audioBytes.fetch_add(packet->size, std::memory_order_relaxed);
 	}
+
+	// --- place the packet on the master clock and keep its bytes ---------
+	const bool isVideo = packet->type == OBS_ENCODER_VIDEO;
+	// One timeline per track, each touched only by its own encoder thread.
+	MasterTimeline &tl = isVideo ? ch->videoTl : ch->audioTl;
+
+	MasterTimeline::Input in;
+	in.pts = packet->pts;
+	in.dts = packet->dts;
+	in.timebaseNum = packet->timebase_num;
+	in.timebaseDen = packet->timebase_den;
+	in.sysDtsUsec = packet->sys_dts_usec;
+
+	const MasterTimeline::Result r = tl.normalize(in);
+	if (!r.ok) {
+		// Cannot be placed on the shared clock, so it cannot be aligned
+		// with the other angles. Dropping it is correct; hiding it is not.
+		ch->malformed.fetch_add(1, std::memory_order_relaxed);
+		return;
+	}
+	// generation 0 with discontinuity set is just the first packet seating
+	// the offset, not a break in the footage.
+	if (r.discontinuity && r.generation > 0) {
+		ch->discontinuities.fetch_add(1, std::memory_order_relaxed);
+		ch->generation.fetch_add(1, std::memory_order_relaxed);
+	}
+
+	LivePacket lp;
+	lp.kind = isVideo ? PacketKind::Video : PacketKind::Audio;
+	lp.keyframe = packet->keyframe;
+	lp.masterNs = r.masterNs;
+	lp.dtsNs = r.dtsNs;
+	lp.generation = ch->generation.load(std::memory_order_relaxed);
+	lp.data.assign(packet->data, packet->data + packet->size);
+
+	{
+		std::lock_guard<std::mutex> lock(ch->ringMutex);
+		ch->ring.push(std::move(lp));
+	}
 }
 
 void PacketTap::onBoOutputStopping(void *param, calldata_t *)
@@ -202,8 +241,18 @@ void PacketTap::unload()
 	detachAll();
 }
 
-void PacketTap::armAsync(const std::array<bool, kMaxTapChannels> &wanted)
+void PacketTap::armAsync(const std::array<bool, kMaxTapChannels> &wanted,
+			 const RingBudget &budget)
 {
+	// Size the live history from the configured bitrate, with headroom for
+	// the peaks a CBR encoder still produces. The duration cap is the real
+	// intent; the byte cap is the guard that keeps a runaway bitrate from
+	// eating RAM.
+	RingLimits limits;
+	limits.maxDurationNs = (int64_t)budget.seconds * 1'000'000'000LL;
+	limits.maxBytes = (size_t)((int64_t)budget.kbpsPerCamera * 1000 / 8 *
+				   budget.seconds * 3 / 2);
+
 	{
 		std::lock_guard<std::mutex> lock(mutex_);
 		wanted_ = wanted;
@@ -211,6 +260,19 @@ void PacketTap::armAsync(const std::array<bool, kMaxTapChannels> &wanted)
 			auto &ch = channels_[i];
 			if (!wanted_[i] || ch.attached.load())
 				continue;
+
+			// Fresh session: forget the previous alignment and
+			// history entirely rather than carrying a stale offset.
+			ch.videoTl = MasterTimeline{};
+			ch.audioTl = MasterTimeline{};
+			ch.generation.store(0);
+			ch.malformed.store(0);
+			ch.discontinuities.store(0);
+			{
+				std::lock_guard<std::mutex> rlock(ch.ringMutex);
+				ch.ring.clear();
+				ch.ring.setLimits(limits);
+			}
 			// Reset the per-session measurements.
 			ch.camIndex = i;
 			ch.videoPackets.store(0);
@@ -228,6 +290,10 @@ void PacketTap::armAsync(const std::array<bool, kMaxTapChannels> &wanted)
 			ch.armWallNs.store((int64_t)os_gettime_ns());
 		}
 	}
+
+	obs_log(LOG_INFO,
+		"[tap] live history budget: %d s per camera, cap %zu MB",
+		budget.seconds, limits.maxBytes / (1024 * 1024));
 
 	if (armRunning_.exchange(true))
 		return; // already running; the new wanted_ set is picked up
@@ -467,6 +533,52 @@ int PacketTap::attachedCount() const
 	return n;
 }
 
+bool PacketTap::resolveRange(int camIndex, int64_t inNs, int64_t outNs,
+			     std::vector<LivePacket> &packetsOut,
+			     int64_t &presentInNs, int64_t &presentOutNs) const
+{
+	if (camIndex < 0 || camIndex >= kMaxTapChannels)
+		return false;
+
+	const Channel &ch = channels_[camIndex];
+	std::lock_guard<std::mutex> lock(ch.ringMutex);
+
+	ResolvedRange r;
+	if (!ch.ring.resolveRange(inNs, outNs, r))
+		return false;
+
+	// Copy the packets out so the caller can decode without holding the
+	// lock the encoder thread needs. (M2 will hand out shared buffers
+	// instead; at replay-event rates this copy is a few ms, once.)
+	packetsOut.clear();
+	packetsOut.reserve(r.last - r.decodeStart + 1);
+	for (size_t i = r.decodeStart; i <= r.last; i++)
+		packetsOut.push_back(ch.ring.at(i));
+
+	presentInNs = r.presentInNs;
+	presentOutNs = r.presentOutNs;
+	return true;
+}
+
+int64_t PacketTap::newestNs(int camIndex) const
+{
+	if (camIndex < 0 || camIndex >= kMaxTapChannels)
+		return 0;
+	const Channel &ch = channels_[camIndex];
+	std::lock_guard<std::mutex> lock(ch.ringMutex);
+	return ch.ring.newestNs();
+}
+
+int64_t PacketTap::oldestReplayableNs(int camIndex) const
+{
+	if (camIndex < 0 || camIndex >= kMaxTapChannels)
+		return 0;
+	const Channel &ch = channels_[camIndex];
+	std::lock_guard<std::mutex> lock(ch.ringMutex);
+	int64_t ns = 0;
+	return ch.ring.oldestKeyframeNs(ns) ? ns : 0;
+}
+
 TapStats PacketTap::stats(int camIndex) const
 {
 	TapStats s;
@@ -493,6 +605,18 @@ TapStats PacketTap::stats(int camIndex) const
 	const uint64_t n = ch.ageSamples.load();
 	s.avgAgeUsec = n ? (ch.ageSumUsec.load() / (int64_t)n) : 0;
 	s.lastSysDtsNs = ch.lastSysDtsNs.load();
+	s.malformedPackets = ch.malformed.load();
+	s.discontinuities = ch.discontinuities.load();
+
+	{
+		std::lock_guard<std::mutex> rlock(ch.ringMutex);
+		s.ringPackets = ch.ring.size();
+		s.ringBytes = ch.ring.bytes();
+		s.ringSpanNs = ch.ring.spanNs();
+		s.ringOldestNs = ch.ring.oldestNs();
+		s.ringNewestNs = ch.ring.newestNs();
+		s.evictedPackets = ch.ring.evictedPackets();
+	}
 	return s;
 }
 
@@ -532,7 +656,12 @@ std::string PacketTap::report() const
 		   << " firstPacketWait=" << s.firstPacketWaitMs << "ms"
 		   << " age(last/avg/max)=" << (s.lastAgeUsec / 1000) << "/"
 		   << (s.avgAgeUsec / 1000) << "/" << (s.maxAgeUsec / 1000) << "ms"
-		   << "\n";
+		   << " ring=" << s.ringPackets << "pk/"
+		   << (s.ringBytes / (1024 * 1024)) << "MB/"
+		   << (s.ringSpanNs / 1000000) << "ms"
+		   << " evicted=" << s.evictedPackets
+		   << " malformed=" << s.malformedPackets
+		   << " disc=" << s.discontinuities << "\n";
 	}
 
 	os << "[tap] cross-angle skew: " << (crossAngleSkewNs() / 1000000)

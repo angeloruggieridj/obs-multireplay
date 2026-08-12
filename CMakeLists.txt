@@ -65,6 +65,11 @@ target_sources(
     # M0: live encoded-packet tap on Branch Output's existing encoders
     src/packet-tap.cpp
     src/packet-tap.hpp
+    # M1: master timeline + bounded in-memory packet history (the live edge)
+    src/packet-types.hpp
+    src/master-timeline.hpp
+    src/packet-ring.cpp
+    src/packet-ring.hpp
     # Scripted M0 gate (no-op unless OBS_MULTIREPLAY_SELFTEST is set)
     src/selftest.cpp
     src/selftest.hpp
@@ -108,4 +113,16 @@ if(ENABLE_TESTS)
   )
   target_compile_features(obs-multireplay-eventstore-tests PRIVATE cxx_std_20)
   add_test(NAME event_store COMMAND obs-multireplay-eventstore-tests)
+
+  # Live packet ring + master timeline. These carry the correctness of the
+  # rewrite (cross-angle marker equality, refuse-never-clamp), and they are
+  # written free of OBS/FFmpeg types precisely so they can be tested here.
+  add_executable(
+    obs-multireplay-packet-tests
+    tests/standalone/packet_ring_test.cpp
+    src/packet-ring.cpp
+  )
+  target_include_directories(obs-multireplay-packet-tests PRIVATE src)
+  target_compile_features(obs-multireplay-packet-tests PRIVATE cxx_std_20)
+  add_test(NAME packet_ring COMMAND obs-multireplay-packet-tests)
 endif()

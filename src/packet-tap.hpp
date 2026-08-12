@@ -56,6 +56,9 @@ ring is the authoritative live edge.
 
 #include <obs.h>
 
+#include "master-timeline.hpp"
+#include "packet-ring.hpp"
+
 #include <array>
 #include <atomic>
 #include <condition_variable>
@@ -95,6 +98,28 @@ struct TapStats {
 	int64_t avgAgeUsec = 0;
 	// Last normalized master timestamp (ns), from sys_dts_usec.
 	int64_t lastSysDtsNs = 0;
+
+	// --- live ring (M1) ---
+	size_t ringPackets = 0;
+	size_t ringBytes = 0;
+	int64_t ringSpanNs = 0;
+	int64_t ringOldestNs = 0;
+	int64_t ringNewestNs = 0;
+	uint64_t evictedPackets = 0;
+	// Packets libobs handed us that could not be placed on the master clock
+	// (zero timebase, missing sys_dts). Should be 0; anything else is a bug
+	// or a broken encoder, and is worth surfacing rather than swallowing.
+	uint64_t malformedPackets = 0;
+	// Encoder restarts / clock jumps observed on this camera.
+	uint64_t discontinuities = 0;
+};
+
+// How much live history to keep per camera. Encoded packets are cheap: at
+// 12 Mbps, 90 s costs ~135 MB per camera, so eight cameras still fit in RAM
+// while covering far more than any replay operator reaches back for.
+struct RingBudget {
+	int seconds = 90;
+	int kbpsPerCamera = 12500; // video + audio, used to size the byte cap
 };
 
 class PacketTap {
@@ -110,7 +135,21 @@ public:
 	// Branch Output starts its output asynchronously after the filter is
 	// enabled, so attaching is retried on a background thread until each BO
 	// output goes active or the attempt budget runs out.
-	void armAsync(const std::array<bool, kMaxTapChannels> &wanted);
+	void armAsync(const std::array<bool, kMaxTapChannels> &wanted,
+		      const RingBudget &budget = {});
+
+	// --- live ring access (M1) ---
+	// Resolve a master-timeline range against one camera's live history.
+	// Strict: false when the range is not fully and continuously held (see
+	// PacketRing::resolveRange). Copies out the packets so the caller never
+	// holds the ring lock while decoding.
+	bool resolveRange(int camIndex, int64_t inNs, int64_t outNs,
+			  std::vector<LivePacket> &packetsOut,
+			  int64_t &presentInNs, int64_t &presentOutNs) const;
+	// Newest instant captured on a camera, 0 if none. This is the live edge.
+	int64_t newestNs(int camIndex) const;
+	// Earliest instant that can actually be replayed, 0 if none.
+	int64_t oldestReplayableNs(int camIndex) const;
 
 	// Detach every attached channel. MUST run BEFORE the Branch Output
 	// filters are disabled (see the lifecycle note above).
@@ -168,6 +207,26 @@ private:
 		std::atomic<int64_t> ageSumUsec{0};
 		std::atomic<uint64_t> ageSamples{0};
 		std::atomic<int64_t> lastSysDtsNs{0};
+
+		// --- master timeline + live ring (M1) ---
+		// One MasterTimeline per track: video and audio come from two
+		// different encoders, each numbering from its own zero, and each
+		// delivering on its own thread — so each is touched by exactly
+		// one thread and needs no lock of its own.
+		MasterTimeline videoTl;
+		MasterTimeline audioTl;
+		std::atomic<uint64_t> malformed{0};
+		std::atomic<uint64_t> discontinuities{0};
+		// Continuity is a property of the CAMERA, not of one track: an
+		// audio break wrecks A/V pairing just as a video break does, so
+		// both bump this and every packet carries it.
+		std::atomic<uint32_t> generation{0};
+
+		// The ring is shared with readers, so it is the one thing here
+		// that takes a lock. Critical sections stay short: the encoder
+		// thread must never wait.
+		mutable std::mutex ringMutex;
+		PacketRing ring;
 	};
 
 	// --- obs_output_info callbacks (C ABI) ---

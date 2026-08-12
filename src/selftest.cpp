@@ -248,7 +248,9 @@ void runSelfTest()
 	const uint32_t laggedBefore = obs_get_lagged_frames();
 	const uint32_t totalBefore = obs_get_total_frames();
 
-	PacketTap::instance().armAsync(want);
+	RingBudget budget;
+	budget.kbpsPerCamera = cfg.videoBitrateKbps + cfg.audioBitrateKbps;
+	PacketTap::instance().armAsync(want, budget);
 
 	// --- Measure ---------------------------------------------------------
 	for (int s = 0; s < durationSecs; s++) {
@@ -266,6 +268,74 @@ void runSelfTest()
 	std::vector<TapStats> stats;
 	for (int i = 0; i < camCount; i++)
 		stats.push_back(PacketTap::instance().stats(i));
+
+	// --- M1 acceptance: the exact use case that was broken ----------------
+	// Take the last 5 seconds off the live ring on every angle, with no file
+	// access at all, and check that one marker resolves to the same instant
+	// everywhere. This is "mark it and put it on air now" in miniature.
+	const double frameMs = 1000.0 / (canvasFps > 0 ? canvasFps : 30.0);
+	bool ringLast5s = armed > 0;
+	int64_t crossAnglePresentDeltaMs = 0;
+	std::vector<int64_t> presentIns;
+	{
+		auto &tap = PacketTap::instance();
+		int64_t commonEdge = INT64_MAX;
+		for (int i = 0; i < camCount; i++) {
+			if (!want[i])
+				continue;
+			const int64_t n = tap.newestNs(i);
+			if (n <= 0) {
+				commonEdge = 0;
+				break;
+			}
+			commonEdge = std::min(commonEdge, n);
+		}
+
+		if (commonEdge <= 0 || commonEdge == INT64_MAX) {
+			ringLast5s = false;
+			obs_log(LOG_ERROR, "[selftest] no live edge on the rings");
+		} else {
+			// Stay a couple of frames inside the edge: the newest
+			// packet held may be audio, slightly ahead of the newest
+			// decodable video frame.
+			const int64_t marginNs =
+				(int64_t)(2.0 * 1e9 / (canvasFps > 0 ? canvasFps : 30.0));
+			const int64_t outNs = commonEdge - marginNs;
+			const int64_t inNs = outNs - 5'000'000'000LL;
+
+			int64_t lo = INT64_MAX, hi = INT64_MIN;
+			for (int i = 0; i < camCount; i++) {
+				if (!want[i])
+					continue;
+				std::vector<LivePacket> clip;
+				int64_t pIn = 0, pOut = 0;
+				if (!tap.resolveRange(i, inNs, outNs, clip, pIn,
+						      pOut)) {
+					obs_log(LOG_ERROR,
+						"[selftest] cam%d: the last 5 s did "
+						"NOT resolve from the ring",
+						i + 1);
+					ringLast5s = false;
+					continue;
+				}
+				presentIns.push_back(pIn);
+				lo = std::min(lo, pIn);
+				hi = std::max(hi, pIn);
+				obs_log(LOG_INFO,
+					"[selftest] cam%d: last 5 s resolved from the "
+					"ring - %zu packets, in=%lld ms out=%lld ms",
+					i + 1, clip.size(),
+					(long long)(pIn / 1000000),
+					(long long)(pOut / 1000000));
+			}
+			if (lo != INT64_MAX && hi != INT64_MIN)
+				crossAnglePresentDeltaMs = (hi - lo) / 1000000;
+		}
+	}
+	// One marker, one frame, every angle.
+	const bool passRingCrossAngle =
+		presentIns.size() < 2 ||
+		(double)crossAnglePresentDeltaMs <= frameMs;
 
 	// --- Tear down in the order the lifecycle demands ---------------------
 	// Detach BEFORE disabling the filters: Branch Output frees its encoder
@@ -302,11 +372,10 @@ void runSelfTest()
 	});
 
 	// --- Verdict ----------------------------------------------------------
-	const double frameMs = 1000.0 / (canvasFps > 0 ? canvasFps : 30.0);
-
 	bool passAttached = attached == armed && armed > 0;
 	bool passNoNewEncoder = armed > 0;
 	bool passPackets = armed > 0;
+	bool passClean = true;
 	int64_t worstMaxAgeMs = 0;
 	for (const auto &s : stats) {
 		if (!want[s.camIndex])
@@ -315,6 +384,11 @@ void runSelfTest()
 			passNoNewEncoder = false;
 		if (s.videoPackets == 0)
 			passPackets = false;
+		// A packet we could not place on the shared clock, or an
+		// unexplained break in a healthy session, means the timeline is
+		// not trustworthy - which is the whole point of the rewrite.
+		if (s.malformedPackets > 0 || s.discontinuities > 0)
+			passClean = false;
 		worstMaxAgeMs = std::max(worstMaxAgeMs, s.maxAgeUsec / 1000);
 	}
 	// Live edge must beat the ~1 s fragment flush by a wide margin; we allow
@@ -330,7 +404,8 @@ void runSelfTest()
 	const bool passImpact = laggedPct <= 1.0;
 
 	const bool pass = passAttached && passNoNewEncoder && passPackets &&
-			  passLatency && passSkew && passImpact;
+			  passLatency && passSkew && passImpact && passClean &&
+			  ringLast5s && passRingCrossAngle;
 
 	// --- Report -----------------------------------------------------------
 	obs_data_t *root = obs_data_create();
@@ -351,8 +426,14 @@ void runSelfTest()
 	obs_data_set_bool(checks, "live_edge_latency_ok", passLatency);
 	obs_data_set_bool(checks, "cross_angle_skew_ok", passSkew);
 	obs_data_set_bool(checks, "obs_impact_ok", passImpact);
+	obs_data_set_bool(checks, "timeline_clean", passClean);
+	obs_data_set_bool(checks, "ring_serves_last_5s", ringLast5s);
+	obs_data_set_bool(checks, "ring_cross_angle_same_frame", passRingCrossAngle);
 	obs_data_set_obj(root, "checks", checks);
 	obs_data_release(checks);
+
+	obs_data_set_int(root, "ring_cross_angle_present_delta_ms",
+			 crossAnglePresentDeltaMs);
 
 	obs_data_set_int(root, "worst_max_packet_age_ms", worstMaxAgeMs);
 	obs_data_set_int(root, "cross_angle_skew_ms", skewNs / 1000000);
@@ -378,6 +459,12 @@ void runSelfTest()
 		obs_data_set_int(c, "first_packet_wait_ms", s.firstPacketWaitMs);
 		obs_data_set_int(c, "packet_age_avg_ms", s.avgAgeUsec / 1000);
 		obs_data_set_int(c, "packet_age_max_ms", s.maxAgeUsec / 1000);
+		obs_data_set_int(c, "ring_packets", (long long)s.ringPackets);
+		obs_data_set_int(c, "ring_mb", (long long)(s.ringBytes / (1024 * 1024)));
+		obs_data_set_int(c, "ring_span_ms", s.ringSpanNs / 1000000);
+		obs_data_set_int(c, "ring_evicted", (long long)s.evictedPackets);
+		obs_data_set_int(c, "malformed_packets", (long long)s.malformedPackets);
+		obs_data_set_int(c, "discontinuities", (long long)s.discontinuities);
 		obs_data_array_push_back(arr, c);
 		obs_data_release(c);
 	}
