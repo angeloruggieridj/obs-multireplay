@@ -65,6 +65,23 @@ obs_data_t *buildSettings(int camIndex, const Config &cfg)
 	// Short GOP (1s) keeps future frame-accurate seeking cheap (M2).
 	obs_data_set_int(settings, "keyint_sec", 1);
 
+	// --- Low-latency profile for the live packet tap --------------------
+	// The replay live edge IS the encoder's output (see packet-tap.hpp), so
+	// encoder pipeline latency directly delays how fresh the newest
+	// replayable frame is. The stock profile measured 368 ms on QSV.
+	//
+	// QSV (obs-qsv11.c:595-608): latency="normal" means AsyncDepth 4 plus a
+	// 60-frame look-ahead under CBR; "ultra-low" means AsyncDepth 1 and no
+	// look-ahead at all. B-frames add reordering delay on top, and removing
+	// them also makes replay seeking cheaper (no reordered decode).
+	//
+	// Keys not understood by the selected encoder are simply ignored, so
+	// this stays safe across QSV / NVENC / AMF / x264.
+	obs_data_set_string(settings, "latency", "ultra-low"); // QSV
+	obs_data_set_int(settings, "bframes", 0);              // QSV
+	obs_data_set_int(settings, "bf", 0);                   // NVENC / x264 / AMF
+	obs_data_set_bool(settings, "lookahead", false);       // NVENC
+
 	// --- Audio: filter audio (the camera's own embedded audio) ---
 	obs_data_set_bool(settings, "custom_audio_source", false);
 	obs_data_set_string(settings, "audio_encoder", "ffmpeg_aac");
