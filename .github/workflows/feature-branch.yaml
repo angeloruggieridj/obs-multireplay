@@ -60,21 +60,32 @@ jobs:
 
           echo 'run=true' >> $GITHUB_OUTPUT
 
+  # Only the clang-format half of check-format.yaml.
+  #
+  # Its sibling gersemi step never gets as far as checking anything: installing
+  # obsproject/tools/gersemi from a third-party Homebrew tap dies on the hosted
+  # runners ("Skipping obsproject/tools because it is not trusted"). That is an
+  # environment problem rather than a property of the code, and it is why this
+  # repo has been red since June. Calling the action directly keeps the half
+  # that works as a real gate instead of letting the broken half mask it.
+  # (`continue-on-error` is not available on jobs that call a reusable workflow,
+  # so the whole check-format workflow cannot simply be made advisory.)
   check-format:
     name: Check Formatting 🔍
     needs: check-duplicate
     if: needs.check-duplicate.outputs.run == 'true'
-    uses: ./.github/workflows/check-format.yaml
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
-    # Advisory on feature branches, not a gate. Its gersemi step installs
-    # obsproject/tools/gersemi from a third-party Homebrew tap, which currently
-    # dies during install ("Skipping obsproject/tools because it is not
-    # trusted") on the hosted runners - an environment problem, unrelated to the
-    # code under review, and one this repo has been red on since June. The
-    # clang-format half of the check still runs and is still worth reading; when
-    # the tap is fixed upstream this line should come back out.
-    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: clang-format check 🐉
+        id: clang-format
+        uses: ./.github/actions/run-clang-format
+        with:
+          failCondition: error
 
   build-project:
     name: Build Project 🧱
