@@ -33,6 +33,10 @@ struct AVPacket;
 
 namespace multireplay {
 
+// Planar layouts we can hand to OBS as-is. Keeping this neutral rather than
+// leaking AVPixelFormat means the OBS-facing code never includes FFmpeg.
+enum class FrameFormat { Unknown, I420, NV12, I422, I444 };
+
 class ReplayDecoder {
 public:
 	// One decoded picture. The plane pointers belong to the decoder and stay
@@ -42,7 +46,8 @@ public:
 		int64_t masterNs = 0;
 		uint32_t width = 0;
 		uint32_t height = 0;
-		int format = -1; // AVPixelFormat
+		FrameFormat format = FrameFormat::Unknown;
+		bool fullRange = false;
 		const uint8_t *data[4] = {nullptr, nullptr, nullptr, nullptr};
 		int linesize[4] = {0, 0, 0, 0};
 	};

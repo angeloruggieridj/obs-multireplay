@@ -14,6 +14,7 @@ See selftest.hpp. This is the scripted form of the M0 gate.
 #include "branch-output-control.hpp"
 #include "packet-tap.hpp"
 #include "plugin-support.h"
+#include "replay-channel.hpp"
 #include "replay-core.hpp"
 #include "replay-decoder.hpp"
 
@@ -281,6 +282,7 @@ void runSelfTest()
 	int64_t crossAnglePresentDeltaMs = 0;
 	std::vector<int64_t> presentIns;
 	std::vector<int> decodedFrames;
+	int64_t clipInNs = 0, clipOutNs = 0; // reused by the playback check below
 	{
 		auto &tap = PacketTap::instance();
 		int64_t commonEdge = INT64_MAX;
@@ -306,6 +308,8 @@ void runSelfTest()
 				(int64_t)(2.0 * 1e9 / (canvasFps > 0 ? canvasFps : 30.0));
 			const int64_t outNs = commonEdge - marginNs;
 			const int64_t inNs = outNs - 5'000'000'000LL;
+			clipInNs = inNs;
+			clipOutNs = outNs;
 
 			int64_t lo = INT64_MAX, hi = INT64_MIN;
 			for (int i = 0; i < camCount; i++) {
@@ -405,6 +409,73 @@ void runSelfTest()
 		presentIns.size() < 2 ||
 		(double)crossAnglePresentDeltaMs <= frameMs;
 
+	// --- M2 acceptance: through the real OBS input, in slow motion --------
+	// Play the same 5 seconds into "Replay A" at 50%. Two things get proven
+	// at once: OBS accepts our frames (it reports the picture size back), and
+	// the pacing is right (5 s of footage at half speed takes ~10 s).
+	bool playsIntoObs = false;
+	int playedFrames = 0;
+	int64_t playElapsedMs = 0;
+	if (ringLast5s && clipOutNs > clipInNs) {
+		auto &chan = ReplayChannel::instance();
+		int firstCam = -1;
+		for (int i = 0; i < camCount; i++) {
+			if (want[i]) {
+				firstCam = i;
+				break;
+			}
+		}
+
+		obs_source_t *src = chan.acquireSource();
+		if (firstCam < 0 || !src) {
+			obs_log(LOG_ERROR,
+				"[selftest] no replay source to play into");
+		} else {
+			// The source is in no scene, so OBS would not tick it and
+			// would never consume the async frames we push.
+			obs_source_inc_active(src);
+			obs_source_inc_showing(src);
+
+			std::string perr;
+			const uint64_t t0 = os_gettime_ns();
+			if (!chan.play(firstCam, clipInNs, clipOutNs, 50, perr)) {
+				obs_log(LOG_ERROR, "[selftest] play failed: %s",
+					perr.c_str());
+			} else {
+				while (chan.playing())
+					std::this_thread::sleep_for(
+						std::chrono::milliseconds(50));
+				playElapsedMs =
+					(int64_t)((os_gettime_ns() - t0) / 1000000);
+
+				const auto st = chan.stats();
+				playedFrames = (int)st.framesPushed;
+				const uint32_t w = obs_source_get_width(src);
+				const uint32_t h = obs_source_get_height(src);
+
+				// ~10 s expected; allow a wide band so a loaded
+				// laptop does not produce a false failure.
+				const bool pacedRight = playElapsedMs > 8000 &&
+							playElapsedMs < 13000;
+				playsIntoObs = st.lastRunCompleted &&
+					       playedFrames > 0 && w == cx &&
+					       h == cy && pacedRight;
+
+				obs_log(LOG_INFO,
+					"[selftest] played %d frames into '%s' at 50%% "
+					"in %lld ms (OBS reports %ux%u, %d preroll)",
+					playedFrames, ReplayChannel::sourceName(),
+					(long long)playElapsedMs, w, h,
+					(int)st.framesPreroll);
+			}
+
+			obs_source_dec_showing(src);
+			obs_source_dec_active(src);
+		}
+		if (src)
+			obs_source_release(src);
+	}
+
 	// --- Tear down in the order the lifecycle demands ---------------------
 	// Detach BEFORE disabling the filters: Branch Output frees its encoder
 	// in releaseInfrastructureIfIdle() once its own outputs go idle.
@@ -474,7 +545,7 @@ void runSelfTest()
 	const bool pass = passAttached && passNoNewEncoder && passPackets &&
 			  passLatency && passSkew && passImpact && passClean &&
 			  ringLast5s && passRingCrossAngle && decodeOk &&
-			  startsOnMarkedFrame;
+			  startsOnMarkedFrame && playsIntoObs;
 
 	// --- Report -----------------------------------------------------------
 	obs_data_t *root = obs_data_create();
@@ -500,8 +571,12 @@ void runSelfTest()
 	obs_data_set_bool(checks, "ring_cross_angle_same_frame", passRingCrossAngle);
 	obs_data_set_bool(checks, "clip_decodes", decodeOk);
 	obs_data_set_bool(checks, "clip_starts_on_marked_frame", startsOnMarkedFrame);
+	obs_data_set_bool(checks, "plays_into_obs_source", playsIntoObs);
 	obs_data_set_obj(root, "checks", checks);
 	obs_data_release(checks);
+
+	obs_data_set_int(root, "played_frames", playedFrames);
+	obs_data_set_int(root, "played_elapsed_ms_at_50pct", playElapsedMs);
 
 	obs_data_array_t *decArr = obs_data_array_create();
 	for (int n : decodedFrames) {

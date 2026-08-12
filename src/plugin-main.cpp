@@ -25,6 +25,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #include "replay-core.hpp"
 #include "media-replay.hpp"
 #include "packet-tap.hpp"
+#include "replay-channel.hpp"
 #include "selftest.hpp"
 
 namespace {
@@ -46,6 +47,7 @@ void onFrontendEvent(enum obs_frontend_event event, void *)
 			multireplay::ReplayCore::instance()
 				.disarmPersistedFilters();
 		multireplay::MediaReplay::instance().ensureSource();
+		multireplay::ReplayChannel::instance().ensureSource();
 		multireplay::MediaReplay::instance().setFadeMs(
 			multireplay::ReplayCore::instance()
 				.getConfig()
@@ -73,8 +75,10 @@ bool obs_module_load(void)
 	auto &core = multireplay::ReplayCore::instance();
 	core.load();
 
-	// Register the packet-tap output types before anything can arm them.
+	// Register the packet-tap output types before anything can arm them,
+	// and the replay source type before a scene collection can reference it.
 	multireplay::PacketTap::instance().load();
+	multireplay::ReplayChannel::instance().load();
 
 	multireplay::MediaReplay::instance().load();
 
@@ -117,6 +121,7 @@ void obs_module_unload(void)
 	obs_frontend_remove_dock(kDockId);
 	// Detach from Branch Output's encoders before anything else tears down.
 	multireplay::PacketTap::instance().unload();
+	multireplay::ReplayChannel::instance().unload();
 	multireplay::MediaReplay::instance().unload();
 	multireplay::ReplayCore::instance().unload();
 	obs_log(LOG_INFO, "plugin unloaded");

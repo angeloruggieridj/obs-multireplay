@@ -31,6 +31,25 @@ AVCodecID codecIdFor(const std::string &name)
 	return AV_CODEC_ID_NONE;
 }
 
+FrameFormat frameFormatFor(int avPixelFormat)
+{
+	switch (avPixelFormat) {
+	case AV_PIX_FMT_YUV420P:
+	case AV_PIX_FMT_YUVJ420P:
+		return FrameFormat::I420;
+	case AV_PIX_FMT_NV12:
+		return FrameFormat::NV12;
+	case AV_PIX_FMT_YUV422P:
+	case AV_PIX_FMT_YUVJ422P:
+		return FrameFormat::I422;
+	case AV_PIX_FMT_YUV444P:
+	case AV_PIX_FMT_YUVJ444P:
+		return FrameFormat::I444;
+	default:
+		return FrameFormat::Unknown;
+	}
+}
+
 } // namespace
 
 ReplayDecoder::~ReplayDecoder()
@@ -162,7 +181,8 @@ bool ReplayDecoder::receive(Frame &out)
 			       : frame_->pts;
 	out.width = (uint32_t)frame_->width;
 	out.height = (uint32_t)frame_->height;
-	out.format = frame_->format;
+	out.format = frameFormatFor(frame_->format);
+	out.fullRange = frame_->color_range == AVCOL_RANGE_JPEG;
 	for (int i = 0; i < 4; i++) {
 		out.data[i] = frame_->data[i];
 		out.linesize[i] = frame_->linesize[i];

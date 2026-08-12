@@ -70,9 +70,11 @@ target_sources(
     src/master-timeline.hpp
     src/packet-ring.cpp
     src/packet-ring.hpp
-    # M2: decode the ring back into frames
+    # M2: decode the ring back into frames, and "Replay A" as a real OBS input
     src/replay-decoder.cpp
     src/replay-decoder.hpp
+    src/replay-channel.cpp
+    src/replay-channel.hpp
     # Scripted M0 gate (no-op unless OBS_MULTIREPLAY_SELFTEST is set)
     src/selftest.cpp
     src/selftest.hpp
