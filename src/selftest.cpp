@@ -15,6 +15,7 @@ See selftest.hpp. This is the scripted form of the M0 gate.
 #include "packet-tap.hpp"
 #include "plugin-support.h"
 #include "replay-core.hpp"
+#include "replay-decoder.hpp"
 
 #include <util/platform.h>
 
@@ -275,8 +276,11 @@ void runSelfTest()
 	// everywhere. This is "mark it and put it on air now" in miniature.
 	const double frameMs = 1000.0 / (canvasFps > 0 ? canvasFps : 30.0);
 	bool ringLast5s = armed > 0;
+	bool decodeOk = armed > 0;
+	bool startsOnMarkedFrame = armed > 0;
 	int64_t crossAnglePresentDeltaMs = 0;
 	std::vector<int64_t> presentIns;
+	std::vector<int> decodedFrames;
 	{
 		auto &tap = PacketTap::instance();
 		int64_t commonEdge = INT64_MAX;
@@ -327,6 +331,70 @@ void runSelfTest()
 					i + 1, clip.size(),
 					(long long)(pIn / 1000000),
 					(long long)(pOut / 1000000));
+
+				// Decode it. Frames before the IN are decoded and
+				// dropped on purpose: they only exist to build up
+				// reference state from the keyframe, and dropping
+				// them is what makes the clip start on the marked
+				// frame instead of snapping back to the keyframe.
+				ReplayDecoder dec;
+				std::string derr;
+				if (!dec.open(tap.streamConfig(i), derr)) {
+					obs_log(LOG_ERROR,
+						"[selftest] cam%d: decoder open failed: %s",
+						i + 1, derr.c_str());
+					decodeOk = false;
+					continue;
+				}
+
+				int presented = 0, preroll = 0;
+				int64_t firstPresentedNs = 0;
+				ReplayDecoder::Frame f;
+				const auto pull = [&]() {
+					while (dec.receive(f)) {
+						if (f.masterNs < pIn) {
+							preroll++;
+							continue;
+						}
+						if (presented == 0)
+							firstPresentedNs = f.masterNs;
+						presented++;
+					}
+				};
+				bool sendOk = true;
+				for (const auto &p : clip) {
+					if (!dec.send(p, derr)) {
+						obs_log(LOG_ERROR,
+							"[selftest] cam%d: decode failed: %s",
+							i + 1, derr.c_str());
+						sendOk = false;
+						break;
+					}
+					pull();
+				}
+				if (sendOk && dec.drain(derr))
+					pull();
+
+				decodedFrames.push_back(presented);
+				// The whole point: the first frame we would put on
+				// air is the frame that was marked, to the exact
+				// timestamp - not the keyframe before it.
+				if (presented == 0 || firstPresentedNs != pIn)
+					startsOnMarkedFrame = false;
+
+				const int expected =
+					(int)(5.0 * (canvasFps > 0 ? canvasFps : 30.0));
+				if (!sendOk || presented < expected * 9 / 10)
+					decodeOk = false;
+
+				obs_log(LOG_INFO,
+					"[selftest] cam%d: decoded %d frames (%d dropped "
+					"as pre-roll), first presented=%lld ms, "
+					"requested in=%lld ms, %ux%u",
+					i + 1, presented, preroll,
+					(long long)(firstPresentedNs / 1000000),
+					(long long)(pIn / 1000000), dec.width(),
+					dec.height());
 			}
 			if (lo != INT64_MAX && hi != INT64_MIN)
 				crossAnglePresentDeltaMs = (hi - lo) / 1000000;
@@ -405,7 +473,8 @@ void runSelfTest()
 
 	const bool pass = passAttached && passNoNewEncoder && passPackets &&
 			  passLatency && passSkew && passImpact && passClean &&
-			  ringLast5s && passRingCrossAngle;
+			  ringLast5s && passRingCrossAngle && decodeOk &&
+			  startsOnMarkedFrame;
 
 	// --- Report -----------------------------------------------------------
 	obs_data_t *root = obs_data_create();
@@ -429,8 +498,20 @@ void runSelfTest()
 	obs_data_set_bool(checks, "timeline_clean", passClean);
 	obs_data_set_bool(checks, "ring_serves_last_5s", ringLast5s);
 	obs_data_set_bool(checks, "ring_cross_angle_same_frame", passRingCrossAngle);
+	obs_data_set_bool(checks, "clip_decodes", decodeOk);
+	obs_data_set_bool(checks, "clip_starts_on_marked_frame", startsOnMarkedFrame);
 	obs_data_set_obj(root, "checks", checks);
 	obs_data_release(checks);
+
+	obs_data_array_t *decArr = obs_data_array_create();
+	for (int n : decodedFrames) {
+		obs_data_t *d = obs_data_create();
+		obs_data_set_int(d, "frames", n);
+		obs_data_array_push_back(decArr, d);
+		obs_data_release(d);
+	}
+	obs_data_set_array(root, "decoded_frames_per_angle", decArr);
+	obs_data_array_release(decArr);
 
 	obs_data_set_int(root, "ring_cross_angle_present_delta_ms",
 			 crossAnglePresentDeltaMs);

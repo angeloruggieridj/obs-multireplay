@@ -14,11 +14,35 @@ callback, so a LivePacket owns its bytes.
 #pragma once
 
 #include <cstdint>
+#include <string>
 #include <vector>
 
 namespace multireplay {
 
 enum class PacketKind { Video, Audio };
+
+// Everything a decoder needs to make sense of one camera's packets, captured
+// once when the tap attaches.
+//
+// The extradata matters more than it looks: OBS encoders keep the parameter
+// sets (SPS/PPS for H.264) out of band by default, so a packet stream on its
+// own is not decodable. Capturing them at attach time keeps the ring
+// self-describing even after its head has been evicted.
+struct StreamConfig {
+	std::string videoCodec; // "h264" | "hevc" | "av1"
+	uint32_t width = 0;
+	uint32_t height = 0;
+	std::vector<uint8_t> videoExtradata;
+
+	std::string audioCodec; // "aac" | "opus" | ...
+	uint32_t sampleRate = 0;
+	std::vector<uint8_t> audioExtradata;
+
+	bool videoUsable() const
+	{
+		return !videoCodec.empty() && width > 0 && height > 0;
+	}
+};
 
 // One encoded packet, already normalized onto the master timeline.
 struct LivePacket {

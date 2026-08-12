@@ -146,6 +146,8 @@ public:
 	bool resolveRange(int camIndex, int64_t inNs, int64_t outNs,
 			  std::vector<LivePacket> &packetsOut,
 			  int64_t &presentInNs, int64_t &presentOutNs) const;
+	// What a decoder needs for this camera (codec, size, parameter sets).
+	StreamConfig streamConfig(int camIndex) const;
 	// Newest instant captured on a camera, 0 if none. This is the live edge.
 	int64_t newestNs(int camIndex) const;
 	// Earliest instant that can actually be replayed, 0 if none.
@@ -227,6 +229,7 @@ private:
 		// thread must never wait.
 		mutable std::mutex ringMutex;
 		PacketRing ring;
+		StreamConfig config; // guarded by ringMutex
 	};
 
 	// --- obs_output_info callbacks (C ABI) ---

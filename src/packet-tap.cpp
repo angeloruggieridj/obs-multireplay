@@ -405,6 +405,44 @@ bool PacketTap::attachLocked(int camIndex)
 		obs_encoder_get_name(venc) ? obs_encoder_get_name(venc) : "?";
 	ch.encoderWasAlreadyActive = obs_encoder_active(venc);
 
+	// Capture what a decoder will need. Without the parameter sets the ring
+	// holds bytes nobody can decode: OBS keeps SPS/PPS out of band by
+	// default, so they have to be taken from the encoder here.
+	{
+		StreamConfig cfg;
+		if (const char *codec = obs_encoder_get_codec(venc))
+			cfg.videoCodec = codec;
+		cfg.width = obs_encoder_get_width(venc);
+		cfg.height = obs_encoder_get_height(venc);
+
+		uint8_t *extra = nullptr;
+		size_t extraSize = 0;
+		if (obs_encoder_get_extra_data(venc, &extra, &extraSize) && extra &&
+		    extraSize)
+			cfg.videoExtradata.assign(extra, extra + extraSize);
+
+		if (aencRef) {
+			if (const char *acodec = obs_encoder_get_codec(aencRef))
+				cfg.audioCodec = acodec;
+			cfg.sampleRate = obs_encoder_get_sample_rate(aencRef);
+			uint8_t *aextra = nullptr;
+			size_t aextraSize = 0;
+			if (obs_encoder_get_extra_data(aencRef, &aextra,
+						       &aextraSize) &&
+			    aextra && aextraSize)
+				cfg.audioExtradata.assign(aextra,
+							  aextra + aextraSize);
+		}
+
+		std::lock_guard<std::mutex> rlock(ch.ringMutex);
+		ch.config = std::move(cfg);
+	}
+	if (ch.config.videoExtradata.empty())
+		obs_log(LOG_WARNING,
+			"[tap] cam%d: encoder exposed no video extradata - the "
+			"ring may not be decodable on its own",
+			camIndex + 1);
+
 	obs_data_t *settings = obs_data_create();
 	obs_data_set_int(settings, "cam_index", camIndex);
 	const std::string tapName =
@@ -558,6 +596,15 @@ bool PacketTap::resolveRange(int camIndex, int64_t inNs, int64_t outNs,
 	presentInNs = r.presentInNs;
 	presentOutNs = r.presentOutNs;
 	return true;
+}
+
+StreamConfig PacketTap::streamConfig(int camIndex) const
+{
+	if (camIndex < 0 || camIndex >= kMaxTapChannels)
+		return {};
+	const Channel &ch = channels_[camIndex];
+	std::lock_guard<std::mutex> lock(ch.ringMutex);
+	return ch.config;
 }
 
 int64_t PacketTap::newestNs(int camIndex) const
