@@ -67,6 +67,7 @@ public:
 
 	struct PlaybackStats {
 		uint64_t framesPushed = 0;
+		uint64_t audioPushed = 0;   // audio buffers handed to OBS
 		uint64_t framesPreroll = 0; // decoded to prime, never shown
 		int64_t firstFrameNs = 0;
 		int64_t lastFrameNs = 0;

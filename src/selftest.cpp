@@ -414,8 +414,12 @@ void runSelfTest()
 	// at once: OBS accepts our frames (it reports the picture size back), and
 	// the pacing is right (5 s of footage at half speed takes ~10 s).
 	bool playsIntoObs = false;
+	bool audioPlays = false;
+	bool slowMotionPaced = false;
 	int playedFrames = 0;
+	int audioBuffers = 0;
 	int64_t playElapsedMs = 0;
+	int64_t slowElapsedMs = 0;
 	if (ringLast5s && clipOutNs > clipInNs) {
 		auto &chan = ReplayChannel::instance();
 		int firstCam = -1;
@@ -436,9 +440,11 @@ void runSelfTest()
 			obs_source_inc_active(src);
 			obs_source_inc_showing(src);
 
+			// Pass 1 - the full five seconds at 1x, which is where
+			// audio rides along.
 			std::string perr;
 			const uint64_t t0 = os_gettime_ns();
-			if (!chan.play(firstCam, clipInNs, clipOutNs, 50, perr)) {
+			if (!chan.play(firstCam, clipInNs, clipOutNs, 100, perr)) {
 				obs_log(LOG_ERROR, "[selftest] play failed: %s",
 					perr.c_str());
 			} else {
@@ -450,23 +456,50 @@ void runSelfTest()
 
 				const auto st = chan.stats();
 				playedFrames = (int)st.framesPushed;
+				audioBuffers = (int)st.audioPushed;
 				const uint32_t w = obs_source_get_width(src);
 				const uint32_t h = obs_source_get_height(src);
 
-				// ~10 s expected; allow a wide band so a loaded
-				// laptop does not produce a false failure.
-				const bool pacedRight = playElapsedMs > 8000 &&
-							playElapsedMs < 13000;
+				// ~5 s expected; a wide band so a loaded laptop
+				// cannot produce a false failure.
+				const bool pacedRight = playElapsedMs > 4200 &&
+							playElapsedMs < 7000;
 				playsIntoObs = st.lastRunCompleted &&
 					       playedFrames > 0 && w == cx &&
 					       h == cy && pacedRight;
+				audioPlays = audioBuffers > 0;
 
 				obs_log(LOG_INFO,
-					"[selftest] played %d frames into '%s' at 50%% "
-					"in %lld ms (OBS reports %ux%u, %d preroll)",
-					playedFrames, ReplayChannel::sourceName(),
+					"[selftest] played %d frames + %d audio buffers "
+					"into '%s' at 1x in %lld ms (OBS reports %ux%u, "
+					"%d preroll)",
+					playedFrames, audioBuffers,
+					ReplayChannel::sourceName(),
 					(long long)playElapsedMs, w, h,
 					(int)st.framesPreroll);
+			}
+
+			// Pass 2 - two seconds at 50%, purely to prove the
+			// slow-motion cadence is the speed we asked for.
+			const int64_t slowInNs = clipOutNs - 2'000'000'000LL;
+			const uint64_t t1 = os_gettime_ns();
+			if (chan.play(firstCam, slowInNs, clipOutNs, 50, perr)) {
+				while (chan.playing())
+					std::this_thread::sleep_for(
+						std::chrono::milliseconds(50));
+				slowElapsedMs =
+					(int64_t)((os_gettime_ns() - t1) / 1000000);
+				slowMotionPaced = slowElapsedMs > 3400 &&
+						  slowElapsedMs < 5200;
+				obs_log(LOG_INFO,
+					"[selftest] 2 s of footage at 50%% took %lld ms "
+					"(%d frames)",
+					(long long)slowElapsedMs,
+					(int)chan.stats().framesPushed);
+			} else {
+				obs_log(LOG_ERROR,
+					"[selftest] slow-motion pass failed: %s",
+					perr.c_str());
 			}
 
 			obs_source_dec_showing(src);
@@ -545,7 +578,8 @@ void runSelfTest()
 	const bool pass = passAttached && passNoNewEncoder && passPackets &&
 			  passLatency && passSkew && passImpact && passClean &&
 			  ringLast5s && passRingCrossAngle && decodeOk &&
-			  startsOnMarkedFrame && playsIntoObs;
+			  startsOnMarkedFrame && playsIntoObs && audioPlays &&
+			  slowMotionPaced;
 
 	// --- Report -----------------------------------------------------------
 	obs_data_t *root = obs_data_create();
@@ -572,11 +606,15 @@ void runSelfTest()
 	obs_data_set_bool(checks, "clip_decodes", decodeOk);
 	obs_data_set_bool(checks, "clip_starts_on_marked_frame", startsOnMarkedFrame);
 	obs_data_set_bool(checks, "plays_into_obs_source", playsIntoObs);
+	obs_data_set_bool(checks, "audio_plays", audioPlays);
+	obs_data_set_bool(checks, "slow_motion_paced", slowMotionPaced);
 	obs_data_set_obj(root, "checks", checks);
 	obs_data_release(checks);
 
 	obs_data_set_int(root, "played_frames", playedFrames);
-	obs_data_set_int(root, "played_elapsed_ms_at_50pct", playElapsedMs);
+	obs_data_set_int(root, "played_audio_buffers", audioBuffers);
+	obs_data_set_int(root, "played_elapsed_ms_at_1x", playElapsedMs);
+	obs_data_set_int(root, "slow_2s_elapsed_ms_at_50pct", slowElapsedMs);
 
 	obs_data_array_t *decArr = obs_data_array_create();
 	for (int n : decodedFrames) {

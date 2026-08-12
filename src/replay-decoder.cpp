@@ -212,4 +212,174 @@ void ReplayDecoder::flush()
 		avcodec_flush_buffers(ctx_);
 }
 
+// ---------------------------------------------------------------------------
+// Audio
+// ---------------------------------------------------------------------------
+
+namespace {
+
+AVCodecID audioCodecIdFor(const std::string &name)
+{
+	if (name == "aac" || name == "mp4a")
+		return AV_CODEC_ID_AAC;
+	if (name == "opus")
+		return AV_CODEC_ID_OPUS;
+	if (name == "flac")
+		return AV_CODEC_ID_FLAC;
+	if (name == "alac")
+		return AV_CODEC_ID_ALAC;
+	if (name == "pcm_s16le")
+		return AV_CODEC_ID_PCM_S16LE;
+	return AV_CODEC_ID_NONE;
+}
+
+SampleFormat sampleFormatFor(int avSampleFormat)
+{
+	switch (avSampleFormat) {
+	case AV_SAMPLE_FMT_FLTP:
+		return SampleFormat::F32Planar;
+	case AV_SAMPLE_FMT_FLT:
+		return SampleFormat::F32;
+	case AV_SAMPLE_FMT_S16:
+		return SampleFormat::S16;
+	default:
+		return SampleFormat::Unknown;
+	}
+}
+
+} // namespace
+
+ReplayAudioDecoder::~ReplayAudioDecoder()
+{
+	close();
+}
+
+bool ReplayAudioDecoder::open(const StreamConfig &cfg, std::string &errorOut)
+{
+	close();
+
+	const AVCodecID id = audioCodecIdFor(cfg.audioCodec);
+	if (id == AV_CODEC_ID_NONE) {
+		errorOut = "unsupported audio codec: " +
+			   (cfg.audioCodec.empty() ? "(none)" : cfg.audioCodec);
+		return false;
+	}
+	const AVCodec *codec = avcodec_find_decoder(id);
+	if (!codec) {
+		errorOut = "no decoder available for " + cfg.audioCodec;
+		return false;
+	}
+
+	ctx_ = avcodec_alloc_context3(codec);
+	if (!ctx_) {
+		errorOut = "could not allocate the audio decoder context";
+		return false;
+	}
+	ctx_->sample_rate = (int)cfg.sampleRate;
+	ctx_->pkt_timebase = AVRational{1, 1'000'000'000};
+
+	if (!cfg.audioExtradata.empty()) {
+		ctx_->extradata = (uint8_t *)av_mallocz(
+			cfg.audioExtradata.size() + AV_INPUT_BUFFER_PADDING_SIZE);
+		if (!ctx_->extradata) {
+			close();
+			errorOut = "could not allocate audio extradata";
+			return false;
+		}
+		memcpy(ctx_->extradata, cfg.audioExtradata.data(),
+		       cfg.audioExtradata.size());
+		ctx_->extradata_size = (int)cfg.audioExtradata.size();
+	}
+
+	if (avcodec_open2(ctx_, codec, nullptr) < 0) {
+		close();
+		errorOut = "avcodec_open2 failed for " + cfg.audioCodec;
+		return false;
+	}
+
+	frame_ = av_frame_alloc();
+	packet_ = av_packet_alloc();
+	if (!frame_ || !packet_) {
+		close();
+		errorOut = "could not allocate audio decoder buffers";
+		return false;
+	}
+	return true;
+}
+
+void ReplayAudioDecoder::close()
+{
+	if (packet_)
+		av_packet_free(&packet_);
+	if (frame_)
+		av_frame_free(&frame_);
+	if (ctx_)
+		avcodec_free_context(&ctx_);
+}
+
+bool ReplayAudioDecoder::send(const LivePacket &p, std::string &errorOut)
+{
+	if (!ctx_ || !packet_) {
+		errorOut = "audio decoder is not open";
+		return false;
+	}
+	if (p.kind != PacketKind::Audio || p.data.empty())
+		return true;
+
+	av_packet_unref(packet_);
+	packet_->data = const_cast<uint8_t *>(p.data.data());
+	packet_->size = (int)p.data.size();
+	packet_->pts = p.masterNs;
+	packet_->dts = p.dtsNs;
+
+	const int rc = avcodec_send_packet(ctx_, packet_);
+	packet_->data = nullptr;
+	packet_->size = 0;
+
+	if (rc < 0 && rc != AVERROR(EAGAIN) && rc != AVERROR_EOF) {
+		char buf[AV_ERROR_MAX_STRING_SIZE] = {};
+		av_strerror(rc, buf, sizeof(buf));
+		errorOut = std::string("audio send failed: ") + buf;
+		return false;
+	}
+	return true;
+}
+
+bool ReplayAudioDecoder::receive(Samples &out)
+{
+	if (!ctx_ || !frame_)
+		return false;
+
+	av_frame_unref(frame_);
+	if (avcodec_receive_frame(ctx_, frame_) < 0)
+		return false;
+
+	out.masterNs = frame_->best_effort_timestamp != AV_NOPTS_VALUE
+			       ? frame_->best_effort_timestamp
+			       : frame_->pts;
+	out.frames = (uint32_t)frame_->nb_samples;
+	out.sampleRate = (uint32_t)frame_->sample_rate;
+	out.channels = (uint32_t)frame_->ch_layout.nb_channels;
+	out.format = sampleFormatFor(frame_->format);
+	for (int i = 0; i < 8; i++)
+		out.data[i] = frame_->data[i];
+	return true;
+}
+
+bool ReplayAudioDecoder::drain(std::string &errorOut)
+{
+	if (!ctx_) {
+		errorOut = "audio decoder is not open";
+		return false;
+	}
+	const int rc = avcodec_send_packet(ctx_, nullptr);
+	if (rc < 0 && rc != AVERROR_EOF) {
+		char buf[AV_ERROR_MAX_STRING_SIZE] = {};
+		av_strerror(rc, buf, sizeof(buf));
+		errorOut = std::string("draining the audio decoder failed: ") + buf;
+		return false;
+	}
+	return true;
+}
+
 } // namespace multireplay

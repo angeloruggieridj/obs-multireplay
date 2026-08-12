@@ -51,6 +51,42 @@ void sourceDestroy(void *data)
 	delete static_cast<ChannelSource *>(data);
 }
 
+audio_format obsAudioFormatFor(SampleFormat f)
+{
+	switch (f) {
+	case SampleFormat::F32Planar:
+		return AUDIO_FORMAT_FLOAT_PLANAR;
+	case SampleFormat::F32:
+		return AUDIO_FORMAT_FLOAT;
+	case SampleFormat::S16:
+		return AUDIO_FORMAT_16BIT;
+	default:
+		return AUDIO_FORMAT_UNKNOWN;
+	}
+}
+
+speaker_layout speakersFor(uint32_t channels)
+{
+	switch (channels) {
+	case 1:
+		return SPEAKERS_MONO;
+	case 2:
+		return SPEAKERS_STEREO;
+	case 3:
+		return SPEAKERS_2POINT1;
+	case 4:
+		return SPEAKERS_4POINT0;
+	case 5:
+		return SPEAKERS_4POINT1;
+	case 6:
+		return SPEAKERS_5POINT1;
+	case 8:
+		return SPEAKERS_7POINT1;
+	default:
+		return SPEAKERS_UNKNOWN;
+	}
+}
+
 video_format obsFormatFor(FrameFormat f)
 {
 	switch (f) {
@@ -246,9 +282,55 @@ void ReplayChannel::playbackLoop()
 		return;
 	}
 
+	// Audio only rides along at normal speed. the reference controller ships slow-motion audio as
+	// an option that is off by default, and pushing AAC frames at a stretched
+	// cadence without time-stretching them would just sound broken - so at
+	// anything other than 1x the clip plays silent until a time-stretcher
+	// lands (v1.x, alongside reverse).
+	const bool wantAudio = speed == 1.0 && !cfg.audioCodec.empty();
+	ReplayAudioDecoder adec;
+	if (wantAudio && !adec.open(cfg, err))
+		obs_log(LOG_WARNING, "[channel] audio unavailable: %s", err.c_str());
+
 	const uint64_t startWall = os_gettime_ns();
-	uint64_t pushed = 0, preroll = 0;
+	uint64_t pushed = 0, preroll = 0, audioPushed = 0;
 	int64_t firstNs = 0, lastNs = 0;
+
+	const auto emitAudio = [&](const ReplayAudioDecoder::Samples &s) {
+		if (s.masterNs < presentIn || s.channels == 0)
+			return;
+		const audio_format afmt = obsAudioFormatFor(s.format);
+		const speaker_layout layout = speakersFor(s.channels);
+		if (afmt == AUDIO_FORMAT_UNKNOWN || layout == SPEAKERS_UNKNOWN)
+			return;
+
+		struct obs_source_audio a = {};
+		a.frames = s.frames;
+		a.samples_per_sec = s.sampleRate;
+		a.speakers = layout;
+		a.format = afmt;
+		// Same clock transform as the video, so OBS can sync the two
+		// itself rather than us hand-rolling an audio clock - which is
+		// what caused the dropouts in the first engine.
+		a.timestamp = startWall +
+			      (uint64_t)((double)(s.masterNs - presentIn) / speed);
+		for (int i = 0; i < 8 && i < MAX_AV_PLANES; i++)
+			a.data[i] = s.data[i];
+
+		obs_source_output_audio(source, &a);
+		audioPushed++;
+	};
+
+	const auto pumpAudio = [&](const LivePacket &p) {
+		if (!adec.opened() || p.kind != PacketKind::Audio)
+			return;
+		std::string aerr;
+		if (!adec.send(p, aerr))
+			return;
+		ReplayAudioDecoder::Samples s;
+		while (adec.receive(s))
+			emitAudio(s);
+	};
 
 	const auto emit = [&](const ReplayDecoder::Frame &f) {
 		// Frames before the marked IN only primed the decoder.
@@ -300,6 +382,7 @@ void ReplayChannel::playbackLoop()
 			completed = false;
 			break;
 		}
+		pumpAudio(p);
 		if (!dec.send(p, err)) {
 			obs_log(LOG_ERROR, "[channel] %s", err.c_str());
 			completed = false;
@@ -317,9 +400,18 @@ void ReplayChannel::playbackLoop()
 		while (dec.receive(frame) && !abort_.load())
 			emit(frame);
 	}
+	if (completed && adec.opened()) {
+		std::string aerr;
+		if (adec.drain(aerr)) {
+			ReplayAudioDecoder::Samples s;
+			while (adec.receive(s))
+				emitAudio(s);
+		}
+	}
 
 	{
 		std::lock_guard<std::mutex> lock(statsMutex_);
+		stats_.audioPushed = audioPushed;
 		stats_.framesPushed = pushed;
 		stats_.framesPreroll = preroll;
 		stats_.firstFrameNs = firstNs;

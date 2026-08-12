@@ -37,6 +37,8 @@ namespace multireplay {
 // leaking AVPixelFormat means the OBS-facing code never includes FFmpeg.
 enum class FrameFormat { Unknown, I420, NV12, I422, I444 };
 
+enum class SampleFormat { Unknown, F32Planar, F32, S16 };
+
 class ReplayDecoder {
 public:
 	// One decoded picture. The plane pointers belong to the decoder and stay
@@ -83,6 +85,39 @@ private:
 	AVPacket *packet_ = nullptr;
 	uint32_t width_ = 0;
 	uint32_t height_ = 0;
+};
+
+// The audio half. Same streaming shape, same master-clock timestamps, so video
+// and audio land on one timeline and OBS can sync them itself.
+class ReplayAudioDecoder {
+public:
+	struct Samples {
+		int64_t masterNs = 0;
+		uint32_t frames = 0; // samples per channel
+		uint32_t sampleRate = 0;
+		uint32_t channels = 0;
+		SampleFormat format = SampleFormat::Unknown;
+		const uint8_t *data[8] = {};
+	};
+
+	ReplayAudioDecoder() = default;
+	~ReplayAudioDecoder();
+	ReplayAudioDecoder(const ReplayAudioDecoder &) = delete;
+	ReplayAudioDecoder &operator=(const ReplayAudioDecoder &) = delete;
+
+	bool open(const StreamConfig &cfg, std::string &errorOut);
+	void close();
+	bool opened() const { return ctx_ != nullptr; }
+
+	// Feed one audio packet; video packets are ignored.
+	bool send(const LivePacket &p, std::string &errorOut);
+	bool receive(Samples &out);
+	bool drain(std::string &errorOut);
+
+private:
+	AVCodecContext *ctx_ = nullptr;
+	AVFrame *frame_ = nullptr;
+	AVPacket *packet_ = nullptr;
 };
 
 } // namespace multireplay
