@@ -13,6 +13,7 @@ See segment-index.hpp.
 #include "packet-tap.hpp"
 #include "plugin-support.h"
 #include "segment-anchor.hpp"
+#include "session-clock.hpp"
 
 extern "C" {
 #include <libavformat/avformat.h>
@@ -137,6 +138,12 @@ void SegmentIndex::start(const std::string &folder,
 			v.clear();
 		for (auto &v : pending_)
 			v.clear();
+		// Before the watcher runs: whatever earlier sessions anchored in
+		// this folder is known immediately, so a project opened now can
+		// be played at once and scanFolder() does not queue those files
+		// for a re-anchor that could never succeed.
+		load();
+		recomputeBoundaries();
 	}
 	running_.store(true);
 	watcher_ = std::thread([this]() { watchLoop(); });
@@ -230,6 +237,34 @@ void SegmentIndex::tryAnchorPending()
 		// The ring is the evidence; read it once per camera per pass.
 		const std::vector<AnchorSample> ring =
 			PacketTap::instance().videoSamples(cam);
+
+		// No evidence at all — the index is watching a folder outside REC
+		// (an opened project). Probing would still demux every pending
+		// file every couple of seconds only to conclude nothing, so skip
+		// straight to counting the attempt. Those files are simply not in
+		// anchors.json, and nothing here could place them.
+		if (ring.empty()) {
+			std::lock_guard<std::mutex> lock(mutex_);
+			auto &pend = pending_[cam];
+			for (auto it = pend.begin(); it != pend.end();) {
+				if (++it->second >= kMaxAnchorAttempts) {
+					obs_log(LOG_WARNING,
+						"[segments] cam%d: %s has no anchor "
+						"on record and no live packets to "
+						"derive one from - it stays "
+						"unplayable rather than guessed",
+						cam + 1,
+						std::filesystem::path(it->first)
+							.filename()
+							.string()
+							.c_str());
+					it = pend.erase(it);
+				} else {
+					++it;
+				}
+			}
+			continue;
+		}
 
 		for (auto &entry : todo) {
 			const std::string &path = entry.first;
@@ -442,9 +477,94 @@ void SegmentIndex::save() const
 
 void SegmentIndex::load()
 {
-	// Reading anchors back for a previous session's files is what makes
-	// "open yesterday's project" work; it needs the event store to speak
-	// wall-clock time too, so it lands with that change.
+	// mutex_ must be held by the caller (start()).
+	//
+	// This is what makes "open yesterday's project" work. The files of a
+	// previous session CANNOT be re-anchored against the ring — the ring is
+	// this process's, and it is empty — so anchors.json is the only evidence
+	// there is. A file sitting in the folder without an entry here therefore
+	// stays unresolvable, and that is the correct answer: inventing a
+	// position for it is exactly the guessing this engine was rewritten to
+	// remove.
+	//
+	// Only the wall-clock anchor was persisted (see save()), so each segment
+	// is put back on THIS session's monotonic clock through the current
+	// epoch. resolve() and segment-reader then work unchanged, because they
+	// only ever see anchorMasterNs.
+	if (folder_.empty())
+		return;
+
+	const std::string path =
+		(std::filesystem::path(folder_) / kAnchorsFile).string();
+	obs_data_t *root = obs_data_create_from_json_file(path.c_str());
+	if (!root)
+		return;
+
+	const SessionEpoch epoch{epochMasterNs_, epochWallNs_};
+	int loaded = 0, dropped = 0;
+
+	obs_data_array_t *arr = obs_data_get_array(root, "segments");
+	if (arr) {
+		const size_t count = obs_data_array_count(arr);
+		for (size_t i = 0; i < count; i++) {
+			obs_data_t *o = obs_data_array_item(arr, i);
+			const int cam = (int)obs_data_get_int(o, "cam") - 1;
+			const int64_t wall =
+				obs_data_get_int(o, "anchor_wall_ns");
+			const char *stored = obs_data_get_string(o, "path");
+
+			if (cam < 0 || cam >= kMaxSegmentCameras || !cams_[cam] ||
+			    wall <= 0 || !stored || !*stored) {
+				obs_data_release(o);
+				continue;
+			}
+
+			// Re-root on the folder we were pointed at: a project
+			// copied to another drive keeps its anchors, and the
+			// path must also match what scanFolder() builds or the
+			// file would be queued for anchoring a second time.
+			std::error_code ec;
+			const std::filesystem::path full =
+				std::filesystem::path(folder_) /
+				std::filesystem::path(stored).filename();
+			if (!std::filesystem::is_regular_file(full, ec)) {
+				dropped++;
+				obs_data_release(o);
+				continue;
+			}
+
+			const std::string fullStr = full.string();
+			const bool known =
+				std::any_of(segments_[cam].begin(),
+					    segments_[cam].end(),
+					    [&](const RecordingSegment &s) {
+						    return s.path == fullStr;
+					    });
+			if (!known) {
+				RecordingSegment seg;
+				seg.path = fullStr;
+				seg.anchorWallNs = wall;
+				seg.anchorMasterNs = wallToMasterNs(epoch, wall);
+				seg.anchored = true;
+				segments_[cam].push_back(seg);
+				loaded++;
+			}
+			obs_data_release(o);
+		}
+		obs_data_array_release(arr);
+	}
+	obs_data_release(root);
+
+	for (auto &segs : segments_)
+		std::sort(segs.begin(), segs.end(),
+			  [](const RecordingSegment &a, const RecordingSegment &b) {
+				  return a.anchorMasterNs < b.anchorMasterNs;
+			  });
+
+	obs_log(LOG_INFO,
+		"[segments] loaded %d anchored file(s) from %s (%d entry/ies "
+		"whose file is gone)",
+		loaded, kAnchorsFile, dropped);
 }
 
 } // namespace multireplay

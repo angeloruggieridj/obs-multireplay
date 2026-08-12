@@ -17,9 +17,11 @@ subtly wrong on air. So the properties pinned here are:
 #include "master-timeline.hpp"
 #include "packet-ring.hpp"
 #include "segment-anchor.hpp"
+#include "session-clock.hpp"
 
 #include <cstdint>
 #include <cstdio>
+#include <limits>
 
 using namespace multireplay;
 
@@ -413,6 +415,116 @@ static void test_anchor_needs_enough_evidence()
 	      AnchorResult::TooFewSamples);
 }
 
+// --- session clock ----------------------------------------------------------
+//
+// Monotonic time is what the engine measures with and what dies with the
+// process; wall time is what survives into events.json / anchors.json. Every
+// mark and every file anchor crosses this bridge twice (save, then load in a
+// later run), so a lossy or lopsided conversion would move footage under the
+// operator's markers - silently, and only after a restart.
+
+static void test_session_clock_round_trips()
+{
+	// A plausible pair: ~2 days of uptime, wall time in 2026.
+	const SessionEpoch e{172'800'000'000'000LL, 1'776'000'000'000'000'000LL};
+
+	// The epoch instant itself maps to itself, both ways.
+	CHECK(masterToWallNs(e, e.masterNs) == e.wallNs);
+	CHECK(wallToMasterNs(e, e.wallNs) == e.masterNs);
+
+	// An instant 90 s after the epoch is 90 s later on the other clock too:
+	// the mapping is a pure offset, it must not scale or drift.
+	const int64_t master = e.masterNs + 90LL * 1'000'000'000LL;
+	const int64_t wall = masterToWallNs(e, master);
+	CHECK(wall == e.wallNs + 90LL * 1'000'000'000LL);
+	CHECK(wallToMasterNs(e, wall) == master);
+
+	// Marks BEFORE the epoch happen for real: the epoch is seated at module
+	// load, and the ring can hold packets stamped a hair earlier.
+	const int64_t before = e.masterNs - 5LL * 1'000'000'000LL;
+	CHECK(wallToMasterNs(e, masterToWallNs(e, before)) == before);
+
+	// Exact round trip over a long session, one sample per second.
+	for (int64_t s = 0; s < 6 * 3600; s += 137) {
+		const int64_t m = e.masterNs + s * 1'000'000'000LL;
+		CHECK(wallToMasterNs(e, masterToWallNs(e, m)) == m);
+	}
+}
+
+// The point of the whole exercise: a mark written yesterday, read back in a
+// process whose monotonic clock counts from a completely different origin,
+// must land on the same real instant - i.e. the same distance from that
+// session's own epoch.
+static void test_session_clock_across_sessions()
+{
+	const SessionEpoch yesterday{172'800'000'000'000LL,
+				     1'776'000'000'000'000'000LL};
+	// Next run: machine rebooted (monotonic near zero), 26 hours later.
+	const SessionEpoch today{3'600'000'000'000LL,
+				 1'776'000'000'000'000'000LL +
+					 26LL * 3600 * 1'000'000'000LL};
+
+	// A mark 42 s into yesterday's session.
+	const int64_t markedMaster = yesterday.masterNs + 42LL * 1'000'000'000LL;
+	const int64_t persisted = masterToWallNs(yesterday, markedMaster);
+
+	// Today it resolves to a master value that is meaningless in isolation
+	// but exactly right relative to today's epoch...
+	const int64_t reloaded = wallToMasterNs(today, persisted);
+	CHECK(reloaded != markedMaster); // different origin: it MUST differ
+	CHECK(reloaded - today.masterNs == persisted - today.wallNs);
+
+	// ...and a segment anchored at the same instant lands on the same value,
+	// which is the property resolve() depends on: mark and footage still meet.
+	const int64_t anchorWall = persisted;
+	CHECK(wallToMasterNs(today, anchorWall) == reloaded);
+
+	// A mark 10 s later stays 10 s later.
+	const int64_t later = masterToWallNs(yesterday,
+					     markedMaster + 10LL * 1'000'000'000LL);
+	CHECK(wallToMasterNs(today, later) - reloaded == 10LL * 1'000'000'000LL);
+}
+
+// An unseated epoch (the standalone/no-session case) must be the identity, or
+// a store with no epoch would quietly rewrite every mark it saves.
+static void test_session_clock_identity_when_unseated()
+{
+	const SessionEpoch none{};
+	CHECK(masterToWallNs(none, 0) == 0);
+	CHECK(masterToWallNs(none, 1'234'567'890LL) == 1'234'567'890LL);
+	CHECK(wallToMasterNs(none, 1'234'567'890LL) == 1'234'567'890LL);
+}
+
+// Wall-clock nanoseconds are already ~1.8e18, a fifth of the int64 range, so
+// the order of operations is load-bearing: the difference of the two same-clock
+// terms has to be taken FIRST. Adding the offset to the wall value before
+// subtracting would blow past INT64_MAX on values this size.
+static void test_session_clock_does_not_overflow()
+{
+	const int64_t kMax = std::numeric_limits<int64_t>::max();
+
+	// Year-2200-ish wall time with a very large monotonic value.
+	const SessionEpoch e{7'000'000'000'000'000'000LL,
+			     7'200'000'000'000'000'000LL};
+
+	const int64_t master = e.masterNs + 3600LL * 1'000'000'000LL;
+	const int64_t wall = masterToWallNs(e, master);
+	CHECK(wall == e.wallNs + 3600LL * 1'000'000'000LL);
+	CHECK(wall > 0 && wall < kMax); // no wrap into negative territory
+	CHECK(wallToMasterNs(e, wall) == master);
+
+	// The naive grouping (epochWall - epochMaster + masterNs) would compute
+	// 7.2e18 + 7.0e18 here; check the real helpers stay well inside range.
+	CHECK(masterToWallNs(e, e.masterNs) == e.wallNs);
+	CHECK(wallToMasterNs(e, e.wallNs) == e.masterNs);
+
+	// The reverse skew (huge monotonic, small wall) must be just as safe.
+	const SessionEpoch skewed{8'000'000'000'000'000'000LL, 1'000'000'000LL};
+	CHECK(masterToWallNs(skewed, skewed.masterNs + 1000) == 1'000'001'000LL);
+	CHECK(wallToMasterNs(skewed, 1'000'001'000LL) ==
+	      skewed.masterNs + 1000);
+}
+
 int main()
 {
 	test_rescale();
@@ -435,6 +547,11 @@ int main()
 	test_anchor_refuses_when_absent();
 	test_anchor_refuses_when_ambiguous();
 	test_anchor_needs_enough_evidence();
+
+	test_session_clock_round_trips();
+	test_session_clock_across_sessions();
+	test_session_clock_identity_when_unseated();
+	test_session_clock_does_not_overflow();
 
 	if (g_fail == 0)
 		std::printf("OK: all packet-ring / master-timeline tests passed\n");

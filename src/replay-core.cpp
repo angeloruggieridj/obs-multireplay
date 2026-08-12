@@ -104,9 +104,55 @@ ReplayCore &ReplayCore::instance()
 	return core;
 }
 
+void ReplayCore::seatSessionEpoch()
+{
+	// Both clocks read back to back: the pair is only as good as how close
+	// the two samples are, and everything persisted this run is converted
+	// through it. See session-clock.hpp.
+	const int64_t master = (int64_t)os_gettime_ns();
+	const int64_t wall =
+		std::chrono::duration_cast<std::chrono::nanoseconds>(
+			std::chrono::system_clock::now().time_since_epoch())
+			.count();
+	epochMasterNs_.store(master);
+	epochWallNs_.store(wall);
+}
+
+void ReplayCore::restartSegmentIndex(const std::string &folder)
+{
+	if (folder.empty())
+		return;
+	// Watch every configured camera slot: a project recorded earlier may have
+	// used a different set of sources, and this is the same filter REC applies
+	// (cam<N>_*.mp4 for a slot we know about). Files whose anchor is not in
+	// anchors.json stay unresolvable — the ring is empty outside REC, so there
+	// is nothing to re-derive an anchor from, and inventing one is exactly what
+	// this engine exists not to do.
+	std::array<bool, kMaxSegmentCameras> segCams{};
+	{
+		std::lock_guard<std::mutex> lock(mutex_);
+		for (int i = 0; i < kMaxCameras && i < kMaxSegmentCameras; i++)
+			segCams[i] = !config_.cameras[i].sourceName.empty();
+	}
+	const SessionEpoch epoch = sessionEpoch();
+	SegmentIndex::instance().start(folder, segCams, epoch.masterNs,
+				       epoch.wallNs);
+}
+
 void ReplayCore::load()
 {
+	// BEFORE loadConfig(): that call restores the last project's events, and
+	// EventStore stores its marks in wall-clock time, so it needs the epoch to
+	// map them back onto this session's monotonic clock.
+	seatSessionEpoch();
+	EventStore::instance().setSessionEpoch(sessionEpoch());
+
 	loadConfig();
+
+	// The events of the last project were just restored; without this its
+	// footage would not be, and the operator would see marks with nothing
+	// behind them until he re-opened the project by hand.
+	restartSegmentIndex(recordingFolder());
 
 	startHotkey_ = obs_hotkey_register_frontend(
 		"MultiReplayStartRecording",
@@ -333,13 +379,12 @@ bool ReplayCore::startRecording(std::string &errorOut)
 		std::array<bool, kMaxSegmentCameras> segCams{};
 		for (int i = 0; i < kMaxCameras && i < kMaxSegmentCameras; i++)
 			segCams[i] = cameraStatus_[i].recording;
-		const int64_t epochWallNs =
-			std::chrono::duration_cast<std::chrono::nanoseconds>(
-				std::chrono::system_clock::now().time_since_epoch())
-				.count();
+		// The session epoch, not a fresh sample: the anchors already on
+		// disk for this folder are about to be read back through it, and
+		// so are the event marks. One pair per process (see sessionEpoch).
+		const SessionEpoch epoch = sessionEpoch();
 		SegmentIndex::instance().start(recFolder, segCams,
-					       (int64_t)os_gettime_ns(),
-					       epochWallNs);
+					       epoch.masterNs, epoch.wallNs);
 	}
 
 	// The encoder-startup latency detector is gone with the file-based engine:
@@ -433,21 +478,29 @@ void ReplayCore::disarmPersistedFilters()
 
 bool ReplayCore::deleteAllSession(std::string &errorOut)
 {
-	std::lock_guard<std::mutex> lock(mutex_);
-	if (recording_) {
-		errorOut = "stop recording first";
-		return false;
+	std::string folder;
+	{
+		std::lock_guard<std::mutex> lock(mutex_);
+		if (recording_) {
+			errorOut = "stop recording first";
+			return false;
+		}
+		if (config_.sessionFolder.empty()) {
+			errorOut = "no session folder configured";
+			return false;
+		}
+		folder = recordingFolderLocked();
 	}
-	if (config_.sessionFolder.empty()) {
-		errorOut = "no session folder configured";
-		return false;
-	}
+
+	// The index now watches the folder outside REC too, and it writes its
+	// anchors back on the way down — stop it BEFORE deleting, or it would
+	// resurrect anchors.json pointing at files that no longer exist.
+	SegmentIndex::instance().stop();
 
 	namespace fs = std::filesystem;
 	std::error_code ec;
 	int removed = 0;
-	for (const auto &entry :
-	     fs::directory_iterator(recordingFolderLocked(), ec)) {
+	for (const auto &entry : fs::directory_iterator(folder, ec)) {
 		if (!entry.is_regular_file())
 			continue;
 		std::string name = entry.path().filename().string();
@@ -470,6 +523,7 @@ bool ReplayCore::deleteAllSession(std::string &errorOut)
 		}
 	}
 	obs_log(LOG_INFO, "Delete All: removed %d file(s)", removed);
+	restartSegmentIndex(folder); // fresh, empty index over the wiped folder
 	return true;
 }
 
@@ -487,8 +541,13 @@ void ReplayCore::setConfig(const Config &cfg)
 	}
 	saveConfig();
 	// Filters must know the new path even before the next REC press.
-	if (!recording_)
+	if (!recording_) {
 		reapplyFilterSettings();
+		// The session folder (and the camera slots the index filters on)
+		// may just have changed; re-point it so it reads the anchors of
+		// whatever folder is now current.
+		restartSegmentIndex(recordingFolder());
+	}
 }
 
 std::string ReplayCore::pickVideoEncoder() const
@@ -722,6 +781,9 @@ bool ReplayCore::newProject(const std::string &title, std::string &errorOut)
 		return false;
 	}
 	EventStore::instance().setSessionFolder(path);
+	// Empty folder, so nothing to read back — but the index must stop pointing
+	// at the previous project, or its files would answer this project's lookups.
+	restartSegmentIndex(path);
 	reapplyFilterSettings(); // redirect Branch Output path to project folder
 	obs_log(LOG_INFO, "Project created: %s", path.c_str());
 	return true;
@@ -751,9 +813,11 @@ bool ReplayCore::openProject(const std::string &folderName,
 	}
 	saveConfig();
 	EventStore::instance().setSessionFolder(path);
-	// The footage of a project recorded in an EARLIER OBS run is not reachable
-	// until it is recorded again: SegmentIndex only watches the folder REC
-	// armed it on. Events load, playback of that old footage does not.
+	// Footage of a project recorded in an EARLIER OBS run: SegmentIndex reads
+	// that run's anchors.json and places its files back on this session's
+	// monotonic clock, so resolve() and segment-reader work unchanged. Note
+	// this happens with nothing recording — which is the whole point.
+	restartSegmentIndex(path);
 	reapplyFilterSettings(); // redirect Branch Output path to project folder
 	obs_log(LOG_INFO, "Project opened: %s", path.c_str());
 	return true;

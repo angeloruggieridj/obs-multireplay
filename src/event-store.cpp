@@ -27,6 +27,12 @@ EventStore &EventStore::instance()
 	return store;
 }
 
+void EventStore::setSessionEpoch(const SessionEpoch &epoch)
+{
+	std::lock_guard<std::mutex> lock(mutex_);
+	epoch_ = epoch;
+}
+
 void EventStore::setSessionFolder(const std::string &folder)
 {
 	std::lock_guard<std::mutex> lock(mutex_);
@@ -401,8 +407,19 @@ void EventStore::save() const
 		obs_data_t *e = obs_data_create();
 		obs_data_set_int(e, "id", ev.id);
 		obs_data_set_int(e, "list", ev.list);
-		obs_data_set_int(e, "tInNs", ev.tInNs);
-		obs_data_set_int(e, "tOutNs", ev.tOutNs);
+		// Marks go out in ABSOLUTE wall-clock ns, never in master time:
+		// master is monotonic system time, exact within the session and
+		// meaningless after a restart, so a file written with it could
+		// never be lined up with the footage again. The explicit *_wall_ns
+		// names exist so nobody mistakes one clock for the other.
+		// out_wall_ns == -1 is the open-event sentinel (Mark In with no
+		// Mark Out yet); real wall values are ~1.8e18, never negative.
+		obs_data_set_int(e, "in_wall_ns",
+				 masterToWallNs(epoch_, ev.tInNs));
+		obs_data_set_int(e, "out_wall_ns",
+				 ev.tOutNs < 0
+					 ? -1
+					 : masterToWallNs(epoch_, ev.tOutNs));
 		obs_data_set_double(e, "speed", ev.speed);
 		obs_data_set_string(e, "createdMode", ev.createdMode.c_str());
 		obs_data_array_t *angles = obs_data_array_create();
@@ -441,16 +458,30 @@ void EventStore::load()
 	if (nextId_ < 1)
 		nextId_ = 1;
 
+	int skippedLegacy = 0;
 	obs_data_array_t *arr = obs_data_get_array(root, "events");
 	if (arr) {
 		size_t count = obs_data_array_count(arr);
 		for (size_t i = 0; i < count; i++) {
 			obs_data_t *e = obs_data_array_item(arr, i);
+			// Pre-wall-clock files stored tInNs/tOutNs, i.e. raw
+			// monotonic time from a process that no longer exists.
+			// There is no epoch that makes those numbers mean
+			// anything, so they are dropped rather than loaded as
+			// marks pointing at an arbitrary instant.
+			if (!obs_data_has_user_value(e, "in_wall_ns")) {
+				skippedLegacy++;
+				obs_data_release(e);
+				continue;
+			}
 			ReplayEvent ev;
 			ev.id = (int)obs_data_get_int(e, "id");
 			ev.list = (int)obs_data_get_int(e, "list");
-			ev.tInNs = obs_data_get_int(e, "tInNs");
-			ev.tOutNs = obs_data_get_int(e, "tOutNs");
+			ev.tInNs = wallToMasterNs(
+				epoch_, obs_data_get_int(e, "in_wall_ns"));
+			const int64_t outWall = obs_data_get_int(e, "out_wall_ns");
+			ev.tOutNs = outWall < 0 ? -1
+						: wallToMasterNs(epoch_, outWall);
 			ev.speed = obs_data_get_double(e, "speed");
 			ev.createdMode =
 				obs_data_get_string(e, "createdMode");
@@ -485,6 +516,12 @@ void EventStore::load()
 	}
 	obs_data_release(root);
 	obs_log(LOG_INFO, "EventStore: loaded %zu event(s)", events_.size());
+	if (skippedLegacy > 0)
+		obs_log(LOG_WARNING,
+			"EventStore: dropped %d event(s) written in the old "
+			"monotonic-time format - their marks cannot be placed "
+			"on any timeline",
+			skippedLegacy);
 }
 
 } // namespace multireplay

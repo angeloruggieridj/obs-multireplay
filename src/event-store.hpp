@@ -6,6 +6,8 @@ SPDX-License-Identifier: GPL-2.0-or-later
 
 #pragma once
 
+#include "session-clock.hpp"
+
 #include <array>
 #include <atomic>
 #include <cstdint>
@@ -40,6 +42,14 @@ struct ReplayEvent {
 class EventStore {
 public:
 	static EventStore &instance();
+
+	// The monotonic↔wall pair used to persist marks. Marks live in memory as
+	// master (monotonic) time, which is meaningless across restarts, so
+	// events.json stores them as absolute wall-clock ns and they are mapped
+	// back through this epoch on load. MUST be set before setSessionFolder(),
+	// which loads. Left unset (all-zero) the conversion is the identity, which
+	// is what the standalone tests want. See session-clock.hpp.
+	void setSessionEpoch(const SessionEpoch &epoch);
 
 	void setSessionFolder(const std::string &folder); // loads events.json
 	void clearAll();                                  // the reference controller "Delete All"
@@ -101,6 +111,7 @@ private:
 	void load();       // mutex_ must be held
 
 	mutable std::mutex mutex_;
+	SessionEpoch epoch_; // see setSessionEpoch()
 	std::string folder_;
 	std::vector<ReplayEvent> events_;
 	int nextId_ = 1;

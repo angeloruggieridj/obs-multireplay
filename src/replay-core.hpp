@@ -17,6 +17,8 @@ GNU General Public License for more details.
 
 #include <obs-module.h>
 
+#include "session-clock.hpp"
+
 #include <array>
 #include <atomic>
 #include <mutex>
@@ -106,6 +108,18 @@ public:
 	bool followLive() const { return followLive_.load(); }
 	void setFollowLive(bool follow) { followLive_.store(follow); }
 
+	// --- The session epoch: monotonic time ↔ wall time (session-clock.hpp) ---
+	// Seated ONCE per process, in load(), and never re-sampled: everything
+	// persisted this run (event markers, file anchors) is converted through
+	// this one pair, so re-seating it mid-session would silently shift values
+	// already written against the old pair. It is deliberately NOT tied to REC
+	// either — opening yesterday's project has to convert its wall-clock marks
+	// with nothing recording.
+	SessionEpoch sessionEpoch() const
+	{
+		return {epochMasterNs_.load(), epochWallNs_.load()};
+	}
+
 	// the reference controller "Delete All": wipe recordings + events in the session folder,
 	// keep all settings. Refuses while recording.
 	bool deleteAllSession(std::string &errorOut);
@@ -146,6 +160,11 @@ public:
 private:
 	ReplayCore() = default;
 
+	void seatSessionEpoch(); // sample both clocks once; see sessionEpoch()
+	// (Re)point SegmentIndex at `folder` so the anchors written by earlier
+	// sessions are read back. Must be called WITHOUT mutex_ held.
+	void restartSegmentIndex(const std::string &folder);
+
 	void loadConfig();
 	void saveConfig() const;
 	// Called with mutex_ held — returns recordingFolder without re-acquiring.
@@ -161,6 +180,8 @@ private:
 	bool recording_ = false;
 	std::atomic<int> currentAngle_{0};   // 0-based, see currentAngle()
 	std::atomic<bool> followLive_{true}; // see followLive()
+	std::atomic<int64_t> epochMasterNs_{0}; // see sessionEpoch()
+	std::atomic<int64_t> epochWallNs_{0};
 	std::array<CameraStatus, kMaxCameras> cameraStatus_{};
 	obs_hotkey_id startHotkey_ = OBS_INVALID_HOTKEY_ID;
 	obs_hotkey_id stopHotkey_ = OBS_INVALID_HOTKEY_ID;

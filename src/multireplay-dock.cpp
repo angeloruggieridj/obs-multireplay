@@ -1242,7 +1242,11 @@ void MultiReplayDock::poll()
 	displayDurNs_ = (startNs > 0 && liveEdgeNs > startNs)
 				? liveEdgeNs - startNs
 				: 0;
-	previewHasContent_.store(liveEdgeNs > 0);
+	// Anchored footage counts as content even with a dead live edge: that is
+	// exactly a project reopened in a later OBS run (nothing captured yet, but
+	// yesterday's files are on the timeline). Without startNs the preview would
+	// stay black while the replay input was actually producing frames.
+	previewHasContent_.store(liveEdgeNs > 0 || startNs > 0);
 
 	// The event columns are drawn relative to that origin, so a moved origin
 	// has to redraw them — it moves once for real, when the first anchored

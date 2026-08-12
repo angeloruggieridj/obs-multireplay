@@ -75,6 +75,8 @@ target_sources(
     src/replay-channel.cpp
     src/replay-channel.hpp
     src/segment-anchor.hpp
+    # monotonic <-> wall clock: what makes a project survive an OBS restart
+    src/session-clock.hpp
     src/segment-index.cpp
     src/segment-index.hpp
     src/segment-reader.cpp
