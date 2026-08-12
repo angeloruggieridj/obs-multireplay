@@ -26,6 +26,21 @@ struct SceneSwitchCtx {
 	std::string *saveCurrentInto; // optional: record the previous scene
 };
 
+// obs_queue_task(OBS_TASK_UI, …, wait=true) hands straight to OBS Studio's
+// handler, which is a Qt::BlockingQueuedConnection onto the GUI thread — from
+// the GUI thread itself that is a self-deadlock, with no early-out in libobs
+// (obs.c only short-circuits same-thread dispatch for the GRAPHICS/AUDIO
+// queues). Most callers here ARE the GUI thread (dock buttons), so do the
+// short-circuit ourselves.
+void runOnUi(obs_task_t task, void *param, bool wait)
+{
+	if (wait && obs_in_task_thread(OBS_TASK_UI)) {
+		task(param);
+		return;
+	}
+	obs_queue_task(OBS_TASK_UI, task, param, wait);
+}
+
 void switchSceneTask(void *param)
 {
 	auto *ctx = static_cast<SceneSwitchCtx *>(param);
@@ -34,7 +49,13 @@ void switchSceneTask(void *param)
 		obs_source_t *current = obs_frontend_get_current_scene();
 		if (current) {
 			const char *name = obs_source_get_name(current);
-			*ctx->saveCurrentInto = name ? name : "";
+			const std::string cur = name ? name : "";
+			// Re-triggering a replay while the replay scene is
+			// already on air must not record IT as "the scene to go
+			// back to" — that would strand program on the replay
+			// scene once the queue drains.
+			if (cur != ctx->sceneName)
+				*ctx->saveCurrentInto = cur;
 			obs_source_release(current);
 		}
 	}
@@ -265,7 +286,8 @@ void PlaybackCoordinator::switchToReplayScene()
 	// scene with no way to switch back.
 	//
 	// switchSceneTask does not acquire mutex_ or any lock owned by the
-	// calling thread, so wait=true cannot deadlock.
+	// calling thread, so waiting cannot deadlock on our own state; runOnUi
+	// handles the "already on the GUI thread" case (see above).
 	//
 	// There is no plugin-managed scene any more: "MultiReplay - Replay A" is
 	// an ordinary OBS input the operator puts where he wants it, so the only
@@ -280,7 +302,7 @@ void PlaybackCoordinator::switchToReplayScene()
 		return;
 	}
 	auto *ctx = new SceneSwitchCtx{scene, &previousSceneName_};
-	obs_queue_task(OBS_TASK_UI, switchSceneTask, ctx, true);
+	runOnUi(switchSceneTask, ctx, true);
 }
 
 void PlaybackCoordinator::restorePreviousScene()
@@ -289,7 +311,7 @@ void PlaybackCoordinator::restorePreviousScene()
 	if (previousSceneName_.empty())
 		return;
 	auto *ctx = new SceneSwitchCtx{previousSceneName_, nullptr};
-	obs_queue_task(OBS_TASK_UI, switchSceneTask, ctx, false);
+	runOnUi(switchSceneTask, ctx, false);
 	previousSceneName_.clear();
 }
 

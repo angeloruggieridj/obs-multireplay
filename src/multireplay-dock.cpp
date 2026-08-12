@@ -16,6 +16,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
 #include "plugin-support.h"
 
 #include <obs-module.h>
+#include <obs-frontend-api.h> // obs_frontend_get_scenes (output-scene picker)
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -1894,8 +1895,45 @@ void MultiReplayDock::openSettings()
 
 	// No replay-source selector: "MultiReplay - Replay A" is a plugin-provided
 	// OBS input the operator drops into whatever scene he likes, exactly like
-	// a capture card. cfg.replaySourceName / cfg.outputSceneName survive only
-	// for back-compat on load/save.
+	// a capture card. cfg.replaySourceName survives only for back-compat.
+	//
+	// The OUTPUT SCENE selector, however, is needed: PlaybackCoordinator only
+	// takes program on "to output" when cfg.outputSceneName names a scene, and
+	// with the picker gone (removed together with the plugin-managed scene) the
+	// field stayed empty forever — so "to output" silently did nothing. The
+	// operator has to tell us which of HIS scenes holds the replay input.
+	auto *outScene = new QComboBox(&dlg);
+	outScene->setToolTip(obs_module_text("Dock.OutputSceneHint"));
+	outScene->addItem(obs_module_text("Dock.None"), "");
+	{
+		// obs_frontend_get_scenes returns the scene sources in the order
+		// shown in the Scenes dock; names are what the coordinator resolves
+		// with obs_get_source_by_name, so store the name as the item data.
+		struct obs_frontend_source_list scenes = {};
+		obs_frontend_get_scenes(&scenes);
+		for (size_t i = 0; i < scenes.sources.num; i++) {
+			const char *nm =
+				obs_source_get_name(scenes.sources.array[i]);
+			if (nm && *nm)
+				outScene->addItem(QString::fromUtf8(nm),
+						  QString::fromUtf8(nm));
+		}
+		obs_frontend_source_list_free(&scenes);
+	}
+	{
+		// A scene configured earlier may have been renamed or deleted; keep
+		// it in the list rather than silently resetting the setting.
+		const QString cur = QString::fromStdString(cfg.outputSceneName);
+		int idx = outScene->findData(cur);
+		if (idx < 0 && !cur.isEmpty()) {
+			outScene->addItem(cur, cur);
+			idx = outScene->count() - 1;
+		}
+		if (idx >= 0)
+			outScene->setCurrentIndex(idx);
+	}
+	form->addRow(obs_module_text("Dock.OutputScene"), outScene);
+
 	auto *music = makeSourceCombo(cfg.musicSourceName);
 	form->addRow(obs_module_text("Dock.MusicSource"), music);
 
@@ -1939,6 +1977,7 @@ void MultiReplayDock::openSettings()
 	cfg.videoBitrateKbps = vbr->value();
 	cfg.audioBitrateKbps = abr->value();
 	cfg.videoEncoderId = enc->currentData().toString().toStdString();
+	cfg.outputSceneName = outScene->currentData().toString().toStdString();
 	cfg.musicSourceName = music->currentData().toString().toStdString();
 	cfg.autoSwitchScene = autoSwitch->isChecked();
 	for (int i = 0; i < kMaxCameras; i++) {
