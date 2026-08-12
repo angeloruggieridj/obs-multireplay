@@ -1,0 +1,78 @@
+# Runs the reusable format check and build workflows on every branch that is
+# not covered by the "Push" workflow (master / main / release/**).
+#
+# Deliberately separate from push.yaml so that:
+#   * the release job (tags X.Y.Z only) can never be reached from here;
+#   * main / release / tag / pull request behaviour stays bit-identical.
+name: Feature Branch
+run-name: ${{ github.ref_name }} feature branch run 🧪
+on:
+  workflow_dispatch:
+  push:
+    branches-ignore:
+      - master
+      - main
+      - 'release/**'
+    paths-ignore:
+      - '**.md'
+permissions:
+  contents: read
+  pull-requests: read
+concurrency:
+  group: '${{ github.workflow }} @ ${{ github.ref }}'
+  cancel-in-progress: true
+jobs:
+  check-duplicate:
+    name: Check For Open Pull Request 🔁
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        shell: bash
+    outputs:
+      run: ${{ steps.check.outputs.run }}
+    steps:
+      - name: Check Open Pull Requests ☑️
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          : Check Open Pull Requests ☑️
+          if [[ "${RUNNER_DEBUG}" ]]; then set -x; fi
+
+          # Manual runs always build.
+          if [[ "${GITHUB_EVENT_NAME}" != 'push' ]]; then
+            echo 'run=true' >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          # When an open pull request already exists for this branch the
+          # "Pull Request" workflow builds the very same commit, so skip here
+          # to avoid burning CI time twice. Any failure of the query below
+          # falls through and builds (fail open).
+          if open_prs="$(gh pr list --head "${GITHUB_REF_NAME}" --state open --json number --jq 'length')"; then
+            if [[ "${open_prs}" != '0' ]]; then
+              echo 'run=false' >> $GITHUB_OUTPUT
+              echo "::notice::Open pull request found for ${GITHUB_REF_NAME} - covered by the Pull Request workflow, skipping."
+              exit 0
+            fi
+          fi
+
+          echo 'run=true' >> $GITHUB_OUTPUT
+
+  check-format:
+    name: Check Formatting 🔍
+    needs: check-duplicate
+    if: needs.check-duplicate.outputs.run == 'true'
+    uses: ./.github/workflows/check-format.yaml
+    permissions:
+      contents: read
+
+  build-project:
+    name: Build Project 🧱
+    needs: check-duplicate
+    if: needs.check-duplicate.outputs.run == 'true'
+    uses: ./.github/workflows/build-project.yaml
+    secrets: inherit
+    permissions:
+      contents: read
