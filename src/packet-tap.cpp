@@ -607,6 +607,24 @@ StreamConfig PacketTap::streamConfig(int camIndex) const
 	return ch.config;
 }
 
+std::vector<AnchorSample> PacketTap::videoSamples(int camIndex) const
+{
+	std::vector<AnchorSample> out;
+	if (camIndex < 0 || camIndex >= kMaxTapChannels)
+		return out;
+
+	const Channel &ch = channels_[camIndex];
+	std::lock_guard<std::mutex> lock(ch.ringMutex);
+	out.reserve(ch.ring.size() / 2);
+	for (size_t i = 0; i < ch.ring.size(); i++) {
+		const LivePacket &p = ch.ring.at(i);
+		if (p.kind != PacketKind::Video)
+			continue;
+		out.push_back({p.masterNs, (uint32_t)p.data.size()});
+	}
+	return out;
+}
+
 int64_t PacketTap::newestNs(int camIndex) const
 {
 	if (camIndex < 0 || camIndex >= kMaxTapChannels)

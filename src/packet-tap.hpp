@@ -58,6 +58,7 @@ ring is the authoritative live edge.
 
 #include "master-timeline.hpp"
 #include "packet-ring.hpp"
+#include "segment-anchor.hpp"
 
 #include <array>
 #include <atomic>
@@ -148,6 +149,10 @@ public:
 			  int64_t &presentInNs, int64_t &presentOutNs) const;
 	// What a decoder needs for this camera (codec, size, parameter sets).
 	StreamConfig streamConfig(int camIndex) const;
+	// (masterNs, size) of the video packets currently held, oldest first.
+	// This is the evidence a Branch Output file is anchored against — see
+	// segment-anchor.hpp.
+	std::vector<AnchorSample> videoSamples(int camIndex) const;
 	// Newest instant captured on a camera, 0 if none. This is the live edge.
 	int64_t newestNs(int camIndex) const;
 	// Earliest instant that can actually be replayed, 0 if none.

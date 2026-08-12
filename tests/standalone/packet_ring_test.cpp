@@ -308,8 +308,15 @@ static std::vector<AnchorSample> anchorRing(int n, int64_t startNs = 0)
 	for (int i = 0; i < n; i++) {
 		AnchorSample s;
 		s.masterNs = startNs + (int64_t)i * ms(40);
-		// Deterministic but non-repeating within any short run.
-		s.size = 4000 + (uint32_t)((i * 7919) % 5000);
+		// Deterministic, but spread the way real encoded frames are: the
+		// fingerprint is only as good as the variety of its sizes, and a
+		// tight cyclic sequence would collide under the size tolerance in
+		// a way genuine footage never does.
+		uint64_t h = (uint64_t)i * 0x9E3779B97F4A7C15ull;
+		h ^= h >> 30;
+		h *= 0xBF58476D1CE4E5B9ull;
+		h ^= h >> 27;
+		s.size = 2000 + (uint32_t)(h % 60000u);
 		v.push_back(s);
 	}
 	return v;
@@ -343,6 +350,27 @@ static void test_anchor_finds_exact_position()
 				     kAnchorFingerprintLen);
 	CHECK(findAnchor(ring, atEnd, anchor) == AnchorResult::Found);
 	CHECK(anchor == ring[ring.size() - kAnchorFingerprintLen].masterNs);
+}
+
+// A packet does not reach the file byte-identical: Annex B start codes become
+// MP4 length prefixes, which measured as a steady +1 byte per packet against
+// Branch Output. The fingerprint has to survive that without becoming vague.
+static void test_anchor_tolerates_container_size_drift()
+{
+	const auto ring = anchorRing(300);
+	auto fileSizes = sizesFrom(ring, 88, kAnchorFingerprintLen + 4);
+	for (auto &s : fileSizes)
+		s += 1;
+
+	int64_t anchor = -1;
+	CHECK(findAnchor(ring, fileSizes, anchor) == AnchorResult::Found);
+	CHECK(anchor == ring[88].masterNs);
+
+	// ...but drift beyond the tolerance is a different stream, not slack.
+	auto wayOff = sizesFrom(ring, 88, kAnchorFingerprintLen + 4);
+	for (auto &s : wayOff)
+		s += 200;
+	CHECK(findAnchor(ring, wayOff, anchor) == AnchorResult::NotFound);
 }
 
 static void test_anchor_refuses_when_absent()
@@ -403,6 +431,7 @@ int main()
 	test_ring_handles_interleaved_audio();
 
 	test_anchor_finds_exact_position();
+	test_anchor_tolerates_container_size_drift();
 	test_anchor_refuses_when_absent();
 	test_anchor_refuses_when_ambiguous();
 	test_anchor_needs_enough_evidence();

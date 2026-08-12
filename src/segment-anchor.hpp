@@ -48,6 +48,21 @@ struct AnchorSample {
 // guessed at.
 inline constexpr size_t kAnchorFingerprintLen = 12;
 
+// Sizes are compared with a few bytes of slack because a packet does not reach
+// the file byte-identical: OBS emits Annex B, where a NAL may carry a 3-byte
+// start code, while the MP4 muxer writes a 4-byte length prefix for every NAL.
+// Measured against Branch Output this shows up as a steady +1 byte per packet.
+// A frame carries only a handful of NALs, so the drift is small and bounded,
+// while encoded sizes themselves differ by hundreds of bytes — the fingerprint
+// stays just as discriminating.
+inline constexpr uint32_t kAnchorSizeToleranceBytes = 8;
+
+inline bool sizesMatch(uint32_t a, uint32_t b)
+{
+	const uint32_t diff = a > b ? a - b : b - a;
+	return diff <= kAnchorSizeToleranceBytes;
+}
+
 enum class AnchorResult {
 	Found,
 	TooFewSamples,  // not enough ring history or file packets to compare
@@ -73,7 +88,7 @@ inline AnchorResult findAnchor(const std::vector<AnchorSample> &ring,
 	for (size_t i = 0; i <= last; i++) {
 		bool ok = true;
 		for (size_t k = 0; k < need; k++) {
-			if (ring[i + k].size != fileSizes[k]) {
+			if (!sizesMatch(ring[i + k].size, fileSizes[k])) {
 				ok = false;
 				break;
 			}

@@ -11,6 +11,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
 #include "media-replay.hpp"
 #include "packet-tap.hpp"
 #include "plugin-support.h"
+#include "segment-index.hpp"
 
 #include <util/platform.h>
 
@@ -355,6 +356,21 @@ bool ReplayCore::startRecording(std::string &errorOut)
 		budget.kbpsPerCamera =
 			config_.videoBitrateKbps + config_.audioBitrateKbps;
 		PacketTap::instance().armAsync(wantTap, budget);
+
+		// Watch the files Branch Output writes so replay can reach back
+		// past the RAM window. The epoch pair ties this session's
+		// monotonic clock to wall time, which is the only thing that
+		// still means anything once OBS restarts.
+		std::array<bool, kMaxSegmentCameras> segCams{};
+		for (int i = 0; i < kMaxCameras && i < kMaxSegmentCameras; i++)
+			segCams[i] = cameraStatus_[i].recording;
+		const int64_t epochWallNs =
+			std::chrono::duration_cast<std::chrono::nanoseconds>(
+				std::chrono::system_clock::now().time_since_epoch())
+				.count();
+		SegmentIndex::instance().start(recFolder, segCams,
+					       (int64_t)os_gettime_ns(),
+					       epochWallNs);
 	}
 
 	// Auto-measure the encoder-startup latency: poll for the first NEW cam file
@@ -415,6 +431,7 @@ bool ReplayCore::stopRecording()
 	if (PacketTap::instance().anyAttached())
 		obs_log(LOG_INFO, "%s", PacketTap::instance().report().c_str());
 	PacketTap::instance().detachAll();
+	SegmentIndex::instance().stop();
 
 	for (int i = 0; i < kMaxCameras; i++) {
 		auto &st = cameraStatus_[i];

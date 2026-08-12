@@ -17,6 +17,7 @@ See selftest.hpp. This is the scripted form of the M0 gate.
 #include "replay-channel.hpp"
 #include "replay-core.hpp"
 #include "replay-decoder.hpp"
+#include "segment-index.hpp"
 
 #include <util/platform.h>
 
@@ -176,6 +177,10 @@ void runSelfTest()
 	std::error_code ec;
 	const std::filesystem::path folder =
 		std::filesystem::temp_directory_path(ec) / "obs-multireplay-selftest";
+	// Start from an empty folder: leftovers from earlier runs are recordings
+	// whose openings are long gone from the ring, so they can never be
+	// anchored and would drown the check in false negatives.
+	std::filesystem::remove_all(folder, ec);
 	std::filesystem::create_directories(folder, ec);
 	cfg.sessionFolder = folder.string();
 	cfg.splitMinutes = 20;
@@ -247,6 +252,50 @@ void runSelfTest()
 	});
 	obs_log(LOG_INFO, "[selftest] armed %d Branch Output filter(s)", armed);
 
+	// Watch the recording folder so the gate also exercises file anchoring.
+	{
+		std::array<bool, kMaxSegmentCameras> segCams{};
+		for (int i = 0; i < camCount && i < kMaxSegmentCameras; i++)
+			segCams[i] = want[i];
+		const int64_t epochWallNs =
+			std::chrono::duration_cast<std::chrono::nanoseconds>(
+				std::chrono::system_clock::now().time_since_epoch())
+				.count();
+		SegmentIndex::instance().start(cfg.sessionFolder, segCams,
+					       (int64_t)os_gettime_ns(), epochWallNs);
+	}
+
+	// Keep the synthetic cameras moving. A flat colour compresses to nearly
+	// identical frames, which is exactly the case segment anchoring refuses
+	// as ambiguous - so without motion the gate could never exercise it.
+	std::atomic<bool> animate{!useRealSources};
+	std::thread animator;
+	if (animate.load()) {
+		animator = std::thread([&]() {
+			int tick = 0;
+			while (animate.load()) {
+				for (int i = 0; i < camCount; i++) {
+					if (!cams[i])
+						continue;
+					obs_data_t *s = obs_data_create();
+					const uint32_t c =
+						0xFF000000u |
+						(uint32_t)((tick * 2654435761u +
+							    (uint32_t)i * 40503u) &
+							   0x00FFFFFFu);
+					obs_data_set_int(s, "color", c);
+					obs_data_set_int(s, "width", cx);
+					obs_data_set_int(s, "height", cy);
+					obs_source_update(cams[i], s);
+					obs_data_release(s);
+				}
+				tick++;
+				std::this_thread::sleep_for(
+					std::chrono::milliseconds(66));
+			}
+		});
+	}
+
 	const uint32_t laggedBefore = obs_get_lagged_frames();
 	const uint32_t totalBefore = obs_get_total_frames();
 
@@ -261,6 +310,20 @@ void runSelfTest()
 			obs_log(LOG_INFO, "%s",
 				PacketTap::instance().report().c_str());
 	}
+
+	animate.store(false);
+	if (animator.joinable())
+		animator.join();
+
+	const int segmentsAnchored = SegmentIndex::instance().anchoredCount();
+	const int segmentsUnanchored = SegmentIndex::instance().unanchoredCount();
+	// Every recording file that appeared must have been placed on the
+	// timeline exactly; anything left unanchored is footage we would refuse
+	// to play rather than guess the position of.
+	const bool segmentsOk =
+		segmentsAnchored >= armed && segmentsUnanchored == 0;
+	obs_log(LOG_INFO, "[selftest] segments anchored=%d unanchored=%d",
+		segmentsAnchored, segmentsUnanchored);
 
 	const uint32_t laggedAfter = obs_get_lagged_frames();
 	const uint32_t totalAfter = obs_get_total_frames();
@@ -513,6 +576,7 @@ void runSelfTest()
 	// Detach BEFORE disabling the filters: Branch Output frees its encoder
 	// in releaseInfrastructureIfIdle() once its own outputs go idle.
 	PacketTap::instance().detachAll();
+	SegmentIndex::instance().stop();
 
 	// Tearing down a Branch Output filter destroys its QTimer, so this goes
 	// back on the UI thread too.
@@ -579,7 +643,7 @@ void runSelfTest()
 			  passLatency && passSkew && passImpact && passClean &&
 			  ringLast5s && passRingCrossAngle && decodeOk &&
 			  startsOnMarkedFrame && playsIntoObs && audioPlays &&
-			  slowMotionPaced;
+			  slowMotionPaced && segmentsOk;
 
 	// --- Report -----------------------------------------------------------
 	obs_data_t *root = obs_data_create();
@@ -608,9 +672,15 @@ void runSelfTest()
 	obs_data_set_bool(checks, "plays_into_obs_source", playsIntoObs);
 	obs_data_set_bool(checks, "audio_plays", audioPlays);
 	obs_data_set_bool(checks, "slow_motion_paced", slowMotionPaced);
+	// Every recording file that appeared must have been placed on the
+	// timeline exactly; anything left unanchored is footage we would refuse
+	// to play rather than guess the position of.
+	obs_data_set_bool(checks, "segments_anchored", segmentsOk);
 	obs_data_set_obj(root, "checks", checks);
 	obs_data_release(checks);
 
+	obs_data_set_int(root, "segments_anchored", segmentsAnchored);
+	obs_data_set_int(root, "segments_unanchored", segmentsUnanchored);
 	obs_data_set_int(root, "played_frames", playedFrames);
 	obs_data_set_int(root, "played_audio_buffers", audioBuffers);
 	obs_data_set_int(root, "played_elapsed_ms_at_1x", playElapsedMs);
