@@ -23,6 +23,8 @@ start.
 #include <atomic>
 #include <climits>
 #include <cstdint>
+#include <functional>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <utility>
@@ -109,6 +111,13 @@ public:
 	// it from its own thread while poll() writes it on the UI thread.
 	bool previewShowsReplay() const { return previewShowsReplay_.load(); }
 
+	// What an OBS hotkey callback is handed (see registerDockHotkeys). Public
+	// only because that callback is a plain C function, as libobs requires.
+	struct HotkeyCtx {
+		MultiReplayDock *dock = nullptr;
+		std::function<void(MultiReplayDock *)> fn;
+	};
+
 private:
 	// --- UI assembly ---
 	QWidget *buildPreview();
@@ -140,6 +149,12 @@ private:
 	// (and refuses) when it is not. See the definition.
 	bool markable(int64_t tNs);
 	std::vector<int> selectedEventIds() const;
+	// The "Play selected" button, factored out so the hotkey of the same name
+	// runs the same code (selection, angle and "to output" all included).
+	void playSelected();
+	// Move the list selection by `delta`, clamped. Two relative hotkeys beat
+	// twenty absolute ones.
+	void stepList(int delta);
 	void seekToFraction(double frac);
 	// One-line transient message in the status area. Used for the things the
 	// operator triggers with a single press (an angle button, a scrub) where a
@@ -159,6 +174,20 @@ private:
 	// per-angle override, and re-cues the current clip from its in-point at
 	// the new speed (broadcast-style).
 	void applyReplaySpeed(int pct);
+
+	// --- hotkeys the DOCK owns ---------------------------------------------
+	// ReplayCore registers the hotkeys whose meaning is engine state. These
+	// are the ones whose meaning is the DOCK's state — which events are
+	// selected, where the bar is parked, what the speed slider says — and no
+	// free function in replay-core can see any of it. Registered here so a
+	// Stream Deck reaches exactly the same code as the buttons, instead of a
+	// second implementation that drifts.
+	//
+	// OBS calls a hotkey callback on the hotkey thread, so each one hops onto
+	// the GUI thread before it touches a widget.
+	void registerDockHotkeys();
+	std::vector<std::unique_ptr<HotkeyCtx>> hotkeyCtx_;
+	std::vector<obs_hotkey_id> hotkeys_;
 
 	// --- event filter: double-click on note labels ---
 	bool eventFilter(QObject *watched, QEvent *event) override;

@@ -775,6 +775,9 @@ MultiReplayDock::MultiReplayDock(QWidget *parent) : QWidget(parent)
 	connect(pollTimer_, &QTimer::timeout, this, &MultiReplayDock::poll);
 	pollTimer_->start();
 
+	// After the widgets exist: every one of these acts on one of them.
+	registerDockHotkeys();
+
 	refreshAngles();
 	refreshEvents();
 	poll();
@@ -782,6 +785,16 @@ MultiReplayDock::MultiReplayDock(QWidget *parent) : QWidget(parent)
 
 MultiReplayDock::~MultiReplayDock()
 {
+	// FIRST, before anything else is torn down: a hotkey firing from the
+	// hotkey thread must not find a half-destroyed dock. obs_hotkey_unregister
+	// takes libobs' hotkey mutex, so it returns only once no callback is in
+	// flight; the contexts it was pointing at die with the vector below.
+	for (obs_hotkey_id id : hotkeys_)
+		if (id != OBS_INVALID_HOTKEY_ID)
+			obs_hotkey_unregister(id);
+	hotkeys_.clear();
+	hotkeyCtx_.clear();
+
 	// Order matters here. The display is a CHILD widget, so ~QWidget takes it
 	// down only after this body has returned — leaving a window in which the
 	// graphics thread can still call drawChannelA() on a half-destroyed dock.
@@ -1159,14 +1172,8 @@ QWidget *MultiReplayDock::buildEvents()
 				   "mrAccent");
 	auto *playLast = compactBtn(obs_module_text("Dock.PlayLast"), this);
 	auto *stop = compactBtn(obs_module_text("Dock.Stop"), this, "mrDanger");
-	connect(playSel, &QPushButton::clicked, this, [this]() {
-		std::string err;
-		if (!PlaybackCoordinator::instance().playEvents(
-			    selectedEventIds(), currentAngle1_ - 1,
-			    toOutputChk_->isChecked(), err))
-			QMessageBox::warning(this, "obs-multireplay",
-					     QString::fromStdString(err));
-	});
+	connect(playSel, &QPushButton::clicked, this,
+		&MultiReplayDock::playSelected);
 	connect(playLast, &QPushButton::clicked, this, [this]() {
 		std::string err;
 		if (!PlaybackCoordinator::instance().playLastEvent(
@@ -1258,6 +1265,97 @@ std::vector<int> MultiReplayDock::selectedEventIds() const
 			ids.push_back(id);
 	}
 	return ids;
+}
+
+namespace {
+
+// OBS fires hotkey callbacks on the hotkey thread. Everything the dock does
+// touches widgets, so the work is posted to the GUI thread with the dock itself
+// as the context object: if the dock is gone by then, ~QObject has already
+// dropped the posted event and nothing runs on a dead pointer.
+void onDockHotkey(void *data, obs_hotkey_id, obs_hotkey_t *, bool pressed)
+{
+	if (!pressed)
+		return;
+	auto *ctx = static_cast<MultiReplayDock::HotkeyCtx *>(data);
+	if (!ctx || !ctx->dock)
+		return;
+	QMetaObject::invokeMethod(
+		ctx->dock, [ctx]() { ctx->fn(ctx->dock); },
+		Qt::QueuedConnection);
+}
+
+} // namespace
+
+void MultiReplayDock::registerDockHotkeys()
+{
+	struct Def {
+		const char *name;
+		const char *locale;
+		void (*fn)(MultiReplayDock *);
+	};
+
+	static const Def kDefs[] = {
+		// The play button, not "the last event": what an operator has
+		// selected is what he means, and the table auto-selects the mark
+		// he has just taken.
+		{"ReplayPlaySelected", "Hotkey.PlaySelected",
+		 [](MultiReplayDock *d) { d->playSelected(); }},
+		{"ReplayStepForward", "Hotkey.StepForward",
+		 [](MultiReplayDock *d) { d->stepFrameForward(); }},
+		{"ReplayMarkCancel", "Hotkey.MarkCancel",
+		 [](MultiReplayDock *d) {
+			 EventStore::instance().markCancel();
+			 d->refreshEvents();
+		 }},
+		// Speed presets: the same path as the chips, so they re-cue the
+		// current clip at the new speed instead of only changing a number.
+		{"ReplaySpeed25", "Hotkey.Speed25",
+		 [](MultiReplayDock *d) { d->applyReplaySpeed(25); }},
+		{"ReplaySpeed50", "Hotkey.Speed50",
+		 [](MultiReplayDock *d) { d->applyReplaySpeed(50); }},
+		{"ReplaySpeed75", "Hotkey.Speed75",
+		 [](MultiReplayDock *d) { d->applyReplaySpeed(75); }},
+		{"ReplaySpeed100", "Hotkey.Speed100",
+		 [](MultiReplayDock *d) { d->applyReplaySpeed(100); }},
+		{"ReplayFastForward", "Hotkey.FastForward",
+		 [](MultiReplayDock *d) { d->applyReplaySpeed(200); }},
+		// 20 lists and no way to change list without the mouse was the
+		// gap; two relative steps beat twenty absolute hotkeys.
+		{"ReplayPrevList", "Hotkey.PrevList",
+		 [](MultiReplayDock *d) { d->stepList(-1); }},
+		{"ReplayNextList", "Hotkey.NextList",
+		 [](MultiReplayDock *d) { d->stepList(+1); }},
+	};
+
+	for (const Def &def : kDefs) {
+		auto ctx = std::make_unique<HotkeyCtx>();
+		ctx->dock = this;
+		ctx->fn = def.fn;
+		hotkeys_.push_back(obs_hotkey_register_frontend(
+			def.name, obs_module_text(def.locale), onDockHotkey,
+			ctx.get()));
+		hotkeyCtx_.push_back(std::move(ctx));
+	}
+}
+
+void MultiReplayDock::stepList(int delta)
+{
+	if (!listCombo_)
+		return;
+	const int next = std::clamp(listCombo_->currentIndex() + delta, 0,
+				    listCombo_->count() - 1);
+	listCombo_->setCurrentIndex(next); // its signal selects the list + refreshes
+}
+
+void MultiReplayDock::playSelected()
+{
+	std::string err;
+	if (!PlaybackCoordinator::instance().playEvents(
+		    selectedEventIds(), currentAngle1_ - 1,
+		    toOutputChk_ && toOutputChk_->isChecked(), err))
+		QMessageBox::warning(this, "obs-multireplay",
+				     QString::fromStdString(err));
 }
 
 void MultiReplayDock::setAngle(int angle1Based)
