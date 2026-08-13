@@ -402,6 +402,19 @@ void ReplayChannel::playbackLoop()
 			firstNs = f.masterNs;
 		lastNs = f.masterNs;
 		pushed++;
+
+		// Publish the playhead as it moves, not once at the end.
+		// positionNs() IS this field, and the dock reads it thirty times a
+		// second to drive the seekbar, the timecode and — in review mode —
+		// markTimeNs(). Left until after the loop it stayed at the 0 that
+		// play() resets it to for the whole clip, so the bar never moved and
+		// a mark taken while reviewing landed at master 0.
+		{
+			std::lock_guard<std::mutex> lock(statsMutex_);
+			stats_.framesPushed = pushed;
+			stats_.firstFrameNs = firstNs;
+			stats_.lastFrameNs = lastNs;
+		}
 	};
 
 	bool completed = true;
