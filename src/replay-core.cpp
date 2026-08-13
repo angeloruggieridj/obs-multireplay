@@ -189,6 +189,32 @@ int64_t hotkeyMarkTimeNs()
 	return ReplayChannel::instance().positionNs();
 }
 
+// A mark is only real if there is an instant behind it. Master time is
+// os_gettime_ns(), never 0 on a running machine, so 0 means the tap has
+// captured nothing on this angle and nothing is playing either. Storing it
+// would produce an event at master 0: visible in the list, impossible to play.
+bool hotkeyMarkable(int64_t tNs)
+{
+	if (tNs > 0)
+		return true;
+	obs_log(LOG_WARNING,
+		"mark ignored: nothing captured on angle %d and no replay "
+		"playing",
+		ReplayCore::instance().currentAngle() + 1);
+	return false;
+}
+
+// The angle the operator is on, which is the one he is looking at when he hits
+// the key. Marking always enabled CAM1 instead, so a mark taken from a Stream
+// Deck while watching angle 3 produced an event enabled on angle 1 only — and
+// playback, which refuses to play a disabled angle, then silently put the wrong
+// camera on air. The dock has always passed its selected angle; the hotkeys,
+// which are the ones actually used during a match, did not.
+int hotkeyAngle0()
+{
+	return ReplayCore::instance().currentAngle();
+}
+
 using SimpleFn = void (*)();
 
 void onSimpleHotkey(void *data, obs_hotkey_id, obs_hotkey_t *, bool pressed)
@@ -205,15 +231,35 @@ struct HotkeyDef {
 
 const HotkeyDef kReplayHotkeys[] = {
 	{"ReplayMarkIn", "Hotkey.MarkIn",
-	 []() { EventStore::instance().markIn(hotkeyMarkTimeNs()); }},
+	 []() {
+		 const int64_t t = hotkeyMarkTimeNs();
+		 if (hotkeyMarkable(t))
+			 EventStore::instance().markIn(t, hotkeyAngle0());
+	 }},
 	{"ReplayMarkOut", "Hotkey.MarkOut",
-	 []() { EventStore::instance().markOut(hotkeyMarkTimeNs()); }},
+	 []() {
+		 const int64_t t = hotkeyMarkTimeNs();
+		 if (hotkeyMarkable(t))
+			 EventStore::instance().markOut(t);
+	 }},
 	{"ReplayMarkInOut5", "Hotkey.Mark5",
-	 []() { EventStore::instance().markInOut(hotkeyMarkTimeNs(), 5); }},
+	 []() {
+		 const int64_t t = hotkeyMarkTimeNs();
+		 if (hotkeyMarkable(t))
+			 EventStore::instance().markInOut(t, 5, hotkeyAngle0());
+	 }},
 	{"ReplayMarkInOut10", "Hotkey.Mark10",
-	 []() { EventStore::instance().markInOut(hotkeyMarkTimeNs(), 10); }},
+	 []() {
+		 const int64_t t = hotkeyMarkTimeNs();
+		 if (hotkeyMarkable(t))
+			 EventStore::instance().markInOut(t, 10, hotkeyAngle0());
+	 }},
 	{"ReplayMarkInOut20", "Hotkey.Mark20",
-	 []() { EventStore::instance().markInOut(hotkeyMarkTimeNs(), 20); }},
+	 []() {
+		 const int64_t t = hotkeyMarkTimeNs();
+		 if (hotkeyMarkable(t))
+			 EventStore::instance().markInOut(t, 20, hotkeyAngle0());
+	 }},
 	{"ReplayPlayLastEventToOutput", "Hotkey.PlayLast",
 	 []() {
 		 std::string err;
