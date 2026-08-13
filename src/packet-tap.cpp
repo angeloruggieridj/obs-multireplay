@@ -340,10 +340,22 @@ void PacketTap::armLoop()
 				if (attachLocked(i)) {
 					attempts[i] = 0;
 				} else if (attempts[i] == kArmMaxAttempts) {
+					// Almost always one cause. Branch Output
+					// decides when to record from a global
+					// Interlock setting in ITS dock, not from
+					// anything on the filter, so we can neither
+					// set it nor read it. On anything other than
+					// "Always ON" our REC enables the filter and
+					// Branch Output simply declines to start -
+					// silently, as far as the operator can see.
+					// Naming the likely cause beats reporting
+					// the symptom.
 					obs_log(LOG_WARNING,
-						"[tap] cam%d: giving up, no active "
-						"Branch Output output named '%s%d' "
-						"after %d s",
+						"[tap] cam%d: no active Branch Output "
+						"output named '%s%d' after %d s. Check "
+						"Branch Output's Interlock setting: it "
+						"must be 'Always ON' for REC to arm the "
+						"recordings.",
 						i + 1,
 						branch_output::kFilterNamePrefix,
 						i + 1,
