@@ -762,10 +762,11 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 		auto &chan = ReplayChannel::instance();
 		SeekBar *bar = nullptr;
 		runOnUi([&]() {
-			for (SeekBar *b : dock->findChildren<SeekBar *>()) {
-				bar = b;
-				break;
-			}
+			// value() rather than a loop that breaks on the first
+			// item: clang rejects that as an unreachable loop
+			// increment under -Werror, and the dock has exactly one
+			// seekbar anyway.
+			bar = dock->findChild<SeekBar *>();
 		});
 		if (!bar) {
 			obs_log(LOG_ERROR, "[selftest] dock: no seekbar found");
