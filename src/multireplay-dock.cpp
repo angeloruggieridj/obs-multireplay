@@ -306,7 +306,8 @@ enum EventCol {
 	kColIn,
 	kColOut,
 	kColDur,
-	kColCams, // per-angle: [cam toggle] [comment] [speed%]
+	kColSpeed, // event speed, "--" = inherited (the reference controller), editable in place
+	kColCams,  // per-angle: [cam toggle] [comment] [speed%]
 	kColCount
 };
 
@@ -1060,7 +1061,7 @@ QWidget *MultiReplayDock::buildEvents()
 	events_->setColumnCount(kColCount);
 	events_->setHorizontalHeaderLabels(
 		{"#", obs_module_text("Dock.In"), obs_module_text("Dock.Out"),
-		 obs_module_text("Dock.Duration"),
+		 obs_module_text("Dock.Duration"), obs_module_text("Dock.Speed"),
 		 obs_module_text("Dock.AnglesHeader")});
 	events_->setSelectionBehavior(QAbstractItemView::SelectRows);
 	events_->setSelectionMode(QAbstractItemView::ExtendedSelection);
@@ -1086,6 +1087,27 @@ QWidget *MultiReplayDock::buildEvents()
 	}
 	connect(events_, &QTableWidget::itemChanged, this,
 		&MultiReplayDock::onEventItemChanged);
+	// the reference controller: double-clicking an event plays it TO OUTPUT. It is the fastest
+	// path there is from "that one" to "on air", and the reason the operator
+	// keeps his hand on the mouse. The speed cell is exempt: double-click is
+	// also how that one is edited, and taking program because someone wanted
+	// to type 50 would be the worst kind of surprise.
+	connect(events_, &QTableWidget::cellDoubleClicked, this,
+		[this](int row, int column) {
+			if (column == kColSpeed)
+				return;
+			QTableWidgetItem *it = events_->item(row, kColId);
+			if (!it)
+				return;
+			const int id = it->data(Qt::UserRole).toInt();
+			if (id <= 0)
+				return;
+			std::string err;
+			if (!PlaybackCoordinator::instance().playEvents(
+				    {id}, currentAngle1_ - 1, /*toOutput*/ true,
+				    err))
+				showNotice(QString::fromStdString(err));
+		});
 	v->addWidget(events_, 1);
 
 	// Inspector panel: per-angle toggle · comment · vel% for the selected event.
@@ -1853,7 +1875,25 @@ void MultiReplayDock::refreshEvents()
 		return false;
 	};
 
+	// The rows are COLLECTED first and rendered after, so the list can be drawn
+	// in chronological order (the reference controller "sort events by time") rather than in the
+	// order the marks were taken. The two orders diverge the moment a −20s
+	// preset follows a −5s one, and during a match a list that is not in the
+	// order things happened is read wrong, not slowly.
+	struct Row {
+		int id = 0;
+		int64_t tin = 0;
+		int64_t tout = -1;
+		double ownSpeed = -1.0;      // what this event sets, <0 = "--"
+		double resolvedSpeed = -1.0; // inherited from the previous event
+		bool camOn[kEventAngles] = {};
+		double camSpeeds[kEventAngles] = {};
+		std::string camNotes[kEventAngles];
+	};
+	std::vector<Row> rows;
+
 	size_t n = obs_data_array_count(arr);
+	rows.reserve(n);
 	for (size_t i = 0; i < n; i++) {
 		obs_data_t *e = obs_data_array_item(arr, i);
 		int id = (int)obs_data_get_int(e, "id");
@@ -1893,10 +1933,6 @@ void MultiReplayDock::refreshEvents()
 		if (tin >= 0 && tout > tin)
 			rawMarkers.push_back({tin, tout});
 
-		QString dur = tout >= 0 ? formatTc(tout - tin)
-					: QString::fromUtf8(
-						  obs_module_text("Dock.Open"));
-
 		// search filter (id / per-angle notes / angles)
 		if (!needle.isEmpty()) {
 			QString hay = QString::number(id) + " " + anglesStr;
@@ -1911,15 +1947,47 @@ void MultiReplayDock::refreshEvents()
 			}
 		}
 
-		int row = events_->rowCount();
+		Row r;
+		r.id = id;
+		r.tin = tin;
+		r.tout = tout;
+		r.ownSpeed = obs_data_get_double(e, "speed");
+		r.resolvedSpeed = obs_data_get_double(e, "resolvedSpeed");
+		for (int k = 0; k < kEventAngles; k++) {
+			r.camOn[k] = camOn[k];
+			r.camSpeeds[k] = camSpeeds[k];
+			r.camNotes[k] = camNotes[k];
+		}
+		rows.push_back(std::move(r));
+
+		obs_data_release(e);
+	}
+	obs_data_array_release(arr);
+
+	if (rowCfg.sortEventsByTime)
+		// Stable: two marks at the same instant keep the order they were
+		// taken in, which is the only tie-break that means anything.
+		std::stable_sort(rows.begin(), rows.end(),
+				 [](const Row &a, const Row &b) {
+					 return a.tin < b.tin;
+				 });
+	const int idDigits = std::clamp(rowCfg.eventIdDigits, 1, 8);
+
+	auto roItem = [](const QString &txt, Qt::Alignment al) {
+		auto *it = new QTableWidgetItem(txt);
+		it->setTextAlignment(al);
+		it->setFlags(Qt::ItemIsSelectable | Qt::ItemIsEnabled);
+		return it;
+	};
+
+	for (const Row &r : rows) {
+		const int row = events_->rowCount();
 		events_->insertRow(row);
 
-		auto roItem = [](const QString &txt, Qt::Alignment al) {
-			auto *it = new QTableWidgetItem(txt);
-			it->setTextAlignment(al);
-			it->setFlags(Qt::ItemIsSelectable | Qt::ItemIsEnabled);
-			return it;
-		};
+		QString dur = r.tout >= 0
+				      ? formatTc(r.tout - r.tin)
+				      : QString::fromUtf8(
+						obs_module_text("Dock.Open"));
 
 		// Nothing behind the mark: flag it here rather than letting the
 		// operator find out by pressing play during a match. A closed
@@ -1929,37 +1997,62 @@ void MultiReplayDock::refreshEvents()
 		// sit in that range - the last session's log has one, event 4,
 		// failing with "no video frame at or after the requested
 		// in-point" five times in a row.
-		const bool degenerate = tout >= 0 && tout - tin < 1'000'000;
+		const bool degenerate = r.tout >= 0 && r.tout - r.tin < 1'000'000;
 		const bool playable =
-			tin > 0 && !degenerate && footageExists(tin);
-		auto *idItem = roItem(playable ? QString::number(id)
-					       : QStringLiteral("⚠ ") +
-							 QString::number(id),
+			r.tin > 0 && !degenerate && footageExists(r.tin);
+		// the reference controller pads ids to a fixed width so they stay the same length for
+		// the whole match and can be called out loud.
+		const QString idText =
+			QString("%1").arg(r.id, idDigits, 10, QLatin1Char('0'));
+		auto *idItem = roItem(playable ? idText
+					       : QStringLiteral("⚠ ") + idText,
 				      Qt::AlignCenter);
-		idItem->setData(Qt::UserRole, id);
+		idItem->setData(Qt::UserRole, r.id);
 		if (!playable)
 			idItem->setToolTip(
 				obs_module_text("Dock.EventNoFootage"));
 		events_->setItem(row, kColId, idItem);
-		events_->setItem(row, kColIn, roItem(relTc(tin), mid));
+		events_->setItem(row, kColIn, roItem(relTc(r.tin), mid));
 		events_->setItem(row, kColOut,
-				 roItem(tout >= 0 ? relTc(tout)
-						  : QStringLiteral("--"),
+				 roItem(r.tout >= 0 ? relTc(r.tout)
+						    : QStringLiteral("--"),
 					mid));
 		events_->setItem(row, kColDur, roItem(dur, mid));
+
+		// Speed: what this event sets, or in parentheses what it inherited
+		// from the event before it (the reference controller), or "--" when nobody set one and
+		// the slider decides. The parentheses are the whole point — an
+		// operator has to be able to see at a glance whether 50% is HIS or
+		// something he is dragging along from three marks ago.
+		QString speedText = QStringLiteral("--");
+		if (r.ownSpeed >= 0)
+			speedText = QString("%1%").arg((int)std::lround(
+				r.ownSpeed * 100.0));
+		else if (r.resolvedSpeed >= 0)
+			speedText = QString("(%1%)").arg((int)std::lround(
+				r.resolvedSpeed * 100.0));
+		auto *speedItem = new QTableWidgetItem(speedText);
+		speedItem->setTextAlignment(mid);
+		speedItem->setFlags(Qt::ItemIsSelectable | Qt::ItemIsEnabled |
+				    Qt::ItemIsEditable);
+		speedItem->setToolTip(obs_module_text("Dock.SpeedHint"));
+		speedItem->setData(Qt::UserRole, r.id);
+		if (r.ownSpeed < 0)
+			speedItem->setForeground(QBrush(QColor("#707070")));
+		events_->setItem(row, kColSpeed, speedItem);
 
 		// Compact summary of enabled angles (full editing is in the
 		// inspector panel below): "1  3·50%  5✎". A trailing ✎ marks a
 		// per-angle comment; ·NN% marks a per-angle speed override.
 		QString summary;
 		for (int k = 0; k < kEventAngles; k++) {
-			if (!camOn[k])
+			if (!r.camOn[k])
 				continue;
 			QString tok = QString::number(k + 1);
-			if (camSpeeds[k] >= 0)
+			if (r.camSpeeds[k] >= 0)
 				tok += QString("·%1%").arg(
-					(int)(camSpeeds[k] * 100));
-			if (!camNotes[k].empty())
+					(int)(r.camSpeeds[k] * 100));
+			if (!r.camNotes[k].empty())
 				tok += QStringLiteral("✎");
 			if (!summary.isEmpty())
 				summary += QStringLiteral("  ");
@@ -1967,10 +2060,7 @@ void MultiReplayDock::refreshEvents()
 		}
 		auto *camItem = roItem(summary, Qt::AlignVCenter | Qt::AlignLeft);
 		events_->setItem(row, kColCams, camItem);
-
-		obs_data_release(e);
 	}
-	obs_data_array_release(arr);
 	refreshing_ = false;
 	markerNs_ = std::move(rawMarkers);
 	// Fraction conversion happens in poll() each tick via displayDurNs_.
@@ -2126,9 +2216,33 @@ void MultiReplayDock::populateInspector(int eventId)
 
 void MultiReplayDock::onEventItemChanged(QTableWidgetItem *item)
 {
-	// No editable text columns remain (speed is per-angle in the camera cell,
-	// in/out/duration are read-only). Kept as a no-op hook for future columns.
-	(void)item;
+	// The Speed column is the only editable one (in/out/duration are read-only
+	// and the angles live in the inspector). Everything else here is a rebuild
+	// writing its own cells, which must not be read back as an operator edit.
+	if (refreshing_ || !item || item->column() != kColSpeed)
+		return;
+	const int id = item->data(Qt::UserRole).toInt();
+	if (id <= 0)
+		return;
+
+	// Accept what an operator actually types: "50", "50%", " 50 ", and blank
+	// or "--" for "no speed of my own" — which is what makes the event fall
+	// back to the previous one's, exactly like the reference controller.
+	QString t = item->text().trimmed();
+	t.remove(QLatin1Char('%'));
+	t.remove(QLatin1Char('('));
+	t.remove(QLatin1Char(')'));
+	bool ok = false;
+	const int v = t.toInt(&ok);
+	if (!ok || t.isEmpty() || t == QStringLiteral("--"))
+		EventStore::instance().setSpeed(id, -1.0);
+	else
+		EventStore::instance().setSpeed(id, std::clamp(v, 1, 100) / 100.0);
+	// No refresh from here: we are inside the model's own setData, and tearing
+	// the rows down under it would free the item the view is still finishing
+	// with. The store's version counter has just moved, so poll() rebuilds on
+	// its next tick (~33 ms) on a clean stack — which is also what normalises
+	// the text and re-parenthesises every event that inherits from this one.
 }
 
 // ---------------------------------------------------------------------------

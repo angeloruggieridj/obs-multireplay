@@ -137,11 +137,20 @@ bool PlaybackCoordinator::playEvents(const std::vector<int> &eventIds,
 	// Snapshot the events too, for the same reason: EventStore has its own
 	// lock and the dock mutates it from the GUI thread while this runs.
 	std::vector<ReplayEvent> events;
+	// The event's own speed WITH the reference controller inheritance (the previous event's, when
+	// it has none of its own). Resolved here, next to the snapshot and outside
+	// our lock, because it asks EventStore — which the dock is mutating from
+	// the GUI thread while this runs.
+	std::vector<double> eventSpeed;
 	events.reserve(eventIds.size());
+	eventSpeed.reserve(eventIds.size());
 	for (int id : eventIds) {
 		ReplayEvent ev;
-		if (EventStore::instance().get(id, ev) && ev.tOutNs >= 0)
+		if (EventStore::instance().get(id, ev) && ev.tOutNs >= 0) {
 			events.push_back(std::move(ev));
+			eventSpeed.push_back(
+				EventStore::instance().resolvedSpeed(id));
+		}
 	}
 
 	std::lock_guard<std::mutex> lock(mutex_);
@@ -160,13 +169,17 @@ bool PlaybackCoordinator::playEvents(const std::vector<int> &eventIds,
 	const int defPct = defaultSpeedPct_.load();
 
 	std::vector<QueueItem> items;
-	// Speed is resolved per ANGLE (its own override if it has one, else the
-	// slider default): the same event can be shown at 100% on the wide and
-	// 50% on the tight, which is exactly what the per-angle field is for.
-	const auto push = [&](const ReplayEvent &ev, int a) {
-		int pct = ev.angles[a].speed >= 0
-				  ? (int)std::lround(ev.angles[a].speed * 100.0)
-				  : defPct;
+	// Three tiers, most specific first: the ANGLE's own override (the same
+	// event at 100% on the wide and 50% on the tight, which is what the
+	// per-angle field is for), then the EVENT's speed with the reference controller inheritance,
+	// then the slider default. Each tier only applies where the one above said
+	// nothing.
+	const auto push = [&](const ReplayEvent &ev, double evSpeed, int a) {
+		int pct = defPct;
+		if (ev.angles[a].speed >= 0)
+			pct = (int)std::lround(ev.angles[a].speed * 100.0);
+		else if (evSpeed >= 0)
+			pct = (int)std::lround(evSpeed * 100.0);
 		items.push_back(
 			{ev.id, ev.tInNs, ev.tOutNs, a, std::clamp(pct, 5, 400)});
 	};
@@ -175,7 +188,9 @@ bool PlaybackCoordinator::playEvents(const std::vector<int> &eventIds,
 	// operator gets told WHICH camera has nothing rather than a generic "no".
 	int refusedAngle = -1;
 
-	for (const ReplayEvent &ev : events) {
+	for (size_t ei = 0; ei < events.size(); ei++) {
+		const ReplayEvent &ev = events[ei];
+		const double evSpeed = eventSpeed[ei];
 		if (mode == AngleMode::AllEnabled) {
 			// One clip per enabled angle, in angle order. Enabling C1
 			// and C2 on a mark is a request to SEE both, one after the
@@ -199,13 +214,13 @@ bool PlaybackCoordinator::playEvents(const std::vector<int> &eventIds,
 						ev.id, a + 1);
 					continue;
 				}
-				push(ev, a);
+				push(ev, evSpeed, a);
 			}
 			if ((int)items.size() > before)
 				continue;
 			// No angle enabled at all: fall back to the requested one
 			// rather than silently dropping the event.
-			push(ev, ang);
+			push(ev, evSpeed, ang);
 			continue;
 		}
 
@@ -223,7 +238,7 @@ bool PlaybackCoordinator::playEvents(const std::vector<int> &eventIds,
 			refusedAngle = ang;
 			continue;
 		}
-		push(ev, ang);
+		push(ev, evSpeed, ang);
 	}
 	if (items.empty()) {
 		if (refusedAngle >= 0)
