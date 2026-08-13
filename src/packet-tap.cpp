@@ -480,6 +480,26 @@ bool PacketTap::attachLocked(int camIndex)
 		return false;
 	}
 
+	// Between the lookup above and the start just now, Branch Output may have
+	// torn its pipeline down - it restarts itself whenever its settings
+	// change, and that destroys the obs_view backing this encoder. Staying
+	// attached to that is what crashes libobs' gpu_encode_thread, so if the
+	// ground moved under us, let go at once and let the retry loop pick it up
+	// when it has settled.
+	if (!obs_output_active(bo) || !obs_encoder_active(venc)) {
+		obs_log(LOG_WARNING,
+			"[tap] cam%d: Branch Output restarted while attaching - "
+			"backing off",
+			camIndex + 1);
+		obs_output_stop(ours);
+		obs_output_release(ours);
+		obs_encoder_release(vencRef);
+		if (aencRef)
+			obs_encoder_release(aencRef);
+		obs_output_release(bo);
+		return false;
+	}
+
 	// Safety net for every teardown path we do not drive ourselves.
 	if (signal_handler_t *sh = obs_output_get_signal_handler(bo)) {
 		signal_handler_connect(sh, "stopping", onBoOutputStopping, &ch);

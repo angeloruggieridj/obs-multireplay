@@ -384,6 +384,27 @@ bool ReplayCore::startRecording(std::string &errorOut)
 		}
 		st.sourceFound = true;
 
+		// Stop first, unconditionally, before touching the settings.
+		//
+		// A filter that is already recording when REC is pressed - which
+		// happens whenever the disarm did not take - would otherwise be
+		// reconfigured underneath itself: ensureFilter() calls
+		// obs_source_update(), Branch Output reacts by restarting its
+		// pipeline, and it destroys the obs_view backing the encoder we
+		// are in the middle of attaching to. libobs' gpu_encode_thread
+		// then dereferences that freed video and takes OBS down with it
+		// (observed: c0000005 in gpu_encode_thread).
+		//
+		// Disabling an already-stopped filter costs nothing, so this runs
+		// on every camera rather than trying to detect the bad case.
+		if (obs_source_t *existing = obs_source_get_filter_by_name(
+			    target, (std::string(branch_output::kFilterNamePrefix) +
+				     std::to_string(i + 1))
+					    .c_str())) {
+			branch_output::setEnabled(existing, false);
+			obs_source_release(existing);
+		}
+
 		obs_source_t *filter =
 			branch_output::ensureFilter(target, i, config_);
 		if (filter) {

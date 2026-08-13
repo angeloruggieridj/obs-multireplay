@@ -312,7 +312,13 @@ QString formatTc(int64_t ns)
 struct Data {
 	obs_data_t *d;
 	explicit Data(const std::string &json)
-		: d(obs_data_create_from_json(json.c_str()))
+		// An empty string is a normal answer - no session, no cameras
+		// configured - not a parse failure. Handing it to the parser
+		// anyway made obs-data.c log "'[' or '{' expected" about twenty
+		// times a second from the poll timer, which buried real errors
+		// in the log and did the work for nothing.
+		: d(json.empty() ? nullptr
+				 : obs_data_create_from_json(json.c_str()))
 	{
 	}
 	~Data()

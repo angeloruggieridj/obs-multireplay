@@ -35,6 +35,13 @@ constexpr int kAnchorEveryNScans = 4; // ~2 s
 // A file's window only stays in the ring for as long as the ring is deep, so
 // give up long before that rather than retrying forever.
 constexpr int kMaxAnchorAttempts = 30; // ~60 s
+// Attempt count for a file we have stopped trying to anchor. It stays in the
+// pending list wearing this marker rather than being erased: scanFolder only
+// skips files it already knows about, so an erased one was immediately
+// rediscovered, re-queued with a fresh counter and given up on again - a loop
+// that re-demuxed the same files forever and filled the log with the same two
+// warnings every couple of seconds.
+constexpr int kAnchorAbandoned = -1;
 constexpr const char *kAnchorsFile = "anchors.json";
 
 // Branch Output writes "cam<N>_<timestamp>.mp4" (see branch-output-control).
@@ -247,6 +254,10 @@ void SegmentIndex::tryAnchorPending()
 			std::lock_guard<std::mutex> lock(mutex_);
 			auto &pend = pending_[cam];
 			for (auto it = pend.begin(); it != pend.end();) {
+				if (it->second == kAnchorAbandoned) {
+					++it;
+					continue;
+				}
 				if (++it->second >= kMaxAnchorAttempts) {
 					obs_log(LOG_WARNING,
 						"[segments] cam%d: %s has no anchor "
@@ -258,15 +269,16 @@ void SegmentIndex::tryAnchorPending()
 							.filename()
 							.string()
 							.c_str());
-					it = pend.erase(it);
-				} else {
-					++it;
+					it->second = kAnchorAbandoned;
 				}
+				++it;
 			}
 			continue;
 		}
 
 		for (auto &entry : todo) {
+			if (entry.second == kAnchorAbandoned)
+				continue; // already given up on; do not re-demux it
 			const std::string &path = entry.first;
 
 			// Probe a stretch of the file, not just its opening. The
@@ -372,7 +384,7 @@ void SegmentIndex::tryAnchorPending()
 						: (res == AnchorResult::NotFound
 							   ? "not found"
 							   : "not readable"));
-				pend.erase(it);
+				it->second = kAnchorAbandoned;
 			}
 		}
 	}
