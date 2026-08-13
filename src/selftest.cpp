@@ -805,6 +805,46 @@ void runSelfTest()
 	obs_log(LOG_INFO, "[selftest] segments anchored=%d unanchored=%d",
 		segmentsAnchored, segmentsUnanchored);
 
+	// --- The anchors must be ON DISK before the take ends -----------------
+	// anchors.json is the only evidence a later run has: a file whose opening
+	// has left the ring can never be re-anchored. It used to be written only
+	// by stop(), so a take that ended with OBS killed or crashed left its
+	// recordings with no anchor at all - which is why the operator's 18:27
+	// take (183 MB per camera) can never be replayed. Read the real file,
+	// mid-take, and count what is in it.
+	int anchorsOnDisk = 0;
+	{
+		const std::string ap =
+			(std::filesystem::path(cfg.sessionFolder) / "anchors.json")
+				.string();
+		obs_data_t *root = obs_data_create_from_json_file(ap.c_str());
+		if (root) {
+			obs_data_array_t *arr = obs_data_get_array(root, "segments");
+			if (arr) {
+				anchorsOnDisk = (int)obs_data_array_count(arr);
+				obs_data_array_release(arr);
+			}
+			obs_data_release(root);
+		}
+	}
+	const bool anchorsPersisted = anchorsOnDisk >= armed;
+	obs_log(anchorsPersisted ? LOG_INFO : LOG_ERROR,
+		"[selftest] anchors.json holds %d segment(s) mid-take (%d armed) - "
+		"this is what a project reopened tomorrow reads",
+		anchorsOnDisk, armed);
+
+	// --- Event timecodes have an origin that exists -----------------------
+	// A mark is an absolute instant on a clock that started with OBS; it only
+	// becomes a timecode relative to where the project's footage begins. That
+	// origin must come from the anchored recordings (every camera, not the
+	// selected one), or a reopened project prints marks as raw monotonic time
+	// - five-digit minute counts, which is exactly what the operator saw.
+	const int64_t projectOrigin = SegmentIndex::instance().projectOriginNs();
+	const bool projectOriginOk = projectOrigin > 0;
+	obs_log(projectOriginOk ? LOG_INFO : LOG_ERROR,
+		"[selftest] project origin (oldest anchor on any camera) = %lld ms",
+		(long long)(projectOrigin / 1000000));
+
 	const uint32_t laggedAfter = obs_get_lagged_frames();
 	const uint32_t totalAfter = obs_get_total_frames();
 	const int64_t skewNs = PacketTap::instance().crossAngleSkewNs();
@@ -1145,6 +1185,19 @@ void runSelfTest()
 					   "checks skipped");
 	}
 
+	// The mark the dock just took, expressed the way the event table expresses
+	// it: after the project's footage begins, and inside this take. A mark that
+	// lands before the origin (or hours after it) is the "absurd timecode" a
+	// reopened project showed, caught here instead of by eye.
+	const int64_t markOffsetNs =
+		projectOriginOk ? dockChecks.markInNs - projectOrigin : -1;
+	const bool eventTimecodeSane =
+		projectOriginOk && dockChecks.markInNs > 0 && markOffsetNs > 0 &&
+		markOffsetNs < (int64_t)(durationSecs + 120) * 1000000000LL;
+	obs_log(eventTimecodeSane ? LOG_INFO : LOG_ERROR,
+		"[selftest] marked event sits %lld ms after the project origin",
+		(long long)(markOffsetNs / 1000000));
+
 	// --- Tear down in the order the lifecycle demands ---------------------
 	// Detach BEFORE disabling the filters: Branch Output frees its encoder
 	// in releaseInfrastructureIfIdle() once its own outputs go idle.
@@ -1231,7 +1284,9 @@ void runSelfTest()
 			  dockChecks.angleCombinations &&
 			  dockChecks.angleChoiceRepeatable &&
 			  dockChecks.singleNonFirstAnglePlays &&
-			  dockChecks.queueAdvancesToSecond;
+			  dockChecks.queueAdvancesToSecond &&
+			  anchorsPersisted && projectOriginOk &&
+			  eventTimecodeSane;
 
 	// --- Report -----------------------------------------------------------
 	obs_data_t *root = obs_data_create();
@@ -1264,6 +1319,13 @@ void runSelfTest()
 	// timeline exactly; anything left unanchored is footage we would refuse
 	// to play rather than guess the position of.
 	obs_data_set_bool(checks, "segments_anchored", segmentsOk);
+	// Written to anchors.json as they are established, not at STOP: a take
+	// that ends with OBS killed still leaves replayable footage behind.
+	obs_data_set_bool(checks, "anchors_persisted_during_take",
+			  anchorsPersisted);
+	// Event timecodes have an origin, and it is the project's footage.
+	obs_data_set_bool(checks, "project_origin_from_anchors", projectOriginOk);
+	obs_data_set_bool(checks, "event_timecode_sane", eventTimecodeSane);
 	obs_data_set_bool(checks, "plays_from_disk", filePlaysFromDisk);
 	obs_data_set_bool(checks, "disk_matches_ring", fileMatchesRing);
 	obs_data_set_int(root, "disk_played_frames", fileFrames);
@@ -1299,6 +1361,10 @@ void runSelfTest()
 	obs_data_release(checks);
 
 	obs_data_set_int(root, "segments_anchored", segmentsAnchored);
+	obs_data_set_int(root, "anchors_on_disk_mid_take", anchorsOnDisk);
+	obs_data_set_int(root, "project_origin_ms", projectOrigin / 1000000);
+	obs_data_set_int(root, "mark_offset_from_origin_ms",
+			 markOffsetNs / 1000000);
 	obs_data_set_int(root, "segments_unanchored", segmentsUnanchored);
 	obs_data_set_int(root, "played_frames", playedFrames);
 	obs_data_set_int(root, "played_audio_buffers", audioBuffers);

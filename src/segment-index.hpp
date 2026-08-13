@@ -72,6 +72,21 @@ public:
 	// Oldest instant available on disk for a camera, 0 if none anchored.
 	int64_t oldestNs(int camIndex) const;
 
+	// Oldest anchored instant across ALL cameras, 0 if nothing is anchored.
+	// This is where the project's footage begins, and it is the only origin an
+	// event timecode may be measured from: a mark is a property of the project,
+	// not of the angle the operator happens to be looking at, so it must not
+	// renumber itself when he presses another camera button - nor collapse to
+	// raw monotonic time (a five-digit minute count) when the selected angle
+	// has nothing anchored.
+	int64_t projectOriginNs() const;
+
+	// Is that instant inside an anchored segment on any camera? "Can this mark
+	// still be played from disk" is a question the event list has to answer for
+	// footage of a session that is over, and answering it honestly is better
+	// than offering a row that does nothing when clicked.
+	bool coversAnyCamera(int64_t masterNs) const;
+
 	std::vector<RecordingSegment> segments(int camIndex) const;
 	int anchoredCount() const;
 	// Files seen but not anchorable (their opening had already left the

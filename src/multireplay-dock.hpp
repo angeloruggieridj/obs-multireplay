@@ -231,6 +231,14 @@ private:
 	// Master-timeline window currently drawn on the seekbar (ns).
 	int64_t timelineStartNs_ = 0; // oldest replayable instant, 0 = nothing
 	int64_t displayDurNs_ = 0;    // live edge - timelineStartNs_
+	// Where the PROJECT's footage begins, which is what event timecodes and
+	// YouTube chapters are measured from. Deliberately not timelineStartNs_:
+	// that one follows the selected angle, so the whole table renumbered
+	// itself when the operator pressed another camera button, and it is 0
+	// whenever the selected angle has nothing — which printed marks as raw
+	// monotonic time (a five-digit minute count). 0 = no footage at all, and
+	// then there is no honest number to print.
+	int64_t eventOriginNs_ = 0;
 	// Origin the event table was last rendered against, so poll() can tell
 	// when the columns need redrawing (see poll()).
 	int64_t tableOriginNs_ = 0;

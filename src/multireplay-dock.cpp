@@ -1341,14 +1341,26 @@ void MultiReplayDock::poll()
 	// stay black while the replay input was actually producing frames.
 	previewHasContent_ = liveEdgeNs > 0 || startNs > 0;
 
+	// Event times belong to the PROJECT, not to the angle being watched: the
+	// earliest anchored recording on ANY camera is 0:00 for the table and for
+	// the YouTube chapters. Reading it off the selected angle renumbered every
+	// row when the operator pressed another camera button, and gave nothing at
+	// all for an angle with no anchor — which is how a reopened project ended
+	// up printing marks as raw monotonic time. The ring is the fallback for a
+	// session that has not written a file yet.
+	int64_t eventOrigin = SegmentIndex::instance().projectOriginNs();
+	if (eventOrigin <= 0)
+		eventOrigin = startNs;
+	eventOriginNs_ = eventOrigin;
+
 	// The event columns are drawn relative to that origin, so a moved origin
 	// has to redraw them — it moves once for real, when the first anchored
 	// recording replaces the ring's (constantly evicted) oldest instant. The
 	// 1 s of slack is what keeps the ring's drift from rebuilding the table
 	// thirty times a second.
-	if (timelineStartNs_ > 0 &&
-	    std::abs(timelineStartNs_ - tableOriginNs_) > 1'000'000'000LL) {
-		tableOriginNs_ = timelineStartNs_;
+	if (eventOriginNs_ > 0 &&
+	    std::abs(eventOriginNs_ - tableOriginNs_) > 1'000'000'000LL) {
+		tableOriginNs_ = eventOriginNs_;
 		refreshEvents();
 	}
 
@@ -1685,11 +1697,38 @@ void MultiReplayDock::refreshEvents()
 	const Qt::Alignment mid = Qt::AlignVCenter | Qt::AlignHCenter;
 	std::vector<std::pair<int64_t, int64_t>> rawMarkers;
 
-	// Marks are absolute master-timeline instants; the columns show them
-	// relative to the same origin the seekbar uses, so the two agree.
-	const int64_t originNs = timelineStartNs_;
-	auto relTc = [originNs](int64_t ns) {
+	// Marks are absolute instants on a monotonic clock that started with OBS,
+	// so a column only means something relative to where this project's
+	// footage begins. With NO footage there is no such origin, and printing
+	// the raw instant produced the five-digit minute counts a reopened project
+	// showed ("5648:09.557" for a mark taken four minutes into a take). A mark
+	// we cannot place is shown as unplaceable.
+	const int64_t originNs = eventOriginNs_;
+	const bool haveOrigin = originNs > 0;
+	auto relTc = [originNs, haveOrigin](int64_t ns) {
+		if (!haveOrigin)
+			return QStringLiteral("--:--.---");
 		return formatTc(ns > originNs ? ns - originNs : 0);
+	};
+
+	// Can this mark still be played? The ring holds the last minutes; anything
+	// older needs an anchored recording. An event of a session whose files were
+	// never anchored can never play again, and saying so in the list beats a
+	// row that does nothing when clicked.
+	auto &tapRef = PacketTap::instance();
+	const Config rowCfg = ReplayCore::instance().getConfig();
+	auto footageExists = [&](int64_t ns) {
+		if (SegmentIndex::instance().coversAnyCamera(ns))
+			return true;
+		for (int cam = 0; cam < kNCams; cam++) {
+			if (rowCfg.cameras[cam].sourceName.empty())
+				continue;
+			const int64_t oldest = tapRef.oldestReplayableNs(cam);
+			const int64_t newest = tapRef.newestNs(cam);
+			if (oldest > 0 && ns >= oldest && ns <= newest)
+				return true;
+		}
+		return false;
 	};
 
 	size_t n = obs_data_array_count(arr);
@@ -1760,8 +1799,25 @@ void MultiReplayDock::refreshEvents()
 			return it;
 		};
 
-		auto *idItem = roItem(QString::number(id), Qt::AlignCenter);
+		// Nothing behind the mark: flag it here rather than letting the
+		// operator find out by pressing play during a match. A closed
+		// event shorter than a millisecond is the other unplayable kind:
+		// Mark Out taken at the same instant as Mark In, which markOut
+		// widens to exactly 1 ns so the event is "closed". No frame can
+		// sit in that range - the last session's log has one, event 4,
+		// failing with "no video frame at or after the requested
+		// in-point" five times in a row.
+		const bool degenerate = tout >= 0 && tout - tin < 1'000'000;
+		const bool playable =
+			tin > 0 && !degenerate && footageExists(tin);
+		auto *idItem = roItem(playable ? QString::number(id)
+					       : QStringLiteral("⚠ ") +
+							 QString::number(id),
+				      Qt::AlignCenter);
 		idItem->setData(Qt::UserRole, id);
+		if (!playable)
+			idItem->setToolTip(
+				obs_module_text("Dock.EventNoFootage"));
 		events_->setItem(row, kColId, idItem);
 		events_->setItem(row, kColIn, roItem(relTc(tin), mid));
 		events_->setItem(row, kColOut,
@@ -2251,9 +2307,13 @@ void MultiReplayDock::openProjectDialog()
 				     QString::fromStdString(err));
 		return;
 	}
+	// poll() FIRST: it reads the newly loaded anchors and seats the project
+	// origin the table is drawn against. Rebuilding the table before that
+	// rendered the just-loaded marks against an origin of 0 — raw monotonic
+	// time — until some later tick happened to move the origin by a second.
+	poll();
 	refreshEvents();
 	refreshAngles();
-	poll();
 }
 
 void MultiReplayDock::copyYouTubeChapters()
@@ -2262,7 +2322,9 @@ void MultiReplayDock::copyYouTubeChapters()
 	// Chapter 0:00 is the start of the timeline the dock is showing, which is
 	// the oldest instant still replayable — the same origin as the seekbar.
 	std::string text =
-		EventStore::instance().chaptersText(list, timelineStartNs_);
+		// The project's footage begins the chapter list, not the angle the
+		// operator is on (see eventOriginNs_).
+		EventStore::instance().chaptersText(list, eventOriginNs_);
 	if (text.empty()) {
 		QMessageBox::information(
 			this, "obs-multireplay",

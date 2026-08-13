@@ -278,6 +278,7 @@ void SegmentIndex::tryAnchorPending()
 			continue;
 		}
 
+		bool anchoredThisPass = false;
 		for (auto &entry : todo) {
 			// STOP is pressed on the GUI thread and joins this one.
 			// Probing a file is a full demux of a couple of hundred
@@ -349,6 +350,7 @@ void SegmentIndex::tryAnchorPending()
 							 b.anchorMasterNs;
 					  });
 				pend.erase(it);
+				anchoredThisPass = true;
 				obs_log(LOG_INFO,
 					"[segments] cam%d: anchored %s at master %lld ms",
 					cam + 1,
@@ -396,6 +398,18 @@ void SegmentIndex::tryAnchorPending()
 				it->second = kAnchorAbandoned;
 			}
 		}
+
+		// Write the anchor down NOW, not at STOP. anchors.json is the only
+		// evidence a later run has - a file whose opening has left the ring
+		// can never be re-anchored - and it used to be written only by
+		// stop(). A take that ended with OBS being killed (or crashing)
+		// therefore left its recordings on disk with no anchor at all: the
+		// 18:27 take in this project is 183 MB per camera and permanently
+		// unplayable for exactly that reason, and the next run's log says
+		// so with "giving up on cam1_...18-27-00.mp4 (not found)".
+		// Outside the lock: save() takes it.
+		if (anchoredThisPass)
+			save();
 	}
 }
 
@@ -441,6 +455,38 @@ int64_t SegmentIndex::oldestNs(int camIndex) const
 	return segs.empty() ? 0 : segs.front().anchorMasterNs;
 }
 
+int64_t SegmentIndex::projectOriginNs() const
+{
+	std::lock_guard<std::mutex> lock(mutex_);
+	int64_t oldest = 0;
+	for (const auto &segs : segments_) {
+		if (segs.empty())
+			continue;
+		// Each camera's vector is sorted by anchor, so its front is its
+		// own oldest.
+		const int64_t first = segs.front().anchorMasterNs;
+		if (first > 0 && (oldest == 0 || first < oldest))
+			oldest = first;
+	}
+	return oldest;
+}
+
+bool SegmentIndex::coversAnyCamera(int64_t masterNs) const
+{
+	std::lock_guard<std::mutex> lock(mutex_);
+	for (const auto &segs : segments_) {
+		for (const RecordingSegment &s : segs) {
+			if (!s.anchored || masterNs < s.anchorMasterNs)
+				continue;
+			// endMasterNs == 0 means "still the newest, still
+			// growing", which covers everything after its anchor.
+			if (s.endMasterNs == 0 || masterNs < s.endMasterNs)
+				return true;
+		}
+	}
+	return false;
+}
+
 std::vector<RecordingSegment> SegmentIndex::segments(int camIndex) const
 {
 	if (camIndex < 0 || camIndex >= kMaxSegmentCameras)
@@ -473,6 +519,31 @@ void SegmentIndex::save() const
 	if (folder_.empty())
 		return;
 
+	const std::string outPath =
+		(std::filesystem::path(folder_) / kAnchorsFile).string();
+
+	// Never write an empty index over a file that has entries. save() runs
+	// from stop(), and start() calls stop() first - so a run that failed to
+	// read anchors.json (or was pointed at the folder before it could) erased
+	// it on the next REC press. That is exactly what happened here: the file
+	// this project was left with is 15 bytes, `{"segments":[]}`, and every
+	// session since has opened with "loaded 0 anchored file(s)". An index with
+	// nothing in it has nothing to say about a folder; silence is the correct
+	// output, not a blank sheet over the evidence.
+	int held = 0;
+	for (const auto &segs : segments_)
+		held += (int)segs.size();
+	if (held == 0) {
+		std::error_code ec;
+		if (std::filesystem::exists(outPath, ec)) {
+			obs_log(LOG_INFO,
+				"[segments] nothing anchored this run - leaving %s "
+				"as it is rather than blanking it",
+				kAnchorsFile);
+			return;
+		}
+	}
+
 	obs_data_t *root = obs_data_create();
 	obs_data_array_t *arr = obs_data_array_create();
 	for (int cam = 0; cam < kMaxSegmentCameras; cam++) {
@@ -490,9 +561,7 @@ void SegmentIndex::save() const
 	obs_data_set_array(root, "segments", arr);
 	obs_data_array_release(arr);
 
-	const std::string path =
-		(std::filesystem::path(folder_) / kAnchorsFile).string();
-	obs_data_save_json_safe(root, path.c_str(), "tmp", "bak");
+	obs_data_save_json_safe(root, outPath.c_str(), "tmp", "bak");
 	obs_data_release(root);
 }
 
