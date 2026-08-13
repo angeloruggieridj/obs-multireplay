@@ -647,10 +647,14 @@ MultiReplayDock::MultiReplayDock(QWidget *parent) : QWidget(parent)
 			menu->addSeparator();
 			auto *actSettings = menu->addAction(
 				obs_module_text("Dock.Settings"));
+			auto *actRename = menu->addAction(
+				obs_module_text("Dock.RenameList"));
 			menu->addSeparator();
 			auto *actChapters = menu->addAction(
 				obs_module_text("Dock.YouTubeChapters"));
 			gear->setMenu(menu);
+			connect(actRename, &QAction::triggered, this,
+				&MultiReplayDock::renameListDialog);
 			connect(actNew, &QAction::triggered, this,
 				&MultiReplayDock::newProjectDialog);
 			connect(actOpen, &QAction::triggered, this,
@@ -1037,9 +1041,13 @@ QWidget *MultiReplayDock::buildEvents()
 	listLbl->setObjectName("mrSectionLabel");
 	top->addWidget(listLbl);
 	listCombo_ = new QComboBox(this);
-	listCombo_->setFixedWidth(56);
+	// Room for a name ("3 · Falli") without letting a long one push the search
+	// box off the panel.
+	listCombo_->setMinimumWidth(56);
+	listCombo_->setMaximumWidth(150);
 	for (int i = 1; i <= kEventLists; i++)
 		listCombo_->addItem(QString::number(i));
+	refreshListNames();
 	listCombo_->setCurrentIndex(EventStore::instance().selectedList() - 1);
 	connect(listCombo_, &QComboBox::currentIndexChanged, this,
 		[this](int idx) {
@@ -1779,6 +1787,44 @@ void MultiReplayDock::poll()
 	}
 }
 
+void MultiReplayDock::refreshListNames()
+{
+	if (!listCombo_)
+		return;
+	auto &store = EventStore::instance();
+	// Item text only: changing it does not move the current index, but the
+	// combo emits nothing we would care about either way, and blocking the
+	// signals keeps a rebuild from ever looking like an operator switching list.
+	QSignalBlocker block(listCombo_);
+	for (int i = 1; i <= kEventLists && i <= listCombo_->count(); i++) {
+		const std::string nm = store.listName(i);
+		listCombo_->setItemText(i - 1,
+					nm.empty()
+						? QString::number(i)
+						: QString("%1 · %2")
+							  .arg(i)
+							  .arg(QString::fromStdString(
+								  nm)));
+	}
+}
+
+void MultiReplayDock::renameListDialog()
+{
+	auto &store = EventStore::instance();
+	const int list = store.selectedList();
+	bool ok = false;
+	const QString cur = QString::fromStdString(store.listName(list));
+	const QString name = QInputDialog::getText(
+		this, obs_module_text("Dock.RenameList"),
+		QString(obs_module_text("Dock.RenameListLabel")).arg(list),
+		QLineEdit::Normal, cur, &ok);
+	if (!ok)
+		return;
+	// An empty name is how a list goes back to being just a number.
+	store.setListName(list, name.trimmed().toStdString());
+	refreshListNames();
+}
+
 void MultiReplayDock::refreshAngles()
 {
 	if (!anglesA_)
@@ -1808,6 +1854,10 @@ void MultiReplayDock::refreshAngles()
 
 void MultiReplayDock::refreshEvents()
 {
+	// Here rather than only where a name is edited: opening another project
+	// loads that project's list names without ever bumping the version
+	// counter, and this is the one function every one of those paths calls.
+	refreshListNames();
 	int list = EventStore::instance().selectedList();
 	Data d(EventStore::instance().listJson(list));
 	if (!d)

@@ -120,6 +120,10 @@ private:
 	void poll();             // periodic transport/status refresh
 	void refreshEvents();    // reload the selected list into the table
 	void refreshAngles();    // update angle button labels from camera displayName
+	// the reference controller: the 20 lists can be named ("Gol", "Falli"). Re-labels the combo
+	// from the store; the selection is preserved.
+	void refreshListNames();
+	void renameListDialog(); // gear menu → rename the selected list
 	void onEventItemChanged(QTableWidgetItem *item); // edit commit
 	// Inspector panel below the table: per-angle toggle · comment · vel% for the
 	// currently selected event (replaces the cramped in-table camera cards).
