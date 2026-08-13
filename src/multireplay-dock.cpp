@@ -279,6 +279,9 @@ constexpr int kNCams = kMaxCameras; // 8
 // multi-gigabyte copy on a long session.
 constexpr int64_t kScrubReviewNs = 10'000'000'000LL; // 10 s
 
+// How long a one-line notice keeps the status area (see showNotice).
+constexpr int64_t kNoticeNs = 5'000'000'000LL; // 5 s
+
 // A sequence is several clips, and the engine goes idle between them: the queue
 // advance crosses the playback thread's finish callback and the OBS UI task
 // queue, which takes a few tens of milliseconds. Anything inside this window
@@ -1248,6 +1251,14 @@ void MultiReplayDock::replayCurrent()
 		      PlaybackCoordinator::AngleMode::Single);
 }
 
+void MultiReplayDock::showNotice(const QString &text)
+{
+	if (!statusLbl_)
+		return;
+	statusLbl_->setText(QStringLiteral("⚠ ") + text);
+	noticeUntilNs_ = (int64_t)os_gettime_ns() + kNoticeNs;
+}
+
 void MultiReplayDock::seekToFraction(double frac)
 {
 	if (timelineStartNs_ <= 0 || displayDurNs_ <= 0)
@@ -1264,11 +1275,33 @@ void MultiReplayDock::seekToFraction(double frac)
 	// playhead to park, it plays ranges. Stop the queue first so its own
 	// finish callback cannot cut in over the review clip.
 	PlaybackCoordinator::instance().stopEvents();
+	// ...and consume that stop ourselves. poll() sends a finished SEQUENCE back
+	// to the live edge, which is right when a replay ends and wrong here: it
+	// would drag the operator off the very instant he just chose.
+	prevSequenceActive_ = false;
 	ReplayCore::instance().setFollowLive(false);
+	// Where the timeline now stands, whatever the engine can serve: the bar
+	// stays under the operator's finger instead of snapping back.
+	playheadNs_ = inNs;
+
 	std::string err;
 	if (!ReplayChannel::instance().play(currentAngle1_ - 1, inNs, outNs,
-					    speedPct_, err))
-		MR_DLOG("[dock] scrub review unavailable: %s", err.c_str());
+					    speedPct_, err)) {
+		// Nothing covers that instant on this angle — the ring has evicted
+		// it and no anchored file holds it. Saying so is the point: the
+		// alternative was the preview quietly showing the live camera, which
+		// reads as "this is what was recorded there" and is not.
+		const int64_t relMs = (inNs - timelineStartNs_) / 1000000;
+		showNotice(QString("%1 (cam %2 @ %3) — %4")
+				   .arg(obs_module_text("Dock.NoFootageHere"))
+				   .arg(currentAngle1_)
+				   .arg(formatTc(relMs * 1000000))
+				   .arg(QString::fromStdString(err)));
+		obs_log(LOG_WARNING,
+			"[dock] no footage on angle %d at %lld ms into the "
+			"timeline: %s",
+			currentAngle1_, (long long)relMs, err.c_str());
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -1642,7 +1675,11 @@ void MultiReplayDock::poll()
 	// stays at full rate, because that IS what has to look smooth.
 	// (refreshStatus is computed at the top: the preview resolution uses it
 	// too.)
-	Data st(refreshStatus ? core.statusJson() : std::string());
+	// A live notice owns the status line until it expires: it is the answer to
+	// something the operator just did, and overwriting it 250 ms later with the
+	// idle line is how "the dock ignored me" happens.
+	Data st((refreshStatus && nowNs >= noticeUntilNs_) ? core.statusJson()
+							  : std::string());
 	if (st) {
 		QString ver = obs_data_get_string(st, "version");
 		int64_t mins = obs_data_get_int(st, "estimatedMinutesRemaining");

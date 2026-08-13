@@ -187,6 +187,9 @@ struct DockChecks {
 	// ...and when the sequence ends, the transport goes back to the live edge by
 	// itself, instead of leaving the operator to press NOW.
 	bool followsLiveAfterSequence = false;
+	// A scrub shows the FOOTAGE at that instant and keeps showing it after the
+	// review clip has run out - the live camera belongs to follow-live only.
+	bool scrubShowsFootage = false;
 	int previewLiveSamples = 0; // frames of the sequence spent on the live camera
 	int queuedClips = 0;
 	int ticks = 0;
@@ -652,6 +655,50 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 			}
 			pc.stopEvents();
 		}
+
+	// --- scrubbing shows the FOOTAGE, and keeps showing it ----------------
+	// Dragging the seekbar is "review from here". The dock used to hand the
+	// preview back to the live camera the moment that review ran out, so a
+	// position chosen by hand in the recorded timeline ended up displaying the
+	// camera as it is now — presented as the footage of then.
+	{
+		auto &chan = ReplayChannel::instance();
+		SeekBar *bar = nullptr;
+		runOnUi([&]() {
+			for (SeekBar *b : dock->findChildren<SeekBar *>()) {
+				bar = b;
+				break;
+			}
+		});
+		if (!bar) {
+			obs_log(LOG_ERROR, "[selftest] dock: no seekbar found");
+		} else {
+			// Near the live edge, i.e. inside the ring — the part of the
+			// timeline the gate can guarantee is servable.
+			runOnUi([&]() { emit bar->seekRequested(0.90); });
+			bool played = false;
+			for (int i = 0; i < 60 && !played; i++) {
+				played = chan.playing() ||
+					 chan.stats().framesPushed > 0;
+				std::this_thread::sleep_for(
+					std::chrono::milliseconds(50));
+			}
+			// End the review and let the dock tick a few times: THIS is
+			// where it used to jump back to the camera.
+			chan.stop();
+			std::this_thread::sleep_for(
+				std::chrono::milliseconds(400));
+			const bool stillFootage =
+				dock->previewShowsReplay() &&
+				!ReplayCore::instance().followLive();
+			c.scrubShowsFootage = played && stillFootage;
+			obs_log(c.scrubShowsFootage ? LOG_INFO : LOG_ERROR,
+				"[selftest] dock: scrub review played=%s, preview "
+				"still on the footage afterwards=%s",
+				played ? "yes" : "NO",
+				stillFootage ? "yes" : "NO");
+		}
+	}
 	}
 
 	// Leave the operator's own project exactly as it was found.
@@ -1385,6 +1432,7 @@ void runSelfTest()
 			  dockChecks.queueAdvancesToSecond &&
 			  dockChecks.previewHoldsSequence &&
 			  dockChecks.followsLiveAfterSequence &&
+			  dockChecks.scrubShowsFootage &&
 			  anchorsPersisted && projectOriginOk &&
 			  eventTimecodeSane && filtersIdleOutsideRec;
 
@@ -1465,6 +1513,10 @@ void runSelfTest()
 	// ...and the transport goes back to the live edge on its own afterwards.
 	obs_data_set_bool(checks, "dock_follows_live_after_sequence",
 			  dockChecks.followsLiveAfterSequence);
+	// A scrub shows the footage at that instant, and still does once the
+	// review has run out.
+	obs_data_set_bool(checks, "dock_scrub_shows_footage",
+			  dockChecks.scrubShowsFootage);
 	obs_data_set_obj(root, "checks", checks);
 	obs_data_release(checks);
 

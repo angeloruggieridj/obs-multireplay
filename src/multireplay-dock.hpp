@@ -137,6 +137,11 @@ private:
 	bool markable(int64_t tNs);
 	std::vector<int> selectedEventIds() const;
 	void seekToFraction(double frac);
+	// One-line transient message in the status area. Used for the things the
+	// operator triggers with a single press (an angle button, a scrub) where a
+	// modal would be worse than the silence it replaces — but silence is what
+	// made him think the dock had ignored him.
+	void showNotice(const QString &text);
 	void setAngle(int angle1Based);
 	// (Re)play the selected (or last) completed event from its IN on the
 	// current angle at the resolved speed. No-op while following live (the
@@ -244,6 +249,8 @@ private:
 	// the last frame of the clip that finished, which is why the bar used to
 	// stay wherever the replay stopped until NOW was pressed by hand.
 	int64_t playheadNs_ = 0;
+	// Until when showNotice()'s message owns the status line (master ns).
+	int64_t noticeUntilNs_ = 0;
 
 	QTimer *pollTimer_ = nullptr;
 	bool prevRecording_ = false; // detects REC start
