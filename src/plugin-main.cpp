@@ -46,6 +46,14 @@ void onFrontendEvent(enum obs_frontend_event event, void *)
 			multireplay::ReplayCore::instance()
 				.disarmPersistedFilters();
 		multireplay::ReplayChannel::instance().ensureSource();
+		// The scene collection has just been (re)loaded, so this is where
+		// the operator's items that show the replay input exist again -
+		// and where the "fit to canvas" setting has to be seeded into the
+		// channel, which re-applies it on every clip afterwards.
+		multireplay::ReplayChannel::instance().applyCanvasFit(
+			multireplay::ReplayCore::instance()
+				.getConfig()
+				.fitReplayToCanvas);
 		// No-op unless OBS_MULTIREPLAY_SELFTEST is set.
 		multireplay::maybeRunSelfTest();
 	}

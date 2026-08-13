@@ -55,6 +55,21 @@ public:
 	// The OBS input name the operator will look for.
 	static const char *sourceName();
 
+	// Make every scene item that shows the replay input fill the canvas,
+	// keeping its aspect ratio (the transform OBS calls "Fit to screen":
+	// bounding box = canvas, SCALE_INNER, centred).
+	//
+	// This is a TRANSFORM, not a picture change: the frames stay at the
+	// camera's own resolution and the GPU scales them while compositing, the
+	// way it already does for every capture card. It is the only layer where
+	// the fix belongs, because the replay input changes size with the angle
+	// being played - a 720p camera then a 1080p one - and no fixed scale can
+	// be right for both, while a bounding box is right for all of them.
+	//
+	// `enable` is remembered and re-applied when a clip starts. False does not
+	// undo anything: it just stops us touching the operator's transform.
+	void applyCanvasFit(bool enable);
+
 	// Where the clip comes from. Auto prefers the ring (no I/O, always
 	// exact) and falls back to the recording files for anything older;
 	// the explicit values exist so both paths can be exercised and
@@ -105,6 +120,7 @@ private:
 
 	void playbackLoop();
 	void joinWorker();
+	void fitSceneItems(); // applyCanvasFit's body; no lock held
 
 	obs_source_t *source_ = nullptr; // owned (ref held)
 	mutable std::mutex mutex_;
@@ -123,6 +139,7 @@ private:
 	std::thread worker_;
 	std::atomic<bool> playing_{false};
 	std::atomic<bool> abort_{false};
+	std::atomic<bool> fitToCanvas_{true}; // see applyCanvasFit()
 
 	mutable std::mutex statsMutex_;
 	PlaybackStats stats_;

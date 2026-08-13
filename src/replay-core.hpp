@@ -66,6 +66,12 @@ struct Config {
 	std::string musicSourceName; // OBS audio source unmuted during playback
 	bool autoSwitchScene = true; // play-to-output switches the OBS scene;
 				     // false = only feed the Replay source
+	// Make the replay fill the canvas, aspect preserved, wherever the
+	// operator put it (ReplayChannel::applyCanvasFit). On by default: a
+	// 720p camera in a 1080p project is otherwise composited at 2/3 size,
+	// and since the replay input changes size with the angle no fixed
+	// transform can be right for a mixed set. Off = hands off his transform.
+	bool fitReplayToCanvas = true;
 	std::array<CameraConfig, kMaxCameras> cameras;
 };
 

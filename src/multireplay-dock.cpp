@@ -2129,6 +2129,14 @@ void MultiReplayDock::openSettings()
 	autoSwitch->setChecked(cfg.autoSwitchScene);
 	form->addRow(obs_module_text("Dock.AutoSwitch"), autoSwitch);
 
+	// Scale the replay to the canvas. This is a scene-item transform, not a
+	// picture change: the frames stay at the camera's own resolution and the
+	// GPU scales them while compositing (see ReplayChannel::applyCanvasFit).
+	auto *fitCanvas = new QCheckBox(&dlg);
+	fitCanvas->setChecked(cfg.fitReplayToCanvas);
+	fitCanvas->setToolTip(obs_module_text("Dock.FitCanvasHint"));
+	form->addRow(obs_module_text("Dock.FitCanvas"), fitCanvas);
+
 	// camera assignments: source + display name
 	auto *camBox = new QGroupBox(obs_module_text("Dock.Cameras"), &dlg);
 	auto *camForm = new QFormLayout(camBox);
@@ -2168,6 +2176,7 @@ void MultiReplayDock::openSettings()
 	cfg.outputSceneName = outScene->currentData().toString().toStdString();
 	cfg.musicSourceName = music->currentData().toString().toStdString();
 	cfg.autoSwitchScene = autoSwitch->isChecked();
+	cfg.fitReplayToCanvas = fitCanvas->isChecked();
 	for (int i = 0; i < kMaxCameras; i++) {
 		cfg.cameras[i].sourceName =
 			camCombos[i]->currentData().toString().toStdString();
@@ -2180,6 +2189,9 @@ void MultiReplayDock::openSettings()
 	EventStore::instance().setSessionFolder(core.recordingFolder());
 	// Cheap safety net: recreate the replay input if the operator deleted it.
 	ReplayChannel::instance().ensureSource();
+	// Applies immediately, so the operator sees the answer to the checkbox he
+	// just ticked without waiting for the next replay.
+	ReplayChannel::instance().applyCanvasFit(cfg.fitReplayToCanvas);
 	refreshAngles();
 	refreshEvents();
 }

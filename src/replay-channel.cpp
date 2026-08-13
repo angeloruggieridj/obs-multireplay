@@ -88,6 +88,60 @@ speaker_layout speakersFor(uint32_t channels)
 	}
 }
 
+// --- "Fit to screen", applied to every scene item that shows the replay ----
+// One item at a time; see ReplayChannel::applyCanvasFit for the why.
+struct FitCtx {
+	obs_source_t *target = nullptr;
+	uint32_t cx = 0, cy = 0;
+	int changed = 0;
+};
+
+bool fitSceneItem(obs_scene_t *, obs_sceneitem_t *item, void *param)
+{
+	auto *ctx = static_cast<FitCtx *>(param);
+	// Groups are their own coordinate space, so "fill the canvas" means
+	// nothing inside one: a replay deliberately put in a group is the
+	// operator's own composition and is left alone.
+	if (obs_sceneitem_get_source(item) != ctx->target)
+		return true;
+
+	// Already fitted: do not rewrite the transform on every clip, or the
+	// scene collection would be marked dirty thirty times an evening for
+	// nothing.
+	if (obs_sceneitem_get_bounds_type(item) == OBS_BOUNDS_SCALE_INNER) {
+		struct vec2 have = {};
+		obs_sceneitem_get_bounds(item, &have);
+		if ((uint32_t)have.x == ctx->cx && (uint32_t)have.y == ctx->cy)
+			return true;
+	}
+
+	struct vec2 bounds = {};
+	vec2_set(&bounds, (float)ctx->cx, (float)ctx->cy);
+	struct vec2 pos = {};
+	vec2_set(&pos, (float)ctx->cx / 2.0f, (float)ctx->cy / 2.0f);
+
+	obs_sceneitem_defer_update_begin(item);
+	obs_sceneitem_set_bounds_type(item, OBS_BOUNDS_SCALE_INNER);
+	obs_sceneitem_set_bounds_alignment(item, OBS_ALIGN_CENTER);
+	obs_sceneitem_set_alignment(item, OBS_ALIGN_CENTER);
+	obs_sceneitem_set_bounds(item, &bounds);
+	obs_sceneitem_set_pos(item, &pos);
+	obs_sceneitem_defer_update_end(item);
+	ctx->changed++;
+	return true;
+}
+
+// Collect the scenes first: obs_enum_scenes runs its callback with libobs'
+// global source mutex held, and taking a scene's own mutex under it (which is
+// what touching an item does) is a lock order we have no business inventing.
+bool collectScene(void *param, obs_source_t *sceneSource)
+{
+	auto *out = static_cast<std::vector<obs_source_t *> *>(param);
+	if (obs_source_t *ref = obs_source_get_ref(sceneSource))
+		out->push_back(ref);
+	return true;
+}
+
 video_format obsFormatFor(FrameFormat f)
 {
 	switch (f) {
@@ -190,6 +244,50 @@ void ReplayChannel::ensureSource()
 	obs_log(LOG_INFO, "[channel] created OBS input '%s'", kSourceName);
 }
 
+void ReplayChannel::applyCanvasFit(bool enable)
+{
+	fitToCanvas_.store(enable);
+	if (enable)
+		fitSceneItems();
+}
+
+void ReplayChannel::fitSceneItems()
+{
+	if (!fitToCanvas_.load())
+		return;
+
+	obs_source_t *target = acquireSource();
+	if (!target)
+		return;
+
+	struct obs_video_info ovi = {};
+	if (!obs_get_video_info(&ovi) || ovi.base_width == 0 ||
+	    ovi.base_height == 0) {
+		obs_source_release(target);
+		return;
+	}
+
+	std::vector<obs_source_t *> scenes;
+	obs_enum_scenes(collectScene, &scenes);
+
+	FitCtx ctx;
+	ctx.target = target;
+	ctx.cx = ovi.base_width;
+	ctx.cy = ovi.base_height;
+	for (obs_source_t *s : scenes) {
+		if (obs_scene_t *scene = obs_scene_from_source(s))
+			obs_scene_enum_items(scene, fitSceneItem, &ctx);
+		obs_source_release(s);
+	}
+	obs_source_release(target);
+
+	if (ctx.changed)
+		obs_log(LOG_INFO,
+			"[channel] fitted %d scene item(s) of '%s' to the %ux%u "
+			"canvas (aspect preserved)",
+			ctx.changed, kSourceName, ctx.cx, ctx.cy);
+}
+
 obs_source_t *ReplayChannel::acquireSource()
 {
 	std::lock_guard<std::mutex> lock(mutex_);
@@ -264,6 +362,13 @@ bool ReplayChannel::play(int camIndex, int64_t inNs, int64_t outNs, int speedPct
 		std::lock_guard<std::mutex> lock(statsMutex_);
 		stats_ = PlaybackStats{};
 	}
+
+	// Re-applied on every clip because the picture size changes WITH the
+	// angle - a 720p camera then a 1080p one - and because the operator may
+	// have dropped the input into a scene since the last one. The bounding
+	// box makes both cases right without touching a single pixel: OBS scales
+	// on the GPU while compositing, which costs nothing per frame.
+	fitSceneItems();
 
 	playing_.store(true);
 	worker_ = std::thread([this]() { playbackLoop(); });

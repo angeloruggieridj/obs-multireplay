@@ -981,6 +981,11 @@ void ReplayCore::loadConfig()
 	if (obs_data_has_user_value(data, "autoSwitchScene"))
 		config_.autoSwitchScene =
 			obs_data_get_bool(data, "autoSwitchScene");
+	// Absent in configs written before the option existed: keep the default
+	// (on) rather than reading back a false nobody chose.
+	if (obs_data_has_user_value(data, "fitReplayToCanvas"))
+		config_.fitReplayToCanvas =
+			obs_data_get_bool(data, "fitReplayToCanvas");
 	const char *fmt = obs_data_get_string(data, "recFormat");
 	if (fmt && *fmt)
 		config_.recFormat = fmt;
@@ -1026,6 +1031,7 @@ void ReplayCore::saveConfig() const
 	obs_data_set_string(data, "musicSourceName",
 			    config_.musicSourceName.c_str());
 	obs_data_set_bool(data, "autoSwitchScene", config_.autoSwitchScene);
+	obs_data_set_bool(data, "fitReplayToCanvas", config_.fitReplayToCanvas);
 	obs_data_set_string(data, "recFormat", config_.recFormat.c_str());
 
 	obs_data_array_t *cams = obs_data_array_create();
