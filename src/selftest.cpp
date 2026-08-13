@@ -843,21 +843,36 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 	// does nothing looks identical to a step at the live edge.
 	{
 		auto &chan = ReplayChannel::instance();
-		const int64_t before = chan.positionNs();
-		runOnUi([&]() { stepBtn->click(); });
-		int64_t after = before;
-		for (int i = 0; i < 40; i++) {
-			after = chan.positionNs();
-			if (after > before)
-				break;
-			std::this_thread::sleep_for(
-				std::chrono::milliseconds(50));
-		}
-		c.frameStepAdvances = before > 0 && after > before;
+		// TWO steps, compared against each other. The engine's position is
+		// its last pushed frame and play() zeroes it at the start of every
+		// clip, so "it is not 0 any more" would also be true of a step that
+		// keeps replaying the same frame. Only the second step landing after
+		// the first says the picture is really walking forward.
+		const auto stepAndSettle = [&](int64_t floorNs) {
+			runOnUi([&]() { stepBtn->click(); });
+			int64_t pos = 0;
+			for (int i = 0; i < 40; i++) {
+				pos = chan.positionNs();
+				if (pos > floorNs)
+					break;
+				std::this_thread::sleep_for(
+					std::chrono::milliseconds(50));
+			}
+			// Let the two-frame clip finish, or the next play() would
+			// join a worker mid-push.
+			for (int i = 0; i < 20 && chan.playing(); i++)
+				std::this_thread::sleep_for(
+					std::chrono::milliseconds(50));
+			return pos;
+		};
+		const int64_t first = stepAndSettle(0);
+		const int64_t second = stepAndSettle(first);
+		c.frameStepAdvances = first > 0 && second > first;
 		obs_log(c.frameStepAdvances ? LOG_INFO : LOG_ERROR,
-			"[selftest] dock: frame step moved the playhead %lld ms → "
-			"%lld ms",
-			(long long)(before / 1000000), (long long)(after / 1000000));
+			"[selftest] dock: two frame steps landed on %lld ms then "
+			"%lld ms (+%lld ms)",
+			(long long)(first / 1000000), (long long)(second / 1000000),
+			(long long)((second - first) / 1000000));
 		chan.stop();
 	}
 
