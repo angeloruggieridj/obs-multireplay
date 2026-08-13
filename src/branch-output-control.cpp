@@ -50,9 +50,25 @@ obs_data_t *buildSettings(int camIndex, const Config &cfg)
 	// --- Container: Hybrid MP4 (crash-safe, chapter markers) ---
 	obs_data_set_string(settings, "rec_format", cfg.recFormat.c_str());
 
-	// --- Automatic split by time (broadcast replay splits every 20 minutes) ---
-	obs_data_set_string(settings, "split_file", "by_time");
-	obs_data_set_int(settings, "split_file_time_mins", cfg.splitMinutes);
+	// --- Automatic split by time, or not at all -------------------------
+	// 0 = one continuous file, and that is what an ISO normally wants: every
+	// split is a seam an event can straddle, and the export path still cannot
+	// cross one.
+	//
+	// Branch Output enables splitting on a non-empty string
+	// (plugin-stream-recording.cpp: `splitRecordingEnabled = strlen(splitFile)
+	// > 0`, then by_time/by_size decide max_time_sec/max_size_mb), and "" is
+	// the value its own "No split" list item carries. It MUST be written
+	// explicitly rather than left out: Branch Output defaults this key from
+	// the OBS profile's own recording-split settings, so an unset key can
+	// still split.
+	if (cfg.splitMinutes > 0) {
+		obs_data_set_string(settings, "split_file", "by_time");
+		obs_data_set_int(settings, "split_file_time_mins",
+				 cfg.splitMinutes);
+	} else {
+		obs_data_set_string(settings, "split_file", "");
+	}
 
 	// --- Video encoder. Encoder-specific settings (e.g. bitrate) live in
 	// the same settings object: Branch Output passes it verbatim to

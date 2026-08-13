@@ -1945,9 +1945,14 @@ void MultiReplayDock::openSettings()
 	form->addRow(obs_module_text("Dock.SessionFolder"), folderRow);
 
 	auto *split = new QSpinBox(&dlg);
-	split->setRange(1, 240);
+	// 0 = never split: an ISO is normally one continuous file (see
+	// branch_output::buildSettings). specialValueText replaces the number at
+	// the minimum, so 0 reads as words instead of a meaningless "0 min".
+	split->setRange(0, 240);
 	split->setValue(cfg.splitMinutes);
 	split->setSuffix(" min");
+	split->setSpecialValueText(obs_module_text("Dock.SplitNever"));
+	split->setToolTip(obs_module_text("Dock.SplitMinutesHint"));
 	form->addRow(obs_module_text("Dock.SplitMinutes"), split);
 
 	auto *vbr = new QSpinBox(&dlg);
