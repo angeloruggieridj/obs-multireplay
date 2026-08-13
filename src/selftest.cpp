@@ -787,9 +787,19 @@ void runSelfTest()
 				// cannot produce a false failure.
 				const bool pacedRight = playElapsedMs > 4200 &&
 							playElapsedMs < 7000;
+				// Against the CAMERA's size, not the canvas. A
+				// replay is the camera's own picture - OBS scales
+				// it when it is composited - so a 720p source in a
+				// 1080p project is correct, not a failure. The
+				// synthetic cameras happen to be canvas-sized,
+				// which is why this only showed up the moment the
+				// gate was pointed at real footage.
+				const StreamConfig scfg =
+					PacketTap::instance().streamConfig(firstCam);
 				playsIntoObs = st.lastRunCompleted &&
-					       playedFrames > 0 && w == cx &&
-					       h == cy && pacedRight;
+					       playedFrames > 0 &&
+					       w == scfg.width &&
+					       h == scfg.height && pacedRight;
 				audioPlays = audioBuffers > 0;
 
 				obs_log(LOG_INFO,
