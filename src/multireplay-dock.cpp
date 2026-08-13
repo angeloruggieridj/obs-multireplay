@@ -39,6 +39,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
 #include <QDialogButtonBox>
 #include <QFormLayout>
 #include <QSpinBox>
+#include <QDoubleSpinBox>
 #include <QFileDialog>
 #include <QFile>
 #include <QDir>
@@ -59,6 +60,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
 #include <QApplication>
 
 #include <algorithm>
+#include <cmath>
 #include <string>
 #include <cstring>
 
@@ -2195,6 +2197,40 @@ void MultiReplayDock::openSettings()
 	abr->setSuffix(" kbps");
 	form->addRow(obs_module_text("Dock.AudioBitrate"), abr);
 
+	// --- the reference controller event options -----------------------------------------------
+	// Pre/post roll: the operator marks after he has seen the action, so the
+	// event has to start before his finger did. Whole seconds like the reference controller, with
+	// tenths available because a football replay and a snooker replay do not
+	// want the same padding.
+	auto *preRoll = new QDoubleSpinBox(&dlg);
+	preRoll->setRange(0.0, 30.0);
+	preRoll->setSingleStep(0.5);
+	preRoll->setDecimals(1);
+	preRoll->setSuffix(" s");
+	preRoll->setValue(cfg.preRollMs / 1000.0);
+	preRoll->setToolTip(obs_module_text("Dock.PreRollHint"));
+	form->addRow(obs_module_text("Dock.PreRoll"), preRoll);
+
+	auto *postRoll = new QDoubleSpinBox(&dlg);
+	postRoll->setRange(0.0, 30.0);
+	postRoll->setSingleStep(0.5);
+	postRoll->setDecimals(1);
+	postRoll->setSuffix(" s");
+	postRoll->setValue(cfg.postRollMs / 1000.0);
+	postRoll->setToolTip(obs_module_text("Dock.PostRollHint"));
+	form->addRow(obs_module_text("Dock.PostRoll"), postRoll);
+
+	auto *sortByTime = new QCheckBox(&dlg);
+	sortByTime->setChecked(cfg.sortEventsByTime);
+	sortByTime->setToolTip(obs_module_text("Dock.SortByTimeHint"));
+	form->addRow(obs_module_text("Dock.SortByTime"), sortByTime);
+
+	auto *idDigits = new QSpinBox(&dlg);
+	idDigits->setRange(1, 8);
+	idDigits->setValue(cfg.eventIdDigits);
+	idDigits->setToolTip(obs_module_text("Dock.IdDigitsHint"));
+	form->addRow(obs_module_text("Dock.IdDigits"), idDigits);
+
 	// Clip crossfade is gone with the A/B ffmpeg_source pair it belonged to:
 	// there is a single replay input now, and a transition between clips is
 	// the operator's own (OBS transitions on the scene that holds it).
@@ -2348,6 +2384,10 @@ void MultiReplayDock::openSettings()
 	cfg.splitMinutes = split->value();
 	cfg.videoBitrateKbps = vbr->value();
 	cfg.audioBitrateKbps = abr->value();
+	cfg.preRollMs = (int)std::lround(preRoll->value() * 1000.0);
+	cfg.postRollMs = (int)std::lround(postRoll->value() * 1000.0);
+	cfg.sortEventsByTime = sortByTime->isChecked();
+	cfg.eventIdDigits = idDigits->value();
 	cfg.videoEncoderId = enc->currentData().toString().toStdString();
 	cfg.outputSceneName = outScene->currentData().toString().toStdString();
 	cfg.musicSourceName = music->currentData().toString().toStdString();

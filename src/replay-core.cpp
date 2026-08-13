@@ -620,7 +620,14 @@ void ReplayCore::setConfig(const Config &cfg)
 	{
 		std::lock_guard<std::mutex> lock(mutex_);
 		config_ = cfg;
+		config_.eventIdDigits = std::clamp(config_.eventIdDigits, 1, 8);
+		config_.preRollMs = std::max(0, config_.preRollMs);
+		config_.postRollMs = std::max(0, config_.postRollMs);
 	}
+	// Marking is a store rule and the hotkeys never pass through the dock, so
+	// the rolls go where both paths read them.
+	EventStore::instance().setRollNs((int64_t)cfg.preRollMs * 1000000,
+					 (int64_t)cfg.postRollMs * 1000000);
 	saveConfig();
 	// Filters must know the new path even before the next REC press.
 	if (!recording_) {
@@ -986,6 +993,20 @@ void ReplayCore::loadConfig()
 	if (obs_data_has_user_value(data, "fitReplayToCanvas"))
 		config_.fitReplayToCanvas =
 			obs_data_get_bool(data, "fitReplayToCanvas");
+	if (obs_data_has_user_value(data, "preRollMs"))
+		config_.preRollMs = (int)obs_data_get_int(data, "preRollMs");
+	if (obs_data_has_user_value(data, "postRollMs"))
+		config_.postRollMs = (int)obs_data_get_int(data, "postRollMs");
+	if (obs_data_has_user_value(data, "sortEventsByTime"))
+		config_.sortEventsByTime =
+			obs_data_get_bool(data, "sortEventsByTime");
+	if (obs_data_has_user_value(data, "eventIdDigits"))
+		config_.eventIdDigits =
+			(int)obs_data_get_int(data, "eventIdDigits");
+	// The rolls are a marking rule, so the store has to know them before the
+	// first hotkey can fire — which is well before the dock exists.
+	EventStore::instance().setRollNs((int64_t)config_.preRollMs * 1000000,
+					 (int64_t)config_.postRollMs * 1000000);
 	const char *fmt = obs_data_get_string(data, "recFormat");
 	if (fmt && *fmt)
 		config_.recFormat = fmt;
@@ -1032,6 +1053,10 @@ void ReplayCore::saveConfig() const
 			    config_.musicSourceName.c_str());
 	obs_data_set_bool(data, "autoSwitchScene", config_.autoSwitchScene);
 	obs_data_set_bool(data, "fitReplayToCanvas", config_.fitReplayToCanvas);
+	obs_data_set_int(data, "preRollMs", config_.preRollMs);
+	obs_data_set_int(data, "postRollMs", config_.postRollMs);
+	obs_data_set_bool(data, "sortEventsByTime", config_.sortEventsByTime);
+	obs_data_set_int(data, "eventIdDigits", config_.eventIdDigits);
 	obs_data_set_string(data, "recFormat", config_.recFormat.c_str());
 
 	obs_data_array_t *cams = obs_data_array_create();

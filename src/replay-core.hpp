@@ -72,6 +72,20 @@ struct Config {
 	// and since the replay input changes size with the angle no fixed
 	// transform can be right for a mixed set. Off = hands off his transform.
 	bool fitReplayToCanvas = true;
+	// the reference controller pre/post roll, in milliseconds: extra time added to the start and
+	// the end of every event as it is MARKED (see EventStore::setRollNs).
+	// 0/0 = off, and off is the default so nothing changes for an operator
+	// who never opens the setting.
+	int preRollMs = 0;
+	int postRollMs = 0;
+	// the reference controller "sort events by time": draw the list in chronological order rather
+	// than in the order the marks were taken. They differ as soon as a −20s
+	// preset is used after a −5s one.
+	bool sortEventsByTime = false;
+	// the reference controller event-id digits (default 4): ids are shown zero-padded to this
+	// width, so they stay the same length all match long and can be called out
+	// loud ("play 0142") without counting characters.
+	int eventIdDigits = 4;
 	std::array<CameraConfig, kMaxCameras> cameras;
 };
 
