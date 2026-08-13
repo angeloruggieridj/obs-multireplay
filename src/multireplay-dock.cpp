@@ -937,12 +937,18 @@ QWidget *MultiReplayDock::buildMarkers()
 	auto *in = compactBtn(obs_module_text("Dock.MarkIn"), this, "mrAccent");
 	auto *out = compactBtn(obs_module_text("Dock.MarkOut"), this, "mrAccent");
 	connect(in, &QPushButton::clicked, this, [this]() {
+		const int64_t t = markTimeNs();
+		if (!markable(t))
+			return;
 		// Inherit the currently selected camera angle (0-based).
-		EventStore::instance().markIn(markTimeNs(), currentAngle1_ - 1);
+		EventStore::instance().markIn(t, currentAngle1_ - 1);
 		refreshEvents();
 	});
 	connect(out, &QPushButton::clicked, this, [this]() {
-		if (!EventStore::instance().markOut(markTimeNs()))
+		const int64_t t = markTimeNs();
+		if (!markable(t))
+			return;
+		if (!EventStore::instance().markOut(t))
 			QMessageBox::information(
 				this, "obs-multireplay",
 				obs_module_text("Dock.NoOpenEvent"));
@@ -954,7 +960,10 @@ QWidget *MultiReplayDock::buildMarkers()
 	for (int sec : {5, 10, 20}) {
 		auto *b = compactBtn(QString("-%1s").arg(sec), this);
 		connect(b, &QPushButton::clicked, this, [this, sec]() {
-			EventStore::instance().markInOut(markTimeNs(), sec,
+			const int64_t t = markTimeNs();
+			if (!markable(t))
+				return;
+			EventStore::instance().markInOut(t, sec,
 							 currentAngle1_ - 1);
 			refreshEvents();
 		});
@@ -1122,6 +1131,23 @@ int64_t MultiReplayDock::markTimeNs() const
 	}
 	// Reviewing: the last frame the replay actually put on screen.
 	return ReplayChannel::instance().positionNs();
+}
+
+bool MultiReplayDock::markable(int64_t tNs)
+{
+	// Master time is os_gettime_ns(), which is never 0 on a running machine:
+	// a 0 here means "no instant at all" — the tap has captured nothing on
+	// this angle (not recording, or the angle has no Branch Output filter
+	// running) and no clip has played, so there is no playhead either.
+	// EventStore would happily store that as a mark at master 0, producing an
+	// event that looks real in the list and can never be played back, because
+	// no footage will ever cover instant zero. Refusing is the honest answer,
+	// and saying so is better than a row nobody can explain.
+	if (tNs > 0)
+		return true;
+	QMessageBox::information(this, "obs-multireplay",
+				 obs_module_text("Dock.NothingToMark"));
+	return false;
 }
 
 std::vector<int> MultiReplayDock::selectedEventIds() const

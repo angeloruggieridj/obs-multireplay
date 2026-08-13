@@ -117,6 +117,9 @@ private:
 	void openProjectDialog();   // Open Project... menu action
 	void copyYouTubeChapters(); // copy chapter timestamps to clipboard
 	int64_t markTimeNs() const; // Live=live edge, Recorded=replay playhead
+	// True when `tNs` is a real instant to mark; tells the operator why not
+	// (and refuses) when it is not. See the definition.
+	bool markable(int64_t tNs);
 	std::vector<int> selectedEventIds() const;
 	void seekToFraction(double frac);
 	void setAngle(int angle1Based);
