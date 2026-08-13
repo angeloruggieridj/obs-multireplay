@@ -529,32 +529,23 @@ void SeekBar::mouseReleaseEvent(QMouseEvent *e)
 
 void MultiReplayDock::drawChannelA(void *data, uint32_t cx, uint32_t cy)
 {
-	// Live mirror: unless a clip is playing, render the live camera source of
-	// the selected angle. That is what the reference controller shows, it is the only zero-latency
-	// picture available (the replay input carries frames only while a clip is
-	// being paced into it), and it is what the operator needs BEFORE the take
-	// to check the angles are the right ones. poll() decides which of the two
-	// this is and publishes the source name; here we only resolve it.
-	obs_source_t *src = nullptr;
 	auto *self = static_cast<MultiReplayDock *>(data);
-	if (self && self->previewLive_.load()) {
-		std::string name;
-		{
-			std::lock_guard<std::mutex> lk(self->previewMutex_);
-			name = self->liveSourceName_;
-		}
-		// An unconfigured angle leaves the name empty, and a stale one
-		// resolves to nothing: both fall through, they never reach the
-		// render below with a dangling pointer.
-		if (!name.empty())
-			src = obs_get_source_by_name(name.c_str()); // add-ref'd
-	}
-	if (!src) {
-		// Nothing captured yet: render black rather than whatever the
-		// replay input last held.
-		if (!self || !self->previewHasContent_.load())
-			return;
-		src = ReplayChannel::instance().acquireSource();
+	if (!self || cx == 0 || cy == 0)
+		return;
+
+	// This runs on the ONE graphics thread that renders every obs_display in
+	// OBS, so it does the least work that can possibly show a picture: copy
+	// the source poll() already resolved and take a reference to it. That
+	// reference is an atomic increment on the source's own control block — no
+	// name lookup, no libobs global source mutex, no engine lock. A draw
+	// callback that blocks on any of those blocks the whole interface, which
+	// is what turned the OBS window black while its taskbar thumbnail (drawn
+	// from an already-composed surface) stayed correct. See previewSource_.
+	obs_source_t *src = nullptr;
+	{
+		std::lock_guard<std::mutex> lk(self->previewMutex_);
+		if (self->previewSource_)
+			src = obs_source_get_ref(self->previewSource_);
 	}
 	if (!src)
 		return;
@@ -771,7 +762,23 @@ MultiReplayDock::MultiReplayDock(QWidget *parent) : QWidget(parent)
 	poll();
 }
 
-MultiReplayDock::~MultiReplayDock() = default;
+MultiReplayDock::~MultiReplayDock()
+{
+	// Order matters here. The display is a CHILD widget, so ~QWidget takes it
+	// down only after this body has returned — leaving a window in which the
+	// graphics thread can still call drawChannelA() on a half-destroyed dock.
+	// Detaching the callback first closes it: obs_display_remove_draw_callback
+	// takes the display's callback mutex, so it returns only once the draw in
+	// flight has finished.
+	if (displayA_)
+		displayA_->setRenderCallback(nullptr, nullptr);
+	if (pollTimer_)
+		pollTimer_->stop();
+	if (previewSource_) {
+		obs_source_release(previewSource_);
+		previewSource_ = nullptr;
+	}
+}
 
 // ---------------------------------------------------------------------------
 // Single A preview + angle selector
@@ -1301,8 +1308,14 @@ void MultiReplayDock::poll()
 	const bool rec = core.isRecording();
 	const bool followLive = core.followLive();
 	const bool playing = chan.playing();
-	const bool eventActive =
-		PlaybackCoordinator::instance().playState().active;
+	const auto playSt = PlaybackCoordinator::instance().playState();
+	const bool eventActive = playSt.active;
+
+	// Counts poll() ticks so the work nobody reads thirty times a second — the
+	// status line, and re-resolving the preview source — runs at a fraction of
+	// the transport rate. See the status block below for why that matters.
+	constexpr int kStatusEveryNTicks = 8; // ~264 ms at 33 ms/tick
+	const bool refreshStatus = (statusTick_++ % kStatusEveryNTicks) == 0;
 
 	// --- timeline window ---
 	// Nothing is "indexed" any more: the live edge is the newest packet the
@@ -1321,7 +1334,7 @@ void MultiReplayDock::poll()
 	// exactly a project reopened in a later OBS run (nothing captured yet, but
 	// yesterday's files are on the timeline). Without startNs the preview would
 	// stay black while the replay input was actually producing frames.
-	previewHasContent_.store(liveEdgeNs > 0 || startNs > 0);
+	previewHasContent_ = liveEdgeNs > 0 || startNs > 0;
 
 	// The event columns are drawn relative to that origin, so a moved origin
 	// has to redraw them — it moves once for real, when the first anchored
@@ -1405,7 +1418,7 @@ void MultiReplayDock::poll()
 	// red); others use the default colour. Per-angle editing/state now lives
 	// in the inspector panel, so the table only needs this row-level cue.
 	{
-		auto ps = PlaybackCoordinator::instance().playState();
+		const auto &ps = playSt;
 		for (int row = 0; row < events_->rowCount(); row++) {
 			QTableWidgetItem *idItem = events_->item(row, kColId);
 			QTableWidgetItem *camItem = events_->item(row, kColCams);
@@ -1463,17 +1476,48 @@ void MultiReplayDock::poll()
 	// replay input only carries pictures while a clip is being paced into it,
 	// so it wins for exactly as long as one is playing.
 	//
-	// Resolving the source NAME happens here, on the UI thread; the graphics
-	// thread only looks it up and releases its own reference (drawChannelA).
-	bool live = !playing;
-	std::string liveName;
-	if (live)
-		liveName = core.getConfig().cameras[cam0].sourceName;
+	// The name→source lookup and the reference counting happen HERE, on the UI
+	// thread. The graphics thread gets a ready-made reference (previewSource_).
 	{
-		std::lock_guard<std::mutex> lk(previewMutex_);
-		liveSourceName_ = liveName;
+		const bool live = !playing;
+		// Re-resolving costs a lookup under libobs' global source mutex, so
+		// only do it when the answer can have changed: a different kind of
+		// picture, a different angle, or the 4 Hz revalidation that catches a
+		// source renamed, deleted or replaced by a scene-collection change.
+		if (live != previewLive_ || cam0 != previewCam0_ || refreshStatus) {
+			obs_source_t *next = nullptr;
+			if (live) {
+				const std::string name =
+					core.getConfig().cameras[cam0].sourceName;
+				// An unconfigured angle, or a name nothing answers
+				// to, publishes nothing: the preview goes black
+				// instead of rendering a dangling pointer.
+				if (!name.empty())
+					next = obs_get_source_by_name(name.c_str());
+			} else if (previewHasContent_) {
+				// Nothing captured yet: render black rather than
+				// whatever the replay input last held.
+				next = chan.acquireSource();
+			}
+
+			obs_source_t *prev = nullptr;
+			{
+				std::lock_guard<std::mutex> lk(previewMutex_);
+				prev = previewSource_;
+				previewSource_ = next;
+			}
+			// Released OUTSIDE the lock, on purpose: the last release
+			// destroys the source, which enters the graphics context —
+			// holding previewMutex_ there would be the UI thread waiting
+			// on the graphics thread while the graphics thread waits on
+			// previewMutex_, which is the deadlock this whole change is
+			// about.
+			if (prev)
+				obs_source_release(prev);
+			previewLive_ = live;
+			previewCam0_ = cam0;
+		}
 	}
-	previewLive_.store(live && !liveName.empty());
 
 	recBtn_->setText(rec ? QStringLiteral("◼  STOP")
 			     : QStringLiteral("●  REC"));
@@ -1506,9 +1550,8 @@ void MultiReplayDock::poll()
 	// a second is still faster than any number in that line can change.
 	// The rest of poll() — seekbar, playhead, transport state — is cheap and
 	// stays at full rate, because that IS what has to look smooth.
-	constexpr int kStatusEveryNTicks = 8; // ~264 ms at 33 ms/tick
-	const bool refreshStatus = (statusTick_++ % kStatusEveryNTicks) == 0;
-
+	// (refreshStatus is computed at the top: the preview resolution uses it
+	// too.)
 	Data st(refreshStatus ? core.statusJson() : std::string());
 	if (st) {
 		QString ver = obs_data_get_string(st, "version");

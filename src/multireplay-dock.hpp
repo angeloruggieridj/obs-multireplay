@@ -17,6 +17,8 @@ start.
 
 #pragma once
 
+#include <obs.h>
+
 #include <QWidget>
 #include <atomic>
 #include <climits>
@@ -191,13 +193,28 @@ private:
 	// the reference controller shows) instead of the replay input, which only has pictures while a
 	// clip is playing. It is a confidence monitor, so it does NOT depend on
 	// recording: the angles are checked before the take, not during it.
-	// Updated by poll() (UI thread), read by drawChannelA() (graphics thread).
-	std::atomic<bool> previewLive_{false};
-	std::mutex previewMutex_;     // guards liveSourceName_
-	std::string liveSourceName_; // OBS source name for the current angle
+	//
+	// WHICH source that is gets decided and RESOLVED here, on the UI thread,
+	// and the resulting owned reference is published for the graphics thread.
+	// Every obs_display in OBS — the program preview, every other dock, ours —
+	// is rendered by ONE graphics thread, so whatever our draw callback waits
+	// on, the whole GUI waits on. It used to call obs_get_source_by_name() per
+	// frame, which takes libobs' global source mutex: with the UI thread
+	// holding that mutex (Settings dialog, scene switch, source list) and then
+	// wanting the graphics context, and the graphics thread holding the
+	// graphics context and wanting the source mutex, the two block each other
+	// and OBS stops repainting. drawChannelA() now only copies this pointer
+	// and takes a ref (a lock-free atomic increment) — no lookup, no libobs
+	// mutex, no engine lock.
+	std::mutex previewMutex_;               // pointer copy + addref only
+	obs_source_t *previewSource_ = nullptr; // owned ref, read by the GFX thread
+	// UI-thread-only bookkeeping: what previewSource_ was resolved FOR, so a
+	// tick that cannot have changed the answer does no lookup at all.
+	bool previewLive_ = false;
+	int previewCam0_ = -1;
 	// False until something has been captured: keeps the preview black after a
 	// fresh start instead of showing the last frame of the previous clip.
-	std::atomic<bool> previewHasContent_{false};
+	bool previewHasContent_ = false;
 
 	QTimer *pollTimer_ = nullptr;
 	bool prevRecording_ = false; // detects REC start
