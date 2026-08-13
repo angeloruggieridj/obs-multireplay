@@ -58,9 +58,23 @@ public:
 	void setLiveMode(bool live) { liveMode_ = live; }
 	bool liveMode() const { return liveMode_; }
 
+	// --- Pre/post roll (the reference controller) ----------------------------------------------
+	// Extra time added to the start and the end of an event. Applied WHEN THE
+	// MARK IS TAKEN, not at playback: the in/out the operator reads in the list
+	// are then the ones that will play, and he can still trim them. Both 0 (the
+	// default) is byte-for-byte the old behaviour.
+	void setRollNs(int64_t preNs, int64_t postNs);
+	int64_t preRollNs() const { return preRollNs_.load(); }
+	int64_t postRollNs() const { return postRollNs_.load(); }
+
 	// --- List selection ---
 	void selectList(int list); // 1..20
 	int selectedList() const { return selectedList_; }
+
+	// --- List names (the reference controller: the 20 lists can be named) ----------------------
+	// "" = never named; the UI then shows the bare number.
+	std::string listName(int list) const;
+	bool setListName(int list, const std::string &name);
 
 	// --- Event creation (times on the master timeline) ---
 	// angle0Based: 0-based camera to enable (0 = CAM1). Replaces the old
@@ -80,6 +94,13 @@ public:
 	bool setDescription(int id, const std::string &note);
 	std::string description(int id) const; // first non-empty angle note
 	bool setSpeed(int id, double speed); // event default; <0 = "--"
+	// The speed that actually applies to `id`, with the reference controller inheritance: its own
+	// if it has one, otherwise the nearest EARLIER event of the same list that
+	// has one. <0 = nobody set one, so the caller's default (the dock slider)
+	// wins. the reference controller words it as "inherits from the previous event": an operator
+	// who drops to 50% once keeps getting 50% on the marks that follow, without
+	// touching every single one.
+	double resolvedSpeed(int id) const;
 	// Per-angle speed override; <0 = inherit the event/default speed.
 	bool setAngleSpeed(int id, int angle1Based, double speed);
 	bool movePoint(int id, bool inPoint, int64_t deltaNs);
@@ -109,14 +130,22 @@ private:
 	EventStore() = default;
 	void save() const; // mutex_ must be held
 	void load();       // mutex_ must be held
+	// Inheritance walk for events_[idx]; mutex_ must be held. Split out because
+	// listJson() already holds the lock and needs the same answer.
+	double resolvedSpeedAt(size_t idx) const;
 
 	mutable std::mutex mutex_;
 	SessionEpoch epoch_; // see setSessionEpoch()
 	std::string folder_;
 	std::vector<ReplayEvent> events_;
+	std::array<std::string, kEventLists> listNames_;
 	int nextId_ = 1;
 	std::atomic<bool> liveMode_{true};
 	std::atomic<int> selectedList_{1};
+	// Pre/post roll, see setRollNs(). Atomic so the hotkey path can read them
+	// without taking the store lock.
+	std::atomic<int64_t> preRollNs_{0};
+	std::atomic<int64_t> postRollNs_{0};
 	mutable std::atomic<uint64_t> version_{0};
 };
 

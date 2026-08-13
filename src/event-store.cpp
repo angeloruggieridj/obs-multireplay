@@ -38,6 +38,9 @@ void EventStore::setSessionFolder(const std::string &folder)
 	std::lock_guard<std::mutex> lock(mutex_);
 	folder_ = folder;
 	events_.clear();
+	// Cleared HERE and not only in load(): a project with no events.json yet
+	// would otherwise inherit the previous project's list names.
+	listNames_.fill(std::string());
 	nextId_ = 1;
 	load();
 }
@@ -52,10 +55,36 @@ void EventStore::clearAll()
 	save();
 }
 
+void EventStore::setRollNs(int64_t preNs, int64_t postNs)
+{
+	// Negative rolls would shorten the event instead of padding it, which is
+	// not what the setting says it does.
+	preRollNs_.store(std::max<int64_t>(0, preNs));
+	postRollNs_.store(std::max<int64_t>(0, postNs));
+}
+
 void EventStore::selectList(int list)
 {
 	if (list >= 1 && list <= kEventLists)
 		selectedList_ = list;
+}
+
+std::string EventStore::listName(int list) const
+{
+	if (list < 1 || list > kEventLists)
+		return {};
+	std::lock_guard<std::mutex> lock(mutex_);
+	return listNames_[list - 1];
+}
+
+bool EventStore::setListName(int list, const std::string &name)
+{
+	if (list < 1 || list > kEventLists)
+		return false;
+	std::lock_guard<std::mutex> lock(mutex_);
+	listNames_[list - 1] = name;
+	save();
+	return true;
 }
 
 int EventStore::markIn(int64_t tNs, int angle0Based)
@@ -64,7 +93,10 @@ int EventStore::markIn(int64_t tNs, int angle0Based)
 	ReplayEvent ev;
 	ev.id = nextId_++;
 	ev.list = selectedList_;
-	ev.tInNs = std::max<int64_t>(0, tNs);
+	// Pre-roll: the operator presses IN when he has SEEN the action, so the reference controller
+	// backs the mark up by a configured amount. Baked into the stored in-point
+	// on purpose — an in-point that reads 12:03.500 must be the one that plays.
+	ev.tInNs = std::max<int64_t>(0, tNs - preRollNs_.load());
 	ev.tOutNs = -1;
 	ev.angles[std::clamp(angle0Based, 0, kEventAngles - 1)].enabled = true;
 	ev.createdMode = liveMode_ ? "live" : "recorded";
@@ -79,7 +111,9 @@ bool EventStore::markOut(int64_t tNs)
 	// close the most recent open event in the selected list
 	for (auto it = events_.rbegin(); it != events_.rend(); ++it) {
 		if (it->list == selectedList_ && it->tOutNs < 0) {
-			it->tOutNs = std::max(it->tInNs + 1, tNs);
+			// Post-roll: keep the play running past the whistle.
+			it->tOutNs = std::max(it->tInNs + 1,
+					      tNs + postRollNs_.load());
 			MR_DLOG(
 				"[ev] markOut id=%d IN=%lldms OUT=%lldms dur=%lldms",
 				it->id, (long long)(it->tInNs / 1000000),
@@ -98,9 +132,12 @@ int EventStore::markInOut(int64_t tNowNs, int seconds, int angle0Based)
 	ReplayEvent ev;
 	ev.id = nextId_++;
 	ev.list = selectedList_;
-	ev.tOutNs = std::max<int64_t>(1, tNowNs);
-	ev.tInNs = std::max<int64_t>(0,
-				     ev.tOutNs - (int64_t)seconds * 1000000000);
+	// Same rolls as the manual marks, measured from NOW: the preset window is
+	// the `seconds` the operator asked for, and the rolls pad it on both sides.
+	ev.tOutNs = std::max<int64_t>(1, tNowNs + postRollNs_.load());
+	ev.tInNs = std::max<int64_t>(0, tNowNs -
+						(int64_t)seconds * 1000000000 -
+						preRollNs_.load());
 	ev.angles[std::clamp(angle0Based, 0, kEventAngles - 1)].enabled = true;
 	ev.createdMode = liveMode_ ? "live" : "recorded";
 	events_.push_back(ev);
@@ -223,6 +260,34 @@ bool EventStore::setSpeed(int id, double speed)
 	return false;
 }
 
+double EventStore::resolvedSpeedAt(size_t idx) const
+{
+	// mutex_ held by the caller.
+	//
+	// "Previous" is previous in CREATION order, which is the order marks were
+	// taken and the order the store keeps them in. Deliberately not the sorted
+	// display order: with the by-time sort on, an event inserted before others
+	// (a −20s preset taken after a −5s one) would otherwise change the speed of
+	// events that were already on screen with a value the operator had read.
+	const int list = events_[idx].list;
+	for (size_t i = idx + 1; i-- > 0;) {
+		if (events_[i].list != list)
+			continue;
+		if (events_[i].speed >= 0)
+			return events_[i].speed;
+	}
+	return -1.0;
+}
+
+double EventStore::resolvedSpeed(int id) const
+{
+	std::lock_guard<std::mutex> lock(mutex_);
+	for (size_t i = 0; i < events_.size(); i++)
+		if (events_[i].id == id)
+			return resolvedSpeedAt(i);
+	return -1.0;
+}
+
 bool EventStore::setAngleSpeed(int id, int angle1Based, double speed)
 {
 	std::lock_guard<std::mutex> lock(mutex_);
@@ -325,8 +390,11 @@ std::string EventStore::listJson(int list) const
 	obs_data_set_bool(root, "liveMode", liveMode_);
 	obs_data_set_int(root, "selectedList", selectedList_);
 
+	obs_data_set_string(root, "listName", listNames_[list - 1].c_str());
+
 	obs_data_array_t *arr = obs_data_array_create();
-	for (const auto &ev : events_) {
+	for (size_t i = 0; i < events_.size(); i++) {
+		const auto &ev = events_[i];
 		if (ev.list != list)
 			continue;
 		obs_data_t *e = obs_data_create();
@@ -334,6 +402,9 @@ std::string EventStore::listJson(int list) const
 		obs_data_set_int(e, "tInNs", ev.tInNs);
 		obs_data_set_int(e, "tOutNs", ev.tOutNs);
 		obs_data_set_double(e, "speed", ev.speed);
+		// What would actually play, inheritance included, so the table can
+		// show an inherited speed without asking again per row.
+		obs_data_set_double(e, "resolvedSpeed", resolvedSpeedAt(i));
 		obs_data_set_string(e, "createdMode", ev.createdMode.c_str());
 		obs_data_array_t *angles = obs_data_array_create();
 		for (const auto &a : ev.angles) {
@@ -402,6 +473,21 @@ void EventStore::save() const
 
 	obs_data_t *root = obs_data_create();
 	obs_data_set_int(root, "nextId", nextId_);
+
+	// The 20 list names travel with the events: they name THIS project's
+	// lists ("Gol", "Falli"), not a global preference.
+	{
+		obs_data_array_t *names = obs_data_array_create();
+		for (const auto &n : listNames_) {
+			obs_data_t *item = obs_data_create();
+			obs_data_set_string(item, "name", n.c_str());
+			obs_data_array_push_back(names, item);
+			obs_data_release(item);
+		}
+		obs_data_set_array(root, "listNames", names);
+		obs_data_array_release(names);
+	}
+
 	obs_data_array_t *arr = obs_data_array_create();
 	for (const auto &ev : events_) {
 		obs_data_t *e = obs_data_create();
@@ -457,6 +543,18 @@ void EventStore::load()
 	nextId_ = (int)obs_data_get_int(root, "nextId");
 	if (nextId_ < 1)
 		nextId_ = 1;
+
+	listNames_.fill(std::string());
+	if (obs_data_array_t *names = obs_data_get_array(root, "listNames")) {
+		const size_t n = obs_data_array_count(names);
+		for (size_t i = 0; i < n && i < (size_t)kEventLists; i++) {
+			obs_data_t *item = obs_data_array_item(names, i);
+			const char *nm = obs_data_get_string(item, "name");
+			listNames_[i] = nm ? nm : "";
+			obs_data_release(item);
+		}
+		obs_data_array_release(names);
+	}
 
 	int skippedLegacy = 0;
 	obs_data_array_t *arr = obs_data_get_array(root, "events");

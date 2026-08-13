@@ -38,6 +38,7 @@ static void reset()
 	store().clearAll();
 	store().selectList(1);
 	store().setLiveMode(true);
+	store().setRollNs(0, 0); // pre/post roll off unless a test asks for it
 }
 
 static void test_mark_in_out()
@@ -278,6 +279,110 @@ static void test_chapters_text()
 	CHECK(store().chaptersText(1) == "1:05 Goal\n");
 }
 
+// the reference controller pre/post roll: seconds added to the start and the end of every event as
+// it is marked. The stored in/out are the padded ones — what the list shows is
+// what will play.
+static void test_pre_post_roll()
+{
+	reset();
+	store().setRollNs(2 * S, 3 * S);
+
+	// Mark In backs up by the pre-roll, Mark Out runs on by the post-roll.
+	int id = store().markIn(50 * S, 0);
+	ReplayEvent ev;
+	CHECK(store().get(id, ev));
+	CHECK(ev.tInNs == 48 * S);
+	CHECK(store().markOut(60 * S));
+	CHECK(store().get(id, ev));
+	CHECK(ev.tOutNs == 63 * S);
+
+	// The preset window is the seconds asked for, padded on both sides.
+	int id2 = store().markInOut(100 * S, 10, 0);
+	CHECK(store().get(id2, ev));
+	CHECK(ev.tInNs == 88 * S);  // 100 - 10 - 2
+	CHECK(ev.tOutNs == 103 * S); // 100 + 3
+
+	// A pre-roll longer than the timeline still clamps at 0, and OUT stays
+	// strictly after IN.
+	store().setRollNs(500 * S, 0);
+	int id3 = store().markIn(5 * S, 0);
+	CHECK(store().get(id3, ev));
+	CHECK(ev.tInNs == 0);
+
+	// Negative rolls are not a way to shorten an event.
+	store().setRollNs(-4 * S, -4 * S);
+	CHECK(store().preRollNs() == 0);
+	CHECK(store().postRollNs() == 0);
+
+	// Off by default = the old behaviour, exactly.
+	reset();
+	int id4 = store().markIn(7 * S, 0);
+	CHECK(store().get(id4, ev));
+	CHECK(ev.tInNs == 7 * S);
+}
+
+// the reference controller: an event with no speed of its own inherits the previous event's.
+static void test_speed_inheritance()
+{
+	reset();
+	int a = store().markIn(10 * S, 0);
+	store().markOut(11 * S);
+	int b = store().markIn(20 * S, 0);
+	store().markOut(21 * S);
+	int c = store().markIn(30 * S, 0);
+	store().markOut(31 * S);
+
+	// Nothing set anywhere → "no answer", so the caller's default wins.
+	CHECK(store().resolvedSpeed(a) < 0);
+	CHECK(store().resolvedSpeed(c) < 0);
+
+	// b at 50%: b and everything after it inherit, a (before it) does not.
+	CHECK(store().setSpeed(b, 0.5));
+	CHECK(store().resolvedSpeed(a) < 0);
+	CHECK(store().resolvedSpeed(b) == 0.5);
+	CHECK(store().resolvedSpeed(c) == 0.5);
+
+	// An explicit value on c wins over the inherited one.
+	CHECK(store().setSpeed(c, 0.25));
+	CHECK(store().resolvedSpeed(c) == 0.25);
+
+	// Inheritance never crosses lists: a new list starts from nothing.
+	store().selectList(2);
+	int d = store().markIn(40 * S, 0);
+	store().markOut(41 * S);
+	CHECK(store().resolvedSpeed(d) < 0);
+	store().selectList(1);
+
+	// An unknown id has no speed rather than someone else's.
+	CHECK(store().resolvedSpeed(9999) < 0);
+}
+
+// the reference controller: the 20 lists can be named, and the names belong to the project.
+static void test_list_names()
+{
+	reset();
+	CHECK(store().listName(1).empty()); // never named
+	CHECK(store().setListName(1, "Gol"));
+	CHECK(store().listName(1) == "Gol");
+	CHECK(store().listName(2).empty()); // naming one does not name them all
+
+	// Out-of-range lists are refused, not silently written elsewhere.
+	CHECK(!store().setListName(0, "x"));
+	CHECK(!store().setListName(kEventLists + 1, "x"));
+	CHECK(store().listName(0).empty());
+
+	// Renaming bumps the version so the dock redraws its combo.
+	uint64_t v = store().version();
+	CHECK(store().setListName(3, "Falli"));
+	CHECK(store().version() > v);
+
+	// "Delete All" wipes the events and KEEPS the settings (the reference controller).
+	store().clearAll();
+	CHECK(store().listName(1) == "Gol");
+	store().setListName(1, "");
+	store().setListName(3, "");
+}
+
 static void test_version_bumps()
 {
 	reset();
@@ -301,6 +406,9 @@ int main()
 	test_duplicate_and_last();
 	test_description();
 	test_chapters_text();
+	test_pre_post_roll();
+	test_speed_inheritance();
+	test_list_names();
 	test_version_bumps();
 
 	if (g_fail == 0)
