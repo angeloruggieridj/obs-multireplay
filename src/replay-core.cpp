@@ -774,6 +774,23 @@ bool ReplayCore::branchOutputAvailable() const
 
 void ReplayCore::reapplyFilterSettings()
 {
+	// Never while recording. ensureFilter() calls obs_source_update(), and a
+	// live Branch Output filter reacts to that by restarting its pipeline -
+	// destroying the obs_view behind the encoder the tap is attached to, and
+	// taking libobs' gpu_encode_thread down with it. Saving Settings mid-take
+	// did exactly this and crashed OBS.
+	//
+	// Refusing is also the right product behaviour: these settings describe
+	// how the session is being recorded, and changing that under a take in
+	// progress would split the footage and leave the earlier files anchored
+	// to a configuration that no longer exists. REC owns the lifecycle.
+	if (recording_) {
+		obs_log(LOG_INFO,
+			"Recording settings left untouched while REC is active - "
+			"they apply from the next recording");
+		return;
+	}
+
 	// Snapshot camera config without holding mutex_ (ensureFilter calls
 	// recordingFolder() which would re-acquire and deadlock).
 	Config cfg;
