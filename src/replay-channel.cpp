@@ -159,19 +159,22 @@ void ReplayChannel::ensureSource()
 {
 	std::lock_guard<std::mutex> lock(mutex_);
 
-	// A scene-collection change replaces the objects behind the names, so
-	// drop what we hold before looking again — keeping a stale ref is how
-	// the old engine ended up driving a source nobody could see.
-	if (source_) {
-		obs_source_release(source_);
-		source_ = nullptr;
-	}
-
+	// Look the name up BEFORE dropping what we hold. A scene-collection
+	// change replaces the objects behind the names, so the stale ref does
+	// have to go — but releasing it first destroys the very input we are
+	// about to adopt whenever ours is the last reference, which is the
+	// normal case until the operator drags "Replay A" into a scene. OBS then
+	// logged two "created OBS input" lines per start and left its audio
+	// mixer holding a dead source ("Tried to sort VolumeControl for
+	// 'MultiReplay - Replay A' but source is null"). Taking the new ref
+	// first keeps the object alive across the swap.
 	obs_source_t *existing = obs_get_source_by_name(kSourceName);
-	if (existing) {
-		source_ = existing; // already add-ref'd
+	obs_source_t *previous = source_;
+	source_ = existing; // already add-ref'd, may be null
+	if (previous)
+		obs_source_release(previous);
+	if (source_)
 		return;
-	}
 
 	obs_data_t *settings = obs_data_create();
 	source_ = obs_source_create(kSourceId, kSourceName, settings, nullptr);
