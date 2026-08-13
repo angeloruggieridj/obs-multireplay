@@ -12,6 +12,8 @@ See selftest.hpp. This is the scripted form of the M0 gate.
 #include "selftest.hpp"
 
 #include "branch-output-control.hpp"
+#include "event-store.hpp"
+#include "multireplay-dock.hpp"
 #include "packet-tap.hpp"
 #include "plugin-support.h"
 #include "replay-channel.hpp"
@@ -19,7 +21,14 @@ See selftest.hpp. This is the scripted form of the M0 gate.
 #include "replay-decoder.hpp"
 #include "segment-index.hpp"
 
+#include <util/base.h>
 #include <util/platform.h>
+
+#include <QMainWindow>
+#include <QObject>
+#include <QPushButton>
+#include <QString>
+#include <QTimer>
 
 #include <algorithm>
 #include <array>
@@ -134,6 +143,254 @@ obs_source_t *createSyntheticCamera(int idx, uint32_t cx, uint32_t cy)
 	}
 	obs_log(LOG_ERROR, "[selftest] no colour source type available");
 	return nullptr;
+}
+
+// ---------------------------------------------------------------------------
+// The dock, driven through its own widgets.
+//
+// Everything above this point proves the engine. None of it touches the only
+// thing the operator ever uses, and the rewrite left the dock re-wired but
+// never once run: a dock that throws on construction, freezes the GUI in its
+// timer, marks at an instant no footage covers, or fails to play what it just
+// marked would sail through the whole M0 gate. These checks close that hole by
+// finding the REAL dock OBS registered and clicking its REAL buttons.
+// ---------------------------------------------------------------------------
+
+struct DockChecks {
+	bool found = false;
+	bool pollRuns = false;
+	bool pollQuiet = false;
+	bool pollResponsive = false;
+	bool markOnTimeline = false;
+	bool playsMark = false;
+	bool playheadInsideClip = false;
+	int ticks = 0;
+	int64_t worstGapMs = 0;
+	int logErrors = 0;
+	int64_t markInNs = 0;
+	int64_t markOutNs = 0;
+	int playedFrames = 0;
+};
+
+// Counts OUR error lines while the dock's timer is being watched. Only ours:
+// the claim is "the dock's poll is quiet", not "nothing in OBS ever complains".
+std::atomic<int> g_ourLogErrors{0};
+std::atomic<bool> g_countLogErrors{false};
+log_handler_t g_prevLogHandler = nullptr;
+void *g_prevLogParam = nullptr;
+
+void countingLogHandler(int level, const char *msg, va_list args, void *)
+{
+	if (g_countLogErrors.load() && level <= LOG_ERROR && msg &&
+	    strstr(msg, PLUGIN_NAME) != nullptr)
+		g_ourLogErrors++;
+	// Chain, so the run still produces its normal OBS log.
+	if (g_prevLogHandler)
+		g_prevLogHandler(level, msg, args, g_prevLogParam);
+}
+
+DockChecks runDockChecks(int firstCam, const std::string &tempFolder,
+			 double canvasFps)
+{
+	DockChecks c;
+
+	MultiReplayDock *dock = nullptr;
+	QTimer *pollTimer = nullptr;
+	QPushButton *markBtn = nullptr; // the "-5s" preset
+	QPushButton *playBtn = nullptr; // "play selected"
+
+	runOnUi([&]() {
+		auto *main = static_cast<QMainWindow *>(
+			obs_frontend_get_main_window());
+		if (!main)
+			return;
+		// The registered dock, not a fresh one: this also proves
+		// obs_frontend_add_dock_by_id actually took it.
+		dock = main->findChild<MultiReplayDock *>();
+		if (!dock)
+			return;
+		for (QTimer *t : dock->findChildren<QTimer *>()) {
+			if (t->isActive() && t->interval() > 0 &&
+			    t->interval() <= 100) {
+				pollTimer = t;
+				break;
+			}
+		}
+		// Matched on the text the dock itself builds: "-5s" is composed
+		// from a number so it is locale-independent, and the play button
+		// goes through the same obs_module_text() we do.
+		const QString mark5 = QStringLiteral("-5s");
+		const QString playSel = QString::fromUtf8(
+			obs_module_text("Dock.PlaySelected"));
+		for (QPushButton *b : dock->findChildren<QPushButton *>()) {
+			if (b->text() == mark5)
+				markBtn = b;
+			else if (b->text() == playSel)
+				playBtn = b;
+		}
+	});
+
+	c.found = dock && pollTimer && markBtn && playBtn;
+	if (!c.found) {
+		obs_log(LOG_ERROR,
+			"[selftest] dock not usable (dock=%p timer=%p mark=%p "
+			"play=%p)",
+			(void *)dock, (void *)pollTimer, (void *)markBtn,
+			(void *)playBtn);
+		return c;
+	}
+
+	// --- Is the timer running, and does it hand the GUI thread back? -----
+	// The gap between consecutive ticks is measured AFTER the dock's own
+	// slot has run (our connection is made later, so it fires later), which
+	// makes the worst gap the honest cost of a poll: a poll that blocks —
+	// on a network stat(), a lock, a modal — shows up here and nowhere else.
+	std::atomic<int> ticks{0};
+	std::atomic<int64_t> worstGapNs{0};
+	int64_t lastTickNs = 0; // UI thread only
+	QMetaObject::Connection conn;
+
+	g_ourLogErrors.store(0);
+	base_get_log_handler(&g_prevLogHandler, &g_prevLogParam);
+	base_set_log_handler(countingLogHandler, nullptr);
+	g_countLogErrors.store(true);
+	runOnUi([&]() {
+		lastTickNs = (int64_t)os_gettime_ns();
+		conn = QObject::connect(pollTimer, &QTimer::timeout, dock,
+					[&]() {
+						const int64_t now =
+							(int64_t)os_gettime_ns();
+						const int64_t gap =
+							now - lastTickNs;
+						lastTickNs = now;
+						if (gap > worstGapNs.load())
+							worstGapNs.store(gap);
+						ticks++;
+					});
+	});
+	std::this_thread::sleep_for(std::chrono::milliseconds(2000));
+	runOnUi([&]() { QObject::disconnect(conn); });
+	g_countLogErrors.store(false);
+	base_set_log_handler(g_prevLogHandler, g_prevLogParam);
+
+	c.ticks = ticks.load();
+	c.worstGapMs = worstGapNs.load() / 1000000;
+	c.logErrors = g_ourLogErrors.load();
+	// 2 s of a 33 ms timer is ~60 ticks; 40 leaves room for a busy machine
+	// while still failing a timer that never started.
+	c.pollRuns = c.ticks >= 40;
+	// 250 ms is far above normal jitter and far below anything a human would
+	// not notice as a freeze.
+	c.pollResponsive = c.pollRuns && c.worstGapMs <= 250;
+	c.pollQuiet = c.logErrors == 0;
+	obs_log(LOG_INFO,
+		"[selftest] dock: %d poll ticks in 2 s, worst gap %lld ms, "
+		"%d plugin errors logged",
+		c.ticks, (long long)c.worstGapMs, c.logErrors);
+
+	// --- Mark, through the button an operator actually hits ---------------
+	auto &store = EventStore::instance();
+	// Point the store at the throwaway folder first: this must neither read
+	// nor overwrite the operator's own events.json.
+	store.setSessionFolder(tempFolder);
+	store.setLiveMode(true);
+	// The dock marks on ITS current angle, which it copies from the core on
+	// every tick — so set it there and let one tick carry it across.
+	ReplayCore::instance().setCurrentAngle(firstCam);
+	std::this_thread::sleep_for(std::chrono::milliseconds(200));
+
+	runOnUi([&]() { markBtn->click(); });
+
+	ReplayEvent ev;
+	const int evId = store.lastEventId();
+	const bool haveEvent = evId > 0 && store.get(evId, ev);
+	if (haveEvent) {
+		c.markInNs = ev.tInNs;
+		c.markOutNs = ev.tOutNs;
+		const int64_t oldest =
+			PacketTap::instance().oldestReplayableNs(firstCam);
+		const int64_t newest = PacketTap::instance().newestNs(firstCam);
+		// The mark has to fall INSIDE the window the dock is drawing,
+		// on the angle that was selected. A mark at master 0 — what a
+		// dead live edge produces — fails here, which is the regression
+		// this exists to catch.
+		c.markOnTimeline = ev.tInNs > 0 && oldest > 0 &&
+				   ev.tInNs >= oldest && ev.tOutNs <= newest &&
+				   ev.tOutNs > ev.tInNs &&
+				   ev.angles[firstCam].enabled;
+		obs_log(LOG_INFO,
+			"[selftest] dock: marked event %d in=%lld ms out=%lld ms "
+			"(ring holds %lld..%lld ms, angle %d enabled: %s)",
+			evId, (long long)(ev.tInNs / 1000000),
+			(long long)(ev.tOutNs / 1000000),
+			(long long)(oldest / 1000000),
+			(long long)(newest / 1000000), firstCam + 1,
+			ev.angles[firstCam].enabled ? "yes" : "NO");
+	} else {
+		obs_log(LOG_ERROR, "[selftest] dock: the mark button created "
+				   "no event");
+	}
+
+	// --- Play it back, through the play button ----------------------------
+	// Checked first that the range is servable: a playEvents() that fails
+	// opens a modal QMessageBox on the GUI thread, and a modal dialog would
+	// wedge every runOnUi() after it — including the teardown.
+	bool servable = false;
+	if (c.markOnTimeline) {
+		std::vector<LivePacket> probe;
+		int64_t pIn = 0, pOut = 0;
+		servable = PacketTap::instance().resolveRange(
+			firstCam, ev.tInNs, ev.tOutNs, probe, pIn, pOut);
+	}
+	if (servable) {
+		auto &chan = ReplayChannel::instance();
+		obs_source_t *src = chan.acquireSource();
+		if (src) {
+			// In no scene during the gate, so OBS would not consume
+			// the frames we push (see the M2 pass above).
+			obs_source_inc_active(src);
+			obs_source_inc_showing(src);
+		}
+
+		runOnUi([&]() { playBtn->click(); });
+
+		// 5 s of footage at 1x, generously bounded.
+		for (int i = 0; i < 300 && chan.playing(); i++)
+			std::this_thread::sleep_for(
+				std::chrono::milliseconds(50));
+
+		const auto st = chan.stats();
+		const int64_t pos = chan.positionNs();
+		c.playedFrames = (int)st.framesPushed;
+		const int expected = (int)(5.0 * (canvasFps > 0 ? canvasFps : 30.0));
+		c.playsMark = st.lastRunCompleted &&
+			      c.playedFrames >= expected * 9 / 10;
+		// The playhead the dock draws (and marks against in review) must
+		// end up inside the clip that just played, never back at 0.
+		c.playheadInsideClip =
+			pos >= ev.tInNs && pos <= ev.tOutNs;
+		obs_log(LOG_INFO,
+			"[selftest] dock: play button pushed %d frames, playhead "
+			"at %lld ms (clip %lld..%lld ms)",
+			c.playedFrames, (long long)(pos / 1000000),
+			(long long)(ev.tInNs / 1000000),
+			(long long)(ev.tOutNs / 1000000));
+
+		if (src) {
+			obs_source_dec_showing(src);
+			obs_source_dec_active(src);
+			obs_source_release(src);
+		}
+	} else if (c.markOnTimeline) {
+		obs_log(LOG_ERROR, "[selftest] dock: the marked range is not "
+				   "servable — not clicking play");
+	}
+
+	// Leave the operator's own project exactly as it was found.
+	if (evId > 0)
+		store.remove(evId);
+	store.setSessionFolder(ReplayCore::instance().recordingFolder());
+	return c;
 }
 
 void runSelfTest()
@@ -632,6 +889,27 @@ void runSelfTest()
 			obs_source_release(src);
 	}
 
+	// --- The dock, on the same live ring ---------------------------------
+	// Deliberately here, while everything is still armed and the ring is
+	// full: the dock is only interesting against a running session, which is
+	// exactly the state an operator has when he touches it.
+	DockChecks dockChecks;
+	{
+		int firstArmed = -1;
+		for (int i = 0; i < camCount; i++) {
+			if (want[i]) {
+				firstArmed = i;
+				break;
+			}
+		}
+		if (firstArmed >= 0)
+			dockChecks = runDockChecks(firstArmed, cfg.sessionFolder,
+						   canvasFps);
+		else
+			obs_log(LOG_ERROR, "[selftest] no armed camera — dock "
+					   "checks skipped");
+	}
+
 	// --- Tear down in the order the lifecycle demands ---------------------
 	// Detach BEFORE disabling the filters: Branch Output frees its encoder
 	// in releaseInfrastructureIfIdle() once its own outputs go idle.
@@ -710,7 +988,10 @@ void runSelfTest()
 			  ringLast5s && passRingCrossAngle && decodeOk &&
 			  startsOnMarkedFrame && playsIntoObs && audioPlays &&
 			  slowMotionPaced && segmentsOk && filePlaysFromDisk &&
-			  fileMatchesRing;
+			  fileMatchesRing && dockChecks.found &&
+			  dockChecks.pollRuns && dockChecks.pollResponsive &&
+			  dockChecks.pollQuiet && dockChecks.markOnTimeline &&
+			  dockChecks.playsMark && dockChecks.playheadInsideClip;
 
 	// --- Report -----------------------------------------------------------
 	obs_data_t *root = obs_data_create();
@@ -746,6 +1027,18 @@ void runSelfTest()
 	obs_data_set_bool(checks, "plays_from_disk", filePlaysFromDisk);
 	obs_data_set_bool(checks, "disk_matches_ring", fileMatchesRing);
 	obs_data_set_int(root, "disk_played_frames", fileFrames);
+	// The dock: found and clicked, not just compiled (see runDockChecks).
+	obs_data_set_bool(checks, "dock_registered", dockChecks.found);
+	obs_data_set_bool(checks, "dock_poll_runs", dockChecks.pollRuns);
+	obs_data_set_bool(checks, "dock_poll_responsive",
+			  dockChecks.pollResponsive);
+	obs_data_set_bool(checks, "dock_poll_no_errors", dockChecks.pollQuiet);
+	obs_data_set_bool(checks, "dock_mark_on_timeline",
+			  dockChecks.markOnTimeline);
+	obs_data_set_bool(checks, "dock_plays_marked_event",
+			  dockChecks.playsMark);
+	obs_data_set_bool(checks, "dock_playhead_inside_clip",
+			  dockChecks.playheadInsideClip);
 	obs_data_set_obj(root, "checks", checks);
 	obs_data_release(checks);
 
@@ -768,6 +1061,14 @@ void runSelfTest()
 
 	obs_data_set_int(root, "ring_cross_angle_present_delta_ms",
 			 crossAnglePresentDeltaMs);
+
+	obs_data_set_int(root, "dock_poll_ticks_in_2s", dockChecks.ticks);
+	obs_data_set_int(root, "dock_worst_poll_gap_ms", dockChecks.worstGapMs);
+	obs_data_set_int(root, "dock_plugin_errors_logged", dockChecks.logErrors);
+	obs_data_set_int(root, "dock_marked_in_ms", dockChecks.markInNs / 1000000);
+	obs_data_set_int(root, "dock_marked_out_ms",
+			 dockChecks.markOutNs / 1000000);
+	obs_data_set_int(root, "dock_played_frames", dockChecks.playedFrames);
 
 	obs_data_set_int(root, "worst_max_packet_age_ms", worstMaxAgeMs);
 	obs_data_set_int(root, "cross_angle_skew_ms", skewNs / 1000000);
