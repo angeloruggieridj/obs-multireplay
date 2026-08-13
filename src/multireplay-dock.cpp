@@ -1350,6 +1350,14 @@ void MultiReplayDock::poll()
 	auto &chan = ReplayChannel::instance();
 	auto &tap = PacketTap::instance();
 
+	// The preview's obs_display is bound to a native window handle, and OBS
+	// re-parents its docks whenever the layout is restored, floated, tabbed or
+	// re-docked — which destroys that handle. Qt does not reliably tell the
+	// widget, so this is the only place that can notice a display left
+	// presenting into a window that no longer exists. Two integer compares.
+	if (displayA_)
+		displayA_->recheckWindow();
+
 	// The hotkeys change the angle without going through the dock.
 	const int hotAngle1 = core.currentAngle() + 1;
 	if (hotAngle1 >= 1 && hotAngle1 <= kNCams)

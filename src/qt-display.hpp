@@ -10,6 +10,17 @@ an obs_display_t; a draw callback renders an OBS source into it every frame.
 
 Used by the dock to show the live "Replay A" program preview without going
 through the (now removed) browser layer.
+
+LIFECYCLE — read before touching this class. The obs_display_t owns a D3D swap
+chain bound to ONE native window handle. That binding is the fragile part: OBS
+re-parents its docks (restoring the saved layout at startup, floating, tabbing,
+re-docking), and Qt answers a re-parent by destroying this widget's native
+window and making a new one. A display left on the old handle keeps presenting
+into a window that no longer exists — silently, because nothing on the Qt side
+can see it, and libobs does not complain either. So the handle the display was
+created against is remembered, re-checked (see recheckWindow) and every
+create/destroy is logged with it: an interface that goes black must be
+diagnosable from the OBS log alone.
 */
 
 #pragma once
@@ -39,19 +50,35 @@ public:
 	void setRenderCallback(void (*draw)(void *, uint32_t, uint32_t),
 			       void *data);
 
+	// Confirm the display still matches this widget's native window, and
+	// create it when it is missing. Two integer compares plus an IsWindow()
+	// in the common case, so the dock calls it from its poll timer: Qt does
+	// not reliably tell a widget that the window under it has been replaced,
+	// and a poll is the only thing that can notice a display stranded on a
+	// dead handle. Safe to call from the UI thread at any rate.
+	void recheckWindow();
+
 protected:
 	void resizeEvent(QResizeEvent *event) override;
 	void paintEvent(QPaintEvent *event) override;
 	bool event(QEvent *event) override;
 
 private:
-	void createDisplay();
-	void destroyDisplay();
+	// `why` is logged verbatim: it is the only breadcrumb left when the
+	// preview misbehaves on a machine we cannot attach a debugger to.
+	void createDisplay(const char *why);
+	void destroyDisplay(const char *why);
 
 	obs_display_t *display_ = nullptr;
+	// The native handle `display_` was created against. Compared with the
+	// widget's current handle to detect a re-parent Qt did not announce.
+	WId createdWinId_ = 0;
 	void (*drawCb_)(void *, uint32_t, uint32_t) = nullptr;
 	void *drawData_ = nullptr;
 	bool destroying_ = false;
+	// One-shot guard so "cannot create the display yet" is logged once per
+	// dry spell instead of on every paint event.
+	bool deferralLogged_ = false;
 };
 
 } // namespace multireplay
