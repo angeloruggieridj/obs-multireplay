@@ -99,6 +99,16 @@ public:
 	explicit MultiReplayDock(QWidget *parent = nullptr);
 	~MultiReplayDock() override;
 
+	// What the preview is showing: true = the replay (a clip, a scrub review,
+	// or the frame the last one ended on), false = the live camera mirror.
+	//
+	// Published for the automated gate, which is the only thing outside the
+	// dock that reads it: "the preview flipped back to the live camera between
+	// two clips of a sequence" is invisible to every other check, and it is
+	// exactly what put the wrong picture on air. Atomic because the gate samples
+	// it from its own thread while poll() writes it on the UI thread.
+	bool previewShowsReplay() const { return previewShowsReplay_.load(); }
+
 private:
 	// --- UI assembly ---
 	QWidget *buildPreview();
@@ -215,6 +225,19 @@ private:
 	// False until something has been captured: keeps the preview black after a
 	// fresh start instead of showing the last frame of the previous clip.
 	bool previewHasContent_ = false;
+	// Mirror of !previewLive_, readable from any thread (see previewShowsReplay).
+	std::atomic<bool> previewShowsReplay_{false};
+
+	// --- sequence bookkeeping (see poll()) ---
+	// A multi-angle event is SEVERAL clips, and the engine is idle for a moment
+	// between them. Tracking the queue instead of the clip is what keeps the
+	// preview (and the program, with "to output" on) on the replay for the whole
+	// sequence instead of flashing the live camera between angles.
+	bool prevSequenceActive_ = false;
+	// Last instant a clip was really being paced out. A queue that claims to be
+	// active while nothing has played for a while died badly, and must not pin
+	// the preview on a replay that is not coming.
+	int64_t lastPlayingNs_ = 0;
 
 	QTimer *pollTimer_ = nullptr;
 	bool prevRecording_ = false; // detects REC start

@@ -180,6 +180,11 @@ struct DockChecks {
 	// worker's finish callback, re-posted onto the OBS UI queue) and is the
 	// half of "play both angles" no shape check can see.
 	bool queueAdvancesToSecond = false;
+	// The preview belongs to the SEQUENCE, not to the clip: between two angles
+	// of the same event the engine is briefly idle, and the dock used to put the
+	// live camera on screen for that moment - on air too, with "to output".
+	bool previewHoldsSequence = false;
+	int previewLiveSamples = 0; // frames of the sequence spent on the live camera
 	int queuedClips = 0;
 	int ticks = 0;
 	int64_t worstGapMs = 0;
@@ -446,12 +451,14 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 	if (!haveEvent) {
 		// nothing to queue: the mark check above already failed loudly
 	} else if (secondCam < 0) {
-		// One camera: nothing about combinations can be proven here.
+		// One camera: nothing about combinations — nor about what happens
+		// BETWEEN two clips — can be proven here.
 		c.multiAngleQueue = true;
 		c.angleCombinations = true;
 		c.angleChoiceRepeatable = true;
 		c.singleNonFirstAnglePlays = true;
 		c.queueAdvancesToSecond = true;
+		c.previewHoldsSequence = true;
 	} else {
 		auto &pc = PlaybackCoordinator::instance();
 		const int a1 = firstCam + 1;
@@ -561,36 +568,46 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 			store.setAngle(evId, a2, true);
 			std::string qerr;
 			if (pc.playEvents({evId}, firstCam, false, qerr)) {
-				// The clip is 5 s at 1x; 12 s is generous and
-				// still bounded.
+				// Watch the WHOLE sequence, sampling faster than
+				// the dock's own 33 ms tick: two 5 s clips plus
+				// the hop, capped at 20 s.
 				bool reachedSecond = false;
+				bool secondRuns = false;
 				uint64_t framesAtHop = 0;
-				for (int i = 0; i < 240; i++) {
+				int previewSamples = 0, previewLive = 0;
+				for (int i = 0; i < 1000; i++) {
 					const auto ps = pc.playState();
-					if (ps.queuePos == 2 && ps.angle1 == a2) {
+					if (!reachedSecond && ps.queuePos == 2 &&
+					    ps.angle1 == a2) {
 						reachedSecond = true;
 						framesAtHop = chan.stats()
 								      .framesPushed;
-						break;
+					}
+					if (reachedSecond &&
+					    chan.stats().framesPushed > 0)
+						secondRuns = true;
+					// Only once something is really on air: the
+					// very first tick is legitimately still on
+					// the live camera.
+					if (chan.stats().framesPushed > 0 ||
+					    reachedSecond) {
+						previewSamples++;
+						if (!dock->previewShowsReplay())
+							previewLive++;
 					}
 					if (!ps.active)
-						break; // queue died early
+						break; // sequence finished
 					std::this_thread::sleep_for(
-						std::chrono::milliseconds(50));
-				}
-				// Frames on the SECOND clip, not leftovers from
-				// the first: play() zeroes the counter.
-				bool secondRuns = false;
-				for (int i = 0; reachedSecond && i < 40; i++) {
-					if (chan.stats().framesPushed > 0) {
-						secondRuns = true;
-						break;
-					}
-					std::this_thread::sleep_for(
-						std::chrono::milliseconds(50));
+						std::chrono::milliseconds(20));
 				}
 				c.queueAdvancesToSecond = reachedSecond &&
 							  secondRuns;
+				c.previewLiveSamples = previewLive;
+				// Not "mostly": a single frame of the wrong camera
+				// between two angles is a flash the operator sees,
+				// and puts on air with "to output" on.
+				c.previewHoldsSequence =
+					previewSamples > 0 && previewLive == 0;
 				obs_log(c.queueAdvancesToSecond ? LOG_INFO
 								: LOG_ERROR,
 					"[selftest] dock: two-angle sequence — "
@@ -1338,6 +1355,7 @@ void runSelfTest()
 			  dockChecks.angleChoiceRepeatable &&
 			  dockChecks.singleNonFirstAnglePlays &&
 			  dockChecks.queueAdvancesToSecond &&
+			  dockChecks.previewHoldsSequence &&
 			  anchorsPersisted && projectOriginOk &&
 			  eventTimecodeSane && filtersIdleOutsideRec;
 
@@ -1412,6 +1430,9 @@ void runSelfTest()
 	// callback and the generation filter.
 	obs_data_set_bool(checks, "dock_queue_advances_to_second_angle",
 			  dockChecks.queueAdvancesToSecond);
+	// The preview belongs to the sequence: no live-camera flash between angles.
+	obs_data_set_bool(checks, "dock_preview_holds_sequence",
+			  dockChecks.previewHoldsSequence);
 	obs_data_set_obj(root, "checks", checks);
 	obs_data_release(checks);
 
@@ -1448,6 +1469,8 @@ void runSelfTest()
 	obs_data_set_int(root, "dock_played_frames", dockChecks.playedFrames);
 	obs_data_set_int(root, "dock_two_angle_clips_queued",
 			 dockChecks.queuedClips);
+	obs_data_set_int(root, "dock_preview_live_samples_during_sequence",
+			 dockChecks.previewLiveSamples);
 
 	obs_data_set_int(root, "worst_max_packet_age_ms", worstMaxAgeMs);
 	obs_data_set_int(root, "cross_angle_skew_ms", skewNs / 1000000);

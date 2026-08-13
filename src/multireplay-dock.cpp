@@ -279,6 +279,14 @@ constexpr int kNCams = kMaxCameras; // 8
 // multi-gigabyte copy on a long session.
 constexpr int64_t kScrubReviewNs = 10'000'000'000LL; // 10 s
 
+// A sequence is several clips, and the engine goes idle between them: the queue
+// advance crosses the playback thread's finish callback and the OBS UI task
+// queue, which takes a few tens of milliseconds. Anything inside this window
+// still counts as "the replay is on screen", so the preview does not flash the
+// live camera between two angles of the same event. Anything beyond it is a
+// queue that is not coming back, and the preview must be free to move on.
+constexpr int64_t kSequenceGapGraceNs = 1'500'000'000LL; // 1.5 s
+
 // How long a take gets to prove Branch Output really started it. Branch Output
 // re-evaluates its start conditions once a second (plugin-main.cpp:
 // TASK_INTERVAL_MS = 1000), so this is four of its ticks — enough for encoder
@@ -1316,6 +1324,21 @@ void MultiReplayDock::poll()
 	const auto playSt = PlaybackCoordinator::instance().playState();
 	const bool eventActive = playSt.active;
 
+	// --- is the REPLAY on screen? (the sequence, not the clip) -----------
+	// ReplayChannel::playing() goes false for a moment between the clips of a
+	// multi-angle sequence — the finish callback has to travel from the playback
+	// thread through the OBS UI queue before the next clip starts — and asking
+	// it alone made the dock show the live camera in that gap: a visible flash,
+	// and with "to output" on, a flash on air. The queue knows better: it is
+	// still active. The grace window keeps a queue that died badly (nothing
+	// playing, nothing coming) from pinning the preview forever.
+	const int64_t nowNs = (int64_t)os_gettime_ns();
+	if (playing || (eventActive && !prevSequenceActive_))
+		lastPlayingNs_ = nowNs;
+	const bool sequenceOnAir =
+		playing || (eventActive && lastPlayingNs_ > 0 &&
+			    nowNs - lastPlayingNs_ < kSequenceGapGraceNs);
+
 	// Counts poll() ticks so the work nobody reads thirty times a second — the
 	// status line, and re-resolving the preview source — runs at a fraction of
 	// the transport rate. See the status block below for why that matters.
@@ -1412,8 +1435,9 @@ void MultiReplayDock::poll()
 	if (anglesA_) {
 		// PGM follows the angle actually on air, which is not the selected
 		// one any more: a two-angle event plays C1 then C2 while the dock
-		// still points at whichever the operator picked.
-		bool ep = eventActive && playing && playSt.angle1 > 0;
+		// still points at whichever the operator picked. Driven by the
+		// SEQUENCE so the tally does not blink off in the gap between clips.
+		bool ep = sequenceOnAir && playSt.angle1 > 0;
 		for (int i = 1; i <= kNCams; i++) {
 			auto *b = qobject_cast<QPushButton *>(
 				anglesA_->button(i));
@@ -1491,15 +1515,24 @@ void MultiReplayDock::poll()
 
 	// Live-mirror preview state (see drawChannelA). The preview is a
 	// confidence monitor for the selected angle: the operator lines the
-	// cameras up BEFORE the take, so it mirrors the live source whenever
-	// nothing else is on it — recording or not, ever started or not. The
-	// replay input only carries pictures while a clip is being paced into it,
-	// so it wins for exactly as long as one is playing.
+	// cameras up BEFORE the take, so it mirrors the live source — recording or
+	// not, ever started or not.
+	//
+	// But ONLY while following live. That is the whole meaning of follow-live,
+	// and the two bugs it fixes are the same bug: asking "is a clip playing
+	// right now" showed the live camera in the gap between two clips of a
+	// sequence, and showed it again the moment a scrub review ran out — so
+	// dragging the seekbar to a point in the recorded timeline ended up
+	// displaying the camera as it is NOW, presented as the footage of THEN.
+	// Once the operator has scrubbed or played something he is reviewing the
+	// timeline, and the preview stays on the footage (the replay input holds
+	// the last frame it was handed) until he asks for the live edge back.
 	//
 	// The name→source lookup and the reference counting happen HERE, on the UI
 	// thread. The graphics thread gets a ready-made reference (previewSource_).
 	{
-		const bool live = !playing;
+		const bool live = followLive && !sequenceOnAir;
+		previewShowsReplay_.store(!live);
 		// Re-resolving costs a lookup under libobs' global source mutex, so
 		// only do it when the answer can have changed: a different kind of
 		// picture, a different angle, or the 4 Hz revalidation that catches a
