@@ -199,6 +199,12 @@ struct DockChecks {
 	// is not the first one, because "always flag camera 1" passes any check made
 	// on camera 1 - and that was the real bug on the hotkey path.
 	bool markInheritsAngle = false;
+	// reference parity, M3. The id is drawn zero-padded to the configured width (so
+	// it can be called out loud), double-clicking a row puts that event on air,
+	// and the frame step really moves the picture on.
+	bool idPadded = false;
+	bool doubleClickPlays = false;
+	bool frameStepAdvances = false;
 	int previewLiveSamples = 0; // frames of the sequence spent on the live camera
 	int queuedClips = 0;
 	int ticks = 0;
@@ -235,6 +241,7 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 	QTimer *pollTimer = nullptr;
 	QPushButton *markBtn = nullptr; // the "-5s" preset
 	QPushButton *playBtn = nullptr; // "play selected"
+	QPushButton *stepBtn = nullptr; // "one frame forward"
 
 	runOnUi([&]() {
 		auto *main = static_cast<QMainWindow *>(
@@ -259,21 +266,26 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 		const QString mark5 = QStringLiteral("-5s");
 		const QString playSel = QString::fromUtf8(
 			obs_module_text("Dock.PlaySelected"));
+		// The frame step carries a glyph, not a translated word, so it is
+		// matched on the glyph the dock builds it with.
+		const QString step = QStringLiteral("⏭");
 		for (QPushButton *b : dock->findChildren<QPushButton *>()) {
 			if (b->text() == mark5)
 				markBtn = b;
 			else if (b->text() == playSel)
 				playBtn = b;
+			else if (b->text() == step)
+				stepBtn = b;
 		}
 	});
 
-	c.found = dock && pollTimer && markBtn && playBtn;
+	c.found = dock && pollTimer && markBtn && playBtn && stepBtn;
 	if (!c.found) {
 		obs_log(LOG_ERROR,
 			"[selftest] dock not usable (dock=%p timer=%p mark=%p "
-			"play=%p)",
+			"play=%p step=%p)",
 			(void *)dock, (void *)pollTimer, (void *)markBtn,
-			(void *)playBtn);
+			(void *)playBtn, (void *)stepBtn);
 		return c;
 	}
 
@@ -399,6 +411,32 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 		obs_log(LOG_ERROR,
 			"[selftest] dock: the table never selected the event it "
 			"just marked — 'play selected' would have nothing to play");
+
+	// --- the id is drawn the way the reference controller draws it ----------------------------
+	// Zero-padded to the configured width, so it keeps the same length for the
+	// whole match and can be called out loud ("play 0142"). Read off the real
+	// cell: this is a rendering claim, and the store knows nothing about it.
+	if (selected) {
+		const int digits = std::clamp(
+			ReplayCore::instance().getConfig().eventIdDigits, 1, 8);
+		QString cell;
+		runOnUi([&]() {
+			QTableWidget *t = dock->findChild<QTableWidget *>();
+			if (!t)
+				return;
+			for (int r = 0; r < t->rowCount(); r++) {
+				QTableWidgetItem *it = t->item(r, 0);
+				if (it && it->data(Qt::UserRole).toInt() == evId)
+					cell = it->text();
+			}
+		});
+		c.idPadded = cell == QString("%1").arg(evId, digits, 10,
+						       QLatin1Char('0'));
+		obs_log(c.idPadded ? LOG_INFO : LOG_ERROR,
+			"[selftest] dock: event %d drawn as '%s' (%d digits "
+			"configured)",
+			evId, cell.toUtf8().constData(), digits);
+	}
 
 	// Checked also that the range is servable, for the same modal reason.
 	bool servable = false;
@@ -796,6 +834,64 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 				played ? "yes" : "NO",
 				stillFootage ? "yes" : "NO");
 		}
+	}
+
+	// --- one frame forward really moves the picture on --------------------
+	// The engine has no playhead to advance: a step is a two-frame range played
+	// from just past where the bar stands. Proving it in the gate means proving
+	// the range was servable and the input got the frame — a step that silently
+	// does nothing looks identical to a step at the live edge.
+	{
+		auto &chan = ReplayChannel::instance();
+		const int64_t before = chan.positionNs();
+		runOnUi([&]() { stepBtn->click(); });
+		int64_t after = before;
+		for (int i = 0; i < 40; i++) {
+			after = chan.positionNs();
+			if (after > before)
+				break;
+			std::this_thread::sleep_for(
+				std::chrono::milliseconds(50));
+		}
+		c.frameStepAdvances = before > 0 && after > before;
+		obs_log(c.frameStepAdvances ? LOG_INFO : LOG_ERROR,
+			"[selftest] dock: frame step moved the playhead %lld ms → "
+			"%lld ms",
+			(long long)(before / 1000000), (long long)(after / 1000000));
+		chan.stop();
+	}
+
+	// --- double-clicking a row puts that event on air ---------------------
+	// the reference controller's fastest path from "that one" to "on air". Emitted on a column that
+	// is NOT the speed cell, which is the one exception (double-click edits it).
+	{
+		auto &pc = PlaybackCoordinator::instance();
+		pc.stopEvents();
+		int row = -1;
+		runOnUi([&]() {
+			QTableWidget *t = dock->findChild<QTableWidget *>();
+			if (!t)
+				return;
+			for (int r = 0; r < t->rowCount(); r++) {
+				QTableWidgetItem *it = t->item(r, 0);
+				if (it && it->data(Qt::UserRole).toInt() == evId)
+					row = r;
+			}
+			if (row >= 0)
+				emit t->cellDoubleClicked(row, 1); // the In column
+		});
+		for (int i = 0; i < 40 && !c.doubleClickPlays; i++) {
+			const auto ps = pc.playState();
+			c.doubleClickPlays = ps.active && ps.eventId == evId;
+			if (!c.doubleClickPlays)
+				std::this_thread::sleep_for(
+					std::chrono::milliseconds(50));
+		}
+		obs_log(c.doubleClickPlays ? LOG_INFO : LOG_ERROR,
+			"[selftest] dock: double-click on row %d started event %d: "
+			"%s",
+			row, evId, c.doubleClickPlays ? "yes" : "NO");
+		pc.stopEvents();
 	}
 
 	// Leave the operator's own project exactly as it was found.
@@ -1532,7 +1628,9 @@ void runSelfTest()
 			  dockChecks.scrubShowsFootage &&
 			  dockChecks.singleHonoursRequestedAngle &&
 			  dockChecks.singleReportsUnplayableAngle &&
-			  dockChecks.markInheritsAngle &&
+			  dockChecks.markInheritsAngle && dockChecks.idPadded &&
+			  dockChecks.doubleClickPlays &&
+			  dockChecks.frameStepAdvances &&
 			  anchorsPersisted && projectOriginOk &&
 			  eventTimecodeSane && filtersIdleOutsideRec;
 
@@ -1625,6 +1723,13 @@ void runSelfTest()
 	// A mark flags the angle the operator is watching, not always the first.
 	obs_data_set_bool(checks, "dock_mark_inherits_current_angle",
 			  dockChecks.markInheritsAngle);
+	// reference parity (M3): ids are padded to the configured width, a double-click
+	// puts the row on air, and the frame step really advances the picture.
+	obs_data_set_bool(checks, "dock_event_id_padded", dockChecks.idPadded);
+	obs_data_set_bool(checks, "dock_double_click_plays_event",
+			  dockChecks.doubleClickPlays);
+	obs_data_set_bool(checks, "dock_frame_step_advances",
+			  dockChecks.frameStepAdvances);
 	obs_data_set_obj(root, "checks", checks);
 	obs_data_release(checks);
 
