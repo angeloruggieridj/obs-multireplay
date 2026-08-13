@@ -19,6 +19,7 @@ start.
 
 #include <obs.h>
 
+#include <QString>
 #include <QWidget>
 #include <atomic>
 #include <climits>
@@ -38,6 +39,7 @@ class QLabel;
 class QLineEdit;
 class QComboBox;
 class QCheckBox;
+class QTabBar;
 class QTableWidget;
 class QTableWidgetItem;
 class QButtonGroup;
@@ -71,6 +73,10 @@ public:
 	// Event markers drawn on the timeline as amber rectangles.
 	// Each pair is (inFrac, outFrac) in [0,1].
 	void setEventMarkers(std::vector<std::pair<double, double>> markers);
+	// the reference controller prints the transport state ON the position bar ("0000 - 00:11.56
+	// 100%") instead of beside it, and that is where the operator's eye already
+	// is while he scrubs. Drawn centred, over the fill.
+	void setOverlayText(const QString &text);
 	bool dragging() const { return dragging_; }
 
 signals:
@@ -91,6 +97,7 @@ private:
 	double seekableFrac_ = 1.0;
 	double dragFrac_ = 0.0;
 	bool dragging_ = false;
+	QString overlay_;
 	std::vector<std::pair<double, double>> markers_;
 };
 
@@ -120,18 +127,37 @@ public:
 
 private:
 	// --- UI assembly ---
+	// Zoned the way the broadcast replay controller is zoned, top to bottom:
+	// list tabs + search + Live, then the channel A preview with its green
+	// status strip, then the event table, then the two rows of controls and
+	// the full-width position bar. buildBottomBar() owns the last two.
+	QWidget *buildToolbar();
 	QWidget *buildPreview();
-	QWidget *buildTransport();
 	QWidget *buildMarkers();
+	QWidget *buildAngleMatrix();
+	QWidget *buildTransport();
 	QWidget *buildEvents();
+	QWidget *buildBottomBar();
 
 	// --- engine interaction ---
 	void poll();             // periodic transport/status refresh
 	void refreshEvents();    // reload the selected list into the table
 	void refreshAngles();    // update angle button labels from camera displayName
-	// the reference controller: the 20 lists can be named ("Gol", "Falli"). Re-labels the combo
+	// the reference controller: the 20 lists can be named ("Gol", "Falli"). Re-labels the tabs
 	// from the store; the selection is preserved.
 	void refreshListNames();
+	// One table column per configured camera, headed "N Name" (the reference controller). The set
+	// of columns follows the camera configuration, so this rebuilds them (and
+	// only when the configuration really changed — rebuilding clears the
+	// table).
+	void rebuildEventColumns();
+	// the reference controller paints the header of the angle being watched green. Cheap enough to
+	// call from poll(), which is also the only place that learns the angle
+	// changed under a hotkey.
+	void updateCamHeaderHighlight();
+	// The green strip under the preview: list, clip x/y, remaining, event id,
+	// IN/OUT offsets, timecode, speed. Same fields the reference controller puts there.
+	void updateChannelStrip();
 	void renameListDialog(); // gear menu → rename the selected list
 	void onEventItemChanged(QTableWidgetItem *item); // edit commit
 	// Inspector panel below the table: per-angle toggle · comment · vel% for the
@@ -198,10 +224,14 @@ private:
 	// preview (single replay channel A)
 	OBSQTDisplay *displayA_ = nullptr;
 	QButtonGroup *anglesA_ = nullptr;
+	// the reference controller's green channel strip under the A preview.
+	QLabel *chanBadge_ = nullptr; // "A1"
+	QLabel *chanStrip_ = nullptr; // the three information lines
 
 	// recording / status
 	QPushButton *recBtn_ = nullptr;
 	QLabel *statusLbl_ = nullptr;
+	QLabel *clockLbl_ = nullptr;   // wall clock + remaining recording time
 	QLabel *projectLbl_ = nullptr; // shows active project name
 
 	// transport
@@ -211,21 +241,29 @@ private:
 	int speedPct_ = 100;
 	SeekBar *seek_ = nullptr;
 	QSlider *speed_ = nullptr;
+	// The 25/33/50/75/100/2× chips, keyed by percentage so poll() can light
+	// the one that matches the current speed (the reference controller fills it green).
+	QButtonGroup *speedChips_ = nullptr;
 	QLabel *speedLbl_ = nullptr;
 	QLabel *tcLbl_ = nullptr;
 	QPushButton *playPauseBtn_ = nullptr;
 	QPushButton *nowBtn_ = nullptr;
 	bool seekDragging_ = false;
 
-	// markers
-	QCheckBox *liveChk_ = nullptr;
+	// markers. the reference controller's Live is a red toggle BUTTON in the top bar, not a
+	// checkbox down with the marker keys: it is the mode the whole panel is in.
+	QPushButton *liveBtn_ = nullptr;
 
 	// events
-	QComboBox *listCombo_ = nullptr;
+	QTabBar *listTabs_ = nullptr; // the 20 lists, broadcast-style tabs
 	QLineEdit *search_ = nullptr;
 	QTableWidget *events_ = nullptr;
 	// Inspector: framed panel under the table; its rows are rebuilt per selection.
+	// Collapsed by default now that the enable toggle and the comment are in the
+	// table itself (the reference controller): what is left in here is the per-angle speed override,
+	// which the reference controller has no column for.
 	QGroupBox *inspector_ = nullptr;
+	QWidget *inspectorBody_ = nullptr; // hidden when the panel is collapsed
 	QVBoxLayout *inspectorLayout_ = nullptr;
 	int inspectorEventId_ = 0;
 	bool refreshing_ = false; // guards itemChanged during table rebuilds
@@ -234,9 +272,15 @@ private:
 	// auto-selects it so "Riproduci selezionati" is one click; otherwise the
 	// user's current selection is preserved across refreshes.
 	int lastMaxEventId_ = 0;
-	QCheckBox *toOutputChk_ = nullptr;
-	QCheckBox *loopChk_ = nullptr;
-	QCheckBox *musicChk_ = nullptr;
+	QPushButton *toOutputBtn_ = nullptr;
+	QPushButton *loopBtn_ = nullptr;
+	QPushButton *musicBtn_ = nullptr;
+	// Which camera each per-camera table column stands for (0-based), in
+	// column order starting at kColFirstCam. Empty = no camera configured.
+	std::vector<int> camCols_;
+	// Header section currently painted green (the angle being watched), -1 =
+	// none. Kept so poll() only repaints when it really moved.
+	int camHeaderHot_ = -1;
 
 	QSplitter *splitter_ = nullptr;
 
@@ -286,8 +330,12 @@ private:
 	// the last frame of the clip that finished, which is why the bar used to
 	// stay wherever the replay stopped until NOW was pressed by hand.
 	int64_t playheadNs_ = 0;
-	// Until when showNotice()'s message owns the status line (master ns).
+	// Until when showNotice()'s message owns the channel strip (master ns),
+	// and the message itself. It goes on the strip rather than in the corner
+	// status line because that line is two inches wide and this is the answer
+	// to something the operator just pressed.
 	int64_t noticeUntilNs_ = 0;
+	QString noticeText_;
 
 	QTimer *pollTimer_ = nullptr;
 	bool prevRecording_ = false; // detects REC start

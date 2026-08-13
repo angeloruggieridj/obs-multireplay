@@ -23,7 +23,10 @@ SPDX-License-Identifier: GPL-2.0-or-later
 #include <QHBoxLayout>
 #include <QGridLayout>
 #include <QSplitter>
+#include <QAbstractButton>
+#include <QDateTime>
 #include <QPushButton>
+#include <QTabBar>
 #include <QToolButton>
 #include <QSlider>
 #include <QLabel>
@@ -67,20 +70,20 @@ SPDX-License-Identifier: GPL-2.0-or-later
 namespace multireplay {
 
 // ---------------------------------------------------------------------------
-// Dock-wide stylesheet — professional broadcast control room palette.
-// Reference: Grass Valley, Ross Video, Viz master control panels —
-// near-black surface, neutral grey buttons, PVW green / PGM red for
-// camera state, steel blue for the seekbar progress. No amber.
+// Dock-wide stylesheet — the broadcast replay controller's palette.
 //
-// Palette:
-//   #0c0c0c  deep bg          #1c8a38  PVW green (preview/selected)
-//   #141414  surface          #be2020  PGM red  (program/playing)
-//   #1c1c1c  elevated         #081a0e  green bg dark
-//   #222222  btn rest         #200808  red bg dark
-//   #2c2c2c  border           #28b050  green text
-//   #424242  border hover     #de3838  red text
-//   #c0c0c0  text primary     #365e8a  steel-blue (seekbar)
-//   #484848  text muted       #c02020  danger/rec red
+// The colours are SAMPLED from the reference screenshots in "reference-gui/", not
+// invented: an operator coming from the reference controller reads this panel by colour before he
+// reads it by label, and "green means the angle I am on, orange means the row I
+// have selected" is muscle memory worth more than any house style. Nothing here
+// is copied from the reference controller itself — these are hex values in our own stylesheet.
+//
+// Palette (sampled):
+//   #1D3D74  table header blue      #176533  active-angle header green
+//   #DB5026  selected row orange    #199847  position bar, played
+//   #00121C  row odd (navy black)   #146433  position bar, remaining
+//   #002A42  row even               #116B35  angle enabled (checkbox)
+//   #A81C1C  Live / REC red         #0c0c0c  dock background
 static const char *kDockStyle = R"QSS(
 /* ── base ─────────────────────────────────────────────── */
 #MultiReplayDock { background: #0c0c0c; }
@@ -92,6 +95,17 @@ QLabel#mrTimecode   { color: #c8c8c8; font-size: 12px; font-weight: 700;
                       letter-spacing: 0.3px; }
 QLabel#mrSectionLabel { color: #686868; font-size: 9px; font-weight: 700;
                         letter-spacing: 1.4px; text-transform: uppercase; }
+/* wall clock over the "remaining" line, the reference controller-red while a take is running */
+QLabel#mrClock      { color: #6a6a6a; font-size: 10px; }
+QLabel#mrClock[rec="true"] { color: #e03030; font-weight: 700; }
+/* the collapsible per-angle speed panel under the table */
+QGroupBox#mrInspector {
+	border: 1px solid #1c2a3c; border-radius: 3px;
+	margin-top: 6px; color: #8a97a6; font-size: 10px;
+}
+QGroupBox#mrInspector::title {
+	subcontrol-origin: margin; left: 7px; padding: 0 3px;
+}
 /* mrCamNoteEdit: styled inline via setStyleSheet() on the widget */
 
 /* ── generic buttons ───────────────────────────────────── */
@@ -129,6 +143,52 @@ QPushButton#mrNow {
 	min-height: 28px; min-width: 36px; color: #484848;
 }
 QPushButton#mrNow[live="true"] { background: #280808; border-color: #c02020; color: #e03030; }
+
+/* ── the reference controller "Live" mode toggle — red when marks are taken as they happen ── */
+QPushButton#mrLive {
+	background: #181818; color: #6a6a6a;
+	border: 1px solid #2c2c2c; border-radius: 3px;
+	font-weight: 700; font-size: 11px; letter-spacing: 0.6px;
+	min-height: 22px; min-width: 54px; padding: 2px 14px;
+}
+QPushButton#mrLive:hover { border-color: #424242; color: #9a9a9a; }
+QPushButton#mrLive:checked {
+	background: #A81C1C; color: #ffffff; border-color: #d03030;
+}
+
+/* ── latching toggles (Loop · music · to output) ─────────── */
+QPushButton#mrToggle {
+	background: #181818; color: #6a6a6a;
+	border: 1px solid #2c2c2c; border-radius: 3px;
+	font-size: 10px; min-height: 26px; padding: 2px 9px;
+}
+QPushButton#mrToggle:hover { border-color: #424242; color: #9a9a9a; }
+QPushButton#mrToggle:checked {
+	background: #176533; color: #ffffff; border-color: #22a04a;
+}
+
+/* ── list tabs (the reference controller: one tab per event list) ─────────────── */
+QTabBar#mrListTabs { background: transparent; }
+QTabBar#mrListTabs::tab {
+	background: #141414; color: #8a8a8a;
+	border: 1px solid #232323; border-bottom: 0;
+	padding: 3px 9px; margin-right: 1px; min-width: 16px;
+	font-size: 10px;
+}
+QTabBar#mrListTabs::tab:hover { background: #1e1e1e; color: #c0c0c0; }
+QTabBar#mrListTabs::tab:selected {
+	background: #1D3D74; color: #ffffff; border-color: #2a5296;
+}
+
+/* ── channel strip under the preview (the reference controller green info band) ─ */
+QLabel#mrChanBadge {
+	background: #0e4523; color: #ffffff;
+	font-weight: 700; font-size: 11px; padding: 2px 7px;
+}
+QLabel#mrChanStrip {
+	background: #146433; color: #dff3e2;
+	font-size: 10px; padding: 2px 7px;
+}
 
 /* REC button */
 QPushButton#mrRec {
@@ -175,23 +235,10 @@ QPushButton#mrSpeedChip {
 }
 QPushButton#mrSpeedChip:hover { background: #222222; color: #b0b0b0; border-color: #424242; }
 QPushButton#mrSpeedChip:pressed { background: #0c2212; border-color: #1c8a38; color: #28b050; }
-
-/* ── camera toggle chips in event table ─────────────────── */
-QToolButton#mrCamToggle {
-	background: #181818; border: 1px solid #2c2c2c; border-radius: 3px;
-	color: #383838; font-size: 9px; font-weight: 700;
-	min-width: 30px; max-width: 44px; min-height: 22px;
-	padding: 1px 4px; text-align: center;
+/* the reference controller fills the chip that matches the current speed (100% by default). */
+QPushButton#mrSpeedChip[active="true"] {
+	background: #176533; border-color: #22a04a; color: #ffffff;
 }
-QToolButton#mrCamToggle:hover  { border-color: #424242; color: #585858; }
-QToolButton#mrCamToggle[state="preview"] {
-	background: #081a0e; border-color: #1c8a38; color: #28b050;
-}
-QToolButton#mrCamToggle[state="preview"]:hover { background: #0c2014; border-color: #22a040; }
-QToolButton#mrCamToggle[state="program"] {
-	background: #200808; border-color: #be2020; color: #de3838;
-}
-QToolButton#mrCamToggle[state="program"]:hover { background: #280c0c; border-color: #cc2828; }
 
 /* ── section separator line ─────────────────────────────── */
 QWidget#mrSepLine { background: #1c1c1c; }
@@ -236,21 +283,32 @@ QSlider#mrSpeed::handle:horizontal {
 }
 QSlider#mrSpeed::handle:horizontal:hover { background: #e0e0e0; }
 
-/* ── event table ─────────────────────────────────────────── */
+/* ── event table (the reference controller: navy rows, orange selection) ─────── */
 QTableWidget#mrEvents {
-	background: #0c0c0c; alternate-background-color: #101010;
-	gridline-color: transparent; border: 1px solid #1c1c1c;
-	border-radius: 4px; color: #c0c0c0; outline: 0;
+	background: #00121C; alternate-background-color: #002A42;
+	gridline-color: transparent; border: 1px solid #10243a;
+	border-radius: 0; color: #d6dde6; outline: 0;
 }
-QTableWidget#mrEvents::item { padding: 3px 5px; border: 0; }
-QTableWidget#mrEvents::item:selected { background: #1a2e52; color: #d0d8f0; }
+QTableWidget#mrEvents::item { padding: 2px 5px; border: 0; }
+QTableWidget#mrEvents::item:selected { background: #DB5026; color: #ffffff; }
+/* The per-angle enable box, which in the reference controller IS the cell */
+QTableWidget#mrEvents::indicator {
+	width: 11px; height: 11px;
+	border: 1px solid #9aa4ae; background: #05131c;
+}
+QTableWidget#mrEvents::indicator:checked {
+	background: #116B35; border-color: #d8dde2;
+}
+/* The section BACKGROUND is not ours to set: OBS's own theme styles
+   QHeaderView::section (Yami.obt: background-color: var(--button_bg)) and wins
+   whatever we put here — measured on screen, #272A33 either way. That is why
+   the "angle I am watching" cue is a ▶ in the header TEXT (see
+   updateCamHeaderHighlight) and not the reference controller's green fill: a colour we cannot
+   guarantee is worse than a glyph we can. */
 QHeaderView::section {
-	background: #141414; color: #909090;
-	padding: 4px 5px; border: 0;
-	border-bottom: 1px solid #2c2c2c;
-	font-size: 9px; font-weight: 700; letter-spacing: 0.8px;
+	color: #cfd8e4; padding: 3px 5px;
+	font-size: 9px; font-weight: 700; letter-spacing: 0.6px;
 }
-QTableCornerButton::section { background: #141414; border: 0; }
 
 /* ── scrollbars ──────────────────────────────────────────── */
 #MultiReplayDock QScrollBar:vertical {
@@ -264,11 +322,11 @@ QTableCornerButton::section { background: #141414; border: 0; }
 	height: 0; width: 0;
 }
 
-QSplitter::handle:horizontal {
-	background: #1e1e1e; width: 5px;
+QSplitter::handle:vertical {
+	background: #1e1e1e; height: 5px;
 }
-QSplitter::handle:horizontal:hover { background: #2e2e2e; }
-QSplitter::handle:vertical { background: transparent; }
+QSplitter::handle:vertical:hover { background: #2e2e2e; }
+QSplitter::handle:horizontal { background: #1e1e1e; width: 5px; }
 )QSS";
 
 namespace {
@@ -299,17 +357,26 @@ constexpr int64_t kSequenceGapGraceNs = 1'500'000'000LL; // 1.5 s
 // than when the first replay comes up empty. See poll().
 constexpr int64_t kArmWatchNs = 4'000'000'000LL; // 4 s
 
-// Event table column layout.
-// Note: per-camera descriptions are edited via right-click on camera chips.
+// Event table column layout — the reference controller's: the fixed information columns, then ONE
+// COLUMN PER CAMERA, each holding that angle's enable box and its comment.
+//
+// kColId must stay column 0 and kColIn column 1: the automated gate reads the
+// padded id off item(row, 0) and fires a double-click on column 1 to prove it
+// takes program. Camera columns start after kColSpeed and their count follows
+// the camera configuration (see rebuildEventColumns / camCols_).
 enum EventCol {
 	kColId = 0,
 	kColIn,
 	kColOut,
 	kColDur,
-	kColSpeed, // event speed, "--" = inherited (the reference controller), editable in place
-	kColCams,  // per-angle: [cam toggle] [comment] [speed%]
-	kColCount
+	kColSpeed,   // event speed, "--" = inherited (the reference controller), editable in place
+	kColFirstCam // first per-camera column
 };
+
+// A camera cell with no comment reads "-" in the reference controller, not blank: an empty cell is
+// ambiguous next to a checkbox, a dash is not. It is display only — it never
+// reaches the store (see camNoteFromCell).
+const QString kNoNote = QStringLiteral("-");
 
 QString monoFamily()
 {
@@ -388,6 +455,29 @@ void repolish(QWidget *w)
 	w->update();
 }
 
+// A latching control drawn as a button, which is what the reference controller uses for Live, Loop
+// and the music toggle — a checkbox reads as a form field, a lit button reads
+// as a state, and this panel is read at a glance.
+QPushButton *toggleBtn(const QString &text, QWidget *parent, const QString &tip,
+		       const char *role = "mrToggle")
+{
+	auto *b = new QPushButton(text, parent);
+	b->setObjectName(QString::fromLatin1(role));
+	b->setCheckable(true);
+	b->setToolTip(tip);
+	b->setCursor(Qt::PointingHandCursor);
+	b->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+	return b;
+}
+
+// A small uppercase caption, the reference controller's "Mark" / "A" row prefixes.
+QLabel *sectionLabel(const QString &text, QWidget *parent)
+{
+	auto *l = new QLabel(text.toUpper(), parent);
+	l->setObjectName(QStringLiteral("mrSectionLabel"));
+	return l;
+}
+
 } // namespace
 
 // ---------------------------------------------------------------------------
@@ -416,6 +506,14 @@ void SeekBar::setEventMarkers(std::vector<std::pair<double, double>> markers)
 	update();
 }
 
+void SeekBar::setOverlayText(const QString &text)
+{
+	if (overlay_ == text)
+		return;
+	overlay_ = text;
+	update();
+}
+
 double SeekBar::fracAt(int x) const
 {
 	const int m = 2;
@@ -428,32 +526,38 @@ void SeekBar::paintEvent(QPaintEvent *)
 	QPainter p(this);
 	p.setRenderHint(QPainter::Antialiasing, true);
 
-	const int m = 4;                       // horizontal margin
-	const int h = 14;                      // track thickness
-	const int y = (height() - h) / 2;
+	// the reference controller's position bar is a full-height green band, not a bead on a rail:
+	// it is the widest, brightest thing on the panel because it is the control
+	// the operator's hand lives on. Same here — the whole widget IS the bar.
+	const int m = 2;                       // horizontal margin
+	const int h = height() - 2;            // track thickness (nearly full)
+	const int y = 1;
 	const int w = width() - 2 * m;
 	const double pos = dragging_ ? dragFrac_ : positionFrac_;
 
-	// Track (dark base)
+	// Track (the remaining part of the timeline): the reference controller dark green
 	p.setPen(Qt::NoPen);
-	p.setBrush(QColor(0x16, 0x16, 0x16));
-	p.drawRoundedRect(QRectF(m, y, w, h), 2, 2);
+	p.setBrush(QColor(0x14, 0x64, 0x33));
+	p.drawRect(QRectF(m, y, w, h));
 
-	// Seekable band (slightly lighter — indexed footage extent)
-	if (seekableFrac_ > 0.0) {
-		p.setBrush(QColor(0x22, 0x22, 0x22));
-		p.drawRoundedRect(QRectF(m, y, w * seekableFrac_, h), 2, 2);
+	// Anything outside the seekable region is NOT green: it is not a place the
+	// operator can go, and painting it like the rest would say it is.
+	if (seekableFrac_ < 1.0) {
+		p.setBrush(QColor(0x10, 0x18, 0x14));
+		p.drawRect(QRectF(m + w * seekableFrac_, y,
+				  w * (1.0 - seekableFrac_), h));
 	}
 
-	// Event markers — alternating green / cyan.
-	// Each marker: semi-transparent fill + bright left-edge line + dim right edge.
+	// Event markers — orange, the colour the reference controller gives an event everywhere else
+	// (the selected row). Semi-transparent fill + bright edges.
 	static const QColor kFill[2] = {
-		QColor(0x1c, 0x8a, 0x38, 0x70), // green
-		QColor(0x1a, 0x72, 0x98, 0x70), // cyan
+		QColor(0xdb, 0x50, 0x26, 0x80), // orange
+		QColor(0xe0, 0x80, 0x20, 0x80), // amber (alternating, so two
+						// adjacent events stay legible)
 	};
 	static const QColor kEdge[2] = {
-		QColor(0x28, 0xb0, 0x50),        // bright green
-		QColor(0x22, 0x9a, 0xc0),        // bright cyan
+		QColor(0xff, 0x76, 0x40),
+		QColor(0xff, 0xa8, 0x40),
 	};
 	for (int mi = 0; mi < (int)markers_.size(); mi++) {
 		const auto &mk = markers_[mi];
@@ -482,26 +586,34 @@ void SeekBar::paintEvent(QPaintEvent *)
 	}
 	p.setPen(Qt::NoPen);
 
-	// Position fill — steel blue gradient (drawn on top of markers,
-	// blends because of partial alpha)
+	// Played-up-to-here — the reference controller's bright green, drawn over the markers
+	// (they show through: the fill is opaque, so the markers ahead of the
+	// playhead are the ones that matter and those stay visible).
 	if (pos > 0.0) {
-		QRectF f(m, y, w * pos, h);
-		QLinearGradient grad(f.left(), 0, f.right(), 0);
-		grad.setColorAt(0.0, QColor(0x1c, 0x3c, 0x5c, 0xb0));
-		grad.setColorAt(1.0, QColor(0x2a, 0x5e, 0x8a, 0xb0));
-		p.setBrush(grad);
-		p.drawRoundedRect(f, 2, 2);
+		p.setBrush(QColor(0x19, 0x98, 0x47));
+		p.drawRect(QRectF(m, y, w * pos, h));
 	}
 
-	// Playhead: vertical line through full track + circle handle
+	// Playhead: a thin bright line, no bead. the reference controller draws a hairline, and a
+	// bead on a 24 px band hides the very frame it is pointing at.
 	const double hx = m + w * pos;
-	const double r = (dragging_ || underMouse()) ? 7.5 : 6.0;
-	p.setPen(QPen(QColor(0xe0, 0xe0, 0xe0, 0xc0), 1.5,
-		      Qt::SolidLine, Qt::FlatCap));
+	p.setPen(QPen(QColor(0xff, 0xff, 0xff, dragging_ ? 0xff : 0xc0),
+		      dragging_ ? 3.0 : 2.0, Qt::SolidLine, Qt::FlatCap));
 	p.drawLine(QPointF(hx, y), QPointF(hx, y + h));
-	p.setPen(QPen(QColor(0x28, 0x48, 0x60), 1.0));
-	p.setBrush(QColor(0xe0, 0xe0, 0xe0));
-	p.drawEllipse(QPointF(hx, height() / 2.0), r, r);
+
+	// the reference controller prints the transport state ON the bar. Centred, with a dark halo
+	// so it stays readable over both greens.
+	if (!overlay_.isEmpty()) {
+		QFont f = p.font();
+		f.setPointSizeF(f.pointSizeF() * 1.05);
+		f.setBold(true);
+		p.setFont(f);
+		const QRectF tr(m, y, w, h);
+		p.setPen(QColor(0x00, 0x20, 0x0c, 0xb0));
+		p.drawText(tr.adjusted(1, 1, 1, 1), Qt::AlignCenter, overlay_);
+		p.setPen(QColor(0xff, 0xff, 0xff));
+		p.drawText(tr, Qt::AlignCenter, overlay_);
+	}
 }
 
 void SeekBar::mousePressEvent(QMouseEvent *e)
@@ -595,12 +707,14 @@ void MultiReplayDock::drawChannelA(void *data, uint32_t cx, uint32_t cy)
 MultiReplayDock::MultiReplayDock(QWidget *parent) : QWidget(parent)
 {
 	setObjectName("MultiReplayDock");
-	setMinimumSize(700, 300);
+	// Taller than before: the reference controller zoning is vertical (preview, list, two rows
+	// of controls, position bar) where the old layout was two columns.
+	setMinimumSize(700, 340);
 	setStyleSheet(QString::fromUtf8(kDockStyle));
 
 	auto *root = new QVBoxLayout(this);
-	root->setContentsMargins(5, 5, 5, 5);
-	root->setSpacing(4);
+	root->setContentsMargins(4, 4, 4, 4);
+	root->setSpacing(3);
 
 	// Helper: 1px separator line (each call returns a fresh widget).
 	auto mkSep = [this]() -> QWidget * {
@@ -610,165 +724,34 @@ MultiReplayDock::MultiReplayDock(QWidget *parent) : QWidget(parent)
 		return s;
 	};
 
-	// ── HEADER: REC · status · ⚙ ─────────────────────────────────────
+	// ── The broadcast replay controller's zoning, top to bottom ────────────
+	// 1. list tabs · search · Live
+	// 2. channel A preview + its green status strip
+	// 3. the event list, one column per camera
+	// 4. mark keys · angle row · export
+	// 5. record + transport + slow-motion speed
+	// 6. the full-width position bar
+	//
+	// An operator who has used the reference controller finds every control where his hand
+	// already goes, which is the entire point of this layout.
+	root->addWidget(buildToolbar());
+
 	{
-		auto *bar = new QHBoxLayout();
-		bar->setSpacing(6);
-		recBtn_ = new QPushButton(QStringLiteral("●  REC"), this);
-		recBtn_->setObjectName("mrRec");
-		recBtn_->setProperty("recording", false);
-		recBtn_->setMinimumWidth(92);
-		recBtn_->setCursor(Qt::PointingHandCursor);
-		bar->addWidget(recBtn_);
-
-		statusLbl_ = new QLabel(this);
-		statusLbl_->setObjectName("mrMuted");
-		bar->addWidget(statusLbl_, 1);
-
-		projectLbl_ = new QLabel(this);
-		projectLbl_->setObjectName("mrMuted");
-		projectLbl_->setStyleSheet(
-			"color: #487898; font-size: 9px; padding: 0 4px;");
-		projectLbl_->hide();
-		bar->addWidget(projectLbl_);
-
-		auto *gear = new QToolButton(this);
-		gear->setObjectName("mrGear");
-		gear->setText(QStringLiteral("⚙"));
-		gear->setCursor(Qt::PointingHandCursor);
-		gear->setToolTip(obs_module_text("Dock.Settings"));
-		gear->setPopupMode(QToolButton::InstantPopup);
-		{
-			auto *menu = new QMenu(gear);
-			auto *actNew = menu->addAction(
-				obs_module_text("Dock.NewProject"));
-			auto *actOpen = menu->addAction(
-				obs_module_text("Dock.OpenProject"));
-			menu->addSeparator();
-			auto *actSettings = menu->addAction(
-				obs_module_text("Dock.Settings"));
-			auto *actRename = menu->addAction(
-				obs_module_text("Dock.RenameList"));
-			menu->addSeparator();
-			auto *actChapters = menu->addAction(
-				obs_module_text("Dock.YouTubeChapters"));
-			gear->setMenu(menu);
-			connect(actRename, &QAction::triggered, this,
-				&MultiReplayDock::renameListDialog);
-			connect(actNew, &QAction::triggered, this,
-				&MultiReplayDock::newProjectDialog);
-			connect(actOpen, &QAction::triggered, this,
-				&MultiReplayDock::openProjectDialog);
-			connect(actSettings, &QAction::triggered, this,
-				&MultiReplayDock::openSettings);
-			connect(actChapters, &QAction::triggered, this,
-				&MultiReplayDock::copyYouTubeChapters);
-		}
-		bar->addWidget(gear);
-		root->addLayout(bar);
-
-		connect(recBtn_, &QPushButton::clicked, this, [this]() {
-			auto &core = ReplayCore::instance();
-			if (core.isRecording()) {
-				core.stopRecording();
-			} else {
-				// Stop any event playing BEFORE arming: a new take
-				// must not start while a clip is still being paced
-				// into the replay input.
-				PlaybackCoordinator::instance().stopEvents();
-				std::string err;
-				if (!core.startRecording(err))
-					QMessageBox::warning(
-						this, "obs-multireplay",
-						QString::fromStdString(err));
-			}
-			poll();
-		});
-	}
-	root->addWidget(mkSep());
-
-	// ── MAIN: resizable horizontal splitter ──────────────────────────
-	{
-		splitter_ = new QSplitter(Qt::Horizontal, this);
+		// Preview above, list below: the reference controller stacks them, and the previous
+		// side-by-side split had no equivalent there. Draggable, because an
+		// OBS dock can be a wide strip or a tall column.
+		splitter_ = new QSplitter(Qt::Vertical, this);
 		splitter_->setChildrenCollapsible(false);
 		splitter_->setHandleWidth(5);
-
-		// Left panel: preview + angle selector + seekbar + transport
-		auto *left = new QWidget(splitter_);
-		left->setMinimumWidth(180);
-		auto *lv = new QVBoxLayout(left);
-		lv->setContentsMargins(0, 0, 0, 0);
-		lv->setSpacing(0);
-		lv->addWidget(buildPreview(), 1);
-		lv->addWidget(mkSep());
-		lv->addWidget(buildTransport());
-		splitter_->addWidget(left);
-
-		// Right panel: event list (list selector, search, table, playback)
+		splitter_->addWidget(buildPreview());
 		splitter_->addWidget(buildEvents());
-		splitter_->setStretchFactor(0, 1);
+		splitter_->setStretchFactor(0, 3);
 		splitter_->setStretchFactor(1, 2);
 		root->addWidget(splitter_, 1);
 	}
 
-	// ── FOOTER: markers (left) + edit controls (right) ─────────────────
-	{
-		root->addWidget(mkSep());
-		auto *footerBox = new QWidget(this);
-		auto *fh = new QHBoxLayout(footerBox);
-		fh->setContentsMargins(0, 0, 0, 0);
-		fh->setSpacing(4);
-
-		// Marker section (Live + IN/OUT + presets + Cancel)
-		fh->addWidget(buildMarkers());
-		fh->addStretch(1);
-
-		// Edit controls (secondary — delete, duplicate, export)
-		auto *dup = compactBtn(obs_module_text("Dock.Duplicate"), this);
-		auto *del = compactBtn(obs_module_text("Dock.Delete"), this,
-				       "mrDanger");
-		auto *exp = compactBtn(obs_module_text("Dock.Export"), this);
-		auto *delAll = compactBtn(obs_module_text("Dock.DeleteAll"), this,
-					  "mrDanger");
-		connect(dup, &QPushButton::clicked, this, [this]() {
-			for (int id : selectedEventIds())
-				EventStore::instance().duplicate(id);
-			refreshEvents();
-		});
-		connect(del, &QPushButton::clicked, this, [this]() {
-			for (int id : selectedEventIds())
-				EventStore::instance().remove(id);
-			refreshEvents();
-		});
-		connect(exp, &QPushButton::clicked, this, [this]() {
-			auto ids = selectedEventIds();
-			if (ids.empty())
-				return;
-			QString folder = QFileDialog::getExistingDirectory(
-				this, obs_module_text("Dock.ExportFolder"));
-			if (folder.isEmpty())
-				return;
-			std::string err;
-			for (int id : ids)
-				ExportManager::instance().exportEvent(
-					id, 0, folder.toStdString(), err);
-		});
-		connect(delAll, &QPushButton::clicked, this, [this]() {
-			if (QMessageBox::question(
-				    this, "obs-multireplay",
-				    obs_module_text("Dock.DeleteAllConfirm"),
-				    QMessageBox::Yes | QMessageBox::No,
-				    QMessageBox::No) != QMessageBox::Yes)
-				return;
-			PlaybackCoordinator::instance().stopEvents();
-			EventStore::instance().clearAll();
-		});
-		fh->addWidget(dup);
-		fh->addWidget(del);
-		fh->addWidget(exp);
-		fh->addWidget(delAll);
-		root->addWidget(footerBox);
-	}
+	root->addWidget(mkSep());
+	root->addWidget(buildBottomBar());
 
 	pollTimer_ = new QTimer(this);
 	pollTimer_->setInterval(33); // ~30 fps — smooth seekbar + responsive transport
@@ -812,15 +795,84 @@ MultiReplayDock::~MultiReplayDock()
 }
 
 // ---------------------------------------------------------------------------
-// Single A preview + angle selector
+// Toolbar: list tabs · search · Live  (the reference controller's top strip)
+// ---------------------------------------------------------------------------
+
+QWidget *MultiReplayDock::buildToolbar()
+{
+	auto *box = new QWidget(this);
+	auto *h = new QHBoxLayout(box);
+	h->setContentsMargins(0, 0, 0, 0);
+	h->setSpacing(5);
+
+	projectLbl_ = new QLabel(box);
+	projectLbl_->setObjectName("mrMuted");
+	projectLbl_->setStyleSheet("color: #487898; font-size: 9px; padding: 0 4px;");
+	projectLbl_->hide();
+	h->addWidget(projectLbl_);
+
+	// The 20 lists as TABS, not a dropdown. the reference controller shows them all at once and
+	// the operator jumps between them mid-match without opening anything; a
+	// combo hides nineteen of them behind a click. Named lists show the name.
+	listTabs_ = new QTabBar(box);
+	listTabs_->setObjectName("mrListTabs");
+	listTabs_->setDrawBase(false);
+	listTabs_->setExpanding(false);
+	listTabs_->setUsesScrollButtons(true);
+	listTabs_->setElideMode(Qt::ElideRight);
+	listTabs_->setFocusPolicy(Qt::NoFocus);
+	for (int i = 1; i <= kEventLists; i++)
+		listTabs_->addTab(QString::number(i));
+	refreshListNames();
+	listTabs_->setCurrentIndex(EventStore::instance().selectedList() - 1);
+	connect(listTabs_, &QTabBar::currentChanged, this, [this](int idx) {
+		if (idx < 0)
+			return;
+		EventStore::instance().selectList(idx + 1);
+		refreshEvents();
+	});
+	h->addWidget(listTabs_, 0);
+	h->addStretch(1);
+
+	auto *mag = new QLabel(QStringLiteral("🔍"), box);
+	mag->setObjectName("mrMuted");
+	h->addWidget(mag);
+	search_ = new QLineEdit(box);
+	search_->setPlaceholderText(obs_module_text("Dock.Search"));
+	search_->setClearButtonEnabled(true);
+	search_->setMaximumWidth(190);
+	search_->setMinimumWidth(90);
+	connect(search_, &QLineEdit::textChanged, this,
+		[this](const QString &) { refreshEvents(); });
+	h->addWidget(search_, 0);
+
+	// the reference controller's Live button, in the reference controller's place and the reference controller's colour: red means the
+	// marks land where the action is happening, off means they land where the
+	// position bar is parked.
+	liveBtn_ = new QPushButton(obs_module_text("Dock.LiveMode"), box);
+	liveBtn_->setObjectName("mrLive");
+	liveBtn_->setCheckable(true);
+	liveBtn_->setCursor(Qt::PointingHandCursor);
+	liveBtn_->setToolTip(obs_module_text("Dock.LiveModeHint"));
+	liveBtn_->setChecked(EventStore::instance().liveMode());
+	connect(liveBtn_, &QPushButton::toggled, this,
+		[](bool on) { EventStore::instance().setLiveMode(on); });
+	h->addWidget(liveBtn_);
+
+	return box;
+}
+
+// ---------------------------------------------------------------------------
+// Single A preview + its green channel strip
 // ---------------------------------------------------------------------------
 
 QWidget *MultiReplayDock::buildPreview()
 {
 	auto *box = new QWidget(this);
+	box->setMinimumHeight(96);
 	auto *v = new QVBoxLayout(box);
 	v->setContentsMargins(0, 0, 0, 0);
-	v->setSpacing(3);
+	v->setSpacing(0);
 
 	displayA_ = new OBSQTDisplay(this);
 	displayA_->setRenderCallback(&MultiReplayDock::drawChannelA, this);
@@ -828,15 +880,44 @@ QWidget *MultiReplayDock::buildPreview()
 	displayA_->setMinimumHeight(40);
 	v->addWidget(displayA_, 1);
 
-	// angle selector row (cam 1..N) — segmented control
-	auto *row = new QWidget(box);
+	// The green strip the reference controller puts directly under the A output: which list, which
+	// clip of how many, how much of it is left, the event id, how far the
+	// playhead is past IN and short of OUT, the timecode and the speed. All of
+	// it is state we already had and were making the operator infer.
+	auto *strip = new QWidget(box);
+	auto *sh = new QHBoxLayout(strip);
+	sh->setContentsMargins(0, 0, 0, 0);
+	sh->setSpacing(0);
+	chanBadge_ = new QLabel(QStringLiteral("A1"), strip);
+	chanBadge_->setObjectName("mrChanBadge");
+	chanBadge_->setAlignment(Qt::AlignCenter);
+	chanStrip_ = new QLabel(strip);
+	chanStrip_->setObjectName("mrChanStrip");
+	chanStrip_->setFont(QFont(monoFamily()));
+	chanStrip_->setTextFormat(Qt::PlainText);
+	sh->addWidget(chanBadge_);
+	sh->addWidget(chanStrip_, 1);
+	v->addWidget(strip);
+
+	return box;
+}
+
+// ---------------------------------------------------------------------------
+// Angle row — the reference controller's "A [1..8]" camera matrix
+// ---------------------------------------------------------------------------
+
+QWidget *MultiReplayDock::buildAngleMatrix()
+{
+	auto *row = new QWidget(this);
 	auto *h = new QHBoxLayout(row);
 	h->setContentsMargins(0, 0, 0, 0);
-	h->setSpacing(4);
-	auto *lbl = new QLabel(
-		QString::fromUtf8(obs_module_text("Dock.Angle")).toUpper(), row);
-	lbl->setObjectName("mrSectionLabel");
-	h->addWidget(lbl);
+	h->setSpacing(3);
+
+	// the reference controller has an A row and a B row here. There is one replay channel in this
+	// plugin, so there is one row, and it keeps the "A" prefix: the operator
+	// reads it as the A row he knows, not as an unlabelled strip of numbers.
+	h->addWidget(sectionLabel(QStringLiteral("A"), row));
+
 	anglesA_ = new QButtonGroup(this);
 	anglesA_->setExclusive(true);
 	for (int i = 1; i <= kNCams; i++) {
@@ -850,52 +931,96 @@ QWidget *MultiReplayDock::buildPreview()
 		anglesA_->addButton(b, i);
 		h->addWidget(b);
 	}
-	h->addStretch(1);
 	connect(anglesA_, &QButtonGroup::idClicked, this,
 		[this](int id) { setAngle(id); });
-	v->addWidget(row);
 
-	return box;
+	return row;
 }
 
 // ---------------------------------------------------------------------------
-// Transport: seekbar + timecode + buttons + speed
+// Transport — the reference controller's centre group: ⏸ ◀ ↺ [Play Events ▾] NOW ⏭ Loop ♫
 // ---------------------------------------------------------------------------
 
 QWidget *MultiReplayDock::buildTransport()
 {
 	auto *box = new QWidget(this);
-	auto *v = new QVBoxLayout(box);
-	v->setContentsMargins(4, 4, 4, 4);
-	v->setSpacing(4);
-
-	// Row 1: seekbar (full width)
-	seek_ = new SeekBar(this);
-	connect(seek_, &SeekBar::scrubStateChanged, this,
-		[this](bool dragging) { seekDragging_ = dragging; });
-	connect(seek_, &SeekBar::scrubMoved, this, [this](double frac) {
-		tcLbl_->setText(formatTc((int64_t)(frac * (double)displayDurNs_)) +
-				" / " + formatTc(displayDurNs_));
-	});
-	connect(seek_, &SeekBar::seekRequested, this,
-		[this](double frac) { seekToFraction(frac); });
-	v->addWidget(seek_);
-
-	// Row 2: [◀◀][▶][▶▶] [NOW]  ──stretch──  timecode
-	// Timecode is right-justified, transport buttons left-justified.
-	// One row instead of two (saves ~18px of height).
+	// Two lines, as on the reference panel: the keys, and the big timecode centred
+	// underneath them.
+	auto *col = new QVBoxLayout(box);
+	col->setContentsMargins(0, 0, 0, 0);
+	col->setSpacing(1);
 	auto *tr = new QHBoxLayout();
-	tr->setSpacing(4);
+	tr->setContentsMargins(0, 0, 0, 0);
+	tr->setSpacing(3);
 
 	// ▶ U+25B6
 	playPauseBtn_ = transportBtn(QStringLiteral("▶"), this,
 				     obs_module_text("Dock.PlayPause"), "mrPlay");
-	// ⏭ U+23ED — one frame forward (the reference controller frame-by-frame). Forward only: the
-	// engine decodes forward, and a backward step is not a v1 feature.
-	auto *stepBtn = transportBtn(QStringLiteral("⏭"), this,
-				     obs_module_text("Dock.StepFwd"));
-	connect(stepBtn, &QPushButton::clicked, this,
-		[this]() { stepFrameForward(); });
+
+	// the reference controller has a reverse-play key right here. This engine decodes forward
+	// only, so the key keeps its place and is DISABLED with a tooltip that
+	// says so: an operator hunting for it finds it greyed out in one glance
+	// instead of concluding the panel is missing controls.
+	auto *revBtn = transportBtn(QStringLiteral("◀"), this,
+				    obs_module_text("Dock.ReverseUnavailable"));
+	revBtn->setEnabled(false);
+
+	// ↺ the reference controller "instantly play last event".
+	auto *lastBtn = transportBtn(QStringLiteral("↺"), this,
+				     obs_module_text("Dock.PlayLast"));
+	connect(lastBtn, &QPushButton::clicked, this, [this]() {
+		std::string err;
+		if (!PlaybackCoordinator::instance().playLastEvent(
+			    currentAngle1_ - 1,
+			    toOutputBtn_ && toOutputBtn_->isChecked(), err))
+			QMessageBox::warning(this, "obs-multireplay",
+					     QString::fromStdString(err));
+	});
+
+	// the reference controller's "Play Events". The gate finds this button by its module text, so
+	// the LABEL may move with the locale but the widget must stay a plain
+	// QPushButton whose text is exactly obs_module_text("Dock.PlaySelected") —
+	// no menu on it (a QPushButton with a menu swallows click()), hence the
+	// separate ▾ beside it, which is where the reference controller keeps the same options.
+	auto *playSel = compactBtn(obs_module_text("Dock.PlaySelected"), this,
+				   "mrAccent");
+	connect(playSel, &QPushButton::clicked, this,
+		&MultiReplayDock::playSelected);
+
+	auto *more = new QToolButton(this);
+	more->setObjectName("mrGear");
+	more->setText(QStringLiteral("▾"));
+	// A QToolButton defaults to icon-only, and with no icon that is a blank
+	// key with a menu arrow. These are glyph buttons, so say text-only.
+	more->setToolButtonStyle(Qt::ToolButtonTextOnly);
+	more->setCursor(Qt::PointingHandCursor);
+	more->setToolTip(obs_module_text("Dock.PlayOptions"));
+	more->setPopupMode(QToolButton::InstantPopup);
+	{
+		auto *menu = new QMenu(more);
+		auto *actOut = menu->addAction(obs_module_text("Dock.PlayToOutput"));
+		auto *actLast = menu->addAction(obs_module_text("Dock.PlayLast"));
+		menu->addSeparator();
+		auto *actStop = menu->addAction(obs_module_text("Dock.Stop"));
+		more->setMenu(menu);
+		connect(actOut, &QAction::triggered, this, [this]() {
+			std::string err;
+			if (!PlaybackCoordinator::instance().playEvents(
+				    selectedEventIds(), currentAngle1_ - 1,
+				    /*toOutput*/ true, err))
+				showNotice(QString::fromStdString(err));
+		});
+		connect(actLast, &QAction::triggered, this, [this]() {
+			std::string err;
+			if (!PlaybackCoordinator::instance().playLastEvent(
+				    currentAngle1_ - 1,
+				    toOutputBtn_ && toOutputBtn_->isChecked(),
+				    err))
+				showNotice(QString::fromStdString(err));
+		});
+		connect(actStop, &QAction::triggered, this,
+			[]() { PlaybackCoordinator::instance().stopEvents(); });
+	}
 
 	nowBtn_ = new QPushButton(QStringLiteral("NOW"), this);
 	nowBtn_->setObjectName("mrNow");
@@ -904,71 +1029,47 @@ QWidget *MultiReplayDock::buildTransport()
 	nowBtn_->setToolTip(obs_module_text("Dock.JumpToNow"));
 	nowBtn_->setMinimumWidth(38);
 
-	tr->addWidget(playPauseBtn_);
-	tr->addWidget(stepBtn);
-	tr->addWidget(nowBtn_);
-	tr->addStretch(1);
+	// ⏭ U+23ED — one frame forward (the reference controller frame-by-frame). Forward only: the
+	// engine decodes forward, and a backward step is not a v1 feature.
+	// EXACTLY ONE button in this dock may carry this glyph: the gate finds the
+	// frame step by it.
+	auto *stepBtn = transportBtn(QStringLiteral("⏭"), this,
+				     obs_module_text("Dock.StepFwd"));
+	connect(stepBtn, &QPushButton::clicked, this,
+		[this]() { stepFrameForward(); });
 
-	tcLbl_ = new QLabel(QStringLiteral("00:00.000 / 00:00.000"), this);
+	loopBtn_ = toggleBtn(obs_module_text("Dock.Loop"), this,
+			     obs_module_text("Dock.Loop"));
+	connect(loopBtn_, &QPushButton::toggled, this,
+		[](bool on) { PlaybackCoordinator::instance().setLoop(on); });
+
+	musicBtn_ = toggleBtn(QStringLiteral("♫"), this,
+			      obs_module_text("Dock.Music"));
+	connect(musicBtn_, &QPushButton::toggled, this, [](bool on) {
+		PlaybackCoordinator::instance().setMusicEnabled(on);
+	});
+
+	toOutputBtn_ = toggleBtn(obs_module_text("Dock.ToOutput"), this,
+				 obs_module_text("Dock.ToOutput"));
+
+	tr->addWidget(playPauseBtn_);
+	tr->addWidget(revBtn);
+	tr->addWidget(lastBtn);
+	tr->addWidget(playSel);
+	tr->addWidget(more);
+	tr->addWidget(nowBtn_);
+	tr->addWidget(stepBtn);
+	tr->addSpacing(6);
+	tr->addWidget(loopBtn_);
+	tr->addWidget(musicBtn_);
+	tr->addWidget(toOutputBtn_);
+	col->addLayout(tr);
+
+	tcLbl_ = new QLabel(QStringLiteral("00:00.000 / 00:00.000"), box);
 	tcLbl_->setObjectName("mrTimecode");
 	tcLbl_->setFont(QFont(monoFamily()));
-	tcLbl_->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-	tr->addWidget(tcLbl_);
-	v->addLayout(tr);
-
-	// Row 3: speed chips [25%][50%][75%][1×] + slider + value label
-	// HTML-style discrete quick-access buttons for common replay speeds.
-	auto *sh = new QHBoxLayout();
-	sh->setSpacing(3);
-
-	// 2× is fast forward: the same clip, scanned. The engine takes any
-	// speed up to 400% (it is only the spacing between frames), so this needs
-	// no separate transport mode — which is why there is no separate button.
-	const std::pair<int, const char *> speedPresets[] = {
-		{25, "25%"},
-		{50, "50%"},
-		{75, "75%"},
-		{100, "1\xc3\x97"},
-		{200, "2\xc3\x97"}};
-	for (const auto &[pct, lbl] : speedPresets) {
-		int p = pct; // copy: capturing a structured binding is non-portable
-		auto *b = compactBtn(QString::fromUtf8(lbl), this, "mrSpeedChip");
-		connect(b, &QPushButton::clicked, this, [this, p]() {
-			speed_->blockSignals(true);
-			speed_->setValue(p);
-			speed_->blockSignals(false);
-			speedLbl_->setText(
-				QString::asprintf("%.2f\xc3\x97", p / 100.0));
-			applyReplaySpeed(p);
-		});
-		sh->addWidget(b);
-	}
-
-	speed_ = new QSlider(Qt::Horizontal, this);
-	speed_->setObjectName("mrSpeed");
-	// Up to 2×: the reference controller's variable speed is 0-100%, and its fast forward is the
-	// same control pushed past 1×.
-	speed_->setRange(5, 200);
-	speed_->setValue(100);
-	speed_->setToolTip(obs_module_text("Dock.SpeedSliderHint"));
-	speed_->setCursor(Qt::PointingHandCursor);
-
-	speedLbl_ = new QLabel(QStringLiteral("1.00\xc3\x97"), this);
-	speedLbl_->setObjectName("mrTimecode");
-	speedLbl_->setFont(QFont(monoFamily()));
-	speedLbl_->setMinimumWidth(42);
-	speedLbl_->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-
-	connect(speed_, &QSlider::valueChanged, this, [this](int val) {
-		speedLbl_->setText(
-			QString::asprintf("%.2f\xc3\x97", val / 100.0));
-	});
-	connect(speed_, &QSlider::sliderReleased, this,
-		[this]() { applyReplaySpeed(speed_->value()); });
-
-	sh->addWidget(speed_, 1);
-	sh->addWidget(speedLbl_);
-	v->addLayout(sh);
+	tcLbl_->setAlignment(Qt::AlignCenter);
+	col->addWidget(tcLbl_);
 
 	// wire transport actions
 	connect(playPauseBtn_, &QPushButton::clicked, this, [this]() {
@@ -991,6 +1092,243 @@ QWidget *MultiReplayDock::buildTransport()
 }
 
 // ---------------------------------------------------------------------------
+// Bottom bar — the reference controller's two control rows plus the full-width position bar
+// ---------------------------------------------------------------------------
+
+QWidget *MultiReplayDock::buildBottomBar()
+{
+	auto *box = new QWidget(this);
+	auto *v = new QVBoxLayout(box);
+	v->setContentsMargins(0, 0, 0, 0);
+	v->setSpacing(3);
+
+	// ── Row 1: mark keys · angle row · clip actions ───────────────────
+	{
+		auto *h = new QHBoxLayout();
+		h->setSpacing(4);
+		h->addWidget(buildMarkers());
+		h->addStretch(1);
+		h->addWidget(buildAngleMatrix());
+		h->addStretch(1);
+
+		// the reference controller's "Export Clips", in the reference controller's corner.
+		auto *exp = compactBtn(obs_module_text("Dock.ExportClips"), this);
+		connect(exp, &QPushButton::clicked, this, [this]() {
+			auto ids = selectedEventIds();
+			if (ids.empty())
+				return;
+			QString folder = QFileDialog::getExistingDirectory(
+				this, obs_module_text("Dock.ExportFolder"));
+			if (folder.isEmpty())
+				return;
+			std::string err;
+			for (int id : ids)
+				ExportManager::instance().exportEvent(
+					id, 0, folder.toStdString(), err);
+		});
+		h->addWidget(exp);
+
+		// Duplicate / delete / delete-all have no place of their own on the
+		// reference panel (they live in its context menu), and four more buttons
+		// on this row would be four more things to read past. They are here,
+		// one click away, and on the table's right-click menu as well.
+		auto *edit = new QToolButton(this);
+		edit->setObjectName("mrGear");
+		edit->setText(QStringLiteral("⋯"));
+		edit->setToolButtonStyle(Qt::ToolButtonTextOnly);
+		edit->setCursor(Qt::PointingHandCursor);
+		edit->setToolTip(obs_module_text("Dock.ClipActions"));
+		edit->setPopupMode(QToolButton::InstantPopup);
+		{
+			auto *menu = new QMenu(edit);
+			auto *actDup =
+				menu->addAction(obs_module_text("Dock.Duplicate"));
+			auto *actDel =
+				menu->addAction(obs_module_text("Dock.Delete"));
+			menu->addSeparator();
+			auto *actAll =
+				menu->addAction(obs_module_text("Dock.DeleteAll"));
+			edit->setMenu(menu);
+			connect(actDup, &QAction::triggered, this, [this]() {
+				for (int id : selectedEventIds())
+					EventStore::instance().duplicate(id);
+				refreshEvents();
+			});
+			connect(actDel, &QAction::triggered, this, [this]() {
+				for (int id : selectedEventIds())
+					EventStore::instance().remove(id);
+				refreshEvents();
+			});
+			connect(actAll, &QAction::triggered, this, [this]() {
+				if (QMessageBox::question(
+					    this, "obs-multireplay",
+					    obs_module_text(
+						    "Dock.DeleteAllConfirm"),
+					    QMessageBox::Yes | QMessageBox::No,
+					    QMessageBox::No) != QMessageBox::Yes)
+					return;
+				PlaybackCoordinator::instance().stopEvents();
+				EventStore::instance().clearAll();
+			});
+		}
+		h->addWidget(edit);
+		v->addLayout(h);
+	}
+
+	// ── Row 2: ⚙ · REC · clock  |  transport  |  slow-motion speed ────
+	{
+		auto *h = new QHBoxLayout();
+		h->setSpacing(4);
+
+		auto *gear = new QToolButton(this);
+		gear->setObjectName("mrGear");
+		gear->setText(QStringLiteral("⚙"));
+		gear->setToolButtonStyle(Qt::ToolButtonTextOnly);
+		gear->setCursor(Qt::PointingHandCursor);
+		gear->setToolTip(obs_module_text("Dock.Settings"));
+		gear->setPopupMode(QToolButton::InstantPopup);
+		{
+			auto *menu = new QMenu(gear);
+			auto *actNew =
+				menu->addAction(obs_module_text("Dock.NewProject"));
+			auto *actOpen = menu->addAction(
+				obs_module_text("Dock.OpenProject"));
+			menu->addSeparator();
+			auto *actSettings =
+				menu->addAction(obs_module_text("Dock.Settings"));
+			auto *actRename =
+				menu->addAction(obs_module_text("Dock.RenameList"));
+			menu->addSeparator();
+			auto *actChapters = menu->addAction(
+				obs_module_text("Dock.YouTubeChapters"));
+			gear->setMenu(menu);
+			connect(actRename, &QAction::triggered, this,
+				&MultiReplayDock::renameListDialog);
+			connect(actNew, &QAction::triggered, this,
+				&MultiReplayDock::newProjectDialog);
+			connect(actOpen, &QAction::triggered, this,
+				&MultiReplayDock::openProjectDialog);
+			connect(actSettings, &QAction::triggered, this,
+				&MultiReplayDock::openSettings);
+			connect(actChapters, &QAction::triggered, this,
+				&MultiReplayDock::copyYouTubeChapters);
+		}
+		h->addWidget(gear);
+
+		recBtn_ = new QPushButton(QStringLiteral("●  REC"), this);
+		recBtn_->setObjectName("mrRec");
+		recBtn_->setProperty("recording", false);
+		recBtn_->setMinimumWidth(84);
+		recBtn_->setCursor(Qt::PointingHandCursor);
+		connect(recBtn_, &QPushButton::clicked, this, [this]() {
+			auto &core = ReplayCore::instance();
+			if (core.isRecording()) {
+				core.stopRecording();
+			} else {
+				// Stop any event playing BEFORE arming: a new take
+				// must not start while a clip is still being paced
+				// into the replay input.
+				PlaybackCoordinator::instance().stopEvents();
+				std::string err;
+				if (!core.startRecording(err))
+					QMessageBox::warning(
+						this, "obs-multireplay",
+						QString::fromStdString(err));
+			}
+			poll();
+		});
+		h->addWidget(recBtn_);
+
+		// the reference controller stacks the wall clock over the remaining recording time,
+		// right of the record key, in red. Same two lines, same place.
+		auto *clockBox = new QWidget(this);
+		auto *cv = new QVBoxLayout(clockBox);
+		cv->setContentsMargins(2, 0, 2, 0);
+		cv->setSpacing(0);
+		clockLbl_ = new QLabel(clockBox);
+		clockLbl_->setObjectName("mrClock");
+		clockLbl_->setFont(QFont(monoFamily()));
+		statusLbl_ = new QLabel(clockBox);
+		statusLbl_->setObjectName("mrMuted");
+		cv->addWidget(clockLbl_);
+		cv->addWidget(statusLbl_);
+		h->addWidget(clockBox);
+
+		h->addStretch(1);
+		h->addWidget(buildTransport());
+		h->addStretch(1);
+
+		// Slow-motion presets, the reference controller's set (25/33/50/75/100) plus the 2×
+		// that is its fast forward — the engine takes any speed, since a
+		// speed is only the spacing between frames.
+		speedChips_ = new QButtonGroup(this);
+		speedChips_->setExclusive(false);
+		const std::pair<int, const char *> speedPresets[] = {
+			{25, "25%"},  {33, "33%"},  {50, "50%"},
+			{75, "75%"},  {100, "100%"}, {200, "2\xc3\x97"}};
+		for (const auto &[pct, lbl] : speedPresets) {
+			int p = pct; // copy: capturing a structured binding is
+				     // non-portable
+			auto *b = compactBtn(QString::fromUtf8(lbl), this,
+					     "mrSpeedChip");
+			speedChips_->addButton(b, p);
+			connect(b, &QPushButton::clicked, this, [this, p]() {
+				QSignalBlocker block(speed_);
+				speed_->setValue(p);
+				speedLbl_->setText(QString::asprintf(
+					"%.2f\xc3\x97", p / 100.0));
+				applyReplaySpeed(p);
+			});
+			h->addWidget(b);
+		}
+
+		speed_ = new QSlider(Qt::Horizontal, this);
+		speed_->setObjectName("mrSpeed");
+		// Up to 2×: the reference controller's variable speed is 0-100%, and its fast forward is
+		// the same control pushed past 1×.
+		speed_->setRange(5, 200);
+		speed_->setValue(100);
+		speed_->setMinimumWidth(70);
+		speed_->setMaximumWidth(150);
+		speed_->setTickPosition(QSlider::TicksBelow);
+		speed_->setTickInterval(25);
+		speed_->setToolTip(obs_module_text("Dock.SpeedSliderHint"));
+		speed_->setCursor(Qt::PointingHandCursor);
+
+		speedLbl_ = new QLabel(QStringLiteral("1.00\xc3\x97"), this);
+		speedLbl_->setObjectName("mrTimecode");
+		speedLbl_->setFont(QFont(monoFamily()));
+		speedLbl_->setMinimumWidth(42);
+		speedLbl_->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+
+		connect(speed_, &QSlider::valueChanged, this, [this](int val) {
+			speedLbl_->setText(
+				QString::asprintf("%.2f\xc3\x97", val / 100.0));
+		});
+		connect(speed_, &QSlider::sliderReleased, this,
+			[this]() { applyReplaySpeed(speed_->value()); });
+
+		h->addWidget(speed_, 0);
+		h->addWidget(speedLbl_);
+		v->addLayout(h);
+	}
+
+	// ── Row 3: the position bar, full width (the reference controller's green band) ───────
+	seek_ = new SeekBar(this);
+	connect(seek_, &SeekBar::scrubStateChanged, this,
+		[this](bool dragging) { seekDragging_ = dragging; });
+	connect(seek_, &SeekBar::scrubMoved, this, [this](double frac) {
+		tcLbl_->setText(formatTc((int64_t)(frac * (double)displayDurNs_)) +
+				" / " + formatTc(displayDurNs_));
+	});
+	connect(seek_, &SeekBar::seekRequested, this,
+		[this](double frac) { seekToFraction(frac); });
+	v->addWidget(seek_);
+
+	return box;
+}
+
+// ---------------------------------------------------------------------------
 // Markers: Live/Recorded + IN/OUT + presets
 // ---------------------------------------------------------------------------
 
@@ -998,15 +1336,13 @@ QWidget *MultiReplayDock::buildMarkers()
 {
 	auto *box = new QWidget(this);
 	auto *h = new QHBoxLayout(box);
-	h->setContentsMargins(4, 3, 4, 3);
-	h->setSpacing(4);
+	h->setContentsMargins(0, 0, 0, 0);
+	h->setSpacing(3);
 
-	liveChk_ = new QCheckBox(obs_module_text("Dock.LiveMode"), this);
-	liveChk_->setChecked(EventStore::instance().liveMode());
-	liveChk_->setCursor(Qt::PointingHandCursor);
-	connect(liveChk_, &QCheckBox::toggled, this,
-		[](bool on) { EventStore::instance().setLiveMode(on); });
-	h->addWidget(liveChk_);
+	// the reference controller labels this group "Mark" and then the keys are bare: In, Out,
+	// - 5, - 10, - 20. The caption carries the meaning, so the keys stay
+	// short enough to hit without reading.
+	h->addWidget(sectionLabel(obs_module_text("Dock.Mark"), box));
 
 	auto *in = compactBtn(obs_module_text("Dock.MarkIn"), this, "mrAccent");
 	auto *out = compactBtn(obs_module_text("Dock.MarkOut"), this, "mrAccent");
@@ -1061,79 +1397,39 @@ QWidget *MultiReplayDock::buildMarkers()
 QWidget *MultiReplayDock::buildEvents()
 {
 	auto *box = new QWidget(this);
+	box->setMinimumHeight(84);
 	auto *v = new QVBoxLayout(box);
-	v->setContentsMargins(0, 4, 0, 0);
-	v->setSpacing(3);
-
-	auto *top = new QHBoxLayout();
-	top->setSpacing(5);
-	auto *listLbl = new QLabel(
-		QString::fromUtf8(obs_module_text("Dock.List")).toUpper(), this);
-	listLbl->setObjectName("mrSectionLabel");
-	top->addWidget(listLbl);
-	listCombo_ = new QComboBox(this);
-	// Room for a name ("3 · Falli") without letting a long one push the search
-	// box off the panel.
-	listCombo_->setMinimumWidth(56);
-	listCombo_->setMaximumWidth(150);
-	for (int i = 1; i <= kEventLists; i++)
-		listCombo_->addItem(QString::number(i));
-	refreshListNames();
-	listCombo_->setCurrentIndex(EventStore::instance().selectedList() - 1);
-	connect(listCombo_, &QComboBox::currentIndexChanged, this,
-		[this](int idx) {
-			EventStore::instance().selectList(idx + 1);
-			refreshEvents();
-		});
-	top->addWidget(listCombo_);
-
-	search_ = new QLineEdit(this);
-	search_->setPlaceholderText(obs_module_text("Dock.Search"));
-	search_->setClearButtonEnabled(true);
-	connect(search_, &QLineEdit::textChanged, this,
-		[this](const QString &) { refreshEvents(); });
-	top->addWidget(search_, 1);
-	v->addLayout(top);
+	v->setContentsMargins(0, 0, 0, 0);
+	v->setSpacing(2);
 
 	events_ = new QTableWidget(this);
 	events_->setObjectName("mrEvents");
-	events_->setColumnCount(kColCount);
-	events_->setHorizontalHeaderLabels(
-		{"#", obs_module_text("Dock.In"), obs_module_text("Dock.Out"),
-		 obs_module_text("Dock.Duration"), obs_module_text("Dock.Speed"),
-		 obs_module_text("Dock.AnglesHeader")});
 	events_->setSelectionBehavior(QAbstractItemView::SelectRows);
 	events_->setSelectionMode(QAbstractItemView::ExtendedSelection);
-	// Speed cell (4) is edited in place; camera cell (5) is an inline
-	// widget. Right-click on a camera chip edits that angle's description.
+	// The speed cell and the per-camera comments are edited in place; the
+	// per-camera enable box is a click on its indicator.
 	events_->setEditTriggers(QAbstractItemView::DoubleClicked |
 				 QAbstractItemView::EditKeyPressed);
 	events_->verticalHeader()->setVisible(false);
-	events_->verticalHeader()->setDefaultSectionSize(24);
+	events_->verticalHeader()->setDefaultSectionSize(22);
 	events_->setAlternatingRowColors(true);
 	events_->setShowGrid(false);
 	events_->setWordWrap(false);
 	events_->setFrameShape(QFrame::NoFrame);
 	events_->setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
-	{
-		QHeaderView *hh = events_->horizontalHeader();
-		hh->setHighlightSections(false);
-		for (int c = 0; c < kColCount; c++)
-			hh->setSectionResizeMode(c,
-						 QHeaderView::ResizeToContents);
-		hh->setSectionResizeMode(kColCams, QHeaderView::Stretch);
-		hh->setMinimumSectionSize(34);
-	}
+	events_->setContextMenuPolicy(Qt::CustomContextMenu);
+	rebuildEventColumns();
 	connect(events_, &QTableWidget::itemChanged, this,
 		&MultiReplayDock::onEventItemChanged);
 	// the reference controller: double-clicking an event plays it TO OUTPUT. It is the fastest
 	// path there is from "that one" to "on air", and the reason the operator
-	// keeps his hand on the mouse. The speed cell is exempt: double-click is
-	// also how that one is edited, and taking program because someone wanted
-	// to type 50 would be the worst kind of surprise.
+	// keeps his hand on the mouse. Two exemptions, both because a double-click
+	// is ALSO how that cell is edited: the speed column and the per-camera
+	// columns. Taking program because someone wanted to type a comment would
+	// be the worst kind of surprise.
 	connect(events_, &QTableWidget::cellDoubleClicked, this,
 		[this](int row, int column) {
-			if (column == kColSpeed)
+			if (column == kColSpeed || column >= kColFirstCam)
 				return;
 			QTableWidgetItem *it = events_->item(row, kColId);
 			if (!it)
@@ -1147,17 +1443,76 @@ QWidget *MultiReplayDock::buildEvents()
 				    err))
 				showNotice(QString::fromStdString(err));
 		});
+	// Right-click menu: the reference controller keeps the clip housekeeping off the panel, and
+	// so do we — same actions as the ⋯ button on the bottom row.
+	connect(events_, &QTableWidget::customContextMenuRequested, this,
+		[this](const QPoint &pos) {
+			QMenu menu(this);
+			QAction *actDup =
+				menu.addAction(obs_module_text("Dock.Duplicate"));
+			QAction *actDel =
+				menu.addAction(obs_module_text("Dock.Delete"));
+			menu.addSeparator();
+			QAction *actExp =
+				menu.addAction(obs_module_text("Dock.ExportClips"));
+			QAction *chosen =
+				menu.exec(events_->viewport()->mapToGlobal(pos));
+			if (!chosen)
+				return;
+			if (chosen == actDup) {
+				for (int id : selectedEventIds())
+					EventStore::instance().duplicate(id);
+				refreshEvents();
+			} else if (chosen == actDel) {
+				for (int id : selectedEventIds())
+					EventStore::instance().remove(id);
+				refreshEvents();
+			} else if (chosen == actExp) {
+				auto ids = selectedEventIds();
+				if (ids.empty())
+					return;
+				QString folder = QFileDialog::getExistingDirectory(
+					this, obs_module_text("Dock.ExportFolder"));
+				if (folder.isEmpty())
+					return;
+				std::string err;
+				for (int id : ids)
+					ExportManager::instance().exportEvent(
+						id, 0, folder.toStdString(), err);
+			}
+		});
 	v->addWidget(events_, 1);
 
-	// Inspector panel: per-angle toggle · comment · vel% for the selected event.
-	// Rebuilt on every selection change (and after a refresh) by
-	// populateInspector(). Keeps the table itself compact (it only shows an
-	// enabled-angles summary now).
-	inspector_ = new QGroupBox(obs_module_text("Dock.AnglesHeader"), this);
+	// Inspector panel: the per-angle SPEED override for the selected event
+	// (the enable toggle and the comment are in the table now, where the reference controller puts
+	// them). Collapsed by default — it is the rarest of the three edits and
+	// eight camera rows would cost more height than the table it sits under.
+	inspector_ = new QGroupBox(obs_module_text("Dock.AngleSpeeds"), this);
 	inspector_->setObjectName("mrInspector");
-	inspectorLayout_ = new QVBoxLayout(inspector_);
-	inspectorLayout_->setContentsMargins(6, 4, 6, 4);
-	inspectorLayout_->setSpacing(2);
+	inspector_->setCheckable(true);
+	inspector_->setChecked(false);
+	inspector_->setToolTip(obs_module_text("Dock.AngleSpeedsHint"));
+	{
+		auto *outer = new QVBoxLayout(inspector_);
+		outer->setContentsMargins(6, 2, 6, 2);
+		outer->setSpacing(0);
+		inspectorBody_ = new QWidget(inspector_);
+		inspectorLayout_ = new QVBoxLayout(inspectorBody_);
+		inspectorLayout_->setContentsMargins(0, 2, 0, 2);
+		inspectorLayout_->setSpacing(2);
+		outer->addWidget(inspectorBody_);
+		inspectorBody_->setVisible(false);
+		// A checkable QGroupBox only DISABLES its children when unchecked,
+		// and an empty frame still claims its minimum height — measured at
+		// ~65 px of nothing between the list and the mark keys. Hiding the
+		// body AND capping the frame is what actually gives the height back.
+		inspector_->setMaximumHeight(26);
+		connect(inspector_, &QGroupBox::toggled, this, [this](bool on) {
+			if (inspectorBody_)
+				inspectorBody_->setVisible(on);
+			inspector_->setMaximumHeight(on ? QWIDGETSIZE_MAX : 26);
+		});
+	}
 	v->addWidget(inspector_, 0);
 	connect(events_->selectionModel(),
 		&QItemSelectionModel::selectionChanged, this, [this]() {
@@ -1165,43 +1520,108 @@ QWidget *MultiReplayDock::buildEvents()
 			populateInspector(ids.empty() ? 0 : ids.front());
 		});
 
-	// playback controls
-	auto *pb = new QHBoxLayout();
-	pb->setSpacing(3);
-	auto *playSel = compactBtn(obs_module_text("Dock.PlaySelected"), this,
-				   "mrAccent");
-	auto *playLast = compactBtn(obs_module_text("Dock.PlayLast"), this);
-	auto *stop = compactBtn(obs_module_text("Dock.Stop"), this, "mrDanger");
-	connect(playSel, &QPushButton::clicked, this,
-		&MultiReplayDock::playSelected);
-	connect(playLast, &QPushButton::clicked, this, [this]() {
-		std::string err;
-		if (!PlaybackCoordinator::instance().playLastEvent(
-			    currentAngle1_ - 1, toOutputChk_->isChecked(), err))
-			QMessageBox::warning(this, "obs-multireplay",
-					     QString::fromStdString(err));
-	});
-	connect(stop, &QPushButton::clicked, this,
-		[]() { PlaybackCoordinator::instance().stopEvents(); });
-	pb->addWidget(playSel);
-	pb->addWidget(playLast);
-	pb->addWidget(stop);
-	pb->addStretch(1);
-
-	toOutputChk_ = new QCheckBox(obs_module_text("Dock.ToOutput"), this);
-	loopChk_ = new QCheckBox(obs_module_text("Dock.Loop"), this);
-	musicChk_ = new QCheckBox(obs_module_text("Dock.Music"), this);
-	connect(loopChk_, &QCheckBox::toggled, this,
-		[](bool on) { PlaybackCoordinator::instance().setLoop(on); });
-	connect(musicChk_, &QCheckBox::toggled, this, [](bool on) {
-		PlaybackCoordinator::instance().setMusicEnabled(on);
-	});
-	pb->addWidget(toOutputChk_);
-	pb->addWidget(loopChk_);
-	pb->addWidget(musicChk_);
-	v->addLayout(pb);
-
 	return box;
+}
+
+// ---------------------------------------------------------------------------
+// Table columns: the fixed ones plus one per configured camera (the reference controller)
+// ---------------------------------------------------------------------------
+
+void MultiReplayDock::rebuildEventColumns()
+{
+	if (!events_)
+		return;
+
+	// Which cameras deserve a column, and what they are called. Only the
+	// configured ones: eight columns on a two-camera rig is six columns of
+	// dashes between the operator and the two that matter.
+	const Config cfg = ReplayCore::instance().getConfig();
+	std::vector<int> cams;
+	QStringList camLabels;
+	for (int i = 0; i < kNCams; i++) {
+		if (cfg.cameras[i].sourceName.empty())
+			continue;
+		const std::string &dn = cfg.cameras[i].displayName;
+		cams.push_back(i);
+		camLabels << QString("%1 %2").arg(i + 1).arg(
+			dn.empty() ? QString("Cam %1").arg(i + 1)
+				   : QString::fromStdString(dn));
+	}
+
+	// Rebuilding blows the table away, so only do it when the answer changed.
+	// The labels are part of the answer: renaming a camera has to show.
+	QStringList wanted;
+	for (int c : cams)
+		wanted << QString::number(c);
+	static const char *kProp = "mrCamSig";
+	const QString sig = wanted.join(',') + '|' + camLabels.join(',');
+	if (events_->columnCount() > 0 &&
+	    events_->property(kProp).toString() == sig)
+		return;
+	events_->setProperty(kProp, sig);
+
+	camCols_ = cams;
+	camHeaderHot_ = -1; // the highlight belongs to sections that just died
+
+	const bool wasRefreshing = refreshing_;
+	refreshing_ = true; // setHorizontalHeaderItem must not read back as an edit
+	events_->setRowCount(0);
+	events_->setColumnCount(kColFirstCam + (int)cams.size());
+	QStringList headers;
+	headers << QStringLiteral("#") << obs_module_text("Dock.In")
+		<< obs_module_text("Dock.Out") << obs_module_text("Dock.Duration")
+		<< obs_module_text("Dock.Speed");
+	headers += camLabels;
+	events_->setHorizontalHeaderLabels(headers);
+	// The camera headers carry their own label in UserRole: the "angle I am
+	// watching" marker is a prefix on the text (see updateCamHeaderHighlight),
+	// so the plain label has to survive somewhere.
+	for (size_t i = 0; i < cams.size(); i++) {
+		QTableWidgetItem *h =
+			events_->horizontalHeaderItem(kColFirstCam + (int)i);
+		if (h)
+			h->setData(Qt::UserRole, camLabels[(int)i]);
+	}
+	{
+		QHeaderView *hh = events_->horizontalHeader();
+		hh->setHighlightSections(false);
+		for (int c = 0; c < events_->columnCount(); c++)
+			hh->setSectionResizeMode(c, QHeaderView::ResizeToContents);
+		// The camera columns take the slack, as in the reference controller, where they are
+		// the wide half of the list: their cells hold free text.
+		for (int c = kColFirstCam; c < events_->columnCount(); c++)
+			hh->setSectionResizeMode(c, QHeaderView::Stretch);
+		hh->setMinimumSectionSize(34);
+	}
+	refreshing_ = wasRefreshing;
+	updateCamHeaderHighlight();
+}
+
+void MultiReplayDock::updateCamHeaderHighlight()
+{
+	if (!events_ || camCols_.empty())
+		return;
+	int hot = -1;
+	for (size_t i = 0; i < camCols_.size(); i++)
+		if (camCols_[i] == currentAngle1_ - 1)
+			hot = kColFirstCam + (int)i;
+	if (hot == camHeaderHot_)
+		return;
+	const bool wasRefreshing = refreshing_;
+	refreshing_ = true;
+	for (size_t i = 0; i < camCols_.size(); i++) {
+		const int col = kColFirstCam + (int)i;
+		QTableWidgetItem *h = events_->horizontalHeaderItem(col);
+		if (!h)
+			continue;
+		// the reference controller fills this header green. We cannot: OBS's theme owns the
+		// section background (see kDockStyle). A ▶ on the label says the
+		// same thing and no theme can take it away.
+		const QString base = h->data(Qt::UserRole).toString();
+		h->setText(col == hot ? QStringLiteral("▶ ") + base : base);
+	}
+	refreshing_ = wasRefreshing;
+	camHeaderHot_ = hot;
 }
 
 // ---------------------------------------------------------------------------
@@ -1341,11 +1761,11 @@ void MultiReplayDock::registerDockHotkeys()
 
 void MultiReplayDock::stepList(int delta)
 {
-	if (!listCombo_)
+	if (!listTabs_)
 		return;
-	const int next = std::clamp(listCombo_->currentIndex() + delta, 0,
-				    listCombo_->count() - 1);
-	listCombo_->setCurrentIndex(next); // its signal selects the list + refreshes
+	const int next = std::clamp(listTabs_->currentIndex() + delta, 0,
+				    listTabs_->count() - 1);
+	listTabs_->setCurrentIndex(next); // its signal selects the list + refreshes
 }
 
 void MultiReplayDock::playSelected()
@@ -1353,7 +1773,7 @@ void MultiReplayDock::playSelected()
 	std::string err;
 	if (!PlaybackCoordinator::instance().playEvents(
 		    selectedEventIds(), currentAngle1_ - 1,
-		    toOutputChk_ && toOutputChk_->isChecked(), err))
+		    toOutputBtn_ && toOutputBtn_->isChecked(), err))
 		QMessageBox::warning(this, "obs-multireplay",
 				     QString::fromStdString(err));
 }
@@ -1442,7 +1862,7 @@ void MultiReplayDock::replayCurrent()
 	auto &pc = PlaybackCoordinator::instance();
 	std::string err;
 	std::vector<int> ids = selectedEventIds();
-	bool toOut = toOutputChk_ && toOutputChk_->isChecked();
+	bool toOut = toOutputBtn_ && toOutputBtn_->isChecked();
 	int a0 = currentAngle1_ - 1;
 	if (ids.empty())
 		ids = {EventStore::instance().lastEventId()};
@@ -1462,10 +1882,137 @@ void MultiReplayDock::replayCurrent()
 
 void MultiReplayDock::showNotice(const QString &text)
 {
-	if (!statusLbl_)
-		return;
-	statusLbl_->setText(QStringLiteral("⚠ ") + text);
+	// Shown on the green channel strip (see updateChannelStrip): it is wide,
+	// it is directly under the picture the operator is looking at, and it is
+	// where the reference controller keeps the state of the channel. The corner status line is
+	// two inches wide and would swallow half the sentence.
+	noticeText_ = text;
 	noticeUntilNs_ = (int64_t)os_gettime_ns() + kNoticeNs;
+	if (chanStrip_)
+		chanStrip_->setToolTip(text);
+	updateChannelStrip();
+}
+
+// ---------------------------------------------------------------------------
+// The green channel strip (the reference controller's information band under the A output)
+// ---------------------------------------------------------------------------
+
+void MultiReplayDock::updateChannelStrip()
+{
+	// Both are built before the first poll(), but showNotice() can be reached
+	// from anywhere and a half-built dock must not be a crash.
+	if (!chanStrip_ || !events_)
+		return;
+
+	// mm:ss.cc — the reference controller's precision on this strip. Hundredths, because a
+	// thousandth is a digit nobody reads while the clip is running.
+	auto shortTc = [](int64_t ns) {
+		if (ns < 0)
+			ns = 0;
+		const int64_t cs = ns / 10000000; // centiseconds
+		return QString::asprintf("%02d:%02d.%02d", (int)(cs / 6000),
+					 (int)((cs / 100) % 60), (int)(cs % 100));
+	};
+	auto signedTc = [&shortTc](int64_t ns) {
+		return (ns < 0 ? QStringLiteral("-") : QStringLiteral("+")) +
+		       shortTc(ns < 0 ? -ns : ns);
+	};
+
+	auto &store = EventStore::instance();
+	const auto ps = PlaybackCoordinator::instance().playState();
+
+	// Which event this strip is about: the one on air, else the one selected,
+	// else the last mark taken — the same order the transport keys use, so
+	// the strip always describes what ▶ would play.
+	int evId = ps.active ? ps.eventId : 0;
+	if (evId <= 0) {
+		const auto sel = selectedEventIds();
+		evId = sel.empty() ? store.lastEventId() : sel.front();
+	}
+	ReplayEvent ev;
+	const bool haveEv = evId > 0 && store.get(evId, ev);
+
+	const int list = store.selectedList();
+	const std::string listNm = store.listName(list);
+	const QString listText = listNm.empty()
+					 ? QString("%1 %2")
+						   .arg(obs_module_text("Dock.List"))
+						   .arg(list, 2, 10,
+							QLatin1Char('0'))
+					 : QString::fromStdString(listNm);
+
+	const int idDigits =
+		std::clamp(ReplayCore::instance().getConfig().eventIdDigits, 1, 8);
+
+	// Where the playhead is INSIDE this clip. Clamped on purpose: parked at
+	// the live edge (or at 0, with a project reopened and nothing recording)
+	// the raw difference is the distance between two unrelated instants, and
+	// it printed as "IN -5879:34.56" — a number with no meaning that makes the
+	// whole strip look broken. Clamped, an un-cued clip reads exactly as the reference controller
+	// shows a cued one: IN +00:00.00, OUT -<duration>, REM = duration.
+	int64_t clipPos = playheadNs_;
+	if (haveEv) {
+		const int64_t hi = ev.tOutNs > 0 ? ev.tOutNs : ev.tInNs;
+		clipPos = std::clamp(playheadNs_, ev.tInNs, hi);
+	}
+
+	QString l1 = listText;
+	if (ps.active && ps.queued > 0)
+		l1 += QString("   %1/%2 %3")
+			      .arg(ps.queuePos, 2, 10, QLatin1Char('0'))
+			      .arg(ps.queued, 2, 10, QLatin1Char('0'))
+			      .arg(obs_module_text("Dock.Clips"));
+	if (haveEv && ev.tOutNs > 0) {
+		// Remaining WALL time, so it counts down at the rate the operator
+		// is watching: at 50% a 4 s clip has 8 s left, not 4.
+		const int64_t remNs = ev.tOutNs > clipPos ? ev.tOutNs - clipPos : 0;
+		const int pct = speedPct_ > 0 ? speedPct_ : 100;
+		l1 += QString("   REM %1").arg(shortTc(remNs * 100 / pct));
+	}
+
+	QString l2;
+	if (haveEv) {
+		l2 = QString("%1").arg(evId, idDigits, 10, QLatin1Char('0'));
+		l2 += QString("  IN %1").arg(signedTc(clipPos - ev.tInNs));
+		if (ev.tOutNs > 0)
+			l2 += QString("  OUT %1")
+				      .arg(signedTc(clipPos - ev.tOutNs));
+	} else {
+		l2 = obs_module_text("Dock.NoEvent");
+	}
+
+	QString l3;
+	if (noticeUntilNs_ > 0 && (int64_t)os_gettime_ns() < noticeUntilNs_) {
+		l3 = QStringLiteral("⚠ ") + noticeText_;
+	} else {
+		const int64_t rel = (playheadNs_ > eventOriginNs_ &&
+				     eventOriginNs_ > 0)
+					    ? playheadNs_ - eventOriginNs_
+					    : 0;
+		l3 = QString("TC %1   %2%")
+			     .arg(eventOriginNs_ > 0 ? shortTc(rel)
+						     : QStringLiteral("--:--.--"))
+			     .arg(speedPct_);
+	}
+
+	chanStrip_->setText(l1 + "\n" + l2 + "\n" + l3);
+	if (chanBadge_)
+		chanBadge_->setText(QString("A%1").arg(currentAngle1_));
+
+	// The same information the reference controller prints ON the position bar: which event, where
+	// the playhead is, at what speed.
+	if (seek_) {
+		const int64_t rel = (playheadNs_ > timelineStartNs_ &&
+				     timelineStartNs_ > 0)
+					    ? playheadNs_ - timelineStartNs_
+					    : 0;
+		QString ov;
+		if (haveEv)
+			ov = QString("%1 - ").arg(evId, idDigits, 10,
+						  QLatin1Char('0'));
+		ov += shortTc(rel) + QString("   %1%").arg(speedPct_);
+		seek_->setOverlayText(ov);
+	}
 }
 
 void MultiReplayDock::seekToFraction(double frac)
@@ -1729,6 +2276,17 @@ void MultiReplayDock::poll()
 			speedLbl_->setText(QString::asprintf(
 				"%.2f\xc3\x97", coordPct / 100.0));
 		}
+		// the reference controller fills the preset that matches the speed in force. The
+		// property drives the QSS, so it is only repolished when it moves.
+		if (speedChips_) {
+			for (QAbstractButton *ab : speedChips_->buttons()) {
+				const bool on = speedChips_->id(ab) == speedPct_;
+				if (ab->property("active").toBool() == on)
+					continue;
+				ab->setProperty("active", on);
+				repolish(ab);
+			}
+		}
 	}
 
 	// Angle buttons: PVW green = selected, PGM red = event playing on it.
@@ -1759,26 +2317,31 @@ void MultiReplayDock::poll()
 			anglesA_->button(currentAngle1_)->setChecked(true);
 	}
 
-	// Highlight the angles-summary cell of the event currently playing (PGM
-	// red); others use the default colour. Per-angle editing/state now lives
-	// in the inspector panel, so the table only needs this row-level cue.
+	// The row on air gets a PGM cue on its id cell. the reference controller colours the whole
+	// row, but our row colour is the selection (orange), and repainting a
+	// selected row would make "playing" and "selected" indistinguishable —
+	// which is the one thing that must never be ambiguous during a match.
 	{
 		const auto &ps = playSt;
+		const bool wasRefreshing = refreshing_;
+		refreshing_ = true; // colouring is not an operator edit
 		for (int row = 0; row < events_->rowCount(); row++) {
 			QTableWidgetItem *idItem = events_->item(row, kColId);
-			QTableWidgetItem *camItem = events_->item(row, kColCams);
-			if (!idItem || !camItem)
+			if (!idItem)
 				continue;
 			int rowEv = idItem->data(Qt::UserRole).toInt();
 			bool isActive = ps.active && (ps.eventId == rowEv);
-			if (camItem->data(Qt::UserRole + 1).toBool() != isActive) {
-				camItem->setData(Qt::UserRole + 1, isActive);
-				camItem->setForeground(
-					isActive ? QBrush(QColor("#e0604a"))
+			if (idItem->data(Qt::UserRole + 1).toBool() != isActive) {
+				idItem->setData(Qt::UserRole + 1, isActive);
+				idItem->setForeground(
+					isActive ? QBrush(QColor("#ff5a3c"))
 						 : QBrush());
 			}
 		}
+		refreshing_ = wasRefreshing;
 	}
+	// the reference controller paints the header of the camera being watched green.
+	updateCamHeaderHighlight();
 
 	// --- recording status ---
 	// Auto-follow the live edge when recording starts so the preview tracks
@@ -1880,13 +2443,12 @@ void MultiReplayDock::poll()
 		repolish(recBtn_);
 	}
 
-	// Sync live checkbox with engine state (startRecording sets liveMode
-	// internally without going through the checkbox).
+	// Sync the Live button with engine state (startRecording sets liveMode
+	// internally without going through the button).
 	bool lm = EventStore::instance().liveMode();
-	if (liveChk_ && liveChk_->isChecked() != lm) {
-		liveChk_->blockSignals(true);
-		liveChk_->setChecked(lm);
-		liveChk_->blockSignals(false);
+	if (liveBtn_ && liveBtn_->isChecked() != lm) {
+		QSignalBlocker block(liveBtn_);
+		liveBtn_->setChecked(lm);
 	}
 
 	// The status line is the only thing in this timer that can block, and it
@@ -1915,16 +2477,40 @@ void MultiReplayDock::poll()
 		QString ver = obs_data_get_string(st, "version");
 		int64_t mins = obs_data_get_int(st, "estimatedMinutesRemaining");
 		bool boOk = obs_data_get_bool(st, "branchOutputAvailable");
-		QString s = QString("v%1 • %2")
+		// the reference controller's second line: how much recording time is left, in
+		// hours:minutes, not a bare minute count nobody converts under
+		// pressure.
+		QString s;
+		if (!boOk)
+			s = QStringLiteral("⚠ Branch Output");
+		else if (mins >= 0)
+			s = QString("%1 %2")
+				    .arg(QString::asprintf("%02lld:%02lld:00",
+							   (long long)(mins / 60),
+							   (long long)(mins % 60)))
+				    .arg(obs_module_text("Dock.Remaining"));
+		else
+			s = QString("v%1 • %2")
 				    .arg(ver)
 				    .arg(rec ? obs_module_text("Dock.Recording")
 					     : obs_module_text("Dock.Idle"));
-		if (!boOk)
-			s += QStringLiteral("  ⚠ Branch Output");
-		else if (mins >= 0)
-			s += QString("  • ~%1 min").arg(mins);
 		statusLbl_->setText(s);
 	}
+
+	// The wall clock above it, red while the take runs (the reference controller). Same 4 Hz as
+	// the rest of the status block — a clock that ticks 30 times a second
+	// costs a restyle 30 times a second and reads no better.
+	if (refreshStatus && clockLbl_) {
+		clockLbl_->setText(QDateTime::currentDateTime().toString(
+			QStringLiteral("yyyy-MM-dd HH:mm:ss")));
+		if (clockLbl_->property("rec").toBool() != rec) {
+			clockLbl_->setProperty("rec", rec);
+			repolish(clockLbl_);
+		}
+	}
+
+	// The green channel strip and the text printed on the position bar.
+	updateChannelStrip();
 
 	// --- project label ---
 	// Same rate as the status line: it only changes when the operator opens
@@ -1975,22 +2561,28 @@ void MultiReplayDock::poll()
 
 void MultiReplayDock::refreshListNames()
 {
-	if (!listCombo_)
+	if (!listTabs_)
 		return;
 	auto &store = EventStore::instance();
-	// Item text only: changing it does not move the current index, but the
-	// combo emits nothing we would care about either way, and blocking the
-	// signals keeps a rebuild from ever looking like an operator switching list.
-	QSignalBlocker block(listCombo_);
-	for (int i = 1; i <= kEventLists && i <= listCombo_->count(); i++) {
+	// Tab text only: changing it does not move the current tab, but blocking
+	// the signals keeps a rebuild from ever looking like an operator switching
+	// list.
+	QSignalBlocker block(listTabs_);
+	for (int i = 1; i <= kEventLists && i <= listTabs_->count(); i++) {
 		const std::string nm = store.listName(i);
-		listCombo_->setItemText(i - 1,
-					nm.empty()
-						? QString::number(i)
-						: QString("%1 · %2")
-							  .arg(i)
-							  .arg(QString::fromStdString(
-								  nm)));
+		// the reference controller labels the tabs "Events 1"; a named list replaces the
+		// number with the name, which is what the name is for.
+		listTabs_->setTabText(i - 1,
+				      nm.empty()
+					      ? QString::number(i)
+					      : QString::fromStdString(nm));
+		listTabs_->setTabToolTip(
+			i - 1, nm.empty()
+				       ? QString("%1 %2")
+						 .arg(obs_module_text("Dock.List"))
+						 .arg(i)
+				       : QString("%1 · %2").arg(i).arg(
+						 QString::fromStdString(nm)));
 	}
 }
 
@@ -2044,6 +2636,9 @@ void MultiReplayDock::refreshEvents()
 	// loads that project's list names without ever bumping the version
 	// counter, and this is the one function every one of those paths calls.
 	refreshListNames();
+	// Same reason: the camera columns follow the camera configuration, and a
+	// no-op unless that really changed (it clears the table).
+	rebuildEventColumns();
 	int list = EventStore::instance().selectedList();
 	Data d(EventStore::instance().listJson(list));
 	if (!d)
@@ -2277,25 +2872,40 @@ void MultiReplayDock::refreshEvents()
 			speedItem->setForeground(QBrush(QColor("#707070")));
 		events_->setItem(row, kColSpeed, speedItem);
 
-		// Compact summary of enabled angles (full editing is in the
-		// inspector panel below): "1  3·50%  5✎". A trailing ✎ marks a
-		// per-angle comment; ·NN% marks a per-angle speed override.
-		QString summary;
-		for (int k = 0; k < kEventAngles; k++) {
-			if (!r.camOn[k])
-				continue;
-			QString tok = QString::number(k + 1);
-			if (r.camSpeeds[k] >= 0)
-				tok += QString("·%1%").arg(
-					(int)(r.camSpeeds[k] * 100));
-			if (!r.camNotes[k].empty())
-				tok += QStringLiteral("✎");
-			if (!summary.isEmpty())
-				summary += QStringLiteral("  ");
-			summary += tok;
+		// One cell per camera, exactly as the reference controller draws it: a tick box for
+		// "play this angle" and the comment for that angle beside it,
+		// both editable right there. This is the half of the event the
+		// operator actually works on during a match — it used to live in
+		// a panel under the table, which meant every angle change was a
+		// click away from the row it belonged to.
+		for (size_t ci = 0; ci < camCols_.size(); ci++) {
+			const int cam = camCols_[ci];
+			const QString note =
+				r.camNotes[cam].empty()
+					? kNoNote
+					: QString::fromStdString(r.camNotes[cam]);
+			auto *it = new QTableWidgetItem(note);
+			it->setFlags(Qt::ItemIsSelectable | Qt::ItemIsEnabled |
+				     Qt::ItemIsEditable | Qt::ItemIsUserCheckable);
+			it->setCheckState(r.camOn[cam] ? Qt::Checked
+						       : Qt::Unchecked);
+			it->setTextAlignment(Qt::AlignVCenter | Qt::AlignLeft);
+			it->setData(Qt::UserRole, r.id);
+			// A per-angle speed has no column in the reference controller. Rather than
+			// stuff it into the comment — where it would be typed
+			// back into the note on the next edit — the cell is
+			// tinted and says the number in its tooltip; the panel
+			// under the table is where it is set.
+			if (r.camSpeeds[cam] >= 0) {
+				it->setToolTip(
+					QString("%1 · %2%")
+						.arg(obs_module_text(
+							"Dock.AngleSpeedHint"))
+						.arg((int)(r.camSpeeds[cam] * 100)));
+				it->setForeground(QBrush(QColor("#ffd07a")));
+			}
+			events_->setItem(row, kColFirstCam + (int)ci, it);
 		}
-		auto *camItem = roItem(summary, Qt::AlignVCenter | Qt::AlignLeft);
-		events_->setItem(row, kColCams, camItem);
 	}
 	refreshing_ = false;
 	markerNs_ = std::move(rawMarkers);
@@ -2363,12 +2973,15 @@ void MultiReplayDock::populateInspector(int eventId)
 
 	ReplayEvent ev;
 	if (eventId <= 0 || !EventStore::instance().get(eventId, ev)) {
-		inspector_->setTitle(obs_module_text("Dock.AnglesHeader"));
+		inspector_->setTitle(obs_module_text("Dock.AngleSpeeds"));
 		addHint("Dock.SelectEvent");
 		return;
 	}
+	// The toggle and the comment are also in the table (the reference controller), and they are
+	// the same store fields — editing either writes the same value. What is
+	// only here is the per-angle speed.
 	inspector_->setTitle(QString("%1 — #%2")
-				     .arg(obs_module_text("Dock.AnglesHeader"))
+				     .arg(obs_module_text("Dock.AngleSpeeds"))
 				     .arg(eventId));
 
 	Config cfg = ReplayCore::instance().getConfig();
@@ -2452,14 +3065,37 @@ void MultiReplayDock::populateInspector(int eventId)
 
 void MultiReplayDock::onEventItemChanged(QTableWidgetItem *item)
 {
-	// The Speed column is the only editable one (in/out/duration are read-only
-	// and the angles live in the inspector). Everything else here is a rebuild
-	// writing its own cells, which must not be read back as an operator edit.
-	if (refreshing_ || !item || item->column() != kColSpeed)
+	// In/out/duration are read-only; what an operator can change is the event
+	// speed and, in the per-camera columns, whether that angle plays and what
+	// it is called. Everything else reaching here is a rebuild writing its own
+	// cells, which must not be read back as an operator edit.
+	if (refreshing_ || !item)
+		return;
+	const int col = item->column();
+	if (col != kColSpeed && col < kColFirstCam)
 		return;
 	const int id = item->data(Qt::UserRole).toInt();
 	if (id <= 0)
 		return;
+
+	if (col >= kColFirstCam) {
+		const size_t ci = (size_t)(col - kColFirstCam);
+		if (ci >= camCols_.size())
+			return;
+		const int a1 = camCols_[ci] + 1; // EventStore is 1-based
+		// Both halves of the cell are written back on any change: the two
+		// are one edit as far as the operator is concerned, and applying
+		// both is idempotent — far cheaper than tracking which of the two
+		// Qt actually moved.
+		EventStore::instance().setAngle(id, a1,
+						item->checkState() == Qt::Checked);
+		QString note = item->text().trimmed();
+		if (note == kNoNote) // the placeholder is not a comment
+			note.clear();
+		EventStore::instance().setAngleNote(id, a1, note.toStdString());
+		// No refresh from here — see the note at the end of this function.
+		return;
+	}
 
 	// Accept what an operator actually types: "50", "50%", " 50 ", and blank
 	// or "--" for "no speed of my own" — which is what makes the event fall
