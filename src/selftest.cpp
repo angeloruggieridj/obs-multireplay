@@ -190,6 +190,15 @@ struct DockChecks {
 	// A scrub shows the FOOTAGE at that instant and keeps showing it after the
 	// review clip has run out - the live camera belongs to follow-live only.
 	bool scrubShowsFootage = false;
+	// The angle button wins: Single mode plays the camera it was asked for, and
+	// refuses out loud when that camera has nothing, instead of quietly playing
+	// a different one.
+	bool singleHonoursRequestedAngle = false;
+	bool singleReportsUnplayableAngle = false;
+	// A mark flags the angle the operator is WATCHING. Tested on an angle that
+	// is not the first one, because "always flag camera 1" passes any check made
+	// on camera 1 - and that was the real bug on the hotkey path.
+	bool markInheritsAngle = false;
 	int previewLiveSamples = 0; // frames of the sequence spent on the live camera
 	int queuedClips = 0;
 	int ticks = 0;
@@ -466,6 +475,9 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 		c.queueAdvancesToSecond = true;
 		c.previewHoldsSequence = true;
 		c.followsLiveAfterSequence = true;
+		c.singleHonoursRequestedAngle = true;
+		c.singleReportsUnplayableAngle = true;
+		c.markInheritsAngle = true;
 	} else {
 		auto &pc = PlaybackCoordinator::instance();
 		const int a1 = firstCam + 1;
@@ -656,6 +668,91 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 			pc.stopEvents();
 		}
 
+		// --- the angle button wins ------------------------------------
+		// Only the SECOND angle is flagged, and the operator presses the
+		// FIRST. What he asked for is what must play: the old fallback to
+		// "the first enabled angle" played another camera without a word,
+		// which is the behaviour that made the angle model unguessable.
+		{
+			for (int a = 1; a <= kEventAngles; a++)
+				store.setAngle(evId, a, false);
+			store.setAngle(evId, a2, true);
+			std::string serr;
+			const bool started = pc.playEvents(
+				{evId}, firstCam, false, serr,
+				PlaybackCoordinator::AngleMode::Single);
+			const auto ps = pc.playState();
+			c.singleHonoursRequestedAngle =
+				started && ps.queuedAngles ==
+						   std::vector<int>{a1};
+			std::string got;
+			for (int a : ps.queuedAngles)
+				got += std::to_string(a) + " ";
+			obs_log(c.singleHonoursRequestedAngle ? LOG_INFO
+							      : LOG_ERROR,
+				"[selftest] dock: angle button wins — asked for %d "
+				"with only %d flagged, queued [%s]%s%s",
+				a1, a2, got.c_str(),
+				started ? "" : " — refused: ",
+				started ? "" : serr.c_str());
+			pc.stopEvents();
+
+			// ...and a camera with nothing behind it is REFUSED, with
+			// something to say. Silence here is what left the operator
+			// hearing a camera he had not asked for.
+			std::string herr;
+			const bool startedHole = pc.playEvents(
+				{evId}, hole - 1, false, herr,
+				PlaybackCoordinator::AngleMode::Single);
+			c.singleReportsUnplayableAngle =
+				!startedHole && !herr.empty();
+			obs_log(c.singleReportsUnplayableAngle ? LOG_INFO
+							       : LOG_ERROR,
+				"[selftest] dock: unplayable angle %d — started=%s, "
+				"reason '%s'",
+				hole, startedHole ? "yes" : "no", herr.c_str());
+			pc.stopEvents();
+		}
+
+		// --- a mark flags the angle being WATCHED ---------------------
+		// Marking on angle 2 must produce an event enabled on angle 2 and
+		// on nothing else. Deliberately not the first angle: an engine
+		// that always flags camera 1 passes every check taken on camera 1,
+		// and that is exactly what used to happen from a Stream Deck.
+		{
+			ReplayCore::instance().setCurrentAngle(secondCam);
+			// The dock copies the angle from the core on its own tick.
+			std::this_thread::sleep_for(
+				std::chrono::milliseconds(200));
+			const int before = store.lastEventId();
+			runOnUi([&]() { markBtn->click(); });
+			const int id2 = store.lastEventId();
+			ReplayEvent ev2;
+			if (id2 != before && store.get(id2, ev2)) {
+				c.markInheritsAngle =
+					ev2.angles[secondCam].enabled &&
+					!ev2.angles[firstCam].enabled;
+				obs_log(c.markInheritsAngle ? LOG_INFO : LOG_ERROR,
+					"[selftest] dock: mark taken on angle %d — "
+					"flagged %d:%s %d:%s",
+					a2, a1,
+					ev2.angles[firstCam].enabled ? "yes" : "no",
+					a2,
+					ev2.angles[secondCam].enabled ? "yes"
+								      : "no");
+			} else {
+				obs_log(LOG_ERROR,
+					"[selftest] dock: the mark button created no "
+					"event on angle %d", a2);
+			}
+			if (id2 != before)
+				store.remove(id2);
+			ReplayCore::instance().setCurrentAngle(firstCam);
+			std::this_thread::sleep_for(
+				std::chrono::milliseconds(200));
+		}
+	}
+
 	// --- scrubbing shows the FOOTAGE, and keeps showing it ----------------
 	// Dragging the seekbar is "review from here". The dock used to hand the
 	// preview back to the live camera the moment that review ran out, so a
@@ -698,7 +795,6 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 				played ? "yes" : "NO",
 				stillFootage ? "yes" : "NO");
 		}
-	}
 	}
 
 	// Leave the operator's own project exactly as it was found.
@@ -1433,6 +1529,9 @@ void runSelfTest()
 			  dockChecks.previewHoldsSequence &&
 			  dockChecks.followsLiveAfterSequence &&
 			  dockChecks.scrubShowsFootage &&
+			  dockChecks.singleHonoursRequestedAngle &&
+			  dockChecks.singleReportsUnplayableAngle &&
+			  dockChecks.markInheritsAngle &&
 			  anchorsPersisted && projectOriginOk &&
 			  eventTimecodeSane && filtersIdleOutsideRec;
 
@@ -1517,6 +1616,14 @@ void runSelfTest()
 	// review has run out.
 	obs_data_set_bool(checks, "dock_scrub_shows_footage",
 			  dockChecks.scrubShowsFootage);
+	// The angle button wins, and an angle with nothing behind it says so.
+	obs_data_set_bool(checks, "single_mode_honours_requested_angle",
+			  dockChecks.singleHonoursRequestedAngle);
+	obs_data_set_bool(checks, "single_mode_reports_unplayable_angle",
+			  dockChecks.singleReportsUnplayableAngle);
+	// A mark flags the angle the operator is watching, not always the first.
+	obs_data_set_bool(checks, "dock_mark_inherits_current_angle",
+			  dockChecks.markInheritsAngle);
 	obs_data_set_obj(root, "checks", checks);
 	obs_data_release(checks);
 

@@ -171,6 +171,10 @@ bool PlaybackCoordinator::playEvents(const std::vector<int> &eventIds,
 			{ev.id, ev.tInNs, ev.tOutNs, a, std::clamp(pct, 5, 400)});
 	};
 
+	// Set when Single mode had to refuse the angle it was asked for, so the
+	// operator gets told WHICH camera has nothing rather than a generic "no".
+	int refusedAngle = -1;
+
 	for (const ReplayEvent &ev : events) {
 		if (mode == AngleMode::AllEnabled) {
 			// One clip per enabled angle, in angle order. Enabling C1
@@ -179,9 +183,24 @@ bool PlaybackCoordinator::playEvents(const std::vector<int> &eventIds,
 			// the other one away, and the log said so - every replay
 			// read "[1/1]" no matter how many angles were on.
 			int before = (int)items.size();
-			for (int a = 0; a < kEventAngles; a++)
-				if (ev.angles[a].enabled && playable(a))
-					push(ev, a);
+			for (int a = 0; a < kEventAngles; a++) {
+				if (!ev.angles[a].enabled)
+					continue;
+				if (!playable(a)) {
+					// Flagged but unservable (a slot with no
+					// camera, no packets and no anchored
+					// footage). Dropping it silently made the
+					// sequence shorter than the operator's own
+					// flags said it would be.
+					obs_log(LOG_WARNING,
+						"coordinator: event %d has angle %d "
+						"enabled but nothing can play it — "
+						"left out of the queue",
+						ev.id, a + 1);
+					continue;
+				}
+				push(ev, a);
+			}
 			if ((int)items.size() > before)
 				continue;
 			// No angle enabled at all: fall back to the requested one
@@ -190,21 +209,30 @@ bool PlaybackCoordinator::playEvents(const std::vector<int> &eventIds,
 			continue;
 		}
 
-		// Single: never play a DISABLED angle - if the requested one is
-		// off for this event, use its first enabled angle.
-		int useAng = ang;
-		if (!ev.angles[ang].enabled) {
-			for (int a = 0; a < kEventAngles; a++) {
-				if (ev.angles[a].enabled && playable(a)) {
-					useAng = a;
-					break;
-				}
-			}
+		// Single: THE BUTTON WINS.
+		//
+		// This is the re-cue behind the angle buttons and the speed slider,
+		// and the operator pressed camera N because he wants to see camera
+		// N. Substituting "the first enabled angle" when N is not flagged on
+		// the event was a silent swap: he pressed 1, the log read
+		// "angles=[2]", camera 2 played, and nothing anywhere said why — it
+		// is precisely what made the angle model impossible to work out from
+		// using it. An angle with nothing behind it is refused out loud
+		// instead (the dock puts the message on the status line).
+		if (!playable(ang)) {
+			refusedAngle = ang;
+			continue;
 		}
-		push(ev, useAng);
+		push(ev, ang);
 	}
 	if (items.empty()) {
-		errorOut = "no playable (completed) events selected";
+		if (refusedAngle >= 0)
+			errorOut = "camera " + std::to_string(refusedAngle + 1) +
+				   " has no footage for this event (no camera "
+				   "wired to it, nothing in the ring and nothing "
+				   "recorded)";
+		else
+			errorOut = "no playable (completed) events selected";
 		return false;
 	}
 
@@ -239,14 +267,18 @@ bool PlaybackCoordinator::playEvents(const std::vector<int> &eventIds,
 		switchToReplayScene();
 	if (musicEnabled_)
 		setMusicMuted(false);
+	lastStartError_.clear();
 	startNext();
 	// startNext() clears active_ when every item was refused, and it used to
 	// return success anyway: the operator pressed play, nothing happened, and
 	// no dialog said why. That is the normal outcome for an event of a session
 	// whose footage was never anchored, so it has to be said out loud.
 	if (!active_) {
-		errorOut = "none of those clips can be played: no live packets "
-			   "and no anchored recording cover that instant";
+		errorOut = lastStartError_.empty()
+				   ? "none of those clips can be played: no live "
+				     "packets and no anchored recording cover that "
+				     "instant"
+				   : lastStartError_;
 		return false;
 	}
 	return true;
@@ -332,6 +364,10 @@ void PlaybackCoordinator::startNext()
 		obs_log(LOG_WARNING,
 			"coordinator: event %d angle %d not playable: %s",
 			item.eventId, item.angle + 1, err.c_str());
+		// Kept for the caller: "camera 3 has nothing there" is actionable,
+		// "nothing played" is not.
+		lastStartError_ = "camera " + std::to_string(item.angle + 1) +
+				  ": " + err;
 		queuePos_++; // unplayable: advance to the next item
 	}
 

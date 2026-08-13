@@ -1247,8 +1247,13 @@ void MultiReplayDock::replayCurrent()
 	// Single angle on purpose: this is the re-cue behind the angle buttons and
 	// the speed slider, so it shows the camera the operator just picked. The
 	// play buttons go through the default (every enabled angle in sequence).
-	pc.playEvents(ids, a0, toOut, err,
-		      PlaybackCoordinator::AngleMode::Single);
+	//
+	// And when that camera cannot be played, SAY SO. It used to fall through to
+	// some other angle without a word, so pressing "2" played camera 1 and the
+	// operator was left deducing the angle model from what he heard.
+	if (!pc.playEvents(ids, a0, toOut, err,
+			   PlaybackCoordinator::AngleMode::Single))
+		showNotice(QString::fromStdString(err));
 }
 
 void MultiReplayDock::showNotice(const QString &text)

@@ -127,6 +127,10 @@ private:
 	std::atomic<bool> musicEnabled_{false};
 	std::atomic<int> defaultSpeedPct_{100};
 	std::string previousSceneName_;
+	// Why the last startNext() could not play an item. Kept so a play request
+	// that ends up queueing nothing can tell the operator WHICH camera failed
+	// and what the engine said, instead of a generic refusal he cannot act on.
+	std::string lastStartError_;
 };
 
 } // namespace multireplay
