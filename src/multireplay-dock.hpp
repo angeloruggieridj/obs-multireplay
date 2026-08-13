@@ -151,7 +151,11 @@ private:
 	// current angle at the resolved speed. No-op while following live (the
 	// angle buttons then only pick which camera the preview mirrors).
 	void replayCurrent();
-	// Apply a replay speed (5..100): becomes the default for events without a
+	// the reference controller frame-by-frame forward: nudge the playhead on by one frame and show
+	// it. The engine plays ranges, so a step is a very short range — there is
+	// no playhead in it to move (see the definition).
+	void stepFrameForward();
+	// Apply a replay speed (5..200): becomes the default for events without a
 	// per-angle override, and re-cues the current clip from its in-point at
 	// the new speed (broadcast-style).
 	void applyReplaySpeed(int pct);

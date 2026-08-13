@@ -877,6 +877,13 @@ QWidget *MultiReplayDock::buildTransport()
 	// ▶ U+25B6
 	playPauseBtn_ = transportBtn(QStringLiteral("▶"), this,
 				     obs_module_text("Dock.PlayPause"), "mrPlay");
+	// ⏭ U+23ED — one frame forward (the reference controller frame-by-frame). Forward only: the
+	// engine decodes forward, and a backward step is not a v1 feature.
+	auto *stepBtn = transportBtn(QStringLiteral("⏭"), this,
+				     obs_module_text("Dock.StepFwd"));
+	connect(stepBtn, &QPushButton::clicked, this,
+		[this]() { stepFrameForward(); });
+
 	nowBtn_ = new QPushButton(QStringLiteral("NOW"), this);
 	nowBtn_->setObjectName("mrNow");
 	nowBtn_->setProperty("live", false);
@@ -885,6 +892,7 @@ QWidget *MultiReplayDock::buildTransport()
 	nowBtn_->setMinimumWidth(38);
 
 	tr->addWidget(playPauseBtn_);
+	tr->addWidget(stepBtn);
 	tr->addWidget(nowBtn_);
 	tr->addStretch(1);
 
@@ -900,8 +908,15 @@ QWidget *MultiReplayDock::buildTransport()
 	auto *sh = new QHBoxLayout();
 	sh->setSpacing(3);
 
+	// 2× is fast forward: the same clip, scanned. The engine takes any
+	// speed up to 400% (it is only the spacing between frames), so this needs
+	// no separate transport mode — which is why there is no separate button.
 	const std::pair<int, const char *> speedPresets[] = {
-		{25, "25%"}, {50, "50%"}, {75, "75%"}, {100, "1\xc3\x97"}};
+		{25, "25%"},
+		{50, "50%"},
+		{75, "75%"},
+		{100, "1\xc3\x97"},
+		{200, "2\xc3\x97"}};
 	for (const auto &[pct, lbl] : speedPresets) {
 		int p = pct; // copy: capturing a structured binding is non-portable
 		auto *b = compactBtn(QString::fromUtf8(lbl), this, "mrSpeedChip");
@@ -918,8 +933,11 @@ QWidget *MultiReplayDock::buildTransport()
 
 	speed_ = new QSlider(Qt::Horizontal, this);
 	speed_->setObjectName("mrSpeed");
-	speed_->setRange(5, 100);
+	// Up to 2×: the reference controller's variable speed is 0-100%, and its fast forward is the
+	// same control pushed past 1×.
+	speed_->setRange(5, 200);
 	speed_->setValue(100);
+	speed_->setToolTip(obs_module_text("Dock.SpeedSliderHint"));
 	speed_->setCursor(Qt::PointingHandCursor);
 
 	speedLbl_ = new QLabel(QStringLiteral("1.00\xc3\x97"), this);
@@ -1197,7 +1215,14 @@ int64_t MultiReplayDock::markTimeNs() const
 			return now;
 		}
 	}
-	// Reviewing: the last frame the replay actually put on screen.
+	// Recorded mode is the reference controller's "mark at the position of the bar", and the bar is
+	// the dock's playhead — where the operator parked the timeline with a
+	// scrub, a frame step or the end of a clip. ReplayChannel::positionNs() is
+	// only the last frame it pushed, which stops agreeing with the bar the
+	// moment a review runs out, and marking there marks somewhere he is not
+	// looking. It stays as the fallback for a playhead that was never set.
+	if (playheadNs_ > 0)
+		return playheadNs_;
 	return ReplayChannel::instance().positionNs();
 }
 
@@ -1249,11 +1274,60 @@ void MultiReplayDock::setAngle(int angle1Based)
 	replayCurrent();
 }
 
+void MultiReplayDock::stepFrameForward()
+{
+	// the reference controller frame-by-frame forward.
+	//
+	// There is no playhead in the engine to advance: it plays RANGES. So a
+	// step is the shortest range that can hold the next frame, played from one
+	// frame past where the transport stands. The replay input keeps the last
+	// frame it was handed, so when that tiny clip ends the stepped frame is
+	// what stays on screen — which is exactly what a frame step is for.
+	auto &core = ReplayCore::instance();
+	const int64_t edge = timelineStartNs_ + displayDurNs_;
+	if (playheadNs_ <= 0 || displayDurNs_ <= 0) {
+		showNotice(obs_module_text("Dock.NothingToStep"));
+		return;
+	}
+
+	struct obs_video_info ovi = {};
+	int64_t frameNs = 33333333; // 30 fps, if OBS will not say
+	if (obs_get_video_info(&ovi) && ovi.fps_num > 0 && ovi.fps_den > 0)
+		frameNs = (int64_t)((1000000000LL * (int64_t)ovi.fps_den) /
+				    (int64_t)ovi.fps_num);
+
+	const int64_t inNs = std::max(timelineStartNs_, playheadNs_ + frameNs);
+	// Two frames wide, not one: the engine refuses a range it cannot serve
+	// exactly, and a one-frame window that falls between two timestamps is
+	// exactly that. Only the first frame is seen anyway.
+	const int64_t outNs = inNs + 2 * frameNs;
+	if (inNs >= edge) {
+		// Already at the live edge — there is no next frame yet.
+		showNotice(obs_module_text("Dock.AtLiveEdge"));
+		return;
+	}
+
+	// Same discipline as a scrub: kill the queue first so its finish callback
+	// cannot cut in, and consume the transition so poll() does not read the
+	// stop as "the sequence ended, go back to live".
+	PlaybackCoordinator::instance().stopEvents();
+	prevSequenceActive_ = false;
+	core.setFollowLive(false);
+	playheadNs_ = inNs;
+
+	std::string err;
+	if (!ReplayChannel::instance().play(currentAngle1_ - 1, inNs,
+					    std::min(outNs, edge), 100, err))
+		showNotice(QString("%1 — %2")
+				   .arg(obs_module_text("Dock.NoFootageHere"))
+				   .arg(QString::fromStdString(err)));
+}
+
 void MultiReplayDock::applyReplaySpeed(int pct)
 {
 	// Default speed for every angle without an override — the coordinator
 	// resolves it when it builds the queue, including for the hotkeys.
-	speedPct_ = std::clamp(pct, 5, 100);
+	speedPct_ = std::clamp(pct, 5, 200);
 	PlaybackCoordinator::instance().setDefaultSpeedPct(speedPct_);
 	// Always restart from the in-point so the saved IN is respected (the reference controller).
 	replayCurrent();
@@ -1542,8 +1616,22 @@ void MultiReplayDock::poll()
 		nowBtn_->setProperty("live", followLive);
 		repolish(nowBtn_);
 	}
-	// The speed slider is the dock's own state (the engine has none), so it is
-	// never written back here — only read when a clip is queued.
+	// The speed slider is the dock's own state (the engine has none), with one
+	// exception: the speed HOTKEYS set the default without ever reaching a
+	// widget, and a Stream Deck operator pressing 50% must not be left looking
+	// at a slider that still says 1×. Only when the two disagree, and never
+	// while his finger is on it.
+	{
+		const int coordPct =
+			PlaybackCoordinator::instance().defaultSpeedPct();
+		if (speed_ && coordPct != speedPct_ && !speed_->isSliderDown()) {
+			speedPct_ = coordPct;
+			QSignalBlocker block(speed_);
+			speed_->setValue(coordPct);
+			speedLbl_->setText(QString::asprintf(
+				"%.2f\xc3\x97", coordPct / 100.0));
+		}
+	}
 
 	// Angle buttons: PVW green = selected, PGM red = event playing on it.
 	// Visual state is driven by the "state" property + QSS, not :checked.
