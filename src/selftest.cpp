@@ -15,6 +15,7 @@ See selftest.hpp. This is the scripted form of the M0 gate.
 #include "event-store.hpp"
 #include "multireplay-dock.hpp"
 #include "packet-tap.hpp"
+#include "playback-coordinator.hpp"
 #include "plugin-support.h"
 #include "replay-channel.hpp"
 #include "replay-core.hpp"
@@ -164,6 +165,8 @@ struct DockChecks {
 	bool markOnTimeline = false;
 	bool playsMark = false;
 	bool playheadInsideClip = false;
+	bool multiAngleQueue = false;
+	int queuedClips = 0;
 	int ticks = 0;
 	int64_t worstGapMs = 0;
 	int logErrors = 0;
@@ -189,8 +192,8 @@ void countingLogHandler(int level, const char *msg, va_list args, void *)
 		g_prevLogHandler(level, msg, args, g_prevLogParam);
 }
 
-DockChecks runDockChecks(int firstCam, const std::string &tempFolder,
-			 double canvasFps)
+DockChecks runDockChecks(int firstCam, int secondCam,
+			 const std::string &tempFolder, double canvasFps)
 {
 	DockChecks c;
 
@@ -384,6 +387,34 @@ DockChecks runDockChecks(int firstCam, const std::string &tempFolder,
 	} else if (c.markOnTimeline) {
 		obs_log(LOG_ERROR, "[selftest] dock: the marked range is not "
 				   "servable — not clicking play");
+	}
+
+	// --- One event, two angles, two clips ---------------------------------
+	// Enabling C1 and C2 on the same mark is a request to SEE both, one after
+	// the other. The queue used to hold a single clip whatever was enabled -
+	// every replay in the log read "[1/1]" - and no check outside a live
+	// session ever noticed, because nothing looked at the queue.
+	if (!haveEvent) {
+		// nothing to queue: the mark check above already failed loudly
+	} else if (secondCam < 0) {
+		c.multiAngleQueue = true; // one camera: nothing to prove
+	} else {
+		store.setAngle(evId, firstCam + 1, true);
+		store.setAngle(evId, secondCam + 1, true);
+		auto &pc = PlaybackCoordinator::instance();
+		std::string qerr;
+		const bool started =
+			pc.playEvents({evId}, firstCam, false, qerr);
+		const auto ps = pc.playState();
+		c.queuedClips = ps.queued;
+		c.multiAngleQueue = started && ps.queued == 2;
+		pc.stopEvents();
+		obs_log(c.multiAngleQueue ? LOG_INFO : LOG_ERROR,
+			"[selftest] dock: event %d with angles %d+%d queued %d "
+			"clip(s)%s%s",
+			evId, firstCam + 1, secondCam + 1, c.queuedClips,
+			started ? "" : " — playEvents refused: ",
+			started ? "" : qerr.c_str());
 	}
 
 	// Leave the operator's own project exactly as it was found.
@@ -905,16 +936,18 @@ void runSelfTest()
 	// exactly the state an operator has when he touches it.
 	DockChecks dockChecks;
 	{
-		int firstArmed = -1;
+		int firstArmed = -1, secondArmed = -1;
 		for (int i = 0; i < camCount; i++) {
-			if (want[i]) {
+			if (!want[i])
+				continue;
+			if (firstArmed < 0)
 				firstArmed = i;
-				break;
-			}
+			else if (secondArmed < 0)
+				secondArmed = i;
 		}
 		if (firstArmed >= 0)
-			dockChecks = runDockChecks(firstArmed, cfg.sessionFolder,
-						   canvasFps);
+			dockChecks = runDockChecks(firstArmed, secondArmed,
+						   cfg.sessionFolder, canvasFps);
 		else
 			obs_log(LOG_ERROR, "[selftest] no armed camera — dock "
 					   "checks skipped");
@@ -1001,7 +1034,8 @@ void runSelfTest()
 			  fileMatchesRing && dockChecks.found &&
 			  dockChecks.pollRuns && dockChecks.pollResponsive &&
 			  dockChecks.pollQuiet && dockChecks.markOnTimeline &&
-			  dockChecks.playsMark && dockChecks.playheadInsideClip;
+			  dockChecks.playsMark && dockChecks.playheadInsideClip &&
+			  dockChecks.multiAngleQueue;
 
 	// --- Report -----------------------------------------------------------
 	obs_data_t *root = obs_data_create();
@@ -1049,6 +1083,9 @@ void runSelfTest()
 			  dockChecks.playsMark);
 	obs_data_set_bool(checks, "dock_playhead_inside_clip",
 			  dockChecks.playheadInsideClip);
+	// One clip per enabled angle: a two-angle event is two clips, not one.
+	obs_data_set_bool(checks, "dock_multi_angle_queue",
+			  dockChecks.multiAngleQueue);
 	obs_data_set_obj(root, "checks", checks);
 	obs_data_release(checks);
 
@@ -1079,6 +1116,8 @@ void runSelfTest()
 	obs_data_set_int(root, "dock_marked_out_ms",
 			 dockChecks.markOutNs / 1000000);
 	obs_data_set_int(root, "dock_played_frames", dockChecks.playedFrames);
+	obs_data_set_int(root, "dock_two_angle_clips_queued",
+			 dockChecks.queuedClips);
 
 	obs_data_set_int(root, "worst_max_packet_age_ms", worstMaxAgeMs);
 	obs_data_set_int(root, "cross_angle_skew_ms", skewNs / 1000000);

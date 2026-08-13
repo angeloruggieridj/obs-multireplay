@@ -1229,10 +1229,15 @@ void MultiReplayDock::replayCurrent()
 	std::vector<int> ids = selectedEventIds();
 	bool toOut = toOutputChk_ && toOutputChk_->isChecked();
 	int a0 = currentAngle1_ - 1;
-	if (!ids.empty())
-		pc.playEvents(ids, a0, toOut, err);
-	else
-		pc.playLastEvent(a0, toOut, err);
+	if (ids.empty())
+		ids = {EventStore::instance().lastEventId()};
+	if (ids.empty() || ids.front() <= 0)
+		return;
+	// Single angle on purpose: this is the re-cue behind the angle buttons and
+	// the speed slider, so it shows the camera the operator just picked. The
+	// play buttons go through the default (every enabled angle in sequence).
+	pc.playEvents(ids, a0, toOut, err,
+		      PlaybackCoordinator::AngleMode::Single);
 }
 
 void MultiReplayDock::seekToFraction(double frac)
@@ -1393,13 +1398,16 @@ void MultiReplayDock::poll()
 	// Angle buttons: PVW green = selected, PGM red = event playing on it.
 	// Visual state is driven by the "state" property + QSS, not :checked.
 	if (anglesA_) {
-		bool ep = eventActive && playing;
+		// PGM follows the angle actually on air, which is not the selected
+		// one any more: a two-angle event plays C1 then C2 while the dock
+		// still points at whichever the operator picked.
+		bool ep = eventActive && playing && playSt.angle1 > 0;
 		for (int i = 1; i <= kNCams; i++) {
 			auto *b = qobject_cast<QPushButton *>(
 				anglesA_->button(i));
 			if (!b || !b->isVisible())
 				continue;
-			QString st = (ep && i == currentAngle1_)
+			QString st = (ep && i == playSt.angle1)
 					     ? QStringLiteral("program")
 				   : (i == currentAngle1_)
 					     ? QStringLiteral("preview")

@@ -105,23 +105,49 @@ void PlaybackCoordinator::onClipFinished(uint64_t gen)
 
 bool PlaybackCoordinator::playEvents(const std::vector<int> &eventIds,
 				     int angle0, bool toOutput,
-				     std::string &errorOut)
+				     std::string &errorOut, AngleMode mode)
 {
 	std::lock_guard<std::mutex> lock(mutex_);
 
-	// One item per selected event, all on the given angle (the dock's current
-	// angle). Speed = that angle's per-angle override if set, else the default
-	// (slider) speed. There is no event-level speed.
 	int ang = std::clamp(angle0, 0, kEventAngles - 1);
 	const int defPct = defaultSpeedPct_.load();
 	std::vector<QueueItem> items;
+	// Speed is resolved per ANGLE (its own override if it has one, else the
+	// slider default): the same event can be shown at 100% on the wide and
+	// 50% on the tight, which is exactly what the per-angle field is for.
+	const auto push = [&](const ReplayEvent &ev, int a) {
+		int pct = ev.angles[a].speed >= 0
+				  ? (int)std::lround(ev.angles[a].speed * 100.0)
+				  : defPct;
+		items.push_back(
+			{ev.id, ev.tInNs, ev.tOutNs, a, std::clamp(pct, 5, 400)});
+	};
+
 	for (int id : eventIds) {
 		ReplayEvent ev;
 		if (!EventStore::instance().get(id, ev) || ev.tOutNs < 0)
 			continue;
-		// Never play a DISABLED angle: if the requested angle isn't enabled
-		// for this event, use its first enabled angle. (If none are enabled,
-		// fall back to the requested one.)
+
+		if (mode == AngleMode::AllEnabled) {
+			// One clip per enabled angle, in angle order. Enabling C1
+			// and C2 on a mark is a request to SEE both, one after the
+			// other; queueing only the operator's current angle threw
+			// the other one away, and the log said so - every replay
+			// read "[1/1]" no matter how many angles were on.
+			int before = (int)items.size();
+			for (int a = 0; a < kEventAngles; a++)
+				if (ev.angles[a].enabled)
+					push(ev, a);
+			if ((int)items.size() > before)
+				continue;
+			// No angle enabled at all: fall back to the requested one
+			// rather than silently dropping the event.
+			push(ev, ang);
+			continue;
+		}
+
+		// Single: never play a DISABLED angle - if the requested one is
+		// off for this event, use its first enabled angle.
 		int useAng = ang;
 		if (!ev.angles[ang].enabled) {
 			for (int a = 0; a < kEventAngles; a++) {
@@ -131,11 +157,7 @@ bool PlaybackCoordinator::playEvents(const std::vector<int> &eventIds,
 				}
 			}
 		}
-		int pct = ev.angles[useAng].speed >= 0
-				  ? (int)std::lround(ev.angles[useAng].speed * 100.0)
-				  : defPct;
-		items.push_back({ev.id, ev.tInNs, ev.tOutNs, useAng,
-				 std::clamp(pct, 5, 400)});
+		push(ev, useAng);
 	}
 	if (items.empty()) {
 		errorOut = "no playable (completed) events selected";
@@ -192,9 +214,11 @@ PlaybackCoordinator::PlayState PlaybackCoordinator::playState() const
 	std::lock_guard<std::mutex> lock(mutex_);
 	PlayState s;
 	s.active = active_;
+	s.queued = (int)queue_.size();
 	if (active_ && queuePos_ < queue_.size()) {
 		s.eventId = queue_[queuePos_].eventId;
 		s.angle1 = queue_[queuePos_].angle + 1; // 0-based → 1-based
+		s.queuePos = (int)queuePos_ + 1;
 	}
 	return s;
 }

@@ -30,11 +30,25 @@ class PlaybackCoordinator {
 public:
 	static PlaybackCoordinator &instance();
 
-	// Play one or more events (in the given order), all on `angle0` (0-based,
-	// the dock's current angle). Speed = the angle's per-angle override if set,
-	// else the default (slider) speed.
+	// How many clips one event is worth.
+	enum class AngleMode {
+		// the reference controller "play event": every angle the operator ENABLED on that
+		// event, in angle order, one after the other. Marking C1 and C2
+		// means seeing C1 then C2 - which is the point of marking two.
+		AllEnabled,
+		// Just the requested angle: the angle buttons and the speed
+		// slider re-cue the clip the operator is watching, and they must
+		// show THAT camera, not restart the whole sequence.
+		Single,
+	};
+
+	// Play one or more events, in the given order. Speed = the played angle's
+	// per-angle override if set, else the default (slider) speed. `angle0`
+	// (0-based) selects the angle in Single mode, and is the fallback in
+	// AllEnabled mode for an event with no angle enabled at all.
 	bool playEvents(const std::vector<int> &eventIds, int angle0,
-			bool toOutput, std::string &errorOut);
+			bool toOutput, std::string &errorOut,
+			AngleMode mode = AngleMode::AllEnabled);
 	bool playLastEvent(int angle0, bool toOutput, std::string &errorOut);
 
 	// broadcast replayStopEvents.
@@ -48,6 +62,11 @@ public:
 		bool active = false;
 		int eventId = 0;  // id of the event being played
 		int angle1 = 0;   // 1-based camera angle currently playing, 0=none
+		// Clips in the queue and which one is on: an event with two
+		// angles enabled is TWO clips, so this is how the dock (and the
+		// gate) tell "playing one angle" from "playing all of them".
+		int queued = 0;
+		int queuePos = 0; // 1-based position of the clip on air
 	};
 	PlayState playState() const;
 
