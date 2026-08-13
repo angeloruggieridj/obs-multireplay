@@ -1409,7 +1409,25 @@ void MultiReplayDock::poll()
 		liveChk_->blockSignals(false);
 	}
 
-	Data st(core.statusJson());
+	// The status line is the only thing in this timer that can block, and it
+	// is also the one nobody reads thirty times a second: statusJson() stats
+	// the session folder (std::filesystem::space), picks the encoder by
+	// enumerating the registered types while holding the core lock, then
+	// builds a JSON document we immediately parse back.
+	//
+	// On a local disk that measures as free — the self-test saw the same tick
+	// cadence with and without this throttle — so this is not a speed-up, it
+	// is about WHERE that syscall runs: a session folder on a NAS (a normal
+	// setup for a replay rig) turns space() into a network round trip, and one
+	// that hits an unreachable share blocks for the SMB timeout. Thirty of
+	// those a second on the GUI thread is a frozen OBS, not a slow dock. Four
+	// a second is still faster than any number in that line can change.
+	// The rest of poll() — seekbar, playhead, transport state — is cheap and
+	// stays at full rate, because that IS what has to look smooth.
+	constexpr int kStatusEveryNTicks = 8; // ~264 ms at 33 ms/tick
+	const bool refreshStatus = (statusTick_++ % kStatusEveryNTicks) == 0;
+
+	Data st(refreshStatus ? core.statusJson() : std::string());
 	if (st) {
 		QString ver = obs_data_get_string(st, "version");
 		int64_t mins = obs_data_get_int(st, "estimatedMinutesRemaining");
@@ -1426,7 +1444,9 @@ void MultiReplayDock::poll()
 	}
 
 	// --- project label ---
-	{
+	// Same rate as the status line: it only changes when the operator opens
+	// or creates a project, and reading it copies the whole Config.
+	if (refreshStatus) {
 		std::string proj = core.getConfig().currentProjectName;
 		if (projectLbl_) {
 			if (proj.empty()) {

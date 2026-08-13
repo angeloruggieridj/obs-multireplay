@@ -197,6 +197,9 @@ private:
 
 	QTimer *pollTimer_ = nullptr;
 	bool prevRecording_ = false; // detects REC start
+	// Counts poll() ticks so the expensive status refresh can run at a
+	// fraction of the transport rate (see poll()).
+	uint64_t statusTick_ = 0;
 
 	// Master-timeline window currently drawn on the seekbar (ns).
 	int64_t timelineStartNs_ = 0; // oldest replayable instant, 0 = nothing
