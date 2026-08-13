@@ -184,6 +184,9 @@ struct DockChecks {
 	// of the same event the engine is briefly idle, and the dock used to put the
 	// live camera on screen for that moment - on air too, with "to output".
 	bool previewHoldsSequence = false;
+	// ...and when the sequence ends, the transport goes back to the live edge by
+	// itself, instead of leaving the operator to press NOW.
+	bool followsLiveAfterSequence = false;
 	int previewLiveSamples = 0; // frames of the sequence spent on the live camera
 	int queuedClips = 0;
 	int ticks = 0;
@@ -459,6 +462,7 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 		c.singleNonFirstAnglePlays = true;
 		c.queueAdvancesToSecond = true;
 		c.previewHoldsSequence = true;
+		c.followsLiveAfterSequence = true;
 	} else {
 		auto &pc = PlaybackCoordinator::instance();
 		const int a1 = firstCam + 1;
@@ -617,6 +621,30 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 					(unsigned long long)framesAtHop,
 					(unsigned long long)
 						chan.stats().framesPushed);
+				obs_log(c.previewHoldsSequence ? LOG_INFO
+							       : LOG_ERROR,
+					"[selftest] dock: preview stayed on the "
+					"replay for %d/%d samples of the sequence",
+					previewSamples - previewLive,
+					previewSamples);
+
+				// The queue drained by itself: within a second the
+				// dock must have handed the transport back to the
+				// live edge (the tap is still attached, so there IS
+				// a live edge to go back to).
+				for (int i = 0; i < 50; i++) {
+					if (ReplayCore::instance().followLive()) {
+						c.followsLiveAfterSequence = true;
+						break;
+					}
+					std::this_thread::sleep_for(
+						std::chrono::milliseconds(20));
+				}
+				obs_log(c.followsLiveAfterSequence ? LOG_INFO
+								   : LOG_ERROR,
+					"[selftest] dock: back to the live edge after "
+					"the sequence: %s",
+					c.followsLiveAfterSequence ? "yes" : "NO");
 			} else {
 				obs_log(LOG_ERROR,
 					"[selftest] dock: two-angle sequence — "
@@ -1356,6 +1384,7 @@ void runSelfTest()
 			  dockChecks.singleNonFirstAnglePlays &&
 			  dockChecks.queueAdvancesToSecond &&
 			  dockChecks.previewHoldsSequence &&
+			  dockChecks.followsLiveAfterSequence &&
 			  anchorsPersisted && projectOriginOk &&
 			  eventTimecodeSane && filtersIdleOutsideRec;
 
@@ -1433,6 +1462,9 @@ void runSelfTest()
 	// The preview belongs to the sequence: no live-camera flash between angles.
 	obs_data_set_bool(checks, "dock_preview_holds_sequence",
 			  dockChecks.previewHoldsSequence);
+	// ...and the transport goes back to the live edge on its own afterwards.
+	obs_data_set_bool(checks, "dock_follows_live_after_sequence",
+			  dockChecks.followsLiveAfterSequence);
 	obs_data_set_obj(root, "checks", checks);
 	obs_data_release(checks);
 

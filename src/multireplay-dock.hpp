@@ -238,6 +238,12 @@ private:
 	// active while nothing has played for a while died badly, and must not pin
 	// the preview on a replay that is not coming.
 	int64_t lastPlayingNs_ = 0;
+	// The playhead the dock draws: the engine's last frame while a clip plays,
+	// otherwise where the operator parked the timeline (a scrub, NOW, or the
+	// live edge the end of a sequence returns to). ReplayChannel keeps reporting
+	// the last frame of the clip that finished, which is why the bar used to
+	// stay wherever the replay stopped until NOW was pressed by hand.
+	int64_t playheadNs_ = 0;
 
 	QTimer *pollTimer_ = nullptr;
 	bool prevRecording_ = false; // detects REC start

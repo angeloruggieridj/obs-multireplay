@@ -1387,14 +1387,51 @@ void MultiReplayDock::poll()
 		refreshEvents();
 	}
 
+	// Is the live front still being FED? Not "did we press REC": after STOP the
+	// tap is detached and the newest instant stops moving, and that is exactly
+	// when jumping "back to live" would be a lie — there is no live to go to,
+	// only the last frame of a take that is over.
+	const bool liveFrontFed = liveEdgeNs > 0 && tap.anyAttached();
+
+	// --- the sequence just ended: give the transport back to the live edge ---
+	// The operator should not have to press NOW after every replay. This fires
+	// on the QUEUE ending, natural or by Stop, not on each clip — a two-angle
+	// event must not snap back to live halfway through.
+	if (prevSequenceActive_ && !eventActive) {
+		if (liveFrontFed) {
+			// Back to the front, exactly like NOW.
+			core.setFollowLive(true);
+			playheadNs_ = liveEdgeNs;
+		} else {
+			// The take is over, so there is nothing to follow: park the
+			// playhead on the last instant of footage and STAY in review,
+			// which keeps the replay's picture on the preview instead of
+			// swapping in a live camera that has nothing to do with the
+			// moment being reviewed.
+			if (liveEdgeNs > 0)
+				playheadNs_ = liveEdgeNs;
+		}
+	}
+	prevSequenceActive_ = eventActive;
+
 	// Everything inside that window is playable (ring or files), so unlike the
 	// file-tailing engine there is no trailing "not yet flushed" region.
+	//
+	// The playhead is the dock's, not the engine's: ReplayChannel reports the
+	// last frame it pushed forever after, so a finished clip left the bar
+	// wherever it stopped. While a clip plays it IS that frame; otherwise it is
+	// where the operator parked the timeline (scrub, NOW, end of sequence).
 	const int64_t posNs = chan.positionNs();
-	const int64_t relPosNs =
-		(posNs > startNs && startNs > 0) ? posNs - startNs : 0;
+	if (playing && posNs > 0)
+		playheadNs_ = posNs;
+	else if (followLive && liveEdgeNs > 0 && !sequenceOnAir)
+		playheadNs_ = liveEdgeNs;
+	const int64_t relPosNs = (playheadNs_ > startNs && startNs > 0)
+					 ? playheadNs_ - startNs
+					 : 0;
 
 	if (!seekDragging_) {
-		if (rec && followLive) {
+		if (followLive && liveFrontFed) {
 			// Watching the live edge: the playhead IS the edge.
 			seek_->setProgress(1.0, 1.0);
 			tcLbl_->setText(QStringLiteral("● ") +
