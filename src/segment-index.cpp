@@ -233,6 +233,8 @@ void SegmentIndex::scanFolder()
 void SegmentIndex::tryAnchorPending()
 {
 	for (int cam = 0; cam < kMaxSegmentCameras; cam++) {
+		if (!running_.load())
+			return;
 		std::vector<std::pair<std::string, int>> todo;
 		{
 			std::lock_guard<std::mutex> lock(mutex_);
@@ -277,6 +279,13 @@ void SegmentIndex::tryAnchorPending()
 		}
 
 		for (auto &entry : todo) {
+			// STOP is pressed on the GUI thread and joins this one.
+			// Probing a file is a full demux of a couple of hundred
+			// packets, and with several files pending that added up to
+			// seconds of frozen interface. Bail between files so the
+			// join costs at most one probe.
+			if (!running_.load())
+				return;
 			if (entry.second == kAnchorAbandoned)
 				continue; // already given up on; do not re-demux it
 			const std::string &path = entry.first;

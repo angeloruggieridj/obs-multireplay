@@ -384,29 +384,27 @@ bool ReplayCore::startRecording(std::string &errorOut)
 		}
 		st.sourceFound = true;
 
-		// Stop first, unconditionally, before touching the settings.
+		// REC arms; it does not configure.
 		//
-		// A filter that is already recording when REC is pressed - which
-		// happens whenever the disarm did not take - would otherwise be
-		// reconfigured underneath itself: ensureFilter() calls
-		// obs_source_update(), Branch Output reacts by restarting its
-		// pipeline, and it destroys the obs_view backing the encoder we
-		// are in the middle of attaching to. libobs' gpu_encode_thread
-		// then dereferences that freed video and takes OBS down with it
-		// (observed: c0000005 in gpu_encode_thread).
+		// Writing settings here is what broke the take. obs_source_update()
+		// on an existing filter makes Branch Output log "Settings change
+		// detected, Attempting restart" and rebuild its pipeline - so the
+		// encoder the tap had just attached to is destroyed, the tap backs
+		// off and re-attaches seconds later, and by then the opening of the
+		// file it must anchor against has already left the ring. Result:
+		// "still unmatched ... (240 file, 17 ring)", no anchor, nothing
+		// replayable. The same restart, caught mid-attach, is what crashed
+		// gpu_encode_thread earlier.
 		//
-		// Disabling an already-stopped filter costs nothing, so this runs
-		// on every camera rather than trying to detect the bad case.
-		if (obs_source_t *existing = obs_source_get_filter_by_name(
-			    target, (std::string(branch_output::kFilterNamePrefix) +
-				     std::to_string(i + 1))
-					    .c_str())) {
-			branch_output::setEnabled(existing, false);
-			obs_source_release(existing);
-		}
-
+		// So an existing filter is only switched on. Settings belong to the
+		// Settings dialog, which applies them while nothing is recording.
+		const std::string filterName =
+			std::string(branch_output::kFilterNamePrefix) +
+			std::to_string(i + 1);
 		obs_source_t *filter =
-			branch_output::ensureFilter(target, i, config_);
+			obs_source_get_filter_by_name(target, filterName.c_str());
+		if (!filter)
+			filter = branch_output::ensureFilter(target, i, config_);
 		if (filter) {
 			st.filterPresent = true;
 			branch_output::setEnabled(filter, true);
