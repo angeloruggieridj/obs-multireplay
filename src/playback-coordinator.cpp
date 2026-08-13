@@ -7,6 +7,8 @@ SPDX-License-Identifier: GPL-2.0-or-later
 #include "playback-coordinator.hpp"
 #include "replay-core.hpp"
 #include "replay-channel.hpp"
+#include "packet-tap.hpp"
+#include "segment-index.hpp"
 #include "plugin-support.h"
 
 #include <obs-module.h>
@@ -107,10 +109,56 @@ bool PlaybackCoordinator::playEvents(const std::vector<int> &eventIds,
 				     int angle0, bool toOutput,
 				     std::string &errorOut, AngleMode mode)
 {
+	// Which angles could go on air at all: a camera wired to that slot, live
+	// packets held for it, or footage anchored on it. The enabled flags outlive
+	// a config change and the hotkeys can mark on any slot, so without this an
+	// event enabled on angle 5 of a two-camera rig queued a clip play() then
+	// refused - the queue said three clips and the operator saw two. Keeping
+	// the queue equal to what will actually run is what makes the dock's and
+	// the gate's reading of it mean anything.
+	//
+	// Computed BEFORE our own lock is taken, never under it: this asks three
+	// other singletons for their state, and holding mutex_ across those makes
+	// every future lock order in this plugin our problem. Nothing here needs
+	// the queue.
+	bool playableAngle[kEventAngles] = {};
+	{
+		const Config cfg = ReplayCore::instance().getConfig();
+		for (int a = 0; a < kEventAngles && a < kMaxCameras; a++)
+			playableAngle[a] =
+				!cfg.cameras[a].sourceName.empty() ||
+				PacketTap::instance().newestNs(a) > 0 ||
+				SegmentIndex::instance().oldestNs(a) > 0;
+	}
+	const auto playable = [&playableAngle](int a) {
+		return a >= 0 && a < kEventAngles && playableAngle[a];
+	};
+
+	// Snapshot the events too, for the same reason: EventStore has its own
+	// lock and the dock mutates it from the GUI thread while this runs.
+	std::vector<ReplayEvent> events;
+	events.reserve(eventIds.size());
+	for (int id : eventIds) {
+		ReplayEvent ev;
+		if (EventStore::instance().get(id, ev) && ev.tOutNs >= 0)
+			events.push_back(std::move(ev));
+	}
+
 	std::lock_guard<std::mutex> lock(mutex_);
+
+	// The previous queue dies HERE, before a single field of the new one is
+	// written. startNext() bumps the generation too, but only once it has an
+	// item it likes: a play request that ends up queueing nothing at all (or
+	// whose every item is unplayable) used to leave the old queue's finish
+	// callback armed with a generation that was still current, so the clip on
+	// air could advance a queue the operator had already replaced. Cancelling
+	// up front makes "a new play request cancels the old one" an invariant
+	// instead of a side effect of the happy path.
+	playGen_++;
 
 	int ang = std::clamp(angle0, 0, kEventAngles - 1);
 	const int defPct = defaultSpeedPct_.load();
+
 	std::vector<QueueItem> items;
 	// Speed is resolved per ANGLE (its own override if it has one, else the
 	// slider default): the same event can be shown at 100% on the wide and
@@ -123,11 +171,7 @@ bool PlaybackCoordinator::playEvents(const std::vector<int> &eventIds,
 			{ev.id, ev.tInNs, ev.tOutNs, a, std::clamp(pct, 5, 400)});
 	};
 
-	for (int id : eventIds) {
-		ReplayEvent ev;
-		if (!EventStore::instance().get(id, ev) || ev.tOutNs < 0)
-			continue;
-
+	for (const ReplayEvent &ev : events) {
 		if (mode == AngleMode::AllEnabled) {
 			// One clip per enabled angle, in angle order. Enabling C1
 			// and C2 on a mark is a request to SEE both, one after the
@@ -136,7 +180,7 @@ bool PlaybackCoordinator::playEvents(const std::vector<int> &eventIds,
 			// read "[1/1]" no matter how many angles were on.
 			int before = (int)items.size();
 			for (int a = 0; a < kEventAngles; a++)
-				if (ev.angles[a].enabled)
+				if (ev.angles[a].enabled && playable(a))
 					push(ev, a);
 			if ((int)items.size() > before)
 				continue;
@@ -151,7 +195,7 @@ bool PlaybackCoordinator::playEvents(const std::vector<int> &eventIds,
 		int useAng = ang;
 		if (!ev.angles[ang].enabled) {
 			for (int a = 0; a < kEventAngles; a++) {
-				if (ev.angles[a].enabled) {
+				if (ev.angles[a].enabled && playable(a)) {
 					useAng = a;
 					break;
 				}
@@ -168,6 +212,25 @@ bool PlaybackCoordinator::playEvents(const std::vector<int> &eventIds,
 	queuePos_ = 0;
 	toOutput_ = toOutput;
 	active_ = true;
+
+	// The shape of the queue, once, before anything plays. The per-clip lines
+	// below say "[1/2]" but never what the other clip was, so a log from a real
+	// session could not answer "did it queue the angles I enabled?" - which is
+	// exactly the question the multi-angle reports raised.
+	{
+		std::string angles;
+		for (const QueueItem &q : queue_) {
+			if (!angles.empty())
+				angles += ",";
+			angles += std::to_string(q.angle + 1);
+		}
+		obs_log(LOG_INFO,
+			"coordinator: queued %zu clip(s) from %zu event(s), "
+			"mode=%s, angles=[%s]",
+			queue_.size(), eventIds.size(),
+			mode == AngleMode::AllEnabled ? "all-enabled" : "single",
+			angles.c_str());
+	}
 	// Reviewing, not watching the live edge: the preview must show the replay
 	// source from here on.
 	ReplayCore::instance().setFollowLive(false);
@@ -177,6 +240,15 @@ bool PlaybackCoordinator::playEvents(const std::vector<int> &eventIds,
 	if (musicEnabled_)
 		setMusicMuted(false);
 	startNext();
+	// startNext() clears active_ when every item was refused, and it used to
+	// return success anyway: the operator pressed play, nothing happened, and
+	// no dialog said why. That is the normal outcome for an event of a session
+	// whose footage was never anchored, so it has to be said out loud.
+	if (!active_) {
+		errorOut = "none of those clips can be played: no live packets "
+			   "and no anchored recording cover that instant";
+		return false;
+	}
 	return true;
 }
 
@@ -197,6 +269,7 @@ void PlaybackCoordinator::stopEvents()
 	ReplayChannel::instance().stop();
 	playGen_++; // any finish callback still in flight is now stale
 	queue_.clear();
+	queuePos_ = 0; // no queue, no position into one
 	if (active_ && toOutput_)
 		restorePreviousScene();
 	setMusicMuted(true);
@@ -215,6 +288,9 @@ PlaybackCoordinator::PlayState PlaybackCoordinator::playState() const
 	PlayState s;
 	s.active = active_;
 	s.queued = (int)queue_.size();
+	s.queuedAngles.reserve(queue_.size());
+	for (const QueueItem &q : queue_)
+		s.queuedAngles.push_back(q.angle + 1); // 0-based → 1-based
 	if (active_ && queuePos_ < queue_.size()) {
 		s.eventId = queue_[queuePos_].eventId;
 		s.angle1 = queue_[queuePos_].angle + 1; // 0-based → 1-based
@@ -259,7 +335,12 @@ void PlaybackCoordinator::startNext()
 		queuePos_++; // unplayable: advance to the next item
 	}
 
-	// Nothing left to play.
+	// Nothing left to play. Stop the engine as well: at the natural end of a
+	// queue the worker has already exited and this is a no-op join, but when a
+	// NEW queue could not start a single item the clip of the OLD one was still
+	// running - the operator saw the previous angle carry on over a play he had
+	// just replaced, with the dock reporting idle.
+	ReplayChannel::instance().stop();
 	active_ = false;
 	if (toOutput_)
 		restorePreviousScene();

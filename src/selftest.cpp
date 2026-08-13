@@ -27,8 +27,10 @@ See selftest.hpp. This is the scripted form of the M0 gate.
 
 #include <QMainWindow>
 #include <QObject>
+#include <QItemSelectionModel>
 #include <QPushButton>
 #include <QString>
+#include <QTableWidget>
 #include <QTimer>
 
 #include <algorithm>
@@ -166,6 +168,18 @@ struct DockChecks {
 	bool playsMark = false;
 	bool playheadInsideClip = false;
 	bool multiAngleQueue = false;
+	// Any combination of enabled angles, and the combination changing between
+	// two plays of the SAME event. These are separate claims: the first is
+	// about how a queue is built, the second about the previous queue being
+	// gone before the new one is built.
+	bool angleCombinations = false;
+	bool angleChoiceRepeatable = false;
+	bool singleNonFirstAnglePlays = false;
+	// The queue does not just hold two clips, it walks them: clip 1 ends and
+	// clip 2 goes on air by itself. That hop crosses two threads (the playback
+	// worker's finish callback, re-posted onto the OBS UI queue) and is the
+	// half of "play both angles" no shape check can see.
+	bool queueAdvancesToSecond = false;
 	int queuedClips = 0;
 	int ticks = 0;
 	int64_t worstGapMs = 0;
@@ -335,11 +349,40 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 	}
 
 	// --- Play it back, through the play button ----------------------------
-	// Checked first that the range is servable: a playEvents() that fails
-	// opens a modal QMessageBox on the GUI thread, and a modal dialog would
-	// wedge every runOnUi() after it — including the teardown.
+	// The play button plays the SELECTED rows, and the table only selects the
+	// fresh mark on its next poll tick - so clicking straight after the mark
+	// is a race the gate loses roughly one run in three. When it loses,
+	// playEvents finds no event, the dock opens a modal QMessageBox on the GUI
+	// thread, and every runOnUi() after it (including the teardown) blocks
+	// forever: the run produces no report at all rather than a failure.
+	// So wait for the selection the dock is supposed to make.
+	bool selected = false;
+	for (int i = 0; i < 40 && !selected; i++) {
+		runOnUi([&]() {
+			for (QTableWidget *t :
+			     dock->findChildren<QTableWidget *>()) {
+				for (const auto &idx : t->selectionModel()
+							       ->selectedRows()) {
+					QTableWidgetItem *it =
+						t->item(idx.row(), 0);
+					if (it && it->data(Qt::UserRole).toInt() ==
+							  evId)
+						selected = true;
+				}
+			}
+		});
+		if (!selected)
+			std::this_thread::sleep_for(
+				std::chrono::milliseconds(50));
+	}
+	if (haveEvent && !selected)
+		obs_log(LOG_ERROR,
+			"[selftest] dock: the table never selected the event it "
+			"just marked — 'play selected' would have nothing to play");
+
+	// Checked also that the range is servable, for the same modal reason.
 	bool servable = false;
-	if (c.markOnTimeline) {
+	if (c.markOnTimeline && selected) {
 		std::vector<LivePacket> probe;
 		int64_t pIn = 0, pOut = 0;
 		servable = PacketTap::instance().resolveRange(
@@ -389,32 +432,181 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 				   "servable — not clicking play");
 	}
 
-	// --- One event, two angles, two clips ---------------------------------
+	// --- Any combination of enabled angles, on the same event -------------
 	// Enabling C1 and C2 on the same mark is a request to SEE both, one after
 	// the other. The queue used to hold a single clip whatever was enabled -
 	// every replay in the log read "[1/1]" - and no check outside a live
 	// session ever noticed, because nothing looked at the queue.
+	//
+	// A count is not enough: [1,2] and [2,2] are both "two clips". These
+	// assert the exact angle SEQUENCE, for the combinations an operator
+	// actually produces - both cameras, one camera that is not the first, and
+	// a set with a hole in it (angle 1 and angle 3 on a two-camera rig, where
+	// nothing is wired to 3).
 	if (!haveEvent) {
 		// nothing to queue: the mark check above already failed loudly
 	} else if (secondCam < 0) {
-		c.multiAngleQueue = true; // one camera: nothing to prove
+		// One camera: nothing about combinations can be proven here.
+		c.multiAngleQueue = true;
+		c.angleCombinations = true;
+		c.angleChoiceRepeatable = true;
+		c.singleNonFirstAnglePlays = true;
+		c.queueAdvancesToSecond = true;
 	} else {
-		store.setAngle(evId, firstCam + 1, true);
-		store.setAngle(evId, secondCam + 1, true);
 		auto &pc = PlaybackCoordinator::instance();
-		std::string qerr;
-		const bool started =
-			pc.playEvents({evId}, firstCam, false, qerr);
-		const auto ps = pc.playState();
-		c.queuedClips = ps.queued;
-		c.multiAngleQueue = started && ps.queued == 2;
+		const int a1 = firstCam + 1;
+		const int a2 = secondCam + 1;
+		// A slot nothing is wired to. On the operator's two-camera rig
+		// this IS his "angle 3": enabling it must not shift, drop or
+		// reorder the angles that can actually play.
+		const int hole = kEventAngles;
+
+		// Set the enabled set EXACTLY, queue it, and read back the shape
+		// of the queue. Requesting `reqCam` as the current angle at the
+		// same time proves AllEnabled ignores it whenever the event says
+		// something.
+		const auto queueFor = [&](const char *what,
+					  const std::vector<int> &enable,
+					  int reqCam,
+					  const std::vector<int> &expect) {
+			for (int a = 1; a <= kEventAngles; a++)
+				store.setAngle(evId, a, false);
+			for (int a : enable)
+				store.setAngle(evId, a, true);
+			std::string qerr;
+			const bool started =
+				pc.playEvents({evId}, reqCam, false, qerr);
+			const auto ps = pc.playState();
+			const bool ok = started && ps.queuedAngles == expect;
+			std::string got, want;
+			for (int a : ps.queuedAngles)
+				got += std::to_string(a) + " ";
+			for (int a : expect)
+				want += std::to_string(a) + " ";
+			obs_log(ok ? LOG_INFO : LOG_ERROR,
+				"[selftest] dock: %s — queued [%s] expected [%s]%s%s",
+				what, got.c_str(), want.c_str(),
+				started ? "" : " — playEvents refused: ",
+				started ? "" : qerr.c_str());
+			return ok;
+		};
+
+		// Both angles, in angle order, whichever one the operator is on.
+		const bool both = queueFor("both angles", {a1, a2}, firstCam,
+					   {a1, a2});
+		const bool bothFromSecond = queueFor("both angles, on the second",
+						     {a1, a2}, secondCam,
+						     {a1, a2});
+		c.queuedClips = pc.playState().queued;
+		// Non-contiguous: the enabled set has a hole in it.
+		const bool gapLow = queueFor("angles 1 and a hole", {a1, hole},
+					     firstCam, {a1});
+		const bool gapHigh = queueFor("angles 2 and a hole", {a2, hole},
+					      secondCam, {a2});
+		// One angle only, and NOT the first one, requested from the
+		// first: the event decides, not the button.
+		const bool onlySecond = queueFor("only the second angle", {a2},
+						 firstCam, {a2});
+		c.angleCombinations = both && bothFromSecond && gapLow &&
+				      gapHigh && onlySecond;
+		c.multiAngleQueue = both;
+
+		// The single non-first angle must not just queue - it must run.
+		auto &chan = ReplayChannel::instance();
+		bool ranSecond = false;
+		if (onlySecond) {
+			std::string qerr;
+			if (pc.playEvents({evId}, firstCam, false, qerr)) {
+				for (int i = 0; i < 30 &&
+						chan.stats().framesPushed == 0;
+				     i++)
+					std::this_thread::sleep_for(
+						std::chrono::milliseconds(50));
+				const auto ps = pc.playState();
+				ranSecond = ps.angle1 == a2 &&
+					    chan.stats().framesPushed > 0;
+				obs_log(ranSecond ? LOG_INFO : LOG_ERROR,
+					"[selftest] dock: only-angle-%d playback — "
+					"on air angle %d, %llu frame(s)",
+					a2, ps.angle1,
+					(unsigned long long)
+						chan.stats().framesPushed);
+			}
+			pc.stopEvents();
+		}
+		c.singleNonFirstAnglePlays = ranSecond;
+
+		// The SAME event, played three times with a different choice each
+		// time: one angle, then both, then one again. Each play must see
+		// the current enabled set and nothing of the previous queue.
+		const bool r1 = queueFor("repeat 1/3: only the second", {a2},
+					 firstCam, {a2});
+		const bool r2 = queueFor("repeat 2/3: both", {a1, a2}, firstCam,
+					 {a1, a2});
+		const bool r3 = queueFor("repeat 3/3: only the first", {a1},
+					 secondCam, {a1});
+		c.angleChoiceRepeatable = r1 && r2 && r3;
 		pc.stopEvents();
-		obs_log(c.multiAngleQueue ? LOG_INFO : LOG_ERROR,
-			"[selftest] dock: event %d with angles %d+%d queued %d "
-			"clip(s)%s%s",
-			evId, firstCam + 1, secondCam + 1, c.queuedClips,
-			started ? "" : " — playEvents refused: ",
-			started ? "" : qerr.c_str());
+
+		// --- and it must WALK the queue, not just hold it -------------
+		// Clip 1 ends on the playback thread, which posts the advance
+		// onto the OBS UI queue, filtered by a generation counter. If any
+		// link in that chain drops the callback the operator sees one
+		// angle and the sequence stops - silently, because the queue
+		// still reads "2 clips". So let it run for real.
+		if (both) {
+			for (int a = 1; a <= kEventAngles; a++)
+				store.setAngle(evId, a, false);
+			store.setAngle(evId, a1, true);
+			store.setAngle(evId, a2, true);
+			std::string qerr;
+			if (pc.playEvents({evId}, firstCam, false, qerr)) {
+				// The clip is 5 s at 1x; 12 s is generous and
+				// still bounded.
+				bool reachedSecond = false;
+				uint64_t framesAtHop = 0;
+				for (int i = 0; i < 240; i++) {
+					const auto ps = pc.playState();
+					if (ps.queuePos == 2 && ps.angle1 == a2) {
+						reachedSecond = true;
+						framesAtHop = chan.stats()
+								      .framesPushed;
+						break;
+					}
+					if (!ps.active)
+						break; // queue died early
+					std::this_thread::sleep_for(
+						std::chrono::milliseconds(50));
+				}
+				// Frames on the SECOND clip, not leftovers from
+				// the first: play() zeroes the counter.
+				bool secondRuns = false;
+				for (int i = 0; reachedSecond && i < 40; i++) {
+					if (chan.stats().framesPushed > 0) {
+						secondRuns = true;
+						break;
+					}
+					std::this_thread::sleep_for(
+						std::chrono::milliseconds(50));
+				}
+				c.queueAdvancesToSecond = reachedSecond &&
+							  secondRuns;
+				obs_log(c.queueAdvancesToSecond ? LOG_INFO
+								: LOG_ERROR,
+					"[selftest] dock: two-angle sequence — "
+					"reached clip 2 on angle %d: %s, frames "
+					"at the hop %llu, frames after %llu",
+					a2, reachedSecond ? "yes" : "NO",
+					(unsigned long long)framesAtHop,
+					(unsigned long long)
+						chan.stats().framesPushed);
+			} else {
+				obs_log(LOG_ERROR,
+					"[selftest] dock: two-angle sequence — "
+					"playEvents refused: %s", qerr.c_str());
+			}
+			pc.stopEvents();
+		}
 	}
 
 	// Leave the operator's own project exactly as it was found.
@@ -1035,7 +1227,11 @@ void runSelfTest()
 			  dockChecks.pollRuns && dockChecks.pollResponsive &&
 			  dockChecks.pollQuiet && dockChecks.markOnTimeline &&
 			  dockChecks.playsMark && dockChecks.playheadInsideClip &&
-			  dockChecks.multiAngleQueue;
+			  dockChecks.multiAngleQueue &&
+			  dockChecks.angleCombinations &&
+			  dockChecks.angleChoiceRepeatable &&
+			  dockChecks.singleNonFirstAnglePlays &&
+			  dockChecks.queueAdvancesToSecond;
 
 	// --- Report -----------------------------------------------------------
 	obs_data_t *root = obs_data_create();
@@ -1086,6 +1282,19 @@ void runSelfTest()
 	// One clip per enabled angle: a two-angle event is two clips, not one.
 	obs_data_set_bool(checks, "dock_multi_angle_queue",
 			  dockChecks.multiAngleQueue);
+	// ...and the exact angle sequence, for every combination that matters:
+	// both, a set with a hole in it, and one angle that is not the first.
+	obs_data_set_bool(checks, "dock_angle_combinations",
+			  dockChecks.angleCombinations);
+	// The same event, replayed with a different choice each time.
+	obs_data_set_bool(checks, "dock_angle_choice_repeatable",
+			  dockChecks.angleChoiceRepeatable);
+	obs_data_set_bool(checks, "dock_single_non_first_angle_plays",
+			  dockChecks.singleNonFirstAnglePlays);
+	// Clip 1 ends and clip 2 goes on air by itself, across the finish
+	// callback and the generation filter.
+	obs_data_set_bool(checks, "dock_queue_advances_to_second_angle",
+			  dockChecks.queueAdvancesToSecond);
 	obs_data_set_obj(root, "checks", checks);
 	obs_data_release(checks);
 

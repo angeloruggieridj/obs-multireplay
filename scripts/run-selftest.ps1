@@ -107,7 +107,10 @@ $proc = Start-Process -FilePath $obsExe -WorkingDirectory $obsDir `
     -ArgumentList '--disable-shutdown-check', '--multi' -PassThru
 
 # --- 6. Wait for the plugin to write its verdict -----------------------------
-$timeout = $Seconds + 75
+# Measurement window + engine checks + the dock pass, which now replays a
+# two-angle sequence end to end (two 5 s clips in real time). A run that is
+# merely slow must not be reported as "no report at all".
+$timeout = $Seconds + 120
 $waited = 0
 while (-not (Test-Path $report) -and $waited -lt $timeout) {
     if ($proc.HasExited) { break }

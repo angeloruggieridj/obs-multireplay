@@ -67,6 +67,12 @@ public:
 		// gate) tell "playing one angle" from "playing all of them".
 		int queued = 0;
 		int queuePos = 0; // 1-based position of the clip on air
+		// The whole queue's angles (1-based), in play order. "Which
+		// cameras, in which order" is the property the operator actually
+		// asked for, and a count alone cannot express it: [1,2] and
+		// [2,2] both queue two clips. Nothing outside could see the
+		// queue's shape, so no test could ever fail on a wrong one.
+		std::vector<int> queuedAngles;
 	};
 	PlayState playState() const;
 
