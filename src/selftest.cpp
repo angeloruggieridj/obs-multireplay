@@ -716,6 +716,8 @@ void runSelfTest()
 		for (int i = 0; i < camCount; i++) {
 			if (!cams[i])
 				continue;
+			// Created, NOT armed: this is exactly what New Project /
+			// Open Project / Settings do, and it must not record.
 			obs_source_t *filter =
 				branch_output::ensureFilter(cams[i], i, cfg);
 			if (!filter) {
@@ -724,10 +726,61 @@ void runSelfTest()
 					i + 1);
 				continue;
 			}
-			branch_output::setEnabled(filter, true);
 			obs_source_release(filter);
 			want[i] = true;
 			armed++;
+		}
+	});
+
+	// --- A configured filter must NOT be a recording filter ---------------
+	// Branch Output re-evaluates its start conditions once a second, so give it
+	// three ticks with the filters merely CONFIGURED and check that nothing is
+	// writing. This is the regression that made creating a project start the
+	// take: the filter was born enabled, BO obliged, and the recording began
+	// before the tap existed to anchor it against.
+	bool filtersIdleOutsideRec = armed > 0;
+	std::this_thread::sleep_for(std::chrono::milliseconds(3000));
+	runOnUi([&]() {
+		for (int i = 0; i < camCount; i++) {
+			if (!want[i] || !cams[i])
+				continue;
+			const std::string fname =
+				std::string(branch_output::kFilterNamePrefix) +
+				std::to_string(i + 1);
+			bool enabled = true;
+			if (obs_source_t *f = obs_source_get_filter_by_name(
+				    cams[i], fname.c_str())) {
+				enabled = obs_source_enabled(f);
+				obs_source_release(f);
+			}
+			const bool writing = branch_output::recordingOutputActive(i);
+			if (enabled || writing) {
+				filtersIdleOutsideRec = false;
+				obs_log(LOG_ERROR,
+					"[selftest] cam%d: filter armed itself outside "
+					"REC (enabled=%s, recording output active=%s)",
+					i + 1, enabled ? "yes" : "no",
+					writing ? "yes" : "no");
+			}
+		}
+	});
+	obs_log(filtersIdleOutsideRec ? LOG_INFO : LOG_ERROR,
+		"[selftest] filters idle while only configured: %s",
+		filtersIdleOutsideRec ? "yes" : "NO");
+
+	// Now arm them, which is what REC does and the only thing that may.
+	runOnUi([&]() {
+		for (int i = 0; i < camCount; i++) {
+			if (!want[i] || !cams[i])
+				continue;
+			const std::string fname =
+				std::string(branch_output::kFilterNamePrefix) +
+				std::to_string(i + 1);
+			if (obs_source_t *f = obs_source_get_filter_by_name(
+				    cams[i], fname.c_str())) {
+				branch_output::setEnabled(f, true);
+				obs_source_release(f);
+			}
 		}
 	});
 	obs_log(LOG_INFO, "[selftest] armed %d Branch Output filter(s)", armed);
@@ -1286,7 +1339,7 @@ void runSelfTest()
 			  dockChecks.singleNonFirstAnglePlays &&
 			  dockChecks.queueAdvancesToSecond &&
 			  anchorsPersisted && projectOriginOk &&
-			  eventTimecodeSane;
+			  eventTimecodeSane && filtersIdleOutsideRec;
 
 	// --- Report -----------------------------------------------------------
 	obs_data_t *root = obs_data_create();
@@ -1301,6 +1354,8 @@ void runSelfTest()
 	obs_data_set_double(root, "canvas_fps", canvasFps);
 
 	obs_data_t *checks = obs_data_create();
+	// Configuring a camera is not arming it: only REC records.
+	obs_data_set_bool(checks, "filters_idle_outside_rec", filtersIdleOutsideRec);
 	obs_data_set_bool(checks, "all_channels_attached", passAttached);
 	obs_data_set_bool(checks, "no_new_encoder_created", passNoNewEncoder);
 	obs_data_set_bool(checks, "packets_received", passPackets);

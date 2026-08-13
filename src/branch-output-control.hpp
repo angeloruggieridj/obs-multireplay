@@ -30,6 +30,12 @@ bool available();
 // Find-or-create our Branch Output filter on `target` for camera `camIndex`
 // (0-based) and apply recording settings derived from `cfg`.
 // Returns the filter source (caller must obs_source_release) or nullptr.
+//
+// The returned filter is ALWAYS DISARMED, whether it was just created or only
+// reconfigured. Configuring is not arming: a filter left enabled records the
+// moment Branch Output's timer notices it, which is how creating a project used
+// to start a take nobody asked for. setEnabled(true) is the only way in, and
+// ReplayCore::startRecording() is the only caller allowed to use it.
 obs_source_t *ensureFilter(obs_source_t *target, int camIndex, const Config &cfg);
 
 // Enable/disable the filter (this is what starts/stops the Branch Output

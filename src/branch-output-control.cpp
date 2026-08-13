@@ -124,8 +124,30 @@ obs_source_t *ensureFilter(obs_source_t *target, int camIndex, const Config &cfg
 		filter = obs_source_create_private(kFilterId, filterName.c_str(),
 						   settings);
 		if (filter) {
+			// DISARM BEFORE THE FILTER IS EVEN ATTACHED.
+			//
+			// A source is born ENABLED, and an enabled Branch Output
+			// filter is a running recording as soon as BO's own 1 s
+			// timer looks at it (with Interlock on "Always ON" nothing
+			// else gates it). So creating a project - which is only
+			// meant to point the filters at a new folder - started the
+			// take by itself: the operator typed a name, pressed Enter,
+			// and BO wrote 'Starting recording output succeeded' 1.3 s
+			// later, fifteen seconds before he pressed REC.
+			//
+			// That is not merely an early file: the tap only attaches
+			// on REC, so those fifteen seconds are recorded with no
+			// packets in the ring to anchor the file's opening against,
+			// and the whole take ends "nothing anchored this run" -
+			// unreplayable after the ring wraps.
+			//
+			// Doing it before obs_source_filter_add() leaves no window
+			// at all for BO's timer to see it armed.
+			obs_source_set_enabled(filter, false);
 			obs_source_filter_add(target, filter);
-			obs_log(LOG_INFO, "Added Branch Output filter '%s' to '%s'",
+			obs_log(LOG_INFO,
+				"Added Branch Output filter '%s' to '%s' (disarmed — "
+				"recording starts only on REC)",
 				filterName.c_str(), obs_source_get_name(target));
 		} else {
 			obs_log(LOG_ERROR,
@@ -134,6 +156,12 @@ obs_source_t *ensureFilter(obs_source_t *target, int camIndex, const Config &cfg
 		}
 	} else {
 		obs_source_update(filter, settings);
+		// Same rule for a RE-configured filter (New/Open Project, Settings):
+		// this function is never called while recording (startRecording only
+		// calls it for a filter that does not exist yet, and
+		// reapplyFilterSettings refuses mid-take), so "configured" must never
+		// mean "armed". Only startRecording() enables.
+		obs_source_set_enabled(filter, false);
 	}
 
 	obs_data_release(settings);
