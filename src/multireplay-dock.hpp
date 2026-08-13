@@ -186,11 +186,12 @@ private:
 
 	QSplitter *splitter_ = nullptr;
 
-	// Live-mirror preview: while recording and following live, the preview
-	// renders the live camera source for the selected angle (zero latency,
-	// exactly what the reference controller shows) instead of the replay input, which only has
-	// pictures while a clip is playing. Updated by poll() (UI thread), read
-	// by drawChannelA() (graphics thread).
+	// Live-mirror preview: unless a clip is playing, the preview renders the
+	// live camera source for the selected angle (zero latency, exactly what
+	// the reference controller shows) instead of the replay input, which only has pictures while a
+	// clip is playing. It is a confidence monitor, so it does NOT depend on
+	// recording: the angles are checked before the take, not during it.
+	// Updated by poll() (UI thread), read by drawChannelA() (graphics thread).
 	std::atomic<bool> previewLive_{false};
 	std::mutex previewMutex_;     // guards liveSourceName_
 	std::string liveSourceName_; // OBS source name for the current angle

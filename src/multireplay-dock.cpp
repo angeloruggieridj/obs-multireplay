@@ -529,11 +529,12 @@ void SeekBar::mouseReleaseEvent(QMouseEvent *e)
 
 void MultiReplayDock::drawChannelA(void *data, uint32_t cx, uint32_t cy)
 {
-	// Live mirror: while recording + following live, render the live camera
-	// source for the selected angle. That is what the reference controller shows, and it is the
-	// only zero-latency picture available — the replay input only carries
-	// frames while a clip is actually playing. Falls back to the replay input
-	// for review/scrub and after recording stops.
+	// Live mirror: unless a clip is playing, render the live camera source of
+	// the selected angle. That is what the reference controller shows, it is the only zero-latency
+	// picture available (the replay input carries frames only while a clip is
+	// being paced into it), and it is what the operator needs BEFORE the take
+	// to check the angles are the right ones. poll() decides which of the two
+	// this is and publishes the source name; here we only resolve it.
 	obs_source_t *src = nullptr;
 	auto *self = static_cast<MultiReplayDock *>(data);
 	if (self && self->previewLive_.load()) {
@@ -542,6 +543,9 @@ void MultiReplayDock::drawChannelA(void *data, uint32_t cx, uint32_t cy)
 			std::lock_guard<std::mutex> lk(self->previewMutex_);
 			name = self->liveSourceName_;
 		}
+		// An unconfigured angle leaves the name empty, and a stale one
+		// resolves to nothing: both fall through, they never reach the
+		// render below with a dangling pointer.
 		if (!name.empty())
 			src = obs_get_source_by_name(name.c_str()); // add-ref'd
 	}
@@ -1452,10 +1456,16 @@ void MultiReplayDock::poll()
 		}
 	}
 
-	// Live-mirror preview state: while recording + following live, render the
-	// live camera source for the selected angle (see drawChannelA). Resolve
-	// the source name for the current angle here on the UI thread.
-	bool live = rec && followLive;
+	// Live-mirror preview state (see drawChannelA). The preview is a
+	// confidence monitor for the selected angle: the operator lines the
+	// cameras up BEFORE the take, so it mirrors the live source whenever
+	// nothing else is on it — recording or not, ever started or not. The
+	// replay input only carries pictures while a clip is being paced into it,
+	// so it wins for exactly as long as one is playing.
+	//
+	// Resolving the source NAME happens here, on the UI thread; the graphics
+	// thread only looks it up and releases its own reference (drawChannelA).
+	bool live = !playing;
 	std::string liveName;
 	if (live)
 		liveName = core.getConfig().cameras[cam0].sourceName;
