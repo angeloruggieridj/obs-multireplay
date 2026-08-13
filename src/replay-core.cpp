@@ -462,6 +462,23 @@ bool ReplayCore::startRecording(std::string &errorOut)
 	return true;
 }
 
+bool ReplayCore::branchOutputRecording() const
+{
+	std::lock_guard<std::mutex> lock(mutex_);
+	if (!recording_)
+		return false;
+	for (const auto &st : cameraStatus_) {
+		// Only the cameras this take actually armed: an unconfigured or
+		// missing source never had an output to begin with, and counting
+		// it would make the check unfailable.
+		if (!st.recording)
+			continue;
+		if (branch_output::recordingOutputActive(st.index))
+			return true;
+	}
+	return false;
+}
+
 bool ReplayCore::stopRecording()
 {
 	std::lock_guard<std::mutex> lock(mutex_);

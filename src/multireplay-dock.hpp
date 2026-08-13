@@ -112,6 +112,9 @@ private:
 	// Inspector panel below the table: per-angle toggle · comment · vel% for the
 	// currently selected event (replaces the cramped in-table camera cards).
 	void populateInspector(int eventId);
+	// The take armed Branch Output but nothing started: disarm and say why.
+	// Called from poll() when the watchdog below expires.
+	void cancelDeadRecording();
 	void openSettings();        // configuration dialog
 	void newProjectDialog();    // New Project... menu action
 	void openProjectDialog();   // Open Project... menu action
@@ -197,6 +200,12 @@ private:
 
 	QTimer *pollTimer_ = nullptr;
 	bool prevRecording_ = false; // detects REC start
+	// Deadline (master ns) by which Branch Output has to have started at least
+	// one recording output, 0 = not watching. REC only ENABLES the filters:
+	// Branch Output decides on its own, and on any Interlock setting other
+	// than "Always ON" it silently declines — which used to leave the dock red
+	// over a session recording nothing. See poll() / cancelDeadRecording().
+	int64_t armWatchDeadlineNs_ = 0;
 	// Counts poll() ticks so the expensive status refresh can run at a
 	// fraction of the transport rate (see poll()).
 	uint64_t statusTick_ = 0;

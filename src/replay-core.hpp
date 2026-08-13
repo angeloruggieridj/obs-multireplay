@@ -90,6 +90,14 @@ public:
 	bool startRecording(std::string &errorOut);
 	bool stopRecording();
 	bool isRecording() const { return recording_; }
+	// Is Branch Output really recording, on at least one armed camera?
+	//
+	// isRecording() only says WE armed the filters. Branch Output starts (or
+	// declines to start) on its own, from a global Interlock setting we cannot
+	// read — so this is the difference between "the GUI says REC" and "frames
+	// are being captured". The dock uses it to fail the take loudly instead of
+	// letting the operator mark events over nothing (see poll()).
+	bool branchOutputRecording() const;
 
 	// --- Operator state shared by the dock, the hotkeys and the coordinator ---
 	// The playback engine holds none of this any more: ReplayChannel is told an

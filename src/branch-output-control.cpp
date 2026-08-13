@@ -130,5 +130,22 @@ void setEnabled(obs_source_t *filter, bool enabled)
 		obs_source_set_enabled(filter, enabled);
 }
 
+bool recordingOutputActive(int camIndex)
+{
+	// Same name the tap looks up: Branch Output creates its recording output
+	// with the filter's name (plugin-stream-recording.cpp:
+	// obs_output_create(outputId, qUtf8Printable(name), ...)), and its
+	// streaming outputs carry a " (index)" suffix, so this cannot collide.
+	const std::string name =
+		std::string(kFilterNamePrefix) + std::to_string(camIndex + 1);
+
+	obs_output_t *out = obs_get_output_by_name(name.c_str()); // add-ref'd
+	if (!out)
+		return false; // not created yet, or never will be
+	const bool active = obs_output_active(out);
+	obs_output_release(out);
+	return active;
+}
+
 } // namespace branch_output
 } // namespace multireplay

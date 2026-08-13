@@ -17,6 +17,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <obs-module.h>
 #include <obs-frontend-api.h> // obs_frontend_get_scenes (output-scene picker)
+#include <util/platform.h>    // os_gettime_ns (arm watchdog deadline)
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -277,6 +278,13 @@ constexpr int kNCams = kMaxCameras; // 8
 // packet of the range in RAM, and an uncapped "from here to now" would be a
 // multi-gigabyte copy on a long session.
 constexpr int64_t kScrubReviewNs = 10'000'000'000LL; // 10 s
+
+// How long a take gets to prove Branch Output really started it. Branch Output
+// re-evaluates its start conditions once a second (plugin-main.cpp:
+// TASK_INTERVAL_MS = 1000), so this is four of its ticks — enough for encoder
+// creation on a slow adapter, short enough that the operator learns NOW rather
+// than when the first replay comes up empty. See poll().
+constexpr int64_t kArmWatchNs = 4'000'000'000LL; // 4 s
 
 // Event table column layout.
 // Note: per-camera descriptions are edited via right-click on camera chips.
@@ -1240,6 +1248,37 @@ void MultiReplayDock::seekToFraction(double frac)
 }
 
 // ---------------------------------------------------------------------------
+// The take that never started
+// ---------------------------------------------------------------------------
+
+void MultiReplayDock::cancelDeadRecording()
+{
+	auto &core = ReplayCore::instance();
+
+	obs_log(LOG_ERROR,
+		"REC armed the Branch Output filters but no recording output "
+		"started within %lld s — cancelling the take. Branch Output's "
+		"Interlock setting must be 'Always ON'.",
+		(long long)(kArmWatchNs / 1'000'000'000LL));
+
+	// Disarm through the same path as the STOP button: the filters go back
+	// off, the tap stops retrying and the GUI stops claiming to record. This
+	// runs on the GUI thread, so it must not wait on anything — it does not:
+	// stopRecording() only flips filter enables and detaches the tap.
+	core.stopRecording();
+
+	// The message box is DEFERRED. Showing it from inside poll() would open a
+	// nested event loop on top of a running poll tick, re-entering the whole
+	// refresh (and its table rebuild) from within itself. Queued, it opens on
+	// a clean stack, with `this` as context so a closed dock cancels it.
+	QTimer::singleShot(0, this, [this]() {
+		QMessageBox::warning(
+			this, obs_module_text("Dock.RecNotStartedTitle"),
+			obs_module_text("Dock.RecNotStarted"));
+	});
+}
+
+// ---------------------------------------------------------------------------
 // Periodic refresh
 // ---------------------------------------------------------------------------
 
@@ -1382,9 +1421,36 @@ void MultiReplayDock::poll()
 	// --- recording status ---
 	// Auto-follow the live edge when recording starts so the preview tracks
 	// the new take instead of sitting on the last clip that played.
-	if (rec && !prevRecording_)
+	if (rec && !prevRecording_) {
 		core.setFollowLive(true);
+		// Start the watchdog on every take, however it was started (the
+		// REC button, a hotkey, the API): the failure it catches is not
+		// the dock's, it is Branch Output declining.
+		armWatchDeadlineNs_ = (int64_t)os_gettime_ns() + kArmWatchNs;
+	}
 	prevRecording_ = rec;
+
+	// --- did Branch Output actually START? -------------------------------
+	// Our REC only enables the filters. Branch Output re-evaluates its own
+	// start conditions on a 1 s timer, and the Interlock setting that gates
+	// them is global, lives in ITS dock and is exposed by no API — so on
+	// anything but "Always ON" the filters stay armed and nothing records.
+	// The old symptom was the worst kind: a red REC button, a running clock,
+	// and marks landing on footage that does not exist, discovered only when
+	// a replay came up empty (and, before that, only as a log warning 40 s
+	// later, from the tap giving up). A take that has not started in a few
+	// seconds never will, so it is cancelled here rather than faked.
+	if (armWatchDeadlineNs_ > 0) {
+		if (!rec || core.branchOutputRecording()) {
+			armWatchDeadlineNs_ = 0; // running, or already stopped
+		} else if ((int64_t)os_gettime_ns() >= armWatchDeadlineNs_) {
+			// Cleared BEFORE cancelling: cancelDeadRecording() queues a
+			// modal, whose nested event loop keeps this timer ticking.
+			armWatchDeadlineNs_ = 0;
+			cancelDeadRecording();
+			return;
+		}
+	}
 
 	// Live-mirror preview state: while recording + following live, render the
 	// live camera source for the selected angle (see drawChannelA). Resolve

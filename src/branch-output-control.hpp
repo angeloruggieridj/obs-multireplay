@@ -36,6 +36,17 @@ obs_source_t *ensureFilter(obs_source_t *target, int camIndex, const Config &cfg
 // recording when stream_recording=true and no stream server is configured).
 void setEnabled(obs_source_t *filter, bool enabled);
 
+// True when Branch Output has a RUNNING recording output for this camera.
+//
+// Enabling the filter is a request, not a start: Branch Output re-evaluates its
+// own conditions on a 1 s timer (plugin-main.cpp: TASK_INTERVAL_MS) and the
+// Interlock setting that gates them is GLOBAL, lives in Branch Output's own
+// dock, and is not exposed by any API — so the only honest way to know whether
+// our REC actually started anything is to ask whether the output it would have
+// created is running. It is named after our filter (see packet-tap.hpp), so the
+// lookup is exact.
+bool recordingOutputActive(int camIndex);
+
 // Build the obs_data settings for one camera filter.
 // Exposed for unit testing.
 obs_data_t *buildSettings(int camIndex, const Config &cfg);
