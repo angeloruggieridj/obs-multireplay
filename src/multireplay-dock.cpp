@@ -559,12 +559,102 @@ void renderSourceFitted(obs_source_t *src, uint32_t cx, uint32_t cy)
 // SeekBar
 // ---------------------------------------------------------------------------
 
+namespace {
+
+// The ruler strip under the track: where the graduation ticks and their labels
+// are drawn. Small, but it is the whole difference between a scale and a
+// coloured rectangle, so the bar is made tall enough to afford it rather than
+// the labels being squeezed over the track and fighting the timecode there.
+constexpr int kSeekRulerH = 14;
+// Track thickness. Wide enough to hold the event markers and the timecode the
+// way it always did.
+constexpr int kSeekTrackH = 26;
+
+// Label for a graduation. Minutes and seconds up to an hour, then hours: a
+// position bar over a two-hour recording that counts to "137:00" is arithmetic
+// the operator should not be doing.
+QString tickLabel(int64_t ns)
+{
+	const int64_t s = ns / 1'000'000'000LL;
+	if (s < 3600)
+		return QString::asprintf("%lld:%02lld", (long long)(s / 60),
+					 (long long)(s % 60));
+	return QString::asprintf("%lld:%02lld:%02lld", (long long)(s / 3600),
+				 (long long)((s % 3600) / 60), (long long)(s % 60));
+}
+
+} // namespace
+
 SeekBar::SeekBar(QWidget *parent) : QWidget(parent)
 {
-	setFixedHeight(28);
+	// Track + ruler + the 1 px of margin each side. The bar used to be 28 px
+	// of pure track: enough to click, not enough to be recognised as the
+	// control over the whole recording.
+	setFixedHeight(kSeekTrackH + kSeekRulerH + 2);
 	setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
 	setCursor(Qt::PointingHandCursor);
 	setMouseTracking(false);
+}
+
+int SeekBar::trackWidth() const
+{
+	return std::max(1, width() - 4); // 2 px margin each side
+}
+
+int64_t SeekBar::tickStepNs() const
+{
+	if (durationNs_ <= 0)
+		return 0;
+	// Only round steps an operator counts in: seconds, then the quarter and
+	// half minute, then minutes. A "every 3.7 s" scale is worse than none.
+	static const int64_t kStepsSec[] = {1,   2,   5,   10,   15,   30,  60,
+					    120, 300, 600, 900, 1800, 3600, 7200,
+					    10800};
+	// Two labels 58 px apart still have air between them at this font; any
+	// closer and the scale turns into a smear of digits.
+	const double kMinPx = 58.0;
+	const double w = (double)trackWidth();
+	for (int64_t sec : kStepsSec) {
+		const int64_t step = sec * 1'000'000'000LL;
+		if (w * (double)step / (double)durationNs_ >= kMinPx)
+			return step;
+	}
+	// Longer than the coarsest step: keep the coarsest rather than dropping
+	// the scale — sparse marks still say which way time runs.
+	return kStepsSec[sizeof(kStepsSec) / sizeof(kStepsSec[0]) - 1] *
+	       1'000'000'000LL;
+}
+
+int SeekBar::graduations() const
+{
+	const int64_t step = tickStepNs();
+	if (step <= 0)
+		return 0;
+	// Marks at step, 2*step, … up to the end (0 is the left edge and needs
+	// no mark of its own).
+	return (int)(durationNs_ / step);
+}
+
+void SeekBar::setTimeline(int64_t durationNs, const QString &emptyHint)
+{
+	if (durationNs < 0)
+		durationNs = 0;
+	if (durationNs == durationNs_ && emptyHint == emptyHint_)
+		return; // called thirty times a second; most ticks change nothing
+	const bool had = durationNs_ > 0;
+	durationNs_ = durationNs;
+	emptyHint_ = emptyHint;
+	if (had != (durationNs_ > 0)) {
+		// A bar that cannot be scrubbed must not offer the hand cursor:
+		// the cursor is the first promise the widget makes.
+		setCursor(durationNs_ > 0 ? Qt::PointingHandCursor
+					  : Qt::ArrowCursor);
+		if (dragging_) {
+			dragging_ = false;
+			emit scrubStateChanged(false);
+		}
+	}
+	update();
 }
 
 void SeekBar::setProgress(double positionFrac, double seekableFrac)
@@ -599,7 +689,10 @@ double SeekBar::fracAt(int x) const
 void SeekBar::paintEvent(QPaintEvent *)
 {
 	QPainter p(this);
-	p.setRenderHint(QPainter::Antialiasing, true);
+	// Antialiasing OFF: everything here is axis-aligned, and a 1 px
+	// graduation drawn with AA is a 2 px grey smudge — which is how a scale
+	// stops being readable at the exact size where it matters.
+	p.setRenderHint(QPainter::Antialiasing, false);
 
 	// The whole widget IS the bar (no bead on a rail): it is the control the
 	// operator's hand lives on, so it is as wide and as tall as the panel can
@@ -610,11 +703,35 @@ void SeekBar::paintEvent(QPaintEvent *)
 	// one is a CONTROL over the whole recorded timeline. Two stacked bars in
 	// the same colour would be two bars the operator has to tell apart by
 	// reading, every time, under pressure.
-	const int m = 2;                       // horizontal margin
-	const int h = height() - 2;            // track thickness (nearly full)
+	const int m = 2;             // horizontal margin
+	const int h = kSeekTrackH;   // track thickness
 	const int y = 1;
+	const int rulerY = y + h;    // graduations live under the track
 	const int w = width() - 2 * m;
 	const double pos = dragging_ ? dragFrac_ : positionFrac_;
+
+	// --- no timeline: say so, and mean it ---------------------------------
+	// This is not a defensive branch, it is a state the operator reaches by
+	// opening yesterday's project: the files are on disk but nothing is
+	// feeding a live edge, so there is no span to scrub. Drawing the usual
+	// empty track there gave him a scrubber that swallowed every click.
+	if (durationNs_ <= 0) {
+		p.setPen(Qt::NoPen);
+		p.setBrush(QColor(0x11, 0x13, 0x17));
+		p.drawRect(QRect(m, y, w, h + kSeekRulerH));
+		p.setBrush(Qt::NoBrush);
+		p.setPen(QPen(QColor(0x24, 0x2a, 0x33), 1));
+		p.drawRect(QRect(m, y, w - 1, h + kSeekRulerH - 1));
+		if (!emptyHint_.isEmpty()) {
+			QFont f = p.font();
+			f.setBold(true);
+			p.setFont(f);
+			p.setPen(QColor(0x70, 0x7e, 0x8e));
+			p.drawText(QRect(m + 6, y, w - 12, h + kSeekRulerH),
+				   Qt::AlignCenter, emptyHint_);
+		}
+		return;
+	}
 
 	// Track (the part of the timeline behind/ahead of the playhead)
 	p.setPen(Qt::NoPen);
@@ -675,12 +792,92 @@ void SeekBar::paintEvent(QPaintEvent *)
 		p.drawRect(QRectF(m, y, w * pos, h));
 	}
 
+	// --- the graduations --------------------------------------------------
+	// The scale, on its own strip under the track plus a matching tick INTO
+	// the track. This is what tells the operator that the bar spans forty
+	// seconds and not two hours — the number in the middle only says where he
+	// is, never how far the ends are.
+	//
+	// Two densities: labelled marks at tickStepNs(), and four unlabelled ones
+	// between each pair (the fifths of the step) as long as they are far
+	// enough apart to still be separate lines. The minor marks are what makes
+	// the strip read as a ruler at a glance, before any digit is read.
+	{
+		p.setBrush(Qt::NoBrush);
+		// Ruler ground, a shade darker than the track: the strip is part
+		// of the control, not the panel behind it.
+		p.setPen(Qt::NoPen);
+		p.setBrush(QColor(0x0d, 0x10, 0x15));
+		p.drawRect(QRect(m, rulerY, w, kSeekRulerH));
+
+		const int64_t step = tickStepNs();
+		const double pxPerNs = (double)w / (double)durationNs_;
+		const double minorPx = pxPerNs * (double)step / 5.0;
+		const bool drawMinor = minorPx >= 7.0;
+
+		QFont lf = p.font();
+		if (lf.pointSizeF() > 0)
+			lf.setPointSizeF(std::max(6.5, lf.pointSizeF() * 0.78));
+		p.setFont(lf);
+		const QFontMetrics fm(lf);
+
+		const QColor kMajor(0x8e, 0xa4, 0xbc);
+		const QColor kMinor(0x46, 0x54, 0x66);
+		// Where the last label ended, so two of them can never overlap
+		// even at the clamped edges.
+		int lastLabelRight = -10000;
+
+		for (int64_t t = 0; t <= durationNs_; t += step) {
+			const double x = (double)m + pxPerNs * (double)t;
+
+			// Minor marks between this graduation and the next.
+			if (drawMinor) {
+				p.setPen(QPen(kMinor, 1));
+				for (int k = 1; k < 5; k++) {
+					const double mx =
+						x + pxPerNs * (double)step *
+							    ((double)k / 5.0);
+					if (mx > (double)(m + w))
+						break;
+					const int mxi = (int)mx;
+					p.drawLine(mxi, rulerY + 1, mxi,
+						   rulerY + 4);
+				}
+			}
+
+			const int xi = (int)x;
+			// The mark itself: a tick into the bottom of the track so
+			// the scale is tied to the thing it measures, and a taller
+			// one on the ruler.
+			p.setPen(QPen(QColor(0xff, 0xff, 0xff, 0x38), 1));
+			p.drawLine(xi, y + h - 5, xi, y + h - 1);
+			p.setPen(QPen(kMajor, 1));
+			p.drawLine(xi, rulerY + 1, xi, rulerY + 6);
+
+			// ...and its label, when there is room for it. The first
+			// and last are pulled inside the bar instead of being cut
+			// in half by its edge.
+			const QString lbl = tickLabel(t);
+			const int lw = fm.horizontalAdvance(lbl);
+			int lx = xi - lw / 2;
+			lx = std::clamp(lx, m + 1, m + w - lw - 1);
+			if (lx > lastLabelRight + 6) {
+				p.setPen(kMajor);
+				p.drawText(QRect(lx, rulerY + 5, lw, kSeekRulerH - 5),
+					   Qt::AlignHCenter | Qt::AlignTop, lbl);
+				lastLabelRight = lx + lw;
+			}
+		}
+	}
+
 	// Playhead: a thin bright line, no bead. the reference controller draws a hairline, and a
-	// bead on a 24 px band hides the very frame it is pointing at.
+	// bead on a 24 px band hides the very frame it is pointing at. It runs
+	// through the ruler too — a scale is only useful if the position can be
+	// read against it.
 	const double hx = m + w * pos;
 	p.setPen(QPen(QColor(0xff, 0xff, 0xff, dragging_ ? 0xff : 0xc0),
 		      dragging_ ? 3.0 : 2.0, Qt::SolidLine, Qt::FlatCap));
-	p.drawLine(QPointF(hx, y), QPointF(hx, y + h));
+	p.drawLine(QPointF(hx, y), QPointF(hx, y + h + kSeekRulerH));
 
 	// Where the timeline stands, printed ON the bar (the reference controller). NOT the clip
 	// state — that is the green band above; this is position and length of
@@ -700,7 +897,11 @@ void SeekBar::paintEvent(QPaintEvent *)
 
 void SeekBar::mousePressEvent(QMouseEvent *e)
 {
-	if (e->button() != Qt::LeftButton)
+	// No timeline, no scrub. The host would refuse the seek anyway
+	// (seekToFraction), but silently: the click has to be refused HERE, so
+	// the playhead does not jump to where the finger landed on a bar that
+	// spans nothing.
+	if (e->button() != Qt::LeftButton || durationNs_ <= 0)
 		return;
 	dragging_ = true;
 	// Clamp to seekable region so the user can't drag into unindexed territory.
@@ -1341,6 +1542,11 @@ MultiReplayDock::LayoutProbe MultiReplayDock::layoutProbe() const
 	lp.tableY = topOf(events_);
 	lp.clipBarY = topOf(clipBar_);
 	lp.seekY = topOf(seek_);
+	if (seek_) {
+		lp.seekHeight = seek_->height();
+		lp.seekGraduations = seek_->graduations();
+		lp.seekEnabled = seek_->hasTimeline();
+	}
 	return lp;
 }
 
@@ -1828,7 +2034,10 @@ QWidget *MultiReplayDock::buildBottomBar()
 	}
 
 	// ── Row 4: the position bar over the whole recorded timeline ──────
+	// Graduated, and the widest thing on the panel: it is the only control
+	// that reaches the whole project, and the operator finds it by its scale.
 	seek_ = new SeekBar(this);
+	seek_->setToolTip(obs_module_text("Dock.SeekHint"));
 	connect(seek_, &SeekBar::scrubStateChanged, this,
 		[this](bool dragging) { seekDragging_ = dragging; });
 	connect(seek_, &SeekBar::scrubMoved, this, [this](double frac) {
@@ -2570,6 +2779,21 @@ void MultiReplayDock::updateChannelStrip()
 					    : 0;
 		seek_->setOverlayText(shortTc(rel) + "  /  " +
 				      shortTc(displayDurNs_));
+		// The bar needs the LENGTH, not just the fraction: the graduations
+		// are computed from it, and a fraction cannot say whether the bar
+		// spans forty seconds or two hours.
+		//
+		// ...and when there is no length, why. Two different nothings:
+		// a session that has captured nothing yet (press REC), and a
+		// project reopened in a later OBS run — its footage is on disk and
+		// its events still play, but nothing is feeding a live edge this
+		// run, so there is no span to scrub until the next take. That is a
+		// known limit of the timeline, and printing it on the bar is the
+		// difference between a limit and a broken widget.
+		seek_->setTimeline(displayDurNs_,
+				   obs_module_text(timelineStartNs_ > 0
+							   ? "Dock.SeekReopened"
+							   : "Dock.SeekNoTimeline"));
 	}
 }
 

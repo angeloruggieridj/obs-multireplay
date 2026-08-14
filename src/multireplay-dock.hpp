@@ -55,13 +55,27 @@ namespace multireplay {
 class OBSQTDisplay;
 
 // ---------------------------------------------------------------------------
-// SeekBar — modern timeline scrubber.
+// SeekBar — the graduated position bar over the recorded project timeline.
 //
 // A flat custom-painted bar (not a bead-on-rail QSlider): it draws the full
 // recorded timeline, highlights the seekable region (footage already flushed
 // to disk), fills the played-up-to-position portion with the accent colour and
 // renders a slim handle at the playhead. Clicking or dragging emits fractions
 // in [0,1]; the host maps them onto the master timeline.
+//
+// It is GRADUATED, along a ruler strip of its own under the track: regular time
+// marks, labelled where the labels fit. Without them the bar is a coloured
+// rectangle — the operator can see that something moves in it, but not how far
+// back "back" is, and a scrubber whose scale has to be guessed is one nobody
+// recognises as a scrubber. The step is chosen from the timeline's own length
+// (see tickStepNs), so a 40 s take is marked every 5 s and a two-hour one every
+// five minutes.
+//
+// When there is no timeline (setTimeline(0, …)) it does NOT draw an empty
+// track: it goes flat, refuses the mouse and prints the reason it was given.
+// That state is real and reachable — a project reopened in a later OBS run has
+// footage on disk but a dead live edge, so there is no span to scrub — and an
+// inert rectangle there reads as a broken widget.
 // ---------------------------------------------------------------------------
 class SeekBar : public QWidget {
 	Q_OBJECT
@@ -72,6 +86,15 @@ public:
 	// position/duration/seekable expressed as fractions of the timeline
 	// [0,1]; -1 (default seekableFrac) means "whole bar is seekable".
 	void setProgress(double positionFrac, double seekableFrac = 1.0);
+	// How long the timeline the bar stands for is, in ns, and what to say
+	// when it is 0. The duration is what the graduations are computed from:
+	// fractions alone cannot say whether the bar spans forty seconds or two
+	// hours, and that is exactly what a scale has to say.
+	void setTimeline(int64_t durationNs, const QString &emptyHint);
+	bool hasTimeline() const { return durationNs_ > 0; }
+	// Labelled graduations the bar is drawing at its current width, 0 when
+	// there is no timeline. For the automated gate — see LayoutProbe.
+	int graduations() const;
 	// Event markers drawn on the timeline as amber rectangles.
 	// Each pair is (inFrac, outFrac) in [0,1].
 	void setEventMarkers(std::vector<std::pair<double, double>> markers);
@@ -94,12 +117,23 @@ protected:
 
 private:
 	double fracAt(int x) const;
+	// Time between two LABELLED graduations at the current width, 0 when
+	// there is nothing to graduate. One function, so what paintEvent draws
+	// and what graduations() reports cannot drift apart — a gate reading a
+	// second copy of this arithmetic would be checking itself.
+	int64_t tickStepNs() const;
+	// Usable track width in pixels (the ruler runs the same width).
+	int trackWidth() const;
 
 	double positionFrac_ = 0.0;
 	double seekableFrac_ = 1.0;
 	double dragFrac_ = 0.0;
 	bool dragging_ = false;
 	QString overlay_;
+	// Length of the timeline drawn, in ns. 0 = there is none, and the bar
+	// says so (emptyHint_) rather than pretending to be one.
+	int64_t durationNs_ = 0;
+	QString emptyHint_;
 	std::vector<std::pair<double, double>> markers_;
 };
 
@@ -170,11 +204,16 @@ public:
 	};
 	PreviewStats previewStats() const;
 
-	// Where the panel's zones actually ended up. Published for the automated
-	// gate, and it is a claim no widget check can make: "the tabs and the
-	// search box are above the pictures" was true for a whole milestone while
-	// every check that FINDS those widgets passed — they were all present,
-	// in the wrong order. Only geometry can tell.
+	// Where the panel's zones actually ended up, and what the position bar
+	// amounts to. Published for the automated gate.
+	//
+	// Both claims here are ones no widget check can make. "The tabs are above
+	// the pictures" was true for a whole milestone while every check that
+	// FINDS those widgets passed — they were all present, in the wrong order.
+	// And "there is a SeekBar" stayed true the entire time the operator was
+	// telling us he could not see one: a bar with no graduations and no
+	// timeline behind it is a rectangle. So the order is read off real
+	// geometry, and the bar is asked how many marks it is drawing.
 	//
 	// y coordinates are in the dock's own coordinate system; -1 = no widget.
 	// UI thread only.
@@ -185,6 +224,9 @@ public:
 		int tableY = -1;
 		int clipBarY = -1;
 		int seekY = -1;
+		int seekHeight = 0;
+		int seekGraduations = 0;  // labelled marks the bar draws now
+		bool seekEnabled = false; // false = no timeline to scrub
 	};
 	LayoutProbe layoutProbe() const;
 

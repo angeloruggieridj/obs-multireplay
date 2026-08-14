@@ -243,13 +243,17 @@ struct DockChecks {
 	bool listTabsFitTheirNames = false;
 	bool listTabCountFollowsConfig = false;
 	int visibleListTabs = 0;
-	// M6: the ORDER of the panel's zones — pictures first, then what picks
-	// the event, then the events, then the controls. Every other check in
-	// this file was blind to it: the search row sat above the pictures for a
-	// whole milestone with every widget check passing, because they were all
-	// present, just in the wrong place. Read off real geometry through
-	// MultiReplayDock::layoutProbe().
+	// M6: the ORDER of the panel's zones, and the position bar being a scale.
+	// Both are things every other check in this file was blind to: the search
+	// row sat above the pictures for a whole milestone with every widget
+	// check passing (they were all present, just in the wrong place), and
+	// "there is a SeekBar" stayed true while the operator was telling us he
+	// could not see one. Read off real geometry through MultiReplayDock::
+	// layoutProbe().
 	bool layoutOrderTopToBottom = false;
+	bool seekbarGraduated = false;
+	int seekGraduations = 0;
+	int seekHeight = 0;
 	// ...and the failure this whole widget family is famous for: a display
 	// left presenting into a native window Qt has destroyed. It used to be
 	// visible only by reading the OBS log by eye, which is the check that
@@ -420,13 +424,18 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 			c.displaysStranded);
 	}
 
-	// --- the zones are in the operator's order ----------------------------
+	// --- the zones are in the operator's order, and the bar is a scale -----
 	// The panel is read top to bottom: pictures, then what picks the event
 	// (search + Live, then the list tabs), then the events, then the
 	// controls, the green on-air band and the position bar. That order was
 	// wrong for a whole milestone — the tabs and the search box were ABOVE
 	// the pictures — and not one check noticed, because every widget was
 	// present and findable. Geometry is the only thing that can tell.
+	//
+	// The bar at the end has to be a SCALE. A take has been running for the
+	// whole measurement window, so the timeline exists and the graduations
+	// must be on it: a bar with none is the coloured rectangle nobody
+	// recognised as a scrubber.
 	{
 		MultiReplayDock::LayoutProbe lp;
 		runOnUi([&]() { lp = dock->layoutProbe(); });
@@ -434,11 +443,20 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 			lp.previewBottomY > 0 && lp.searchY >= lp.previewBottomY &&
 			lp.listTabsY >= lp.searchY && lp.tableY > lp.listTabsY &&
 			lp.clipBarY > lp.tableY && lp.seekY > lp.clipBarY;
-		obs_log(c.layoutOrderTopToBottom ? LOG_INFO : LOG_ERROR,
+		c.seekGraduations = lp.seekGraduations;
+		c.seekHeight = lp.seekHeight;
+		// >= 2 marks: one is an accident of rounding, two is a scale.
+		c.seekbarGraduated = lp.seekEnabled && lp.seekGraduations >= 2 &&
+				     lp.seekHeight >= 36;
+		obs_log((c.layoutOrderTopToBottom && c.seekbarGraduated)
+				? LOG_INFO
+				: LOG_ERROR,
 			"[selftest] dock: zones at y — pictures end %d, search %d, "
-			"tabs %d, table %d, on-air band %d, position bar %d",
+			"tabs %d, table %d, on-air band %d, position bar %d "
+			"(%d px tall, %d graduations, timeline %s)",
 			lp.previewBottomY, lp.searchY, lp.listTabsY, lp.tableY,
-			lp.clipBarY, lp.seekY);
+			lp.clipBarY, lp.seekY, lp.seekHeight, lp.seekGraduations,
+			lp.seekEnabled ? "yes" : "NO");
 	}
 
 	// --- Mark, through the button an operator actually hits ---------------
@@ -2056,6 +2074,7 @@ void runSelfTest()
 			  dockChecks.listTabsFitTheirNames &&
 			  dockChecks.listTabCountFollowsConfig &&
 			  dockChecks.layoutOrderTopToBottom &&
+			  dockChecks.seekbarGraduated &&
 			  anchorsPersisted && projectOriginOk &&
 			  eventTimecodeSane && filtersIdleOutsideRec;
 
@@ -2187,9 +2206,13 @@ void runSelfTest()
 			  dockChecks.listTabCountFollowsConfig);
 	obs_data_set_int(root, "dock_visible_list_tabs", dockChecks.visibleListTabs);
 	// M6: the pictures come first and the list header sits between them and
-	// the table.
+	// the table; the position bar is a graduated scale, not a rectangle.
 	obs_data_set_bool(checks, "dock_layout_order_top_to_bottom",
 			  dockChecks.layoutOrderTopToBottom);
+	obs_data_set_bool(checks, "dock_seekbar_graduated",
+			  dockChecks.seekbarGraduated);
+	obs_data_set_int(root, "dock_seekbar_graduations", dockChecks.seekGraduations);
+	obs_data_set_int(root, "dock_seekbar_height_px", dockChecks.seekHeight);
 	obs_data_set_obj(root, "checks", checks);
 	obs_data_release(checks);
 
