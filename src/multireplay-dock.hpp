@@ -249,6 +249,10 @@ private:
 	// Move the list selection by `delta`, clamped. Two relative hotkeys beat
 	// twenty absolute ones.
 	void stepList(int delta);
+	// Move the selected event `delta` places in its list's running order.
+	// Manual order and the chronological auto-sort are mutually exclusive by
+	// construction — see the definition.
+	void moveSelectedEvent(int delta);
 	void seekToFraction(double frac);
 	// One-line transient message in the status area. Used for the things the
 	// operator triggers with a single press (an angle button, a scrub) where a

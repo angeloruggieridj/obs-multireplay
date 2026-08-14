@@ -228,6 +228,12 @@ struct DockChecks {
 	// status bar that has nothing to say.
 	bool clipBarReportsOnAir = false;
 	bool skipAdvancesQueue = false;
+	// M5: the running order is the operator's. The ▲/▼ keys must really move
+	// the ROW (not just a field nobody draws), and reordering by hand must
+	// turn the chronological auto-sort off — with both on, the row snaps back
+	// and nothing says why.
+	bool manualReorderMovesRow = false;
+	bool manualReorderDisablesAutoSort = false;
 	// ...and the failure this whole widget family is famous for: a display
 	// left presenting into a native window Qt has destroyed. It used to be
 	// visible only by reading the OBS log by eye, which is the check that
@@ -1133,6 +1139,84 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 		pc.stopEvents();
 	}
 
+	// --- the running order is the operator's ------------------------------
+	// The ▲/▼ keys have to move the ROW, not just a field nobody draws: the
+	// order the table shows IS the order a sequence plays in. Checked on the
+	// real table, through the real key, by comparing the ids before and after.
+	{
+		// A second mark, so there is an order to change at all.
+		runOnUi([&]() { markBtn->click(); });
+		std::this_thread::sleep_for(std::chrono::milliseconds(200));
+
+		QPushButton *upBtn = nullptr;
+		const QString up = QStringLiteral("▲");
+		std::vector<int> before, after;
+		const auto idsInTableOrder = [&](std::vector<int> &out) {
+			out.clear();
+			QTableWidget *t = dock->findChild<QTableWidget *>();
+			if (!t)
+				return;
+			for (int r = 0; r < t->rowCount(); r++) {
+				QTableWidgetItem *it =
+					t->item(r, MultiReplayDock::kColId);
+				if (it)
+					out.push_back(
+						it->data(Qt::UserRole).toInt());
+			}
+		};
+		runOnUi([&]() {
+			for (QPushButton *b : dock->findChildren<QPushButton *>())
+				if (b->text() == up)
+					upBtn = b;
+			idsInTableOrder(before);
+			QTableWidget *t = dock->findChild<QTableWidget *>();
+			// Select the LAST row and push it up: the one move that
+			// cannot be confused with the table's own auto-selection
+			// of the newest mark.
+			if (t && t->rowCount() >= 2)
+				t->selectRow(t->rowCount() - 1);
+		});
+		if (upBtn && before.size() >= 2) {
+			runOnUi([&]() { upBtn->click(); });
+			for (int i = 0; i < 20; i++) {
+				runOnUi([&]() { idsInTableOrder(after); });
+				if (after.size() == before.size() &&
+				    after.back() != before.back())
+					break;
+				std::this_thread::sleep_for(
+					std::chrono::milliseconds(50));
+			}
+			const size_t n = before.size();
+			c.manualReorderMovesRow =
+				after.size() == n && after[n - 2] == before[n - 1] &&
+				after[n - 1] == before[n - 2];
+			std::string b1, a1s;
+			for (int id : before)
+				b1 += std::to_string(id) + " ";
+			for (int id : after)
+				a1s += std::to_string(id) + " ";
+			obs_log(c.manualReorderMovesRow ? LOG_INFO : LOG_ERROR,
+				"[selftest] dock: ▲ moved the last row — order was "
+				"[%s] now [%s]",
+				b1.c_str(), a1s.c_str());
+		} else {
+			obs_log(LOG_ERROR,
+				"[selftest] dock: no ▲ key (%p) or fewer than two "
+				"rows (%zu) — cannot test the running order",
+				(void *)upBtn, before.size());
+		}
+		// Whatever it was before, a manual move must leave the
+		// chronological auto-sort OFF: with both in force the row snaps
+		// back and nothing tells the operator why.
+		c.manualReorderDisablesAutoSort =
+			!ReplayCore::instance().getConfig().sortEventsByTime;
+
+		// Take the extra mark back out.
+		for (int id : after.empty() ? before : after)
+			if (id != evId)
+				store.remove(id);
+	}
+
 	// Leave the operator's own project exactly as it was found.
 	if (evId > 0)
 		store.remove(evId);
@@ -1877,6 +1961,8 @@ void runSelfTest()
 			  dockChecks.tableEditsAngleSpeed &&
 			  dockChecks.clipBarReportsOnAir &&
 			  dockChecks.skipAdvancesQueue &&
+			  dockChecks.manualReorderMovesRow &&
+			  dockChecks.manualReorderDisablesAutoSort &&
 			  anchorsPersisted && projectOriginOk &&
 			  eventTimecodeSane && filtersIdleOutsideRec;
 
@@ -1996,6 +2082,11 @@ void runSelfTest()
 			  dockChecks.clipBarReportsOnAir);
 	obs_data_set_bool(checks, "dock_skip_advances_queue",
 			  dockChecks.skipAdvancesQueue);
+	// M5: the running order is arranged by hand and it really moves the row.
+	obs_data_set_bool(checks, "dock_manual_reorder_moves_row",
+			  dockChecks.manualReorderMovesRow);
+	obs_data_set_bool(checks, "dock_manual_reorder_leaves_autosort_off",
+			  dockChecks.manualReorderDisablesAutoSort);
 	obs_data_set_obj(root, "checks", checks);
 	obs_data_release(checks);
 

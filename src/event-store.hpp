@@ -35,6 +35,11 @@ struct ReplayEvent {
 	int list = 1;      // 1..20
 	int64_t tInNs = 0; // master timeline
 	int64_t tOutNs = -1; // -1 = open event (Mark In without Mark Out yet)
+	// Position in the RUNNING ORDER of its list: dense, ascending, and the
+	// order the dock draws (and plays) the list in. A new mark goes last;
+	// after that the operator owns it — a highlights reel is not "the order
+	// I happened to press the button in". Persisted with the event.
+	int order = 0;
 	struct Angle {
 		bool enabled = false;
 		std::string note;
@@ -107,6 +112,10 @@ public:
 	bool setAngleSpeed(int id, int angle1Based, double speed);
 	bool movePoint(int id, bool inPoint, int64_t deltaNs);
 	bool moveToList(int id, int list);
+	// Move an event `delta` places within the running order of its list
+	// (-1 = one earlier, +1 = one later). False when it is already at the
+	// end it is being pushed towards, or the id is unknown. Persisted.
+	bool moveEvent(int id, int delta);
 	int duplicate(int id); // copy gets a new id (the reference controller behaviour)
 
 	// Most recent event by time (the reference controller "last event"), 0 if none.
@@ -132,6 +141,13 @@ private:
 	EventStore() = default;
 	void save() const; // mutex_ must be held
 	void load();       // mutex_ must be held
+	// Make every list's `order` dense and ascending, keeping the order they
+	// are already in. mutex_ must be held. Runs after a load (a file written
+	// before ordering existed has all-zero orders, and two events must never
+	// share a place) and after a move.
+	void normalizeOrder();
+	// Next free place at the end of `list`. mutex_ must be held.
+	int nextOrderFor(int list) const;
 
 	mutable std::mutex mutex_;
 	SessionEpoch epoch_; // see setSessionEpoch()

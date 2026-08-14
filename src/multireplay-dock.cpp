@@ -1493,6 +1493,24 @@ QWidget *MultiReplayDock::buildBottomBar()
 		});
 		h->addWidget(exp);
 
+		// The running order is the operator's. the reference controller sorts by time or by
+		// the order marks were taken; neither is the order a highlights
+		// reel goes out in, and the only way to get that one is by hand.
+		// Two keys rather than drag-and-drop: a drag inside a table whose
+		// cells are all editable is a click away from starting an edit
+		// instead, and during a match that is the wrong thing to risk.
+		for (const auto &mv : {std::pair<const char *, int>{"▲", -1},
+				       std::pair<const char *, int>{"▼", +1}}) {
+			const int delta = mv.second;
+			auto *b = transportBtn(QString::fromUtf8(mv.first), this,
+					       obs_module_text(delta < 0
+								       ? "Dock.MoveUp"
+								       : "Dock.MoveDown"));
+			connect(b, &QPushButton::clicked, this,
+				[this, delta]() { moveSelectedEvent(delta); });
+			h->addWidget(b);
+		}
+
 		// Duplicate / delete / delete-all have no place of their own on the
 		// reference panel (they live in its context menu), and four more buttons
 		// on this row would be four more things to read past. They are here,
@@ -2135,6 +2153,34 @@ void MultiReplayDock::stepList(int delta)
 	const int next = std::clamp(listTabs_->currentIndex() + delta, 0,
 				    listTabs_->count() - 1);
 	listTabs_->setCurrentIndex(next); // its signal selects the list + refreshes
+}
+
+void MultiReplayDock::moveSelectedEvent(int delta)
+{
+	const auto ids = selectedEventIds();
+	if (ids.empty()) {
+		showNotice(obs_module_text("Dock.SelectToReorder"));
+		return;
+	}
+
+	// Manual order and the chronological auto-sort cannot both be in force:
+	// with the sort on, the operator would move a row and watch it snap
+	// straight back, with nothing to tell him why. So reordering by hand
+	// TURNS THE SORT OFF, and says so — the alternative (refusing) leaves him
+	// hunting through Settings for a switch he does not know exists.
+	auto &core = ReplayCore::instance();
+	Config cfg = core.getConfig();
+	if (cfg.sortEventsByTime) {
+		cfg.sortEventsByTime = false;
+		core.setConfig(cfg);
+		showNotice(obs_module_text("Dock.ManualOrderOn"));
+	}
+
+	// One at a time: moving a multi-selection by one place has no meaning the
+	// operator could predict.
+	if (!EventStore::instance().moveEvent(ids.front(), delta))
+		showNotice(obs_module_text("Dock.CannotMoveFurther"));
+	refreshEvents();
 }
 
 void MultiReplayDock::playSelected()

@@ -87,12 +87,88 @@ bool EventStore::setListName(int list, const std::string &name)
 	return true;
 }
 
+int EventStore::nextOrderFor(int list) const
+{
+	// mutex_ held by the caller.
+	int next = 0;
+	for (const auto &ev : events_)
+		if (ev.list == list && ev.order >= next)
+			next = ev.order + 1;
+	return next;
+}
+
+void EventStore::normalizeOrder()
+{
+	// mutex_ held by the caller.
+	//
+	// Dense and ascending, per list, PRESERVING the order they are already
+	// in. Two things need it: a file written before ordering existed (every
+	// order is 0, so the running order would depend on nothing at all), and
+	// any operation that can leave a hole. Stable on the vector's own order,
+	// so events that tie keep the order they were marked in.
+	for (int list = 1; list <= kEventLists; list++) {
+		std::vector<size_t> idx;
+		for (size_t i = 0; i < events_.size(); i++)
+			if (events_[i].list == list)
+				idx.push_back(i);
+		std::stable_sort(idx.begin(), idx.end(),
+				 [this](size_t a, size_t b) {
+					 return events_[a].order <
+						events_[b].order;
+				 });
+		for (size_t k = 0; k < idx.size(); k++)
+			events_[idx[k]].order = (int)k;
+	}
+}
+
+bool EventStore::moveEvent(int id, int delta)
+{
+	std::lock_guard<std::mutex> lock(mutex_);
+	if (delta == 0)
+		return false;
+	// Who is being moved, and the running order of the list it is in.
+	const ReplayEvent *self = nullptr;
+	for (const auto &ev : events_)
+		if (ev.id == id)
+			self = &ev;
+	if (!self)
+		return false;
+	const int list = self->list;
+
+	std::vector<size_t> idx;
+	for (size_t i = 0; i < events_.size(); i++)
+		if (events_[i].list == list)
+			idx.push_back(i);
+	std::stable_sort(idx.begin(), idx.end(), [this](size_t a, size_t b) {
+		return events_[a].order < events_[b].order;
+	});
+
+	int pos = -1;
+	for (size_t k = 0; k < idx.size(); k++)
+		if (events_[idx[k]].id == id)
+			pos = (int)k;
+	if (pos < 0)
+		return false;
+	const int dest = pos + delta;
+	// Refused, not clamped: "it did nothing" and "it moved to the end" are
+	// different answers, and the dock says so.
+	if (dest < 0 || dest >= (int)idx.size())
+		return false;
+
+	std::swap(events_[idx[(size_t)pos]].order,
+		  events_[idx[(size_t)dest]].order);
+	normalizeOrder();
+	save();
+	return true;
+}
+
 int EventStore::markIn(int64_t tNs, int angle0Based)
 {
 	std::lock_guard<std::mutex> lock(mutex_);
 	ReplayEvent ev;
 	ev.id = nextId_++;
 	ev.list = selectedList_;
+	ev.order = nextOrderFor(ev.list); // a new mark goes last
 	// Pre-roll: the operator presses IN when he has SEEN the action, so the reference controller
 	// backs the mark up by a configured amount. Baked into the stored in-point
 	// on purpose — an in-point that reads 12:03.500 must be the one that plays.
@@ -132,6 +208,7 @@ int EventStore::markInOut(int64_t tNowNs, int seconds, int angle0Based)
 	ReplayEvent ev;
 	ev.id = nextId_++;
 	ev.list = selectedList_;
+	ev.order = nextOrderFor(ev.list); // a new mark goes last
 	// Same rolls as the manual marks, measured from NOW: the preset window is
 	// the `seconds` the operator asked for, and the rolls pad it on both sides.
 	ev.tOutNs = std::max<int64_t>(1, tNowNs + postRollNs_.load());
@@ -294,7 +371,13 @@ bool EventStore::moveToList(int id, int list)
 		return false;
 	for (auto &ev : events_) {
 		if (ev.id == id) {
+			// Its old place means nothing in the new list: append.
+			// Asked BEFORE the move, or the event would be counted as
+			// already being in the destination and would append after
+			// ITSELF — landing one rung past the end, with a hole.
+			const int place = nextOrderFor(list);
 			ev.list = list;
+			ev.order = place;
 			save();
 			return true;
 		}
@@ -309,6 +392,10 @@ int EventStore::duplicate(int id)
 		if (ev.id == id) {
 			ReplayEvent copy = ev;
 			copy.id = nextId_++; // the reference controller: copy gets a new id
+			// ...and its own place at the end. Sharing the original's
+			// would leave two events on the same rung of the running
+			// order, and which one played first would be an accident.
+			copy.order = nextOrderFor(copy.list);
 			events_.push_back(copy);
 			save();
 			return copy.id;
@@ -354,14 +441,26 @@ std::string EventStore::listJson(int list) const
 
 	obs_data_set_string(root, "listName", listNames_[list - 1].c_str());
 
+	// In the RUNNING ORDER, not in the order the vector happens to hold them:
+	// this is the order the dock draws and the order a sequence plays in, and
+	// it is the operator's to arrange (see moveEvent).
+	std::vector<const ReplayEvent *> ordered;
+	for (const auto &ev : events_)
+		if (ev.list == list)
+			ordered.push_back(&ev);
+	std::stable_sort(ordered.begin(), ordered.end(),
+			 [](const ReplayEvent *a, const ReplayEvent *b) {
+				 return a->order < b->order;
+			 });
+
 	obs_data_array_t *arr = obs_data_array_create();
-	for (const auto &ev : events_) {
-		if (ev.list != list)
-			continue;
+	for (const ReplayEvent *evp : ordered) {
+		const ReplayEvent &ev = *evp;
 		obs_data_t *e = obs_data_create();
 		obs_data_set_int(e, "id", ev.id);
 		obs_data_set_int(e, "tInNs", ev.tInNs);
 		obs_data_set_int(e, "tOutNs", ev.tOutNs);
+		obs_data_set_int(e, "order", ev.order);
 		obs_data_set_string(e, "createdMode", ev.createdMode.c_str());
 		obs_data_array_t *angles = obs_data_array_create();
 		for (const auto &a : ev.angles) {
@@ -450,6 +549,9 @@ void EventStore::save() const
 		obs_data_t *e = obs_data_create();
 		obs_data_set_int(e, "id", ev.id);
 		obs_data_set_int(e, "list", ev.list);
+		// The running order belongs to the project: an operator who has
+		// arranged a highlights reel has not arranged it for one session.
+		obs_data_set_int(e, "order", ev.order);
 		// Marks go out in ABSOLUTE wall-clock ns, never in master time:
 		// master is monotonic system time, exact within the session and
 		// meaningless after a restart, so a file written with it could
@@ -534,6 +636,11 @@ void EventStore::load()
 			ReplayEvent ev;
 			ev.id = (int)obs_data_get_int(e, "id");
 			ev.list = (int)obs_data_get_int(e, "list");
+			// Absent in files written before manual ordering existed:
+			// 0 for everyone, which normalizeOrder() below turns into
+			// the order they are stored in — the order they were
+			// marked in, which is what those projects always showed.
+			ev.order = (int)obs_data_get_int(e, "order");
 			ev.tInNs = wallToMasterNs(
 				epoch_, obs_data_get_int(e, "in_wall_ns"));
 			const int64_t outWall = obs_data_get_int(e, "out_wall_ns");
@@ -575,6 +682,7 @@ void EventStore::load()
 		obs_data_array_release(arr);
 	}
 	obs_data_release(root);
+	normalizeOrder();
 	obs_log(LOG_INFO, "EventStore: loaded %zu event(s)", events_.size());
 	if (skippedLegacy > 0)
 		obs_log(LOG_WARNING,

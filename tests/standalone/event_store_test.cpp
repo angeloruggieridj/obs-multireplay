@@ -417,6 +417,74 @@ static void test_list_names()
 	store().setListName(3, "");
 }
 
+// The running order is the operator's: a new mark goes last, and after that he
+// moves it by hand. The order is what the dock draws and what a sequence plays
+// in, so it has to be dense, per-list, and refuse to fall off either end.
+static void test_manual_order()
+{
+	reset();
+	int a = store().markIn(10 * S, 0);
+	store().markOut(11 * S);
+	int b = store().markIn(20 * S, 0);
+	store().markOut(21 * S);
+	int c = store().markIn(30 * S, 0);
+	store().markOut(31 * S);
+
+	const auto orderOf = [](int id) {
+		ReplayEvent ev;
+		return store().get(id, ev) ? ev.order : -1;
+	};
+
+	// A new mark goes last, in the order they were taken.
+	CHECK(orderOf(a) == 0);
+	CHECK(orderOf(b) == 1);
+	CHECK(orderOf(c) == 2);
+
+	// Move c up: c b -> ... a c b.
+	CHECK(store().moveEvent(c, -1));
+	CHECK(orderOf(a) == 0);
+	CHECK(orderOf(c) == 1);
+	CHECK(orderOf(b) == 2);
+
+	// ...and again: c a b.
+	CHECK(store().moveEvent(c, -1));
+	CHECK(orderOf(c) == 0);
+	CHECK(orderOf(a) == 1);
+	CHECK(orderOf(b) == 2);
+
+	// Off the top is REFUSED, not clamped: "it did nothing" and "it moved"
+	// are different answers and the dock says which.
+	CHECK(!store().moveEvent(c, -1));
+	CHECK(orderOf(c) == 0);
+	CHECK(!store().moveEvent(b, +1));
+	CHECK(orderOf(b) == 2);
+
+	// A delta of 0 is not a move.
+	CHECK(!store().moveEvent(a, 0));
+	// An unknown id is not a move either.
+	CHECK(!store().moveEvent(9999, -1));
+
+	// Positions stay dense after a move, so no two events ever share a place.
+	CHECK(orderOf(c) + orderOf(a) + orderOf(b) == 0 + 1 + 2);
+
+	// The order is PER LIST: an event moved to another list is appended
+	// there and does not disturb the places of the list it left.
+	store().selectList(2);
+	int d = store().markIn(40 * S, 0);
+	store().markOut(41 * S);
+	CHECK(orderOf(d) == 0); // first in ITS list, not fourth overall
+	store().selectList(1);
+	CHECK(store().moveToList(b, 2));
+	CHECK(orderOf(b) == 1); // appended after d
+	CHECK(store().moveToList(b, 1));
+
+	// A duplicate gets its own place at the end, never the original's.
+	int dup = store().duplicate(a);
+	CHECK(dup != 0);
+	CHECK(orderOf(dup) != orderOf(a));
+	CHECK(orderOf(dup) >= 2);
+}
+
 static void test_version_bumps()
 {
 	reset();
@@ -443,6 +511,7 @@ int main()
 	test_pre_post_roll();
 	test_angle_triplet_is_independent();
 	test_list_names();
+	test_manual_order();
 	test_version_bumps();
 
 	if (g_fail == 0)
