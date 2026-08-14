@@ -26,6 +26,8 @@ all there is.
 
 #pragma once
 
+#include "session-clock.hpp" // kNoInstant, and why an instant may be negative
+
 #include <array>
 #include <atomic>
 #include <condition_variable>
@@ -39,6 +41,10 @@ namespace multireplay {
 
 constexpr int kMaxSegmentCameras = 8;
 
+// kNoInstant lives in session-clock.hpp, with the note explaining why a master
+// instant may be negative and why that is not an error. Every "is there one?"
+// in this file is a comparison against it, never against 0.
+
 struct RecordingSegment {
 	std::string path;
 	// Master time of this file's first video frame. Valid this session only.
@@ -47,8 +53,24 @@ struct RecordingSegment {
 	// epoch, so the file is still resolvable after OBS has restarted.
 	int64_t anchorWallNs = 0;
 	// Where the file stops covering the timeline: the next segment's anchor,
-	// or 0 while this is the newest one and still growing.
-	int64_t endMasterNs = 0;
+	// or kNoInstant while this is the newest one and still growing.
+	int64_t endMasterNs = kNoInstant;
+	// The file's REAL duration, demuxed from its own timestamps, 0 = not
+	// measured yet or not readable from the file at all.
+	//
+	// Deliberately NOT folded into endMasterNs. That field is what resolve()
+	// refuses instants past, and a duration measured while Branch Output is
+	// still appending to the file is stale by construction — it would cut the
+	// live end off the newest segment. This one only answers "how far does the
+	// footage on disk reach", which is what a timeline needs and a lookup
+	// does not.
+	int64_t durationNs = 0;
+	// True when the measurement was taken with nothing writing to the file,
+	// i.e. it is not going to grow any further.
+	bool durationFinal = false;
+	// Failed measurement attempts. A file whose end we cannot read is stated
+	// as unknown, never estimated - so it must also stop being re-demuxed.
+	int durationProbes = 0;
 	bool anchored = false;
 };
 
@@ -69,10 +91,28 @@ public:
 	bool resolve(int camIndex, int64_t masterNs, std::string &pathOut,
 		     int64_t &fileTimeNsOut) const;
 
-	// Oldest instant available on disk for a camera, 0 if none anchored.
+	// Oldest instant available on disk for a camera, kNoInstant if none is
+	// anchored. Read the note on kNoInstant before comparing this against 0.
 	int64_t oldestNs(int camIndex) const;
 
-	// Oldest anchored instant across ALL cameras, 0 if nothing is anchored.
+	// Newest instant the footage on disk reaches for a camera, kNoInstant
+	// when no segment's end is known.
+	//
+	// This is what makes a reopened project navigable. The timeline used to
+	// be measured from the anchors to the LIVE edge, and outside a take the
+	// live edge is 0 — so a project with hours of footage on disk drew a bar
+	// of length zero and told the operator there was nothing to scrub. The
+	// end of the last file is not something the anchors can say (an anchor is
+	// a beginning), so it is demuxed from the file's own timestamps; a file
+	// that does not say how long it is stays out of this answer instead of
+	// being estimated into it.
+	int64_t newestNs(int camIndex) const;
+	// The same across ALL cameras: where the project's footage ends,
+	// kNoInstant when no end is known anywhere.
+	int64_t projectEndNs() const;
+
+	// Oldest anchored instant across ALL cameras, kNoInstant if nothing is
+	// anchored.
 	// This is where the project's footage begins, and it is the only origin an
 	// event timecode may be measured from: a mark is a property of the project,
 	// not of the angle the operator happens to be looking at, so it must not
@@ -103,6 +143,11 @@ private:
 	void watchLoop();
 	void scanFolder();          // pick up new files
 	void tryAnchorPending();    // match openings against the ring
+	// Demux the real length of ONE anchored file per pass (see newestNs).
+	// One at a time on purpose: this is the same disk I/O the anchoring pass
+	// is deliberately rationed for, and it must not show up as latency on the
+	// live path.
+	void refreshDurations();
 	void recomputeBoundaries(); // segment end = next segment's anchor
 	void save() const;          // anchors.json, wall-clock based
 	void load();

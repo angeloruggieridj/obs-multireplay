@@ -35,7 +35,8 @@ bool ExportManager::exportEvent(int eventId, int angle1Based,
 				std::string &errorOut)
 {
 	ReplayEvent ev;
-	if (!EventStore::instance().get(eventId, ev) || ev.tOutNs < 0) {
+	if (!EventStore::instance().get(eventId, ev) ||
+	    ev.tOutNs == kNoInstant) {
 		errorOut = "event not found or still open";
 		return false;
 	}

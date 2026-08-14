@@ -128,7 +128,8 @@ bool PlaybackCoordinator::playEvents(const std::vector<int> &eventIds,
 			playableAngle[a] =
 				!cfg.cameras[a].sourceName.empty() ||
 				PacketTap::instance().newestNs(a) > 0 ||
-				SegmentIndex::instance().oldestNs(a) > 0;
+				SegmentIndex::instance().oldestNs(a) !=
+					kNoInstant;
 	}
 	const auto playable = [&playableAngle](int a) {
 		return a >= 0 && a < kEventAngles && playableAngle[a];
@@ -140,7 +141,8 @@ bool PlaybackCoordinator::playEvents(const std::vector<int> &eventIds,
 	events.reserve(eventIds.size());
 	for (int id : eventIds) {
 		ReplayEvent ev;
-		if (EventStore::instance().get(id, ev) && ev.tOutNs >= 0)
+		if (EventStore::instance().get(id, ev) &&
+		    ev.tOutNs != kNoInstant)
 			events.push_back(std::move(ev));
 	}
 

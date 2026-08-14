@@ -22,6 +22,11 @@
 .PARAMETER SkipBuild
   Reuse the DLL already in build_x64 instead of rebuilding.
 
+.PARAMETER SkipReopen
+  Stop after the take. By default the gate then relaunches OBS on the same
+  project folder, with nothing recording, to check that a REOPENED project
+  still has a timeline (see the reopen pass at the bottom).
+
 .EXAMPLE
   pwsh -File scripts/run-selftest.ps1
 .EXAMPLE
@@ -32,7 +37,8 @@ param(
     [int]$Seconds = 25,
     [int]$Cams = 2,
     [string]$Sources = "",
-    [switch]$SkipBuild
+    [switch]$SkipBuild,
+    [switch]$SkipReopen
 )
 
 $ErrorActionPreference = 'Stop'
@@ -146,13 +152,81 @@ $json = Get-Content $report -Raw
 Write-Host '--- M0 REPORT ---' -ForegroundColor Yellow
 Write-Host $json
 $r = $json | ConvertFrom-Json
-if ($r.verdict -eq 'PASS') {
-    Write-Host 'M0 GATE: PASS' -ForegroundColor Green
-    exit 0
-} else {
+if ($r.verdict -ne 'PASS') {
     Fail 'M0 GATE: FAIL'
     Write-Host '--- plugin lines from the OBS log ---' -ForegroundColor DarkGray
     Select-String -Path $log.FullName -Pattern '\[tap\]|\[selftest\]|osi-branch-output' |
         Select-Object -Last 40 | ForEach-Object { $_.Line }
+    exit 1
+}
+
+# --- 8. Second pass: the project as it is REOPENED ---------------------------
+# The run above proves the engine inside a take. It cannot prove what happens
+# when OBS is closed and started again on the same project, because its ring is
+# still full of that take - so the live edge exists no matter what the files on
+# disk say. That is exactly the case that was broken (a flat position bar over
+# hours of usable footage), so it gets its own OBS process, on the folder the
+# first pass just left behind, with nothing recording.
+if ($SkipReopen) {
+    Write-Host 'M0 GATE: PASS (reopen pass skipped)' -ForegroundColor Green
+    exit 0
+}
+
+$reopenReport = Join-Path $env:TEMP 'obs-multireplay-selftest-reopen.json'
+if (Test-Path $reopenReport) { Remove-Item $reopenReport -Force }
+
+# The pass finds the project by NAME (MRSelfTest), through the same Open Project
+# call the operator's menu makes - no path is handed to it. It restores the
+# operator's own project and deletes the test one before it finishes.
+$env:OBS_MULTIREPLAY_SELFTEST_REOPEN = '1'
+$env:OBS_MULTIREPLAY_SELFTEST_OUT = $reopenReport
+
+Step 'Relaunching OBS on the same project (reopen pass)'
+$proc2 = Start-Process -FilePath $obsExe -WorkingDirectory $obsDir `
+    -ArgumentList '--disable-shutdown-check', '--multi' -PassThru
+
+# The file lengths are demuxed one per watcher pass and only accepted when two
+# reads agree, so this pass waits in the tens of seconds by design.
+$waited = 0
+while (-not (Test-Path $reopenReport) -and $waited -lt 150) {
+    if ($proc2.HasExited) { break }
+    Start-Sleep -Seconds 2
+    $waited += 2
+}
+$haveReopen = Test-Path $reopenReport
+
+Step 'Closing OBS'
+if (-not $proc2.HasExited) {
+    $proc2.CloseMainWindow() | Out-Null
+    Start-Sleep -Seconds 5
+    if (-not $proc2.HasExited) { Stop-Process -Id $proc2.Id -Force }
+}
+Start-Sleep -Seconds 2
+
+Remove-Item Env:OBS_MULTIREPLAY_SELFTEST_REOPEN -ErrorAction SilentlyContinue
+
+$log2 = Get-ChildItem "$env:APPDATA\obs-studio\logs\*.txt" |
+    Sort-Object LastWriteTime -Descending | Select-Object -First 1
+Write-Host ''
+Write-Host "OBS log (reopen): $($log2.FullName)" -ForegroundColor DarkGray
+
+if (-not $haveReopen) {
+    Fail "No reopen report at $reopenReport - that pass did not complete."
+    Select-String -Path $log2.FullName -Pattern '\[selftest\]|\[segments\]' |
+        Select-Object -Last 30 | ForEach-Object { $_.Line }
+    exit 2
+}
+
+$json2 = Get-Content $reopenReport -Raw
+Write-Host '--- REOPEN REPORT ---' -ForegroundColor Yellow
+Write-Host $json2
+$r2 = $json2 | ConvertFrom-Json
+if ($r2.verdict -eq 'PASS') {
+    Write-Host 'M0 GATE: PASS (take + reopen)' -ForegroundColor Green
+    exit 0
+} else {
+    Fail 'M0 GATE: FAIL (reopened project)'
+    Select-String -Path $log2.FullName -Pattern '\[selftest\]|\[segments\]' |
+        Select-Object -Last 30 | ForEach-Object { $_.Line }
     exit 1
 }

@@ -49,7 +49,7 @@ static void test_mark_in_out()
 	ReplayEvent ev;
 	CHECK(store().get(id, ev));
 	CHECK(ev.tInNs == 5 * S);
-	CHECK(ev.tOutNs == -1); // open
+	CHECK(ev.tOutNs == kNoInstant); // open
 	CHECK(ev.angles[2].enabled);
 	CHECK(!ev.angles[0].enabled);
 	CHECK(ev.createdMode == "live");
@@ -68,10 +68,30 @@ static void test_mark_in_out()
 	CHECK(store().get(id2, ev));
 	CHECK(ev.tOutNs == 100 * S + 1);
 
-	// Negative IN clamps to 0.
+	// A negative IN is KEPT, not clamped. It used to be floored at 0, on the
+	// reasoning that time does not run backwards — but a master instant is
+	// read off a clock that starts at boot, so every mark in a project
+	// recorded before the last reboot converts back to a negative one. The
+	// floor moved those marks to instant 0, where no footage has ever been,
+	// and the events silently stopped playing. See kNoInstant.
 	int id3 = store().markIn(-7 * S, 0);
 	CHECK(store().get(id3, ev));
-	CHECK(ev.tInNs == 0);
+	CHECK(ev.tInNs == -7 * S);
+	// ...and it is a real mark, not the "no instant" sentinel.
+	CHECK(ev.tInNs != kNoInstant);
+	// It closes like any other, and its duration is the honest one.
+	CHECK(store().markOut(-3 * S));
+	CHECK(store().get(id3, ev));
+	CHECK(ev.tOutNs == -3 * S);
+	CHECK(ev.tOutNs - ev.tInNs == 4 * S);
+	// A closed event of yesterday's project must not read as still OPEN:
+	// that was the bug, and every "is it closed?" in the plugin used to be
+	// spelled `tOutNs < 0`. movePoint's out-point branch is one of them, and
+	// it only runs for a closed event — so a moved OUT proves the branch was
+	// taken on a negative instant.
+	CHECK(store().movePoint(id3, /*inPoint*/ false, 1 * S));
+	CHECK(store().get(id3, ev));
+	CHECK(ev.tOutNs == -2 * S);
 }
 
 static void test_mark_in_out_preset()
@@ -86,11 +106,14 @@ static void test_mark_in_out_preset()
 	CHECK(ev.angles[1].enabled);
 	CHECK(ev.createdMode == "recorded");
 
-	// Preset window larger than NOW clamps IN to 0.
+	// A preset window reaching back past the clock's own zero is KEPT as it
+	// is, not clamped: see the note in test_mark_in_out. The window the
+	// operator asked for is 20 s, and 20 s is what the event spans.
 	int id2 = store().markInOut(3 * S, 20, 0);
 	CHECK(store().get(id2, ev));
-	CHECK(ev.tInNs == 0);
+	CHECK(ev.tInNs == -17 * S);
 	CHECK(ev.tOutNs == 3 * S);
+	CHECK(ev.tOutNs - ev.tInNs == 20 * S);
 }
 
 static void test_mark_cancel()
@@ -194,10 +217,13 @@ static void test_move_points()
 	CHECK(store().get(id, ev));
 	CHECK(ev.tInNs == 20 * S - 1);
 
-	// Move IN far negative → clamps to 0.
+	// Move IN far back → it goes there. There is no floor at 0 any more:
+	// instant 0 is not the beginning of anything, it is just the moment this
+	// machine happened to boot, and a mark before it is ordinary in a
+	// reopened project (see test_mark_in_out).
 	CHECK(store().movePoint(id, true, -1000 * S));
 	CHECK(store().get(id, ev));
-	CHECK(ev.tInNs == 0);
+	CHECK(ev.tInNs == 20 * S - 1 - 1000 * S);
 
 	// Move OUT earlier than IN+1 → clamps to IN+1.
 	CHECK(store().movePoint(id, /*inPoint*/ false, -1000 * S));
@@ -324,12 +350,13 @@ static void test_pre_post_roll()
 	CHECK(ev.tInNs == 88 * S);  // 100 - 10 - 2
 	CHECK(ev.tOutNs == 103 * S); // 100 + 3
 
-	// A pre-roll longer than the timeline still clamps at 0, and OUT stays
-	// strictly after IN.
+	// A pre-roll longer than the elapsed clock backs the mark up past zero
+	// rather than piling every such mark onto instant 0 — where no footage
+	// is, so they would all have become unplayable together.
 	store().setRollNs(500 * S, 0);
 	int id3 = store().markIn(5 * S, 0);
 	CHECK(store().get(id3, ev));
-	CHECK(ev.tInNs == 0);
+	CHECK(ev.tInNs == -495 * S);
 
 	// Negative rolls are not a way to shorten an event.
 	store().setRollNs(-4 * S, -4 * S);

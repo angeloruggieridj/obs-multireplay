@@ -31,10 +31,15 @@ constexpr int kEventAngles = 8; // M5: full reference parity
 // previous mark) sat between those two and answered a question nobody asks; it
 // is gone, together with its column.
 struct ReplayEvent {
-	int id = 0;        // broadcast-style fixed numeric id (new id on copy)
-	int list = 1;      // 1..20
-	int64_t tInNs = 0; // master timeline
-	int64_t tOutNs = -1; // -1 = open event (Mark In without Mark Out yet)
+	int id = 0;   // broadcast-style fixed numeric id (new id on copy)
+	int list = 1; // 1..20
+	// Both are INSTANTS on the master timeline, and an instant may be
+	// negative — a mark taken before the machine's last boot converts back to
+	// one, which is every mark in a reopened project. So "open" is kNoInstant
+	// and not "< 0": with the old sentinel every closed event of yesterday's
+	// project read as still open, and none of them would play.
+	int64_t tInNs = kNoInstant;
+	int64_t tOutNs = kNoInstant; // open event: Mark In without a Mark Out yet
 	// Position in the RUNNING ORDER of its list: dense, ascending, and the
 	// order the dock draws (and plays) the list in. A new mark goes last;
 	// after that the operator owns it — a highlights reel is not "the order

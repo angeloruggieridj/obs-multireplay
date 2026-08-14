@@ -189,13 +189,17 @@ int64_t hotkeyMarkTimeNs()
 	return ReplayChannel::instance().positionNs();
 }
 
-// A mark is only real if there is an instant behind it. Master time is
-// os_gettime_ns(), never 0 on a running machine, so 0 means the tap has
-// captured nothing on this angle and nothing is playing either. Storing it
-// would produce an event at master 0: visible in the list, impossible to play.
+// A mark is only real if there is an instant behind it. Both spellings of "no
+// instant" are refused: the ring reports 0 when it has captured nothing on this
+// angle, and ReplayChannel reports kNoInstant when nothing has played. Storing
+// either would produce an event visible in the list and impossible to play.
+//
+// What is NOT refused is a negative instant: master time counts from the
+// machine's boot, so footage older than that sits at negative values and marks
+// on it are perfectly good. See kNoInstant in session-clock.hpp.
 bool hotkeyMarkable(int64_t tNs)
 {
-	if (tNs > 0)
+	if (tNs != 0 && tNs != kNoInstant)
 		return true;
 	obs_log(LOG_WARNING,
 		"mark ignored: nothing captured on angle %d and no replay "

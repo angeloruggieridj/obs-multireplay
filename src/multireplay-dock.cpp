@@ -565,7 +565,11 @@ namespace {
 // are drawn. Small, but it is the whole difference between a scale and a
 // coloured rectangle, so the bar is made tall enough to afford it rather than
 // the labels being squeezed over the track and fighting the timecode there.
-constexpr int kSeekRulerH = 14;
+// 14 was not enough: the labels are drawn into (kSeekRulerH - 5) pixels, so a
+// 14 px strip left 9 px for a number and clipped the digits - the scale was
+// there but unreadable, which is the same as not being there. 24 leaves 19 px,
+// comfortable for the small font at any DPI.
+constexpr int kSeekRulerH = 24;
 // Track thickness. Wide enough to hold the event markers and the timecode the
 // way it always did.
 constexpr int kSeekTrackH = 26;
@@ -2359,22 +2363,25 @@ int64_t MultiReplayDock::markTimeNs() const
 	// only the last frame it pushed, which stops agreeing with the bar the
 	// moment a review runs out, and marking there marks somewhere he is not
 	// looking. It stays as the fallback for a playhead that was never set.
-	if (playheadNs_ > 0)
+	if (playheadNs_ != kNoInstant)
 		return playheadNs_;
 	return ReplayChannel::instance().positionNs();
 }
 
 bool MultiReplayDock::markable(int64_t tNs)
 {
-	// Master time is os_gettime_ns(), which is never 0 on a running machine:
-	// a 0 here means "no instant at all" — the tap has captured nothing on
-	// this angle (not recording, or the angle has no Branch Output filter
-	// running) and no clip has played, so there is no playhead either.
-	// EventStore would happily store that as a mark at master 0, producing an
-	// event that looks real in the list and can never be played back, because
-	// no footage will ever cover instant zero. Refusing is the honest answer,
-	// and saying so is better than a row nobody can explain.
-	if (tNs > 0)
+	// "No instant at all": the tap has captured nothing on this angle (not
+	// recording, or the angle has no Branch Output filter running) and no clip
+	// has played, so there is no playhead either. EventStore would happily
+	// store that as a mark, producing an event that looks real in the list and
+	// can never be played back, because no footage covers it. Refusing is the
+	// honest answer, and saying so is better than a row nobody can explain.
+	//
+	// Both spellings of "none" are refused: the ring reports 0 when it is
+	// empty, the dock's own playhead reports kNoInstant. Every other value is
+	// a real instant — INCLUDING a negative one, which is what footage older
+	// than the machine's last boot looks like.
+	if (tNs != 0 && tNs != kNoInstant)
 		return true;
 	QMessageBox::information(this, "obs-multireplay",
 				 obs_module_text("Dock.NothingToMark"));
@@ -2546,11 +2553,12 @@ void MultiReplayDock::stepFrameForward()
 	// frame it was handed, so when that tiny clip ends the stepped frame is
 	// what stays on screen — which is exactly what a frame step is for.
 	auto &core = ReplayCore::instance();
-	const int64_t edge = timelineStartNs_ + displayDurNs_;
-	if (playheadNs_ <= 0 || displayDurNs_ <= 0) {
+	if (playheadNs_ == kNoInstant || timelineStartNs_ == kNoInstant ||
+	    displayDurNs_ <= 0) {
 		showNotice(obs_module_text("Dock.NothingToStep"));
 		return;
 	}
+	const int64_t edge = timelineStartNs_ + displayDurNs_;
 
 	struct obs_video_info ovi = {};
 	int64_t frameNs = 33333333; // 30 fps, if OBS will not say
@@ -2696,7 +2704,8 @@ void MultiReplayDock::updateChannelStrip()
 	// shows a cued one: IN +00:00.00, OUT -<duration>, REM = duration.
 	int64_t clipPos = playheadNs_;
 	if (haveEv) {
-		const int64_t hi = ev.tOutNs > 0 ? ev.tOutNs : ev.tInNs;
+		const int64_t hi =
+			ev.tOutNs != kNoInstant ? ev.tOutNs : ev.tInNs;
 		clipPos = std::clamp(playheadNs_, ev.tInNs, hi);
 	}
 
@@ -2706,7 +2715,7 @@ void MultiReplayDock::updateChannelStrip()
 			      .arg(ps.queuePos, 2, 10, QLatin1Char('0'))
 			      .arg(ps.queued, 2, 10, QLatin1Char('0'))
 			      .arg(obs_module_text("Dock.Clips"));
-	if (haveEv && ev.tOutNs > 0) {
+	if (haveEv && ev.tOutNs != kNoInstant) {
 		// Remaining WALL time, so it counts down at the rate the operator
 		// is watching: at 50% a 4 s clip has 8 s left, not 4.
 		const int64_t remNs = ev.tOutNs > clipPos ? ev.tOutNs - clipPos : 0;
@@ -2718,7 +2727,7 @@ void MultiReplayDock::updateChannelStrip()
 	if (haveEv) {
 		l2 = QString("%1").arg(evId, idDigits, 10, QLatin1Char('0'));
 		l2 += QString("  IN %1").arg(signedTc(clipPos - ev.tInNs));
-		if (ev.tOutNs > 0)
+		if (ev.tOutNs != kNoInstant)
 			l2 += QString("  OUT %1")
 				      .arg(signedTc(clipPos - ev.tOutNs));
 	} else {
@@ -2729,13 +2738,14 @@ void MultiReplayDock::updateChannelStrip()
 	if (noticeUntilNs_ > 0 && (int64_t)os_gettime_ns() < noticeUntilNs_) {
 		l3 = QStringLiteral("⚠ ") + noticeText_;
 	} else {
-		const int64_t rel = (playheadNs_ > eventOriginNs_ &&
-				     eventOriginNs_ > 0)
-					    ? playheadNs_ - eventOriginNs_
-					    : 0;
+		const bool haveTc = eventOriginNs_ != kNoInstant &&
+				    playheadNs_ != kNoInstant &&
+				    playheadNs_ > eventOriginNs_;
+		const int64_t rel = haveTc ? playheadNs_ - eventOriginNs_ : 0;
 		l3 = QString("TC %1   %2%")
-			     .arg(eventOriginNs_ > 0 ? shortTc(rel)
-						     : QStringLiteral("--:--.--"))
+			     .arg(eventOriginNs_ != kNoInstant
+					  ? shortTc(rel)
+					  : QStringLiteral("--:--.--"))
 			     .arg(speedPct_);
 	}
 
@@ -2754,7 +2764,8 @@ void MultiReplayDock::updateChannelStrip()
 					 : (speedPct_ > 0 ? speedPct_ : 100);
 		double frac = 0.0;
 		QString text;
-		if (haveEv && ev.tOutNs > ev.tInNs) {
+		if (haveEv && ev.tOutNs != kNoInstant &&
+		    ev.tOutNs > ev.tInNs) {
 			const int64_t dur = ev.tOutNs - ev.tInNs;
 			frac = (double)(clipPos - ev.tInNs) / (double)dur;
 			const int64_t remNs =
@@ -2784,8 +2795,9 @@ void MultiReplayDock::updateChannelStrip()
 	// Not the clip state (that is the band above). Position and length of the
 	// recorded timeline, which is the thing this bar actually controls.
 	if (seek_) {
-		const int64_t rel = (playheadNs_ > timelineStartNs_ &&
-				     timelineStartNs_ > 0)
+		const int64_t rel = (timelineStartNs_ != kNoInstant &&
+				     playheadNs_ != kNoInstant &&
+				     playheadNs_ > timelineStartNs_)
 					    ? playheadNs_ - timelineStartNs_
 					    : 0;
 		seek_->setOverlayText(shortTc(rel) + "  /  " +
@@ -2794,23 +2806,24 @@ void MultiReplayDock::updateChannelStrip()
 		// are computed from it, and a fraction cannot say whether the bar
 		// spans forty seconds or two hours.
 		//
-		// ...and when there is no length, why. Two different nothings:
-		// a session that has captured nothing yet (press REC), and a
-		// project reopened in a later OBS run — its footage is on disk and
-		// its events still play, but nothing is feeding a live edge this
-		// run, so there is no span to scrub until the next take. That is a
-		// known limit of the timeline, and printing it on the bar is the
-		// difference between a limit and a broken widget.
-		seek_->setTimeline(displayDurNs_,
-				   obs_module_text(timelineStartNs_ > 0
-							   ? "Dock.SeekReopened"
-							   : "Dock.SeekNoTimeline"));
+		// ...and when there is no length, why. Two different nothings,
+		// and they are no longer the same two: a reopened project now
+		// HAS a timeline (the footage on disk), so the only way to reach
+		// this branch with footage anchored is a recording whose own
+		// length cannot be read back from it. That is rare, real, and
+		// worth naming — the operator is looking at events that play
+		// perfectly while the bar under them refuses to move.
+		seek_->setTimeline(
+			displayDurNs_,
+			obs_module_text(timelineStartNs_ != kNoInstant
+						? "Dock.SeekLengthUnknown"
+						: "Dock.SeekNoTimeline"));
 	}
 }
 
 void MultiReplayDock::seekToFraction(double frac)
 {
-	if (timelineStartNs_ <= 0 || displayDurNs_ <= 0)
+	if (timelineStartNs_ == kNoInstant || displayDurNs_ <= 0)
 		return;
 	frac = std::clamp(frac, 0.0, 1.0);
 	const int64_t inNs =
@@ -2946,19 +2959,45 @@ void MultiReplayDock::poll()
 	// tap captured, and the timeline starts at the oldest instant that can
 	// still be replayed. The recorded files reach further back than the RAM
 	// ring, so they win when they have anything.
+	//
+	// Both ends are INSTANTS, and an instant may be negative: master time is
+	// read off a clock that starts at boot, so a project recorded before the
+	// last reboot sits at negative master values. Nothing here may test one
+	// for > 0 — see kNoInstant in segment-index.hpp. The ring, by contrast,
+	// only ever holds this session's packets, so its 0 really does mean
+	// "empty".
 	const int64_t liveEdgeNs = tap.newestNs(cam0);
 	int64_t startNs = SegmentIndex::instance().oldestNs(cam0);
-	if (startNs <= 0)
-		startNs = tap.oldestReplayableNs(cam0);
+	if (startNs == kNoInstant) {
+		const int64_t ringOldest = tap.oldestReplayableNs(cam0);
+		startNs = ringOldest > 0 ? ringOldest : kNoInstant;
+	}
 	timelineStartNs_ = startNs;
-	displayDurNs_ = (startNs > 0 && liveEdgeNs > startNs)
-				? liveEdgeNs - startNs
+	// The timeline ends where the FOOTAGE ends, which is the live edge only
+	// while a take is running. Measuring it from the live edge alone is what
+	// made a reopened project draw a bar of length zero over hours of usable
+	// footage: outside REC nothing feeds the front, so the whole recorded
+	// project collapsed to a rectangle that said "no live timeline" and
+	// swallowed every click. The end of the last recording is not something
+	// the anchors can say (an anchor is a beginning), so SegmentIndex demuxes
+	// it from the file itself — and says so when the file does not, which
+	// leaves the bar honestly empty instead of drawing a guess.
+	//
+	// Pressing REC then EXTENDS this: the new file anchors onto the same
+	// project origin and the live edge overtakes the disk end, so the bar
+	// grows to the right instead of starting over.
+	const int64_t diskEndNs = SegmentIndex::instance().newestNs(cam0);
+	const int64_t endNs =
+		std::max(liveEdgeNs > 0 ? liveEdgeNs : kNoInstant, diskEndNs);
+	displayDurNs_ = (startNs != kNoInstant && endNs != kNoInstant &&
+			 endNs > startNs)
+				? endNs - startNs
 				: 0;
 	// Anchored footage counts as content even with a dead live edge: that is
 	// exactly a project reopened in a later OBS run (nothing captured yet, but
 	// yesterday's files are on the timeline). Without startNs the preview would
 	// stay black while the replay input was actually producing frames.
-	previewHasContent_ = liveEdgeNs > 0 || startNs > 0;
+	previewHasContent_ = liveEdgeNs > 0 || startNs != kNoInstant;
 
 	// Event times belong to the PROJECT, not to the angle being watched: the
 	// earliest anchored recording on ANY camera is 0:00 for the table and for
@@ -2968,7 +3007,7 @@ void MultiReplayDock::poll()
 	// up printing marks as raw monotonic time. The ring is the fallback for a
 	// session that has not written a file yet.
 	int64_t eventOrigin = SegmentIndex::instance().projectOriginNs();
-	if (eventOrigin <= 0)
+	if (eventOrigin == kNoInstant)
 		eventOrigin = startNs;
 	eventOriginNs_ = eventOrigin;
 
@@ -2977,8 +3016,11 @@ void MultiReplayDock::poll()
 	// recording replaces the ring's (constantly evicted) oldest instant. The
 	// 1 s of slack is what keeps the ring's drift from rebuilding the table
 	// thirty times a second.
-	if (eventOriginNs_ > 0 &&
-	    std::abs(eventOriginNs_ - tableOriginNs_) > 1'000'000'000LL) {
+	// The subtraction is guarded, not just the result: kNoInstant is INT64_MIN
+	// and subtracting it from a real instant overflows.
+	if (eventOriginNs_ != kNoInstant &&
+	    (tableOriginNs_ == kNoInstant ||
+	     std::abs(eventOriginNs_ - tableOriginNs_) > 1'000'000'000LL)) {
 		tableOriginNs_ = eventOriginNs_;
 		refreshEvents();
 	}
@@ -3022,7 +3064,9 @@ void MultiReplayDock::poll()
 		playheadNs_ = posNs;
 	else if (followLive && liveEdgeNs > 0 && !sequenceOnAir)
 		playheadNs_ = liveEdgeNs;
-	const int64_t relPosNs = (playheadNs_ > startNs && startNs > 0)
+	const int64_t relPosNs = (startNs != kNoInstant &&
+				  playheadNs_ != kNoInstant &&
+				  playheadNs_ > startNs)
 					 ? playheadNs_ - startNs
 					 : 0;
 
@@ -3507,7 +3551,7 @@ void MultiReplayDock::refreshEvents()
 	// showed ("5648:09.557" for a mark taken four minutes into a take). A mark
 	// we cannot place is shown as unplaceable.
 	const int64_t originNs = eventOriginNs_;
-	const bool haveOrigin = originNs > 0;
+	const bool haveOrigin = originNs != kNoInstant;
 	auto relTc = [originNs, haveOrigin](int64_t ns) {
 		if (!haveOrigin)
 			return QStringLiteral("--:--.---");
@@ -3587,7 +3631,7 @@ void MultiReplayDock::refreshEvents()
 		// filter) so the seekbar shows full density even when filtered.
 		// Store raw ns — fractions computed each poll() tick using
 		// displayDurNs_ so markers shift left as recording time grows.
-		if (tin >= 0 && tout > tin)
+		if (tin != kNoInstant && tout != kNoInstant && tout > tin)
 			rawMarkers.push_back({tin, tout});
 
 		// search filter (id / per-angle notes / angles)
@@ -3639,10 +3683,10 @@ void MultiReplayDock::refreshEvents()
 		const int row = events_->rowCount();
 		events_->insertRow(row);
 
-		QString dur = r.tout >= 0
-				      ? formatTc(r.tout - r.tin)
-				      : QString::fromUtf8(
-						obs_module_text("Dock.Open"));
+		const bool closed = r.tout != kNoInstant;
+		QString dur = closed ? formatTc(r.tout - r.tin)
+				     : QString::fromUtf8(
+					       obs_module_text("Dock.Open"));
 
 		// Nothing behind the mark: flag it here rather than letting the
 		// operator find out by pressing play during a match. A closed
@@ -3652,9 +3696,9 @@ void MultiReplayDock::refreshEvents()
 		// sit in that range - the last session's log has one, event 4,
 		// failing with "no video frame at or after the requested
 		// in-point" five times in a row.
-		const bool degenerate = r.tout >= 0 && r.tout - r.tin < 1'000'000;
-		const bool playable =
-			r.tin > 0 && !degenerate && footageExists(r.tin);
+		const bool degenerate = closed && r.tout - r.tin < 1'000'000;
+		const bool playable = r.tin != kNoInstant && !degenerate &&
+				      footageExists(r.tin);
 		// the reference controller pads ids to a fixed width so they stay the same length for
 		// the whole match and can be called out loud.
 		const QString idText =
@@ -3669,8 +3713,8 @@ void MultiReplayDock::refreshEvents()
 		events_->setItem(row, kColId, idItem);
 		events_->setItem(row, kColIn, roItem(relTc(r.tin), mid));
 		events_->setItem(row, kColOut,
-				 roItem(r.tout >= 0 ? relTc(r.tout)
-						    : QStringLiteral("--"),
+				 roItem(closed ? relTc(r.tout)
+					       : QStringLiteral("--"),
 					mid));
 		events_->setItem(row, kColDur, roItem(dur, mid));
 
@@ -4243,6 +4287,13 @@ void MultiReplayDock::copyYouTubeChapters()
 	int list = EventStore::instance().selectedList();
 	// Chapter 0:00 is the start of the timeline the dock is showing, which is
 	// the oldest instant still replayable — the same origin as the seekbar.
+	// With no origin at all there is nothing to measure a chapter from, and
+	// chaptersText would be handed kNoInstant to subtract.
+	if (eventOriginNs_ == kNoInstant) {
+		QMessageBox::information(this, "obs-multireplay",
+					 obs_module_text("Dock.NoChapters"));
+		return;
+	}
 	std::string text =
 		// The project's footage begins the chapter list, not the angle the
 		// operator is on (see eventOriginNs_).

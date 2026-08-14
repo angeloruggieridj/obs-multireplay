@@ -19,6 +19,10 @@ start.
 
 #include <obs.h>
 
+// kNoInstant: the dock stores master-timeline instants, and "there is none" is
+// not zero. See the note there before comparing one against 0.
+#include "segment-index.hpp"
+
 #include <QString>
 #include <QWidget>
 #include <array>
@@ -73,9 +77,15 @@ class OBSQTDisplay;
 //
 // When there is no timeline (setTimeline(0, …)) it does NOT draw an empty
 // track: it goes flat, refuses the mouse and prints the reason it was given.
-// That state is real and reachable — a project reopened in a later OBS run has
-// footage on disk but a dead live edge, so there is no span to scrub — and an
-// inert rectangle there reads as a broken widget.
+// An inert rectangle there reads as a broken widget.
+//
+// That state used to be reached by REOPENING a project, which was wrong: the
+// footage was on disk and every event still played, but the timeline was
+// measured to the live edge and outside a take there is no live edge, so hours
+// of usable material drew a flat bar saying there was nothing to scrub. The
+// timeline now ends where the FOOTAGE ends (SegmentIndex::newestNs), so the
+// remaining ways to get here are honest ones: nothing recorded yet, or
+// recordings that do not say how long they are.
 // ---------------------------------------------------------------------------
 class SeekBar : public QWidget {
 	Q_OBJECT
@@ -92,6 +102,10 @@ public:
 	// hours, and that is exactly what a scale has to say.
 	void setTimeline(int64_t durationNs, const QString &emptyHint);
 	bool hasTimeline() const { return durationNs_ > 0; }
+	// How long that timeline is. For the automated gate: "the bar is not
+	// flat" and "the bar spans the footage that is actually on disk" are
+	// different claims, and the reopened-project check needs the second one.
+	int64_t timelineNs() const { return durationNs_; }
 	// Labelled graduations the bar is drawing at its current width, 0 when
 	// there is no timeline. For the automated gate — see LayoutProbe.
 	int graduations() const;
@@ -531,7 +545,9 @@ private:
 	// live edge the end of a sequence returns to). ReplayChannel keeps reporting
 	// the last frame of the clip that finished, which is why the bar used to
 	// stay wherever the replay stopped until NOW was pressed by hand.
-	int64_t playheadNs_ = 0;
+	// kNoInstant, not 0: this is an instant on the master clock and instants
+	// go negative for footage older than the machine's last boot.
+	int64_t playheadNs_ = kNoInstant;
 	// Until when showNotice()'s message owns the channel strip (master ns),
 	// and the message itself. It goes on the strip rather than in the corner
 	// status line because that line is two inches wide and this is the answer
@@ -551,20 +567,24 @@ private:
 	// fraction of the transport rate (see poll()).
 	uint64_t statusTick_ = 0;
 
-	// Master-timeline window currently drawn on the seekbar (ns).
-	int64_t timelineStartNs_ = 0; // oldest replayable instant, 0 = nothing
-	int64_t displayDurNs_ = 0;    // live edge - timelineStartNs_
+	// Master-timeline window currently drawn on the seekbar. The START is an
+	// INSTANT (kNoInstant = nothing to draw); the DURATION is a length, so 0
+	// really does mean none. Instants may be negative — see kNoInstant in
+	// segment-index.hpp — and testing one for > 0 is what made a reopened
+	// project draw a flat bar after a reboot.
+	int64_t timelineStartNs_ = kNoInstant; // oldest replayable instant
+	int64_t displayDurNs_ = 0;             // how much of it there is
 	// Where the PROJECT's footage begins, which is what event timecodes and
 	// YouTube chapters are measured from. Deliberately not timelineStartNs_:
 	// that one follows the selected angle, so the whole table renumbered
-	// itself when the operator pressed another camera button, and it is 0
-	// whenever the selected angle has nothing — which printed marks as raw
-	// monotonic time (a five-digit minute count). 0 = no footage at all, and
-	// then there is no honest number to print.
-	int64_t eventOriginNs_ = 0;
+	// itself when the operator pressed another camera button, and it is
+	// absent whenever the selected angle has nothing — which printed marks as
+	// raw monotonic time (a five-digit minute count). kNoInstant = no footage
+	// at all, and then there is no honest number to print.
+	int64_t eventOriginNs_ = kNoInstant;
 	// Origin the event table was last rendered against, so poll() can tell
 	// when the columns need redrawing (see poll()).
-	int64_t tableOriginNs_ = 0;
+	int64_t tableOriginNs_ = kNoInstant;
 
 	// Raw ns (in, out) for each completed event — fractions computed in poll()
 	// so markers shift leftward as recording time grows.

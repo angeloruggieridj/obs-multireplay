@@ -39,9 +39,31 @@ up with its footage today.
 
 #pragma once
 
+#include <climits>
 #include <cstdint>
 
 namespace multireplay {
+
+// "There is no such instant."
+//
+// NOT zero, and NOT -1, and this matters more than it looks. Read the note
+// above: masterNs counts from an arbitrary origin, in practice the machine's
+// boot. So an instant belonging to footage recorded BEFORE the last reboot —
+// yesterday's match, opened this morning, which is the entire reason the wall
+// clock is persisted at all — converts back to a NEGATIVE master value. That is
+// not an error and not a corner case: it is the ordinary state of every
+// reopened project, and such an instant resolves, plays and scrubs exactly like
+// any other, because only differences between master instants ever mean
+// anything.
+//
+// Which makes `> 0` the wrong way to ask "is there one?", and `< 0` the wrong
+// way to ask "is this event still open?". Measured before this constant
+// existed: a project reopened on the same boot showed 63 s of timeline, and the
+// same project after a reboot showed 0 ms — the position bar went flat over an
+// hour of perfectly good footage, and every closed event in it read as open.
+//
+// Lengths are different and keep using 0: a duration cannot be negative.
+constexpr int64_t kNoInstant = INT64_MIN;
 
 // One instant, sampled on both clocks at once. All-zero = "not seated": the
 // conversions then degenerate to the identity, which is what a context with no

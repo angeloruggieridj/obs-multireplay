@@ -187,7 +187,8 @@ bool readRange(int camIndex, int64_t inNs, int64_t outNs,
 		if (!s.anchored)
 			continue;
 		// Does this file overlap the requested range at all?
-		const int64_t segEnd = s.endMasterNs != 0 ? s.endMasterNs : outNs + 1;
+		const int64_t segEnd =
+			s.endMasterNs != kNoInstant ? s.endMasterNs : outNs + 1;
 		if (segEnd <= inNs || s.anchorMasterNs > outNs)
 			continue;
 

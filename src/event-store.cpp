@@ -172,8 +172,12 @@ int EventStore::markIn(int64_t tNs, int angle0Based)
 	// Pre-roll: the operator presses IN when he has SEEN the action, so the reference controller
 	// backs the mark up by a configured amount. Baked into the stored in-point
 	// on purpose — an in-point that reads 12:03.500 must be the one that plays.
-	ev.tInNs = std::max<int64_t>(0, tNs - preRollNs_.load());
-	ev.tOutNs = -1;
+	//
+	// Not floored at 0 any more: an instant may legitimately be negative (see
+	// kNoInstant), and flooring one would move the mark to a place no footage
+	// covers instead of leaving it where the operator put it.
+	ev.tInNs = tNs - preRollNs_.load();
+	ev.tOutNs = kNoInstant;
 	ev.angles[std::clamp(angle0Based, 0, kEventAngles - 1)].enabled = true;
 	ev.createdMode = liveMode_ ? "live" : "recorded";
 	events_.push_back(ev);
@@ -186,7 +190,7 @@ bool EventStore::markOut(int64_t tNs)
 	std::lock_guard<std::mutex> lock(mutex_);
 	// close the most recent open event in the selected list
 	for (auto it = events_.rbegin(); it != events_.rend(); ++it) {
-		if (it->list == selectedList_ && it->tOutNs < 0) {
+		if (it->list == selectedList_ && it->tOutNs == kNoInstant) {
 			// Post-roll: keep the play running past the whistle.
 			it->tOutNs = std::max(it->tInNs + 1,
 					      tNs + postRollNs_.load());
@@ -211,10 +215,9 @@ int EventStore::markInOut(int64_t tNowNs, int seconds, int angle0Based)
 	ev.order = nextOrderFor(ev.list); // a new mark goes last
 	// Same rolls as the manual marks, measured from NOW: the preset window is
 	// the `seconds` the operator asked for, and the rolls pad it on both sides.
-	ev.tOutNs = std::max<int64_t>(1, tNowNs + postRollNs_.load());
-	ev.tInNs = std::max<int64_t>(0, tNowNs -
-						(int64_t)seconds * 1000000000 -
-						preRollNs_.load());
+	// Neither end is floored: see markIn.
+	ev.tOutNs = tNowNs + postRollNs_.load();
+	ev.tInNs = tNowNs - (int64_t)seconds * 1000000000 - preRollNs_.load();
 	ev.angles[std::clamp(angle0Based, 0, kEventAngles - 1)].enabled = true;
 	ev.createdMode = liveMode_ ? "live" : "recorded";
 	events_.push_back(ev);
@@ -226,7 +229,7 @@ bool EventStore::markCancel()
 {
 	std::lock_guard<std::mutex> lock(mutex_);
 	for (auto it = events_.rbegin(); it != events_.rend(); ++it) {
-		if (it->list == selectedList_ && it->tOutNs < 0) {
+		if (it->list == selectedList_ && it->tOutNs == kNoInstant) {
 			events_.erase(std::next(it).base());
 			save();
 			return true;
@@ -351,10 +354,11 @@ bool EventStore::movePoint(int id, bool inPoint, int64_t deltaNs)
 		if (ev.id != id)
 			continue;
 		if (inPoint) {
-			ev.tInNs = std::max<int64_t>(0, ev.tInNs + deltaNs);
-			if (ev.tOutNs >= 0)
+			// No floor at 0: an instant may be negative.
+			ev.tInNs = ev.tInNs + deltaNs;
+			if (ev.tOutNs != kNoInstant)
 				ev.tInNs = std::min(ev.tInNs, ev.tOutNs - 1);
-		} else if (ev.tOutNs >= 0) {
+		} else if (ev.tOutNs != kNoInstant) {
 			ev.tOutNs = std::max(ev.tInNs + 1,
 					     ev.tOutNs + deltaNs);
 		}
@@ -408,9 +412,11 @@ int EventStore::lastEventId() const
 {
 	std::lock_guard<std::mutex> lock(mutex_);
 	int bestId = 0;
-	int64_t bestIn = -1;
+	// kNoInstant, not -1: "no candidate yet" has to lose to every real
+	// instant, and a real instant can be very negative.
+	int64_t bestIn = kNoInstant;
 	for (const auto &ev : events_) {
-		if (ev.tOutNs >= 0 && ev.tInNs >= bestIn) {
+		if (ev.tOutNs != kNoInstant && ev.tInNs >= bestIn) {
 			bestIn = ev.tInNs;
 			bestId = ev.id;
 		}
@@ -489,7 +495,7 @@ std::string EventStore::chaptersText(int list, int64_t originNs) const
 	std::lock_guard<std::mutex> lock(mutex_);
 	std::string out;
 	for (const auto &ev : events_) {
-		if (ev.list != list || ev.tOutNs < 0)
+		if (ev.list != list || ev.tOutNs == kNoInstant)
 			continue;
 		int64_t relNs = ev.tInNs - originNs;
 		if (relNs < 0)
@@ -562,7 +568,7 @@ void EventStore::save() const
 		obs_data_set_int(e, "in_wall_ns",
 				 masterToWallNs(epoch_, ev.tInNs));
 		obs_data_set_int(e, "out_wall_ns",
-				 ev.tOutNs < 0
+				 ev.tOutNs == kNoInstant
 					 ? -1
 					 : masterToWallNs(epoch_, ev.tOutNs));
 		// No event-level "speed" is written any more: the only speeds are
@@ -644,8 +650,14 @@ void EventStore::load()
 			ev.tInNs = wallToMasterNs(
 				epoch_, obs_data_get_int(e, "in_wall_ns"));
 			const int64_t outWall = obs_data_get_int(e, "out_wall_ns");
-			ev.tOutNs = outWall < 0 ? -1
-						: wallToMasterNs(epoch_, outWall);
+			// The FILE keeps -1 for an open event: wall-clock ns are
+			// ~1.8e18 and never negative, so the sentinel is
+			// unambiguous there and the format does not change. In
+			// RAM it becomes kNoInstant, because a master instant
+			// CAN be negative.
+			ev.tOutNs = outWall < 0
+					    ? kNoInstant
+					    : wallToMasterNs(epoch_, outWall);
 			// "speed" at event level (M3) is deliberately NOT read
 			// back: it no longer exists, and silently applying a
 			// speed the operator can no longer see or change would

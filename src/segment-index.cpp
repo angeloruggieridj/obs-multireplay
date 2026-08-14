@@ -117,6 +117,56 @@ std::vector<FilePacket> probeVideoPackets(const std::string &path, size_t count)
 	return packets;
 }
 
+// How far a recording's own timestamps reach, in ns. 0 = the file does not
+// say, and that is a real answer: it is returned as "unknown" rather than
+// turned into a number the timeline would then be drawn from.
+//
+// libavformat is asked HOW it knows. When it cannot read the length from the
+// container or from the packets it will happily divide the file size by the
+// bitrate (AVFMT_DURATION_FROM_BITRATE) - a guess, and on a fragmented MP4
+// still being written a bad one. That answer is refused.
+int64_t probeFileDurationNs(const std::string &path)
+{
+	AVFormatContext *fmt = nullptr;
+	if (avformat_open_input(&fmt, path.c_str(), nullptr, nullptr) < 0)
+		return 0;
+	if (avformat_find_stream_info(fmt, nullptr) < 0) {
+		avformat_close_input(&fmt);
+		return 0;
+	}
+
+	const AVRational nsBase{1, 1'000'000'000};
+	int64_t ns = 0;
+
+	// The video stream's own duration, when the container carries one.
+	for (unsigned i = 0; i < fmt->nb_streams; i++) {
+		const AVStream *st = fmt->streams[i];
+		if (st->codecpar->codec_type != AVMEDIA_TYPE_VIDEO)
+			continue;
+		if (st->duration > 0 && st->duration != AV_NOPTS_VALUE &&
+		    st->time_base.den > 0)
+			ns = av_rescale_q(st->duration, st->time_base, nsBase);
+		break;
+	}
+
+	// ...and the container's, which for a fragmented file is read back from
+	// the last packets. The larger of the two is the one that saw more of the
+	// file: a header written when recording began is stale, never ahead.
+	if (fmt->duration > 0 && fmt->duration != AV_NOPTS_VALUE &&
+	    fmt->duration_estimation_method != AVFMT_DURATION_FROM_BITRATE) {
+		const int64_t fromContainer = av_rescale_q(
+			fmt->duration, AVRational{1, AV_TIME_BASE}, nsBase);
+		ns = std::max(ns, fromContainer);
+	}
+
+	avformat_close_input(&fmt);
+	return ns > 0 ? ns : 0;
+}
+
+// A file we have tried this many times and still cannot read a length from is
+// declared unknown out loud, and left alone.
+constexpr int kMaxDurationProbes = 3;
+
 } // namespace
 
 SegmentIndex &SegmentIndex::instance()
@@ -172,8 +222,12 @@ void SegmentIndex::watchLoop()
 	int tick = 0;
 	while (running_.load()) {
 		scanFolder();
-		if (tick++ % kAnchorEveryNScans == 0)
+		if (tick++ % kAnchorEveryNScans == 0) {
 			tryAnchorPending();
+			// Same beat, same reason: both are a demux, and the live
+			// path must not pay for either at scan rate.
+			refreshDurations();
+		}
 		{
 			std::unique_lock<std::mutex> lock(mutex_);
 			recomputeBoundaries();
@@ -413,6 +467,93 @@ void SegmentIndex::tryAnchorPending()
 	}
 }
 
+void SegmentIndex::refreshDurations()
+{
+	// Is anything still being appended to? The tap is attached exactly while
+	// Branch Output is recording, so this says whether the NEWEST file of
+	// each camera is still growing. Every other file is closed, whatever the
+	// recorder is doing.
+	const bool writing = PacketTap::instance().anyAttached();
+
+	// Pick one file, under the lock; measure it outside (a demux takes long
+	// enough that holding the mutex would stall resolve() on the playback
+	// thread).
+	std::string target;
+	int targetCam = -1;
+	{
+		std::lock_guard<std::mutex> lock(mutex_);
+		for (int cam = 0; cam < kMaxSegmentCameras && target.empty();
+		     cam++) {
+			auto &segs = segments_[cam];
+			for (size_t i = 0; i < segs.size(); i++) {
+				RecordingSegment &s = segs[i];
+				if (!s.anchored)
+					continue;
+				// Still being written: its length now is not its
+				// length, and the live edge covers it anyway.
+				// It gets measured once the take ends.
+				if (writing && i + 1 == segs.size())
+					continue;
+				if (s.durationFinal ||
+				    s.durationProbes >= kMaxDurationProbes)
+					continue;
+				target = s.path;
+				targetCam = cam;
+				break;
+			}
+		}
+	}
+	if (target.empty() || !running_.load())
+		return;
+
+	const int64_t measured = probeFileDurationNs(target);
+
+	std::lock_guard<std::mutex> lock(mutex_);
+	auto &segs = segments_[targetCam];
+	auto it = std::find_if(segs.begin(), segs.end(),
+			       [&](const RecordingSegment &s) {
+				       return s.path == target;
+			       });
+	if (it == segs.end())
+		return;
+
+	if (measured > 0) {
+		// A length is accepted as FINAL only when two reads agree. The tap
+		// detaches before Branch Output's filters are disabled (that order
+		// is required, see packet-tap), so there is always a window where
+		// nothing is "writing" by our reckoning and the muxer is still
+		// flushing its last fragment. One read taken in that window would
+		// freeze the timeline a second short of the footage; a second
+		// identical read means the file has stopped moving.
+		const bool settled = measured == it->durationNs;
+		it->durationNs = std::max(it->durationNs, measured);
+		it->durationFinal = settled;
+		it->durationProbes = 0;
+		if (settled)
+			obs_log(LOG_INFO, "[segments] cam%d: %s is %lld ms long",
+				targetCam + 1,
+				std::filesystem::path(target)
+					.filename()
+					.string()
+					.c_str(),
+				(long long)(it->durationNs / 1000000));
+		return;
+	}
+
+	if (++it->durationProbes >= kMaxDurationProbes) {
+		// Said, not guessed. A file whose end cannot be read simply does
+		// not extend the timeline: the alternative is a bar whose length
+		// comes from a bitrate division, which is a number that looks
+		// exactly as real as a measured one.
+		obs_log(LOG_WARNING,
+			"[segments] cam%d: %s does not say how long it is - its "
+			"end stays unknown rather than estimated, so it does not "
+			"extend the timeline",
+			targetCam + 1,
+			std::filesystem::path(target).filename().string().c_str());
+	}
+}
+
 void SegmentIndex::recomputeBoundaries()
 {
 	// A segment covers up to where the next one starts; the newest is still
@@ -421,7 +562,7 @@ void SegmentIndex::recomputeBoundaries()
 		for (size_t i = 0; i + 1 < segs.size(); i++)
 			segs[i].endMasterNs = segs[i + 1].anchorMasterNs;
 		if (!segs.empty())
-			segs.back().endMasterNs = 0;
+			segs.back().endMasterNs = kNoInstant;
 	}
 }
 
@@ -437,7 +578,7 @@ bool SegmentIndex::resolve(int camIndex, int64_t masterNs, std::string &pathOut,
 		const RecordingSegment &s = segs[i];
 		if (!s.anchored || masterNs < s.anchorMasterNs)
 			continue;
-		if (s.endMasterNs != 0 && masterNs >= s.endMasterNs)
+		if (s.endMasterNs != kNoInstant && masterNs >= s.endMasterNs)
 			continue;
 		pathOut = s.path;
 		fileTimeNsOut = masterNs - s.anchorMasterNs;
@@ -449,23 +590,59 @@ bool SegmentIndex::resolve(int camIndex, int64_t masterNs, std::string &pathOut,
 int64_t SegmentIndex::oldestNs(int camIndex) const
 {
 	if (camIndex < 0 || camIndex >= kMaxSegmentCameras)
-		return 0;
+		return kNoInstant;
 	std::lock_guard<std::mutex> lock(mutex_);
 	const auto &segs = segments_[camIndex];
-	return segs.empty() ? 0 : segs.front().anchorMasterNs;
+	return segs.empty() ? kNoInstant : segs.front().anchorMasterNs;
+}
+
+int64_t SegmentIndex::newestNs(int camIndex) const
+{
+	if (camIndex < 0 || camIndex >= kMaxSegmentCameras)
+		return kNoInstant;
+	std::lock_guard<std::mutex> lock(mutex_);
+	int64_t newest = kNoInstant;
+	for (const RecordingSegment &s : segments_[camIndex]) {
+		if (!s.anchored)
+			continue;
+		// A closed segment ends where the next one begins; that is known
+		// without touching the disk. Only the last one needs its measured
+		// length, and a segment that has neither contributes nothing -
+		// which is how "not determinable" is expressed here.
+		//
+		// A duration is a LENGTH, so > 0 is the right test for it. An
+		// end is an INSTANT, and instants may be negative (see
+		// kNoInstant) - testing one for > 0 is the bug this whole
+		// sentinel exists to prevent.
+		int64_t end = kNoInstant;
+		if (s.endMasterNs != kNoInstant)
+			end = s.endMasterNs;
+		if (s.durationNs > 0)
+			end = std::max(end, s.anchorMasterNs + s.durationNs);
+		newest = std::max(newest, end);
+	}
+	return newest;
+}
+
+int64_t SegmentIndex::projectEndNs() const
+{
+	int64_t newest = kNoInstant;
+	for (int cam = 0; cam < kMaxSegmentCameras; cam++)
+		newest = std::max(newest, newestNs(cam));
+	return newest;
 }
 
 int64_t SegmentIndex::projectOriginNs() const
 {
 	std::lock_guard<std::mutex> lock(mutex_);
-	int64_t oldest = 0;
+	int64_t oldest = kNoInstant;
 	for (const auto &segs : segments_) {
 		if (segs.empty())
 			continue;
 		// Each camera's vector is sorted by anchor, so its front is its
 		// own oldest.
 		const int64_t first = segs.front().anchorMasterNs;
-		if (first > 0 && (oldest == 0 || first < oldest))
+		if (oldest == kNoInstant || first < oldest)
 			oldest = first;
 	}
 	return oldest;
@@ -478,9 +655,10 @@ bool SegmentIndex::coversAnyCamera(int64_t masterNs) const
 		for (const RecordingSegment &s : segs) {
 			if (!s.anchored || masterNs < s.anchorMasterNs)
 				continue;
-			// endMasterNs == 0 means "still the newest, still
-			// growing", which covers everything after its anchor.
-			if (s.endMasterNs == 0 || masterNs < s.endMasterNs)
+			// No end means "still the newest, still growing", which
+			// covers everything after its anchor.
+			if (s.endMasterNs == kNoInstant ||
+			    masterNs < s.endMasterNs)
 				return true;
 		}
 	}
