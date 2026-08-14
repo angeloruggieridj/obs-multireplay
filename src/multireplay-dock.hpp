@@ -103,6 +103,44 @@ private:
 	std::vector<std::pair<double, double>> markers_;
 };
 
+// ---------------------------------------------------------------------------
+// ClipBar — the green band across the bottom: WHAT IS ON AIR.
+//
+// It is not a scrubber and must never be mistaken for one (the SeekBar above
+// does that job, and lives right underneath it). This bar answers one question
+// and answers it from across the room: which clip is playing, on which angle,
+// how much of it is left, and at what speed. The fill is its progress through
+// that clip, so the operator can see the end coming without reading a number.
+//
+// Green, filled and bright while something is on air; dim while the bar is only
+// describing the clip that WOULD play. the reference controller prints the same information in the
+// same place, and an operator reads a colour before he reads a label.
+// ---------------------------------------------------------------------------
+class ClipBar : public QWidget {
+	Q_OBJECT
+
+public:
+	explicit ClipBar(QWidget *parent = nullptr);
+
+	// progress in [0,1]; `text` is drawn centred over the fill.
+	void setState(double progressFrac, const QString &text, bool onAir);
+
+	// What the band is currently saying. For the automated gate: "the bar
+	// exists" is not the claim worth checking — "while a clip is on air the
+	// bar names it, and its fill has moved" is.
+	QString overlayText() const { return text_; }
+	double progress() const { return progress_; }
+	bool onAir() const { return onAir_; }
+
+protected:
+	void paintEvent(QPaintEvent *) override;
+
+private:
+	double progress_ = 0.0;
+	QString text_;
+	bool onAir_ = false;
+};
+
 class MultiReplayDock : public QWidget {
 	Q_OBJECT
 
@@ -327,6 +365,10 @@ private:
 	// more: it is told the speed of the clip it is asked to play.
 	int speedPct_ = 100;
 	SeekBar *seek_ = nullptr;
+	// The green on-air band and the key beside it that drops the clip on air
+	// and takes the next item of the queue (another angle, or the next event).
+	ClipBar *clipBar_ = nullptr;
+	QPushButton *nextClipBtn_ = nullptr;
 	QSlider *speed_ = nullptr;
 	// The 25/33/50/75/100/2× chips, keyed by percentage so poll() can light
 	// the one that matches the current speed (the reference controller fills it green).

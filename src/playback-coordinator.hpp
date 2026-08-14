@@ -54,6 +54,13 @@ public:
 	// broadcast replayStopEvents.
 	void stopEvents();
 
+	// Drop the clip on air and go straight to the next item of the queue —
+	// which may be another ANGLE of the same event or the next event. The
+	// operator watching a replay he has already seen enough of should not have
+	// to wait for it, and Stop is not the same thing: Stop kills the sequence.
+	// Returns false when there is no queue to advance.
+	bool skipToNext();
+
 	bool queueActive() const;
 
 	// Lightweight snapshot of the currently playing item, safe to call from
@@ -67,6 +74,12 @@ public:
 		// gate) tell "playing one angle" from "playing all of them".
 		int queued = 0;
 		int queuePos = 0; // 1-based position of the clip on air
+		// Speed the clip ON AIR is being played at (5..400), already
+		// resolved from the angle's override or the default. The dock
+		// prints it on the green bar: what the operator has to read there
+		// is the speed of the picture in front of him, which is not the
+		// slider's whenever that angle has an override of its own.
+		int speedPct = 100;
 		// The whole queue's angles (1-based), in play order. "Which
 		// cameras, in which order" is the property the operator actually
 		// asked for, and a count alone cannot express it: [1,2] and

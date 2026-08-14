@@ -580,24 +580,30 @@ void SeekBar::paintEvent(QPaintEvent *)
 	QPainter p(this);
 	p.setRenderHint(QPainter::Antialiasing, true);
 
-	// the reference controller's position bar is a full-height green band, not a bead on a rail:
-	// it is the widest, brightest thing on the panel because it is the control
-	// the operator's hand lives on. Same here — the whole widget IS the bar.
+	// The whole widget IS the bar (no bead on a rail): it is the control the
+	// operator's hand lives on, so it is as wide and as tall as the panel can
+	// afford.
+	//
+	// SLATE BLUE, not green. The green band is the ClipBar directly above,
+	// and that one is a STATUS: what is on air, how much of it is left. This
+	// one is a CONTROL over the whole recorded timeline. Two stacked bars in
+	// the same colour would be two bars the operator has to tell apart by
+	// reading, every time, under pressure.
 	const int m = 2;                       // horizontal margin
 	const int h = height() - 2;            // track thickness (nearly full)
 	const int y = 1;
 	const int w = width() - 2 * m;
 	const double pos = dragging_ ? dragFrac_ : positionFrac_;
 
-	// Track (the remaining part of the timeline): the reference controller dark green
+	// Track (the part of the timeline behind/ahead of the playhead)
 	p.setPen(Qt::NoPen);
-	p.setBrush(QColor(0x14, 0x64, 0x33));
+	p.setBrush(QColor(0x16, 0x1c, 0x24));
 	p.drawRect(QRectF(m, y, w, h));
 
-	// Anything outside the seekable region is NOT green: it is not a place the
-	// operator can go, and painting it like the rest would say it is.
+	// Anything outside the seekable region is darker still: it is not a place
+	// the operator can go, and painting it like the rest would say it is.
 	if (seekableFrac_ < 1.0) {
-		p.setBrush(QColor(0x10, 0x18, 0x14));
+		p.setBrush(QColor(0x0c, 0x0e, 0x12));
 		p.drawRect(QRectF(m + w * seekableFrac_, y,
 				  w * (1.0 - seekableFrac_), h));
 	}
@@ -640,11 +646,11 @@ void SeekBar::paintEvent(QPaintEvent *)
 	}
 	p.setPen(Qt::NoPen);
 
-	// Played-up-to-here — the reference controller's bright green, drawn over the markers
-	// (they show through: the fill is opaque, so the markers ahead of the
-	// playhead are the ones that matter and those stay visible).
+	// Behind the playhead — steel blue, drawn over the markers (the fill is
+	// opaque, so the markers AHEAD of the playhead are the ones that stay
+	// visible, and those are the ones that matter).
 	if (pos > 0.0) {
-		p.setBrush(QColor(0x19, 0x98, 0x47));
+		p.setBrush(QColor(0x2a, 0x4a, 0x72));
 		p.drawRect(QRectF(m, y, w * pos, h));
 	}
 
@@ -655,17 +661,18 @@ void SeekBar::paintEvent(QPaintEvent *)
 		      dragging_ ? 3.0 : 2.0, Qt::SolidLine, Qt::FlatCap));
 	p.drawLine(QPointF(hx, y), QPointF(hx, y + h));
 
-	// the reference controller prints the transport state ON the bar. Centred, with a dark halo
-	// so it stays readable over both greens.
+	// Where the timeline stands, printed ON the bar (the reference controller). NOT the clip
+	// state — that is the green band above; this is position and length of
+	// the recorded timeline, which is what a scrubber is about.
 	if (!overlay_.isEmpty()) {
 		QFont f = p.font();
 		f.setPointSizeF(f.pointSizeF() * 1.05);
 		f.setBold(true);
 		p.setFont(f);
 		const QRectF tr(m, y, w, h);
-		p.setPen(QColor(0x00, 0x20, 0x0c, 0xb0));
+		p.setPen(QColor(0x00, 0x00, 0x00, 0xb0));
 		p.drawText(tr.adjusted(1, 1, 1, 1), Qt::AlignCenter, overlay_);
-		p.setPen(QColor(0xff, 0xff, 0xff));
+		p.setPen(QColor(0xd8, 0xe4, 0xf2));
 		p.drawText(tr, Qt::AlignCenter, overlay_);
 	}
 }
@@ -701,6 +708,64 @@ void SeekBar::mouseReleaseEvent(QMouseEvent *e)
 	emit seekRequested(dragFrac_);
 	emit scrubStateChanged(false);
 	update();
+}
+
+// ---------------------------------------------------------------------------
+// ClipBar — the green on-air band (see the header for what it is FOR)
+// ---------------------------------------------------------------------------
+
+ClipBar::ClipBar(QWidget *parent) : QWidget(parent)
+{
+	setFixedHeight(24);
+	setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+	// Deliberately NOT a pointing-hand cursor and deliberately not clickable:
+	// the bar directly under it IS clickable, and a bar that looks draggable
+	// but is not is worse than one that looks inert.
+}
+
+void ClipBar::setState(double progressFrac, const QString &text, bool onAir)
+{
+	const double p = std::clamp(progressFrac, 0.0, 1.0);
+	if (std::abs(p - progress_) < 0.0005 && text == text_ && onAir == onAir_)
+		return; // 30 times a second, most ticks change nothing
+	progress_ = p;
+	text_ = text;
+	onAir_ = onAir;
+	update();
+}
+
+void ClipBar::paintEvent(QPaintEvent *)
+{
+	QPainter p(this);
+	const int m = 2;
+	const int h = height() - 2;
+	const int y = 1;
+	const int w = width() - 2 * m;
+
+	// Track, then the played part of THIS clip. Bright while it is on air,
+	// muted while the bar is only describing what would play: "is something
+	// on air" must be answerable without reading a word.
+	p.setPen(Qt::NoPen);
+	p.setBrush(QColor(0x14, 0x64, 0x33));
+	p.drawRect(QRectF(m, y, w, h));
+	if (progress_ > 0.0) {
+		p.setBrush(onAir_ ? QColor(0x19, 0x98, 0x47)
+				  : QColor(0x17, 0x65, 0x33));
+		p.drawRect(QRectF(m, y, w * progress_, h));
+	}
+
+	if (text_.isEmpty())
+		return;
+	QFont f = p.font();
+	f.setBold(true);
+	p.setFont(f);
+	const QRectF tr(m + 6, y, w - 12, h);
+	// Dark halo first: the text crosses both greens and has to stay legible
+	// over either.
+	p.setPen(QColor(0x00, 0x20, 0x0c, 0xb0));
+	p.drawText(tr.adjusted(1, 1, 1, 1), Qt::AlignCenter, text_);
+	p.setPen(onAir_ ? QColor(0xff, 0xff, 0xff) : QColor(0xa8, 0xc8, 0xb0));
+	p.drawText(tr, Qt::AlignCenter, text_);
 }
 
 // ---------------------------------------------------------------------------
@@ -1613,7 +1678,34 @@ QWidget *MultiReplayDock::buildBottomBar()
 		v->addLayout(h);
 	}
 
-	// ── Row 3: the position bar, full width (the reference controller's green band) ───────
+	// ── Row 3: the green ON-AIR band, and the key that skips past it ──
+	// What is playing, on which angle, how much is left, at what speed —
+	// with the fill as its progress. The >> beside it drops the clip and
+	// takes the next item of the queue, which may be another angle of the
+	// same event or the next event: the operator who has seen enough of a
+	// replay should not have to sit through the rest of it, and Stop is a
+	// different thing (it kills the sequence).
+	{
+		auto *h = new QHBoxLayout();
+		h->setContentsMargins(0, 0, 0, 0);
+		h->setSpacing(3);
+		clipBar_ = new ClipBar(this);
+		h->addWidget(clipBar_, 1);
+
+		// ">>", never the ⏭ glyph: EXACTLY ONE button in this dock may
+		// carry that one (the frame step), and the gate finds it by it.
+		nextClipBtn_ = transportBtn(QStringLiteral(">>"), this,
+					    obs_module_text("Dock.NextClip"));
+		nextClipBtn_->setMinimumHeight(24);
+		connect(nextClipBtn_, &QPushButton::clicked, this, [this]() {
+			if (!PlaybackCoordinator::instance().skipToNext())
+				showNotice(obs_module_text("Dock.NothingQueued"));
+		});
+		h->addWidget(nextClipBtn_, 0);
+		v->addLayout(h);
+	}
+
+	// ── Row 4: the position bar over the whole recorded timeline ──────
 	seek_ = new SeekBar(this);
 	connect(seek_, &SeekBar::scrubStateChanged, this,
 		[this](bool dragging) { seekDragging_ = dragging; });
@@ -1840,8 +1932,12 @@ void MultiReplayDock::rebuildEventColumns()
 	QStringList headers;
 	headers << QStringLiteral("#") << obs_module_text("Dock.In")
 		<< obs_module_text("Dock.Out") << obs_module_text("Dock.Duration");
-	for (const QString &lbl : camLabels)
-		headers << lbl << obs_module_text("Dock.Note");
+	// The comment header carries the camera NUMBER too ("✎ 2"): with four
+	// cameras on screen a row of identical "Note" headings leaves the
+	// operator counting columns to find out whose comment he is typing.
+	for (size_t i = 0; i < cams.size(); i++)
+		headers << camLabels[(int)i]
+			<< QString("✎ %1").arg(cams[i] + 1);
 	events_->setHorizontalHeaderLabels(headers);
 	// The camera headers carry their own label in UserRole: the "angle I am
 	// watching" marker is a prefix on the text (see updateCamHeaderHighlight),
@@ -2272,19 +2368,53 @@ void MultiReplayDock::updateChannelStrip()
 	if (chanBadge_)
 		chanBadge_->setText(QString("A%1").arg(currentAngle1_));
 
-	// The same information the reference controller prints ON the position bar: which event, where
-	// the playhead is, at what speed.
+	// --- the green band: the state of the ANGLE that is on air ------------
+	// id · angle · time left · speed, with the fill as the progress through
+	// that clip. The speed is the CLIP's (the angle's override when it has
+	// one), not the slider's: what has to be readable there is the speed of
+	// the picture in front of the operator.
+	if (clipBar_) {
+		const bool onAir = ps.active && ps.eventId > 0;
+		const int barPct = onAir ? ps.speedPct
+					 : (speedPct_ > 0 ? speedPct_ : 100);
+		double frac = 0.0;
+		QString text;
+		if (haveEv && ev.tOutNs > ev.tInNs) {
+			const int64_t dur = ev.tOutNs - ev.tInNs;
+			frac = (double)(clipPos - ev.tInNs) / (double)dur;
+			const int64_t remNs =
+				ev.tOutNs > clipPos ? ev.tOutNs - clipPos : 0;
+			// Remaining in WALL time: at 50% a 4 s clip has 8 s left,
+			// and 8 s is how long the operator will be looking at it.
+			text = QString("%1   A%2   %3   %4%")
+				       .arg(evId, idDigits, 10, QLatin1Char('0'))
+				       .arg(onAir ? ps.angle1 : currentAngle1_)
+				       .arg(shortTc(remNs * 100 / (barPct > 0
+									   ? barPct
+									   : 100)))
+				       .arg(barPct);
+			if (onAir && ps.queued > 1)
+				text += QString("   %1/%2")
+						.arg(ps.queuePos)
+						.arg(ps.queued);
+		} else {
+			text = obs_module_text("Dock.NoEvent");
+		}
+		clipBar_->setState(frac, text, onAir);
+	}
+	if (nextClipBtn_)
+		nextClipBtn_->setEnabled(ps.active);
+
+	// --- the position bar: where the TIMELINE stands ----------------------
+	// Not the clip state (that is the band above). Position and length of the
+	// recorded timeline, which is the thing this bar actually controls.
 	if (seek_) {
 		const int64_t rel = (playheadNs_ > timelineStartNs_ &&
 				     timelineStartNs_ > 0)
 					    ? playheadNs_ - timelineStartNs_
 					    : 0;
-		QString ov;
-		if (haveEv)
-			ov = QString("%1 - ").arg(evId, idDigits, 10,
-						  QLatin1Char('0'));
-		ov += shortTc(rel) + QString("   %1%").arg(speedPct_);
-		seek_->setOverlayText(ov);
+		seek_->setOverlayText(shortTc(rel) + "  /  " +
+				      shortTc(displayDurNs_));
 	}
 }
 

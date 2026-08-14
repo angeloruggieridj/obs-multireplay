@@ -329,8 +329,26 @@ PlaybackCoordinator::PlayState PlaybackCoordinator::playState() const
 		s.eventId = queue_[queuePos_].eventId;
 		s.angle1 = queue_[queuePos_].angle + 1; // 0-based → 1-based
 		s.queuePos = (int)queuePos_ + 1;
+		s.speedPct = queue_[queuePos_].speedPct;
 	}
 	return s;
+}
+
+bool PlaybackCoordinator::skipToNext()
+{
+	std::lock_guard<std::mutex> lock(mutex_);
+	if (!active_)
+		return false;
+	// The generation is bumped BEFORE the stop, not after: stopping the clip
+	// can put a finish callback in flight, and that callback must not advance
+	// the queue a second time on top of the advance we are about to do. With
+	// the generation moved, onClipFinished() drops it.
+	playGen_++;
+	ReplayChannel::instance().stop();
+	// Exactly what the natural end of a clip does — including Loop, and
+	// including ending the sequence when this was the last item.
+	onEventFinished();
+	return true;
 }
 
 void PlaybackCoordinator::startNext()

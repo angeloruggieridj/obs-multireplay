@@ -221,6 +221,13 @@ struct DockChecks {
 	bool angleColumnsInTable = false;
 	bool tableEditsAngleSpeed = false;
 	int eventTableColumns = 0;
+	// M5: the green band is the state of the clip ON AIR (id, angle, time
+	// left, speed) with its fill as the progress through that clip — and the
+	// >> key beside it takes the next item of the queue. Both are checked on
+	// the real widgets: a status bar nobody updates looks exactly like a
+	// status bar that has nothing to say.
+	bool clipBarReportsOnAir = false;
+	bool skipAdvancesQueue = false;
 	// ...and the failure this whole widget family is famous for: a display
 	// left presenting into a native window Qt has destroyed. It used to be
 	// visible only by reading the OBS log by eye, which is the check that
@@ -583,10 +590,40 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 
 		runOnUi([&]() { playBtn->click(); });
 
-		// 5 s of footage at 1x, generously bounded.
-		for (int i = 0; i < 300 && chan.playing(); i++)
+		// 5 s of footage at 1x, generously bounded. WHILE it runs, watch
+		// the green band: it has to NAME the clip on air (the padded id)
+		// and its fill has to move. A status bar nobody updates looks
+		// exactly like a status bar with nothing to say, which is why
+		// "the widget exists" would not be worth checking.
+		const QString idText =
+			QString("%1").arg(evId,
+					  std::clamp(ReplayCore::instance()
+							     .getConfig()
+							     .eventIdDigits,
+						     1, 8),
+					  10, QLatin1Char('0'));
+		bool barNamedClip = false;
+		double barProgress = 0.0;
+		for (int i = 0; i < 300 && chan.playing(); i++) {
+			runOnUi([&]() {
+				ClipBar *bar = dock->findChild<ClipBar *>();
+				if (!bar)
+					return;
+				if (bar->onAir() &&
+				    bar->overlayText().contains(idText))
+					barNamedClip = true;
+				barProgress = std::max(barProgress,
+						       bar->progress());
+			});
 			std::this_thread::sleep_for(
 				std::chrono::milliseconds(50));
+		}
+		c.clipBarReportsOnAir = barNamedClip && barProgress > 0.05;
+		obs_log(c.clipBarReportsOnAir ? LOG_INFO : LOG_ERROR,
+			"[selftest] dock: on-air band named event %s: %s, fill "
+			"reached %.0f%%",
+			idText.toUtf8().constData(),
+			barNamedClip ? "yes" : "NO", barProgress * 100.0);
 
 		const auto st = chan.stats();
 		const int64_t pos = chan.positionNs();
@@ -641,6 +678,8 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 		c.singleHonoursRequestedAngle = true;
 		c.singleReportsUnplayableAngle = true;
 		c.markInheritsAngle = true;
+		// One camera: there is never a second queue item to skip TO.
+		c.skipAdvancesQueue = true;
 	} else {
 		auto &pc = PlaybackCoordinator::instance();
 		const int a1 = firstCam + 1;
@@ -827,6 +866,66 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 				obs_log(LOG_ERROR,
 					"[selftest] dock: two-angle sequence — "
 					"playEvents refused: %s", qerr.c_str());
+			}
+			pc.stopEvents();
+		}
+
+		// --- >> drops the clip and takes the next queue item ----------
+		// The operator who has seen enough of an angle should not have to
+		// sit through the rest of it. Clicked through the real key, and
+		// checked on the queue: the position has to MOVE, onto the second
+		// angle, and the sequence has to still be alive afterwards (Stop
+		// would also "leave clip 1" — and that is the bug this would be).
+		{
+			QPushButton *skipBtn = nullptr;
+			const QString skip = QStringLiteral(">>");
+			runOnUi([&]() {
+				for (QPushButton *b :
+				     dock->findChildren<QPushButton *>())
+					if (b->text() == skip)
+						skipBtn = b;
+			});
+			for (int a = 1; a <= kEventAngles; a++)
+				store.setAngle(evId, a, false);
+			store.setAngle(evId, a1, true);
+			store.setAngle(evId, a2, true);
+			std::string kerr;
+			if (skipBtn && pc.playEvents({evId}, firstCam, false, kerr)) {
+				// Let clip 1 really get going first, or "it is on
+				// clip 2" would be indistinguishable from a queue
+				// that had already walked on by itself.
+				for (int i = 0; i < 40 &&
+						chan.stats().framesPushed == 0;
+				     i++)
+					std::this_thread::sleep_for(
+						std::chrono::milliseconds(50));
+				const auto before = pc.playState();
+				runOnUi([&]() { skipBtn->click(); });
+				PlaybackCoordinator::PlayState after;
+				for (int i = 0; i < 40; i++) {
+					after = pc.playState();
+					if (after.active && after.queuePos == 2)
+						break;
+					std::this_thread::sleep_for(
+						std::chrono::milliseconds(50));
+				}
+				c.skipAdvancesQueue = before.queuePos == 1 &&
+						      after.active &&
+						      after.queuePos == 2 &&
+						      after.angle1 == a2;
+				obs_log(c.skipAdvancesQueue ? LOG_INFO : LOG_ERROR,
+					"[selftest] dock: >> moved the queue from "
+					"%d/%d (angle %d) to %d/%d (angle %d), still "
+					"active: %s",
+					before.queuePos, before.queued,
+					before.angle1, after.queuePos,
+					after.queued, after.angle1,
+					after.active ? "yes" : "NO");
+			} else {
+				obs_log(LOG_ERROR,
+					"[selftest] dock: no >> key found (%p) or "
+					"the two-angle queue refused: %s",
+					(void *)skipBtn, kerr.c_str());
 			}
 			pc.stopEvents();
 		}
@@ -1776,6 +1875,8 @@ void runSelfTest()
 			  dockChecks.displaysNeverStranded &&
 			  dockChecks.angleColumnsInTable &&
 			  dockChecks.tableEditsAngleSpeed &&
+			  dockChecks.clipBarReportsOnAir &&
+			  dockChecks.skipAdvancesQueue &&
 			  anchorsPersisted && projectOriginOk &&
 			  eventTimecodeSane && filtersIdleOutsideRec;
 
@@ -1889,6 +1990,12 @@ void runSelfTest()
 			  dockChecks.angleColumnsInTable);
 	obs_data_set_bool(checks, "dock_table_edits_angle_speed",
 			  dockChecks.tableEditsAngleSpeed);
+	// M5: the green band describes the clip ON AIR, and >> takes the next
+	// item of the queue instead of killing the sequence.
+	obs_data_set_bool(checks, "dock_clip_bar_reports_on_air",
+			  dockChecks.clipBarReportsOnAir);
+	obs_data_set_bool(checks, "dock_skip_advances_queue",
+			  dockChecks.skipAdvancesQueue);
 	obs_data_set_obj(root, "checks", checks);
 	obs_data_release(checks);
 
