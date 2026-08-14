@@ -400,10 +400,10 @@ constexpr int64_t kArmWatchNs = 4'000'000'000LL; // 4 s
 // The column numbers themselves live in the HEADER (MultiReplayDock::kColId …
 // kColFirstCam, kColsPerCam): the gate edits real cells and must read the
 // layout from the same place the dock builds it from.
-constexpr int kColId = MultiReplayDock::kColId;
-constexpr int kColIn = MultiReplayDock::kColIn;
-constexpr int kColOut = MultiReplayDock::kColOut;
-constexpr int kColDur = MultiReplayDock::kColDur;
+// Only the two the free functions below need. The fixed columns are NOT
+// mirrored here: inside a member function unqualified `kColId` resolves to the
+// class enumerator, so a file-scope copy would never be read - and clang says
+// so with -Wunused-const-variable, which this project treats as an error.
 constexpr int kColFirstCam = MultiReplayDock::kColFirstCam;
 constexpr int kColsPerCam = MultiReplayDock::kColsPerCam;
 
