@@ -162,11 +162,14 @@ QPushButton#mrToggle:checked {
 
 /* ── list tabs (the reference controller: one tab per event list) ─────────────── */
 QTabBar#mrListTabs { background: transparent; }
+/* No font-size here on purpose: the tab font is set on the WIDGET (see
+   buildToolbar). A size that lives only in the stylesheet is a size nothing
+   outside the painter can measure, and "is this tab wide enough for its own
+   name" is exactly the question the gate has to answer. */
 QTabBar#mrListTabs::tab {
 	background: #141414; color: #8a8a8a;
 	border: 1px solid #232323; border-bottom: 0;
 	padding: 3px 9px; margin-right: 1px; min-width: 16px;
-	font-size: 10px;
 }
 QTabBar#mrListTabs::tab:hover { background: #1e1e1e; color: #c0c0c0; }
 QTabBar#mrListTabs::tab:selected {
@@ -988,6 +991,18 @@ QWidget *MultiReplayDock::buildToolbar()
 	listTabs_->setUsesScrollButtons(true);
 	listTabs_->setElideMode(Qt::ElideNone);
 	listTabs_->setFocusPolicy(Qt::NoFocus);
+	// Slightly smaller than the dock's font, and set on the WIDGET rather
+	// than in the stylesheet: this is the font the tabs are measured AND
+	// painted with, so "the tab is at least as wide as its own name" is a
+	// question that can be answered from outside (the gate asks it).
+	{
+		QFont tf = listTabs_->font();
+		if (tf.pointSizeF() > 0)
+			tf.setPointSizeF(std::max(7.0, tf.pointSizeF() * 0.9));
+		else if (tf.pixelSize() > 0)
+			tf.setPixelSize(std::max(9, (int)(tf.pixelSize() * 0.9)));
+		listTabs_->setFont(tf);
+	}
 	for (int i = 1; i <= kEventLists; i++)
 		listTabs_->addTab(QString::number(i));
 	refreshListNames();
@@ -3389,6 +3404,13 @@ void MultiReplayDock::refreshEvents()
 			// without stopping to read.
 			on->setForeground(QBrush(QColor(hasSpeed ? "#ffd07a"
 								 : "#707070")));
+			// ResizeToContents measures the ITEM, and the item cannot
+			// know how wide the check indicator will be drawn — that
+			// size comes from the stylesheet. Left to itself the cell
+			// came out a few pixels short and Qt drew "7…" instead of
+			// "70%": a speed the operator cannot read is worse than no
+			// speed at all. Wide enough for the box plus "100%".
+			on->setSizeHint(QSize(66, 22));
 			events_->setItem(row, col, on);
 
 			// Right half: the comment for that angle.
