@@ -170,6 +170,24 @@ public:
 	};
 	PreviewStats previewStats() const;
 
+	// Where the panel's zones actually ended up. Published for the automated
+	// gate, and it is a claim no widget check can make: "the tabs and the
+	// search box are above the pictures" was true for a whole milestone while
+	// every check that FINDS those widgets passed — they were all present,
+	// in the wrong order. Only geometry can tell.
+	//
+	// y coordinates are in the dock's own coordinate system; -1 = no widget.
+	// UI thread only.
+	struct LayoutProbe {
+		int previewBottomY = -1; // lowest edge of the picture block
+		int searchY = -1;
+		int listTabsY = -1;
+		int tableY = -1;
+		int clipBarY = -1;
+		int seekY = -1;
+	};
+	LayoutProbe layoutProbe() const;
+
 	// Event table geometry. Public because the automated gate reads and edits
 	// REAL cells: given only a column count it could not tell "the per-event
 	// speed column is gone" from "the table is built differently today", and a
@@ -198,9 +216,16 @@ public:
 private:
 	// --- UI assembly ---
 	// Zoned the way the broadcast replay controller is zoned, top to bottom:
-	// list tabs + search + Live, then the channel A preview with its green
-	// status strip, then the event table, then the two rows of controls and
-	// the full-width position bar. buildBottomBar() owns the last two.
+	// the channel A preview + multiview with its green status strip FIRST,
+	// then the list header (search + Live, then the list tabs), then the
+	// event table, then the two rows of controls, the green on-air band and
+	// the full-width position bar. buildBottomBar() owns the last three.
+	//
+	// The pictures lead. Everything that picks WHICH event — the tabs, the
+	// search box, Live — belongs to the list and lives with it, between the
+	// pictures and the table it filters (see layoutProbe: the gate checks
+	// that order on real geometry, because every widget was present and
+	// findable the whole time it was wrong).
 	QWidget *buildToolbar();
 	QWidget *buildPreview();
 	QWidget *buildMultiview();

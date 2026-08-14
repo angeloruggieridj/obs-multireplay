@@ -870,17 +870,25 @@ MultiReplayDock::MultiReplayDock(QWidget *parent) : QWidget(parent)
 	};
 
 	// ── The broadcast replay controller's zoning, top to bottom ────────────
-	// 1. list tabs · search · Live
-	// 2. channel A preview + its green status strip
-	// 3. the event list, one column per camera
-	// 4. mark keys · angle row · export
-	// 5. record + transport + slow-motion speed
-	// 6. the full-width position bar
+	// 1. the pictures: channel A big, the multiview beside it, green strip
+	// 2. search · Live
+	// 3. the list tabs
+	// 4. the event list, one column per camera
+	// 5. mark keys · angle row · export
+	// 6. record + transport + slow-motion speed
+	// 7. the green on-air band
+	// 8. the full-width position bar
 	//
 	// An operator who has used the reference controller finds every control where his hand
 	// already goes, which is the entire point of this layout.
-	root->addWidget(buildToolbar());
-
+	//
+	// THE PICTURES COME FIRST. They did not, for a while: the tabs, the
+	// search box and Live sat above them, which put a row of small text
+	// where the operator's eye goes for the picture and pushed the picture
+	// down. In the controller this panel is modelled on, everything that
+	// SELECTS an event (which list, which words, live or parked) belongs to
+	// the list — so it lives with the list, directly under the pictures and
+	// directly above the table it filters.
 	{
 		// Preview above, list below: the reference controller stacks them, and the previous
 		// side-by-side split had no equivalent there. Draggable, because an
@@ -889,7 +897,19 @@ MultiReplayDock::MultiReplayDock(QWidget *parent) : QWidget(parent)
 		splitter_->setChildrenCollapsible(false);
 		splitter_->setHandleWidth(5);
 		splitter_->addWidget(buildPreview());
-		splitter_->addWidget(buildEvents());
+
+		// The list pane: what picks the events, then the events. One
+		// widget so the splitter treats them as the single zone they are
+		// — dragging the handle must not be able to leave the search row
+		// stranded away from its table.
+		auto *listPane = new QWidget(this);
+		auto *lv = new QVBoxLayout(listPane);
+		lv->setContentsMargins(0, 0, 0, 0);
+		lv->setSpacing(2);
+		lv->addWidget(buildToolbar());
+		lv->addWidget(buildEvents(), 1);
+		splitter_->addWidget(listPane);
+
 		splitter_->setStretchFactor(0, 3);
 		splitter_->setStretchFactor(1, 2);
 		root->addWidget(splitter_, 1);
@@ -959,13 +979,26 @@ MultiReplayDock::~MultiReplayDock()
 }
 
 // ---------------------------------------------------------------------------
-// Toolbar: list tabs · search · Live  (the reference controller's top strip)
+// Toolbar: search · Live, then the list tabs  (the controller's list header)
+//
+// TWO rows, in this order, because that is the order the reference panel has:
+// the search box and the Live key on one line, the twenty list tabs on the line
+// under it, and the table under those. The tabs are the widest thing here and
+// they scroll; sharing a line with them is what squeezed the search box down to
+// a slot too narrow to read what had been typed into it.
+//
+// The whole block sits UNDER the pictures (see the constructor).
 // ---------------------------------------------------------------------------
 
 QWidget *MultiReplayDock::buildToolbar()
 {
 	auto *box = new QWidget(this);
-	auto *h = new QHBoxLayout(box);
+	auto *v = new QVBoxLayout(box);
+	v->setContentsMargins(0, 0, 0, 0);
+	v->setSpacing(2);
+
+	auto *topRow = new QWidget(box);
+	auto *h = new QHBoxLayout(topRow);
 	h->setContentsMargins(0, 0, 0, 0);
 	h->setSpacing(5);
 
@@ -974,6 +1007,37 @@ QWidget *MultiReplayDock::buildToolbar()
 	projectLbl_->setStyleSheet("color: #487898; font-size: 9px; padding: 0 4px;");
 	projectLbl_->hide();
 	h->addWidget(projectLbl_);
+	// Search and Live sit in the MIDDLE of their row, as they do on the
+	// reference panel: the operator's eye comes down off the picture into the
+	// centre of the panel, not into a corner.
+	h->addStretch(1);
+
+	auto *mag = new QLabel(QStringLiteral("🔍"), box);
+	mag->setObjectName("mrMuted");
+	h->addWidget(mag);
+	search_ = new QLineEdit(box);
+	search_->setPlaceholderText(obs_module_text("Dock.Search"));
+	search_->setClearButtonEnabled(true);
+	search_->setMaximumWidth(190);
+	search_->setMinimumWidth(90);
+	connect(search_, &QLineEdit::textChanged, this,
+		[this](const QString &) { refreshEvents(); });
+	h->addWidget(search_, 0);
+
+	// the reference controller's Live button, in the reference controller's place and the reference controller's colour: red means the
+	// marks land where the action is happening, off means they land where the
+	// position bar is parked.
+	liveBtn_ = new QPushButton(obs_module_text("Dock.LiveMode"), box);
+	liveBtn_->setObjectName("mrLive");
+	liveBtn_->setCheckable(true);
+	liveBtn_->setCursor(Qt::PointingHandCursor);
+	liveBtn_->setToolTip(obs_module_text("Dock.LiveModeHint"));
+	liveBtn_->setChecked(EventStore::instance().liveMode());
+	connect(liveBtn_, &QPushButton::toggled, this,
+		[](bool on) { EventStore::instance().setLiveMode(on); });
+	h->addWidget(liveBtn_);
+	h->addStretch(1);
+	v->addWidget(topRow);
 
 	// The 20 lists as TABS, not a dropdown. the reference controller shows them all at once and
 	// the operator jumps between them mid-match without opening anything; a
@@ -1013,34 +1077,10 @@ QWidget *MultiReplayDock::buildToolbar()
 		EventStore::instance().selectList(idx + 1);
 		refreshEvents();
 	});
-	// The tabs take the slack, not the stretch after them: with the names on,
-	// the row's spare width belongs to the thing whose width means something.
-	h->addWidget(listTabs_, 1);
-
-	auto *mag = new QLabel(QStringLiteral("🔍"), box);
-	mag->setObjectName("mrMuted");
-	h->addWidget(mag);
-	search_ = new QLineEdit(box);
-	search_->setPlaceholderText(obs_module_text("Dock.Search"));
-	search_->setClearButtonEnabled(true);
-	search_->setMaximumWidth(190);
-	search_->setMinimumWidth(90);
-	connect(search_, &QLineEdit::textChanged, this,
-		[this](const QString &) { refreshEvents(); });
-	h->addWidget(search_, 0);
-
-	// the reference controller's Live button, in the reference controller's place and the reference controller's colour: red means the
-	// marks land where the action is happening, off means they land where the
-	// position bar is parked.
-	liveBtn_ = new QPushButton(obs_module_text("Dock.LiveMode"), box);
-	liveBtn_->setObjectName("mrLive");
-	liveBtn_->setCheckable(true);
-	liveBtn_->setCursor(Qt::PointingHandCursor);
-	liveBtn_->setToolTip(obs_module_text("Dock.LiveModeHint"));
-	liveBtn_->setChecked(EventStore::instance().liveMode());
-	connect(liveBtn_, &QPushButton::toggled, this,
-		[](bool on) { EventStore::instance().setLiveMode(on); });
-	h->addWidget(liveBtn_);
+	// The tab bar owns its own row now, so it gets the whole width: with the
+	// names on, the scroll buttons only appear when twenty NAMED lists really
+	// do not fit, instead of as soon as the search box took its share.
+	v->addWidget(listTabs_);
 
 	return box;
 }
@@ -1278,6 +1318,30 @@ MultiReplayDock::PreviewStats MultiReplayDock::previewStats() const
 	for (const PreviewTile &t : tiles_)
 		account(t.display);
 	return s;
+}
+
+// Where the zones ended up, in the dock's own coordinates. See LayoutProbe in
+// the header for why the gate is allowed to ask.
+MultiReplayDock::LayoutProbe MultiReplayDock::layoutProbe() const
+{
+	LayoutProbe lp;
+	const auto topOf = [this](const QWidget *w) {
+		return w ? w->mapTo(this, QPoint(0, 0)).y() : -1;
+	};
+	const auto bottomOf = [&topOf](const QWidget *w) {
+		return w ? topOf(w) + w->height() : -1;
+	};
+	// The picture block is the big preview AND the tile grid beside it,
+	// whichever reaches lower: "under the pictures" has to mean under all of
+	// them.
+	lp.previewBottomY =
+		std::max(bottomOf(displayA_), bottomOf(multiviewBox_));
+	lp.searchY = topOf(search_);
+	lp.listTabsY = topOf(listTabs_);
+	lp.tableY = topOf(events_);
+	lp.clipBarY = topOf(clipBar_);
+	lp.seekY = topOf(seek_);
+	return lp;
 }
 
 void MultiReplayDock::updateMultiviewTally()

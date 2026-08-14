@@ -243,6 +243,13 @@ struct DockChecks {
 	bool listTabsFitTheirNames = false;
 	bool listTabCountFollowsConfig = false;
 	int visibleListTabs = 0;
+	// M6: the ORDER of the panel's zones — pictures first, then what picks
+	// the event, then the events, then the controls. Every other check in
+	// this file was blind to it: the search row sat above the pictures for a
+	// whole milestone with every widget check passing, because they were all
+	// present, just in the wrong place. Read off real geometry through
+	// MultiReplayDock::layoutProbe().
+	bool layoutOrderTopToBottom = false;
 	// ...and the failure this whole widget family is famous for: a display
 	// left presenting into a native window Qt has destroyed. It used to be
 	// visible only by reading the OBS log by eye, which is the check that
@@ -411,6 +418,27 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 			"live display; %d display(s) created, %d stranded",
 			st.tiles, st.visible, st.withDisplay, c.displaysCreated,
 			c.displaysStranded);
+	}
+
+	// --- the zones are in the operator's order ----------------------------
+	// The panel is read top to bottom: pictures, then what picks the event
+	// (search + Live, then the list tabs), then the events, then the
+	// controls, the green on-air band and the position bar. That order was
+	// wrong for a whole milestone — the tabs and the search box were ABOVE
+	// the pictures — and not one check noticed, because every widget was
+	// present and findable. Geometry is the only thing that can tell.
+	{
+		MultiReplayDock::LayoutProbe lp;
+		runOnUi([&]() { lp = dock->layoutProbe(); });
+		c.layoutOrderTopToBottom =
+			lp.previewBottomY > 0 && lp.searchY >= lp.previewBottomY &&
+			lp.listTabsY >= lp.searchY && lp.tableY > lp.listTabsY &&
+			lp.clipBarY > lp.tableY && lp.seekY > lp.clipBarY;
+		obs_log(c.layoutOrderTopToBottom ? LOG_INFO : LOG_ERROR,
+			"[selftest] dock: zones at y — pictures end %d, search %d, "
+			"tabs %d, table %d, on-air band %d, position bar %d",
+			lp.previewBottomY, lp.searchY, lp.listTabsY, lp.tableY,
+			lp.clipBarY, lp.seekY);
 	}
 
 	// --- Mark, through the button an operator actually hits ---------------
@@ -2027,6 +2055,7 @@ void runSelfTest()
 			  dockChecks.manualReorderDisablesAutoSort &&
 			  dockChecks.listTabsFitTheirNames &&
 			  dockChecks.listTabCountFollowsConfig &&
+			  dockChecks.layoutOrderTopToBottom &&
 			  anchorsPersisted && projectOriginOk &&
 			  eventTimecodeSane && filtersIdleOutsideRec;
 
@@ -2157,6 +2186,10 @@ void runSelfTest()
 	obs_data_set_bool(checks, "dock_list_tab_count_follows_config",
 			  dockChecks.listTabCountFollowsConfig);
 	obs_data_set_int(root, "dock_visible_list_tabs", dockChecks.visibleListTabs);
+	// M6: the pictures come first and the list header sits between them and
+	// the table.
+	obs_data_set_bool(checks, "dock_layout_order_top_to_bottom",
+			  dockChecks.layoutOrderTopToBottom);
 	obs_data_set_obj(root, "checks", checks);
 	obs_data_release(checks);
 
