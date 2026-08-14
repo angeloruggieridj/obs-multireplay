@@ -47,6 +47,8 @@ SPDX-License-Identifier: GPL-2.0-or-later
 #include <QFile>
 #include <QDir>
 #include <QGroupBox>
+#include <QListWidget>
+#include <QStackedWidget>
 #include <QMessageBox>
 #include <QDockWidget>
 #include <QSizePolicy>
@@ -170,6 +172,22 @@ QTabBar#mrListTabs::tab:hover { background: #1e1e1e; color: #c0c0c0; }
 QTabBar#mrListTabs::tab:selected {
 	background: #1D3D74; color: #ffffff; border-color: #2a5296;
 }
+
+/* ── settings dialog: side menu + pages ─────────────────────────────── */
+QListWidget#mrSettingsNav {
+	background: #121212; color: #9a9a9a;
+	border: 0; border-right: 1px solid #232323;
+	outline: 0; font-size: 11px;
+}
+QListWidget#mrSettingsNav::item { padding: 8px 12px; border: 0; }
+QListWidget#mrSettingsNav::item:hover { background: #1c1c1c; color: #d0d0d0; }
+QListWidget#mrSettingsNav::item:selected {
+	background: #1D3D74; color: #ffffff;
+}
+QLabel#mrSettingsTitle {
+	color: #e0e6ee; font-size: 14px; font-weight: 700;
+}
+QLabel#mrSettingsBlurb { color: #7a8490; font-size: 10px; }
 
 /* ── multiview tiles (the reference controller's camera thumbnails beside the A output) ── */
 QWidget#mrTile { background: #000000; }
@@ -3503,9 +3521,65 @@ void MultiReplayDock::openSettings()
 
 	QDialog dlg(this);
 	dlg.setWindowTitle(obs_module_text("Dock.Settings"));
-	auto *form = new QFormLayout(&dlg);
+	dlg.setMinimumSize(760, 480);
 
-	// session folder
+	// A SIDE MENU AND PAGES, not one flat column of a dozen unrelated fields.
+	// The old dialog put the session folder, the audio bitrate, the pre-roll,
+	// the output scene and eight camera slots in one list, so finding the one
+	// setting you came for meant reading all of them — and it gave no clue
+	// which of them belong together. Grouped by what the operator is trying to
+	// do: record, wire the cameras, play out, mark events, arrange the panel.
+	auto *root = new QVBoxLayout(&dlg);
+	auto *body = new QHBoxLayout();
+	body->setSpacing(0);
+
+	auto *nav = new QListWidget(&dlg);
+	nav->setObjectName("mrSettingsNav");
+	nav->setFixedWidth(172);
+	nav->setFocusPolicy(Qt::NoFocus);
+	nav->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+
+	auto *pages = new QStackedWidget(&dlg);
+	body->addWidget(nav, 0);
+	body->addWidget(pages, 1);
+	root->addLayout(body, 1);
+
+	// One page per group: a heading, one line saying what the group is FOR
+	// (an operator who has to guess reads every field anyway), then the
+	// fields themselves.
+	const auto addPage = [&](const char *titleKey,
+				 const char *blurbKey) -> QFormLayout * {
+		auto *page = new QWidget(pages);
+		auto *v = new QVBoxLayout(page);
+		v->setContentsMargins(14, 12, 14, 12);
+		v->setSpacing(2);
+
+		auto *title = new QLabel(obs_module_text(titleKey), page);
+		title->setObjectName("mrSettingsTitle");
+		v->addWidget(title);
+
+		auto *blurb = new QLabel(obs_module_text(blurbKey), page);
+		blurb->setObjectName("mrSettingsBlurb");
+		blurb->setWordWrap(true);
+		v->addWidget(blurb);
+
+		auto *form = new QFormLayout();
+		form->setContentsMargins(0, 10, 0, 0);
+		form->setLabelAlignment(Qt::AlignRight | Qt::AlignVCenter);
+		form->setFieldGrowthPolicy(QFormLayout::ExpandingFieldsGrow);
+		v->addLayout(form);
+		v->addStretch(1);
+
+		pages->addWidget(page);
+		nav->addItem(obs_module_text(titleKey));
+		return form;
+	};
+	connect(nav, &QListWidget::currentRowChanged, pages,
+		&QStackedWidget::setCurrentIndex);
+
+	// ── Recording ─────────────────────────────────────────────────────
+	QFormLayout *recPage = addPage("Dock.SetRecording", "Dock.SetRecordingBlurb");
+
 	auto *folderRow = new QHBoxLayout();
 	auto *folderEdit =
 		new QLineEdit(QString::fromStdString(cfg.sessionFolder), &dlg);
@@ -3520,7 +3594,7 @@ void MultiReplayDock::openSettings()
 		if (!f.isEmpty())
 			folderEdit->setText(f);
 	});
-	form->addRow(obs_module_text("Dock.SessionFolder"), folderRow);
+	recPage->addRow(obs_module_text("Dock.SessionFolder"), folderRow);
 
 	auto *split = new QSpinBox(&dlg);
 	// 0 = never split: an ISO is normally one continuous file (see
@@ -3531,97 +3605,25 @@ void MultiReplayDock::openSettings()
 	split->setSuffix(" min");
 	split->setSpecialValueText(obs_module_text("Dock.SplitNever"));
 	split->setToolTip(obs_module_text("Dock.SplitMinutesHint"));
-	form->addRow(obs_module_text("Dock.SplitMinutes"), split);
+	recPage->addRow(obs_module_text("Dock.SplitMinutes"), split);
 
 	auto *vbr = new QSpinBox(&dlg);
 	vbr->setRange(1000, 200000);
 	vbr->setSingleStep(1000);
 	vbr->setValue(cfg.videoBitrateKbps);
 	vbr->setSuffix(" kbps");
-	form->addRow(obs_module_text("Dock.VideoBitrate"), vbr);
+	recPage->addRow(obs_module_text("Dock.VideoBitrate"), vbr);
 
 	auto *abr = new QSpinBox(&dlg);
 	abr->setRange(64, 1024);
 	abr->setValue(cfg.audioBitrateKbps);
 	abr->setSuffix(" kbps");
-	form->addRow(obs_module_text("Dock.AudioBitrate"), abr);
+	recPage->addRow(obs_module_text("Dock.AudioBitrate"), abr);
 
-	// --- the reference controller event options -----------------------------------------------
-	// Pre/post roll: the operator marks after he has seen the action, so the
-	// event has to start before his finger did. Whole seconds like the reference controller, with
-	// tenths available because a football replay and a snooker replay do not
-	// want the same padding.
-	auto *preRoll = new QDoubleSpinBox(&dlg);
-	preRoll->setRange(0.0, 30.0);
-	preRoll->setSingleStep(0.5);
-	preRoll->setDecimals(1);
-	preRoll->setSuffix(" s");
-	preRoll->setValue(cfg.preRollMs / 1000.0);
-	preRoll->setToolTip(obs_module_text("Dock.PreRollHint"));
-	form->addRow(obs_module_text("Dock.PreRoll"), preRoll);
+	// ── Cameras ───────────────────────────────────────────────────────
+	QFormLayout *camPage = addPage("Dock.SetCameras", "Dock.SetCamerasBlurb");
 
-	auto *postRoll = new QDoubleSpinBox(&dlg);
-	postRoll->setRange(0.0, 30.0);
-	postRoll->setSingleStep(0.5);
-	postRoll->setDecimals(1);
-	postRoll->setSuffix(" s");
-	postRoll->setValue(cfg.postRollMs / 1000.0);
-	postRoll->setToolTip(obs_module_text("Dock.PostRollHint"));
-	form->addRow(obs_module_text("Dock.PostRoll"), postRoll);
-
-	auto *sortByTime = new QCheckBox(&dlg);
-	sortByTime->setChecked(cfg.sortEventsByTime);
-	sortByTime->setToolTip(obs_module_text("Dock.SortByTimeHint"));
-	form->addRow(obs_module_text("Dock.SortByTime"), sortByTime);
-
-	auto *idDigits = new QSpinBox(&dlg);
-	idDigits->setRange(1, 8);
-	idDigits->setValue(cfg.eventIdDigits);
-	idDigits->setToolTip(obs_module_text("Dock.IdDigitsHint"));
-	form->addRow(obs_module_text("Dock.IdDigits"), idDigits);
-
-	// How many of the 20 lists to show. Fewer lists = wider tabs = readable
-	// names, which is the whole reason this setting exists.
-	auto *listCount = new QSpinBox(&dlg);
-	listCount->setRange(1, kEventLists);
-	listCount->setValue(cfg.eventListCount);
-	listCount->setToolTip(obs_module_text("Dock.ListCountHint"));
-	form->addRow(obs_module_text("Dock.ListCount"), listCount);
-
-	// Clip crossfade is gone with the A/B ffmpeg_source pair it belonged to:
-	// there is a single replay input now, and a transition between clips is
-	// the operator's own (OBS transitions on the scene that holds it).
-
-	// encoder combo
-	auto *enc = new QComboBox(&dlg);
-	enc->addItem(obs_module_text("Dock.AutoEncoder"), "");
-	{
-		Data ed(core.encodersJson());
-		obs_data_array_t *arr =
-			ed ? obs_data_get_array(ed, "encoders") : nullptr;
-		if (arr) {
-			size_t n = obs_data_array_count(arr);
-			for (size_t i = 0; i < n; i++) {
-				obs_data_t *it = obs_data_array_item(arr, i);
-				enc->addItem(
-					QString::fromUtf8(obs_data_get_string(
-						it, "name")),
-					QString::fromUtf8(obs_data_get_string(
-						it, "id")));
-				obs_data_release(it);
-			}
-			obs_data_array_release(arr);
-		}
-	}
-	{
-		int idx = enc->findData(
-			QString::fromStdString(cfg.videoEncoderId));
-		if (idx >= 0)
-			enc->setCurrentIndex(idx);
-	}
-	form->addRow(obs_module_text("Dock.Encoder"), enc);
-
-	// gather source names once
+	// Gathered once and shared by every source picker on every page.
 	QStringList sourceNames;
 	{
 		Data sd(core.sourcesJson());
@@ -3638,7 +3640,6 @@ void MultiReplayDock::openSettings()
 			obs_data_array_release(arr);
 		}
 	}
-
 	auto makeSourceCombo = [&](const std::string &cur) {
 		auto *c = new QComboBox(&dlg);
 		c->addItem(obs_module_text("Dock.None"), "");
@@ -3650,15 +3651,32 @@ void MultiReplayDock::openSettings()
 		return c;
 	};
 
+	std::vector<QComboBox *> camCombos;
+	std::vector<QLineEdit *> camNameEdits;
+	for (int i = 0; i < kMaxCameras; i++) {
+		auto *row = new QHBoxLayout();
+		auto *c = makeSourceCombo(cfg.cameras[i].sourceName);
+		auto *nameEdit = new QLineEdit(
+			QString::fromStdString(cfg.cameras[i].displayName), &dlg);
+		nameEdit->setPlaceholderText(
+			QString(obs_module_text("Dock.CameraName")).arg(i + 1));
+		nameEdit->setFixedWidth(130);
+		row->addWidget(c, 1);
+		row->addWidget(nameEdit);
+		camCombos.push_back(c);
+		camNameEdits.push_back(nameEdit);
+		camPage->addRow(QString("Cam %1").arg(i + 1), row);
+	}
+
+	// ── Replay / playout ──────────────────────────────────────────────
+	QFormLayout *outPage = addPage("Dock.SetReplay", "Dock.SetReplayBlurb");
+
 	// No replay-source selector: "MultiReplay - Replay A" is a plugin-provided
 	// OBS input the operator drops into whatever scene he likes, exactly like
 	// a capture card. cfg.replaySourceName survives only for back-compat.
 	//
 	// The OUTPUT SCENE selector, however, is needed: PlaybackCoordinator only
-	// takes program on "to output" when cfg.outputSceneName names a scene, and
-	// with the picker gone (removed together with the plugin-managed scene) the
-	// field stayed empty forever — so "to output" silently did nothing. The
-	// operator has to tell us which of HIS scenes holds the replay input.
+	// takes program on "to output" when cfg.outputSceneName names a scene.
 	auto *outScene = new QComboBox(&dlg);
 	outScene->setToolTip(obs_module_text("Dock.OutputSceneHint"));
 	outScene->addItem(obs_module_text("Dock.None"), "");
@@ -3689,14 +3707,11 @@ void MultiReplayDock::openSettings()
 		if (idx >= 0)
 			outScene->setCurrentIndex(idx);
 	}
-	form->addRow(obs_module_text("Dock.OutputScene"), outScene);
-
-	auto *music = makeSourceCombo(cfg.musicSourceName);
-	form->addRow(obs_module_text("Dock.MusicSource"), music);
+	outPage->addRow(obs_module_text("Dock.OutputScene"), outScene);
 
 	auto *autoSwitch = new QCheckBox(&dlg);
 	autoSwitch->setChecked(cfg.autoSwitchScene);
-	form->addRow(obs_module_text("Dock.AutoSwitch"), autoSwitch);
+	outPage->addRow(obs_module_text("Dock.AutoSwitch"), autoSwitch);
 
 	// Scale the replay to the canvas. This is a scene-item transform, not a
 	// picture change: the frames stay at the camera's own resolution and the
@@ -3704,7 +3719,57 @@ void MultiReplayDock::openSettings()
 	auto *fitCanvas = new QCheckBox(&dlg);
 	fitCanvas->setChecked(cfg.fitReplayToCanvas);
 	fitCanvas->setToolTip(obs_module_text("Dock.FitCanvasHint"));
-	form->addRow(obs_module_text("Dock.FitCanvas"), fitCanvas);
+	outPage->addRow(obs_module_text("Dock.FitCanvas"), fitCanvas);
+
+	auto *music = makeSourceCombo(cfg.musicSourceName);
+	outPage->addRow(obs_module_text("Dock.MusicSource"), music);
+
+	// ── Events ────────────────────────────────────────────────────────
+	QFormLayout *evPage = addPage("Dock.SetEvents", "Dock.SetEventsBlurb");
+
+	// Pre/post roll: the operator marks after he has seen the action, so the
+	// event has to start before his finger did. Whole seconds like the reference controller, with
+	// tenths available because a football replay and a snooker replay do not
+	// want the same padding.
+	auto *preRoll = new QDoubleSpinBox(&dlg);
+	preRoll->setRange(0.0, 30.0);
+	preRoll->setSingleStep(0.5);
+	preRoll->setDecimals(1);
+	preRoll->setSuffix(" s");
+	preRoll->setValue(cfg.preRollMs / 1000.0);
+	preRoll->setToolTip(obs_module_text("Dock.PreRollHint"));
+	evPage->addRow(obs_module_text("Dock.PreRoll"), preRoll);
+
+	auto *postRoll = new QDoubleSpinBox(&dlg);
+	postRoll->setRange(0.0, 30.0);
+	postRoll->setSingleStep(0.5);
+	postRoll->setDecimals(1);
+	postRoll->setSuffix(" s");
+	postRoll->setValue(cfg.postRollMs / 1000.0);
+	postRoll->setToolTip(obs_module_text("Dock.PostRollHint"));
+	evPage->addRow(obs_module_text("Dock.PostRoll"), postRoll);
+
+	auto *sortByTime = new QCheckBox(&dlg);
+	sortByTime->setChecked(cfg.sortEventsByTime);
+	sortByTime->setToolTip(obs_module_text("Dock.SortByTimeHint"));
+	evPage->addRow(obs_module_text("Dock.SortByTime"), sortByTime);
+
+	auto *idDigits = new QSpinBox(&dlg);
+	idDigits->setRange(1, 8);
+	idDigits->setValue(cfg.eventIdDigits);
+	idDigits->setToolTip(obs_module_text("Dock.IdDigitsHint"));
+	evPage->addRow(obs_module_text("Dock.IdDigits"), idDigits);
+
+	// How many of the 20 lists to show. Fewer lists = wider tabs = readable
+	// names, which is the whole reason this setting exists.
+	auto *listCount = new QSpinBox(&dlg);
+	listCount->setRange(1, kEventLists);
+	listCount->setValue(cfg.eventListCount);
+	listCount->setToolTip(obs_module_text("Dock.ListCountHint"));
+	evPage->addRow(obs_module_text("Dock.ListCount"), listCount);
+
+	// ── Interface ─────────────────────────────────────────────────────
+	QFormLayout *uiPage = addPage("Dock.SetInterface", "Dock.SetInterfaceBlurb");
 
 	// The multiview strip. Each tile is an obs_display rendered by the same
 	// graphics thread as the OBS program preview, so a rig that is short of
@@ -3712,35 +3777,44 @@ void MultiReplayDock::openSettings()
 	auto *multiview = new QCheckBox(&dlg);
 	multiview->setChecked(cfg.showMultiview);
 	multiview->setToolTip(obs_module_text("Dock.ShowMultiviewHint"));
-	form->addRow(obs_module_text("Dock.ShowMultiview"), multiview);
+	uiPage->addRow(obs_module_text("Dock.ShowMultiview"), multiview);
 
-	// camera assignments: source + display name
-	auto *camBox = new QGroupBox(obs_module_text("Dock.Cameras"), &dlg);
-	auto *camForm = new QFormLayout(camBox);
-	std::vector<QComboBox *> camCombos;
-	std::vector<QLineEdit *> camNameEdits;
-	for (int i = 0; i < kMaxCameras; i++) {
-		auto *row = new QHBoxLayout();
-		auto *c = makeSourceCombo(cfg.cameras[i].sourceName);
-		auto *nameEdit = new QLineEdit(
-			QString::fromStdString(cfg.cameras[i].displayName), &dlg);
-		nameEdit->setPlaceholderText(
-			QString(obs_module_text("Dock.CameraName"))
-				.arg(i + 1));
-		nameEdit->setFixedWidth(110);
-		row->addWidget(c, 1);
-		row->addWidget(nameEdit);
-		camCombos.push_back(c);
-		camNameEdits.push_back(nameEdit);
-		camForm->addRow(QString("Cam %1").arg(i + 1), row);
+	// ── Advanced ──────────────────────────────────────────────────────
+	QFormLayout *advPage = addPage("Dock.SetAdvanced", "Dock.SetAdvancedBlurb");
+
+	auto *enc = new QComboBox(&dlg);
+	enc->addItem(obs_module_text("Dock.AutoEncoder"), "");
+	{
+		Data ed(core.encodersJson());
+		obs_data_array_t *arr =
+			ed ? obs_data_get_array(ed, "encoders") : nullptr;
+		if (arr) {
+			size_t n = obs_data_array_count(arr);
+			for (size_t i = 0; i < n; i++) {
+				obs_data_t *it = obs_data_array_item(arr, i);
+				enc->addItem(QString::fromUtf8(obs_data_get_string(
+						     it, "name")),
+					     QString::fromUtf8(obs_data_get_string(
+						     it, "id")));
+				obs_data_release(it);
+			}
+			obs_data_array_release(arr);
+		}
 	}
-	form->addRow(camBox);
+	{
+		int idx = enc->findData(QString::fromStdString(cfg.videoEncoderId));
+		if (idx >= 0)
+			enc->setCurrentIndex(idx);
+	}
+	advPage->addRow(obs_module_text("Dock.Encoder"), enc);
+
+	nav->setCurrentRow(0);
 
 	auto *buttons = new QDialogButtonBox(
 		QDialogButtonBox::Save | QDialogButtonBox::Cancel, &dlg);
 	connect(buttons, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
 	connect(buttons, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
-	form->addRow(buttons);
+	root->addWidget(buttons, 0);
 
 	if (dlg.exec() != QDialog::Accepted)
 		return;
