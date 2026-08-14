@@ -98,15 +98,6 @@ QLabel#mrSectionLabel { color: #686868; font-size: 9px; font-weight: 700;
 /* wall clock over the "remaining" line, the reference controller-red while a take is running */
 QLabel#mrClock      { color: #6a6a6a; font-size: 10px; }
 QLabel#mrClock[rec="true"] { color: #e03030; font-weight: 700; }
-/* the collapsible per-angle speed panel under the table */
-QGroupBox#mrInspector {
-	border: 1px solid #1c2a3c; border-radius: 3px;
-	margin-top: 6px; color: #8a97a6; font-size: 10px;
-}
-QGroupBox#mrInspector::title {
-	subcontrol-origin: margin; left: 7px; padding: 0 3px;
-}
-/* mrCamNoteEdit: styled inline via setStyleSheet() on the widget */
 
 /* ── generic buttons ───────────────────────────────────── */
 #MultiReplayDock QPushButton {
@@ -370,21 +361,42 @@ constexpr int64_t kSequenceGapGraceNs = 1'500'000'000LL; // 1.5 s
 // than when the first replay comes up empty. See poll().
 constexpr int64_t kArmWatchNs = 4'000'000'000LL; // 4 s
 
-// Event table column layout — the reference controller's: the fixed information columns, then ONE
-// COLUMN PER CAMERA, each holding that angle's enable box and its comment.
+// Event table column layout — the fixed information columns, then TWO COLUMNS
+// PER CONFIGURED CAMERA:
 //
-// kColId must stay column 0 and kColIn column 1: the automated gate reads the
-// padded id off item(row, 0) and fires a double-click on column 1 to prove it
-// takes program. Camera columns start after kColSpeed and their count follows
-// the camera configuration (see rebuildEventColumns / camCols_).
-enum EventCol {
-	kColId = 0,
-	kColIn,
-	kColOut,
-	kColDur,
-	kColSpeed,   // event speed, "--" = inherited (the reference controller), editable in place
-	kColFirstCam // first per-camera column
-};
+//     …  |  N Nome  |  Nota  |  N+1 Nome  |  Nota  | …
+//            ☑ 50%     free text
+//
+// which is the operator's whole per-angle edit — IS THIS ANGLE IN, AT WHAT
+// SPEED, WITH WHAT COMMENT — laid out left to right, one click for the box, one
+// double-click for either text, and no dialog anywhere. During a live match
+// that is the difference between an edit he makes and an edit he skips.
+//
+// There is deliberately NO per-event speed column. The velocities are per-angle
+// and default, full stop (see ReplayEvent) — the M3 "Vel" column encoded a third
+// idea that belongs to neither.
+//
+// The column numbers themselves live in the HEADER (MultiReplayDock::kColId …
+// kColFirstCam, kColsPerCam): the gate edits real cells and must read the
+// layout from the same place the dock builds it from.
+constexpr int kColId = MultiReplayDock::kColId;
+constexpr int kColIn = MultiReplayDock::kColIn;
+constexpr int kColOut = MultiReplayDock::kColOut;
+constexpr int kColDur = MultiReplayDock::kColDur;
+constexpr int kColFirstCam = MultiReplayDock::kColFirstCam;
+constexpr int kColsPerCam = MultiReplayDock::kColsPerCam;
+
+// Which camera PAIR a table column belongs to. -1 = not a camera column at
+// all. Kept as one function so the callers cannot drift.
+inline int camPairIndex(int column)
+{
+	return column < kColFirstCam ? -1 : (column - kColFirstCam) / kColsPerCam;
+}
+inline bool isCamNoteColumn(int column)
+{
+	return column >= kColFirstCam &&
+	       ((column - kColFirstCam) % kColsPerCam) == 1;
+}
 
 // A camera cell with no comment reads "-" in the reference controller, not blank: an empty cell is
 // ambiguous next to a checkbox, a dash is not. It is display only — it never
@@ -1711,13 +1723,13 @@ QWidget *MultiReplayDock::buildEvents()
 		&MultiReplayDock::onEventItemChanged);
 	// the reference controller: double-clicking an event plays it TO OUTPUT. It is the fastest
 	// path there is from "that one" to "on air", and the reason the operator
-	// keeps his hand on the mouse. Two exemptions, both because a double-click
-	// is ALSO how that cell is edited: the speed column and the per-camera
-	// columns. Taking program because someone wanted to type a comment would
-	// be the worst kind of surprise.
+	// keeps his hand on the mouse. The per-camera columns are exempt, because
+	// a double-click is ALSO how those cells are edited: taking program
+	// because someone wanted to type a comment would be the worst kind of
+	// surprise.
 	connect(events_, &QTableWidget::cellDoubleClicked, this,
 		[this](int row, int column) {
-			if (column == kColSpeed || column >= kColFirstCam)
+			if (column >= kColFirstCam)
 				return;
 			QTableWidgetItem *it = events_->item(row, kColId);
 			if (!it)
@@ -1771,42 +1783,11 @@ QWidget *MultiReplayDock::buildEvents()
 		});
 	v->addWidget(events_, 1);
 
-	// Inspector panel: the per-angle SPEED override for the selected event
-	// (the enable toggle and the comment are in the table now, where the reference controller puts
-	// them). Collapsed by default — it is the rarest of the three edits and
-	// eight camera rows would cost more height than the table it sits under.
-	inspector_ = new QGroupBox(obs_module_text("Dock.AngleSpeeds"), this);
-	inspector_->setObjectName("mrInspector");
-	inspector_->setCheckable(true);
-	inspector_->setChecked(false);
-	inspector_->setToolTip(obs_module_text("Dock.AngleSpeedsHint"));
-	{
-		auto *outer = new QVBoxLayout(inspector_);
-		outer->setContentsMargins(6, 2, 6, 2);
-		outer->setSpacing(0);
-		inspectorBody_ = new QWidget(inspector_);
-		inspectorLayout_ = new QVBoxLayout(inspectorBody_);
-		inspectorLayout_->setContentsMargins(0, 2, 0, 2);
-		inspectorLayout_->setSpacing(2);
-		outer->addWidget(inspectorBody_);
-		inspectorBody_->setVisible(false);
-		// A checkable QGroupBox only DISABLES its children when unchecked,
-		// and an empty frame still claims its minimum height — measured at
-		// ~65 px of nothing between the list and the mark keys. Hiding the
-		// body AND capping the frame is what actually gives the height back.
-		inspector_->setMaximumHeight(26);
-		connect(inspector_, &QGroupBox::toggled, this, [this](bool on) {
-			if (inspectorBody_)
-				inspectorBody_->setVisible(on);
-			inspector_->setMaximumHeight(on ? QWIDGETSIZE_MAX : 26);
-		});
-	}
-	v->addWidget(inspector_, 0);
-	connect(events_->selectionModel(),
-		&QItemSelectionModel::selectionChanged, this, [this]() {
-			auto ids = selectedEventIds();
-			populateInspector(ids.empty() ? 0 : ids.front());
-		});
+	// There is no inspector panel any more. It existed for the one edit the
+	// table could not hold — the per-angle speed — and that now has its own
+	// half-column next to the enable box of the camera it belongs to. A panel
+	// that duplicates the table costs height, costs a rebuild per selection
+	// change, and asks the operator to look somewhere other than at the row.
 
 	return box;
 }
@@ -1854,19 +1835,20 @@ void MultiReplayDock::rebuildEventColumns()
 	const bool wasRefreshing = refreshing_;
 	refreshing_ = true; // setHorizontalHeaderItem must not read back as an edit
 	events_->setRowCount(0);
-	events_->setColumnCount(kColFirstCam + (int)cams.size());
+	events_->setColumnCount(kColFirstCam +
+			        (int)cams.size() * kColsPerCam);
 	QStringList headers;
 	headers << QStringLiteral("#") << obs_module_text("Dock.In")
-		<< obs_module_text("Dock.Out") << obs_module_text("Dock.Duration")
-		<< obs_module_text("Dock.Speed");
-	headers += camLabels;
+		<< obs_module_text("Dock.Out") << obs_module_text("Dock.Duration");
+	for (const QString &lbl : camLabels)
+		headers << lbl << obs_module_text("Dock.Note");
 	events_->setHorizontalHeaderLabels(headers);
 	// The camera headers carry their own label in UserRole: the "angle I am
 	// watching" marker is a prefix on the text (see updateCamHeaderHighlight),
 	// so the plain label has to survive somewhere.
 	for (size_t i = 0; i < cams.size(); i++) {
-		QTableWidgetItem *h =
-			events_->horizontalHeaderItem(kColFirstCam + (int)i);
+		QTableWidgetItem *h = events_->horizontalHeaderItem(
+			kColFirstCam + (int)i * kColsPerCam);
 		if (h)
 			h->setData(Qt::UserRole, camLabels[(int)i]);
 	}
@@ -1875,10 +1857,13 @@ void MultiReplayDock::rebuildEventColumns()
 		hh->setHighlightSections(false);
 		for (int c = 0; c < events_->columnCount(); c++)
 			hh->setSectionResizeMode(c, QHeaderView::ResizeToContents);
-		// The camera columns take the slack, as in the reference controller, where they are
-		// the wide half of the list: their cells hold free text.
+		// The COMMENT half takes the slack: it holds free text and is the
+		// only column whose content has no natural width. The enable/speed
+		// half stays as narrow as "☑ 100%", so a four-camera rig still fits
+		// its four angles on screen without scrolling sideways.
 		for (int c = kColFirstCam; c < events_->columnCount(); c++)
-			hh->setSectionResizeMode(c, QHeaderView::Stretch);
+			if (isCamNoteColumn(c))
+				hh->setSectionResizeMode(c, QHeaderView::Stretch);
 		hh->setMinimumSectionSize(34);
 	}
 	refreshing_ = wasRefreshing;
@@ -1892,13 +1877,13 @@ void MultiReplayDock::updateCamHeaderHighlight()
 	int hot = -1;
 	for (size_t i = 0; i < camCols_.size(); i++)
 		if (camCols_[i] == currentAngle1_ - 1)
-			hot = kColFirstCam + (int)i;
+			hot = kColFirstCam + (int)i * kColsPerCam;
 	if (hot == camHeaderHot_)
 		return;
 	const bool wasRefreshing = refreshing_;
 	refreshing_ = true;
 	for (size_t i = 0; i < camCols_.size(); i++) {
-		const int col = kColFirstCam + (int)i;
+		const int col = kColFirstCam + (int)i * kColsPerCam;
 		QTableWidgetItem *h = events_->horizontalHeaderItem(col);
 		if (!h)
 			continue;
@@ -2967,9 +2952,8 @@ void MultiReplayDock::refreshEvents()
 
 	refreshing_ = true;
 	// Block selection signals during the rebuild: setRowCount(0) clears the
-	// selection and selectRow() below re-sets it, each of which would otherwise
-	// emit selectionChanged → populateInspector(). We rebuild the inspector once,
-	// explicitly, at the end instead (avoids a 2-3× teardown storm per refresh).
+	// selection and selectRow() below re-sets it, and nothing downstream needs
+	// to hear about a selection that is only being restored.
 	QSignalBlocker selBlock(events_->selectionModel());
 	events_->setRowCount(0);
 	obs_data_array_t *arr = obs_data_get_array(d, "events");
@@ -3023,8 +3007,6 @@ void MultiReplayDock::refreshEvents()
 		int id = 0;
 		int64_t tin = 0;
 		int64_t tout = -1;
-		double ownSpeed = -1.0;      // what this event sets, <0 = "--"
-		double resolvedSpeed = -1.0; // inherited from the previous event
 		bool camOn[kEventAngles] = {};
 		double camSpeeds[kEventAngles] = {};
 		std::string camNotes[kEventAngles];
@@ -3090,8 +3072,6 @@ void MultiReplayDock::refreshEvents()
 		r.id = id;
 		r.tin = tin;
 		r.tout = tout;
-		r.ownSpeed = obs_data_get_double(e, "speed");
-		r.resolvedSpeed = obs_data_get_double(e, "resolvedSpeed");
 		for (int k = 0; k < kEventAngles; k++) {
 			r.camOn[k] = camOn[k];
 			r.camSpeeds[k] = camSpeeds[k];
@@ -3158,61 +3138,48 @@ void MultiReplayDock::refreshEvents()
 					mid));
 		events_->setItem(row, kColDur, roItem(dur, mid));
 
-		// Speed: what this event sets, or in parentheses what it inherited
-		// from the event before it (the reference controller), or "--" when nobody set one and
-		// the slider decides. The parentheses are the whole point — an
-		// operator has to be able to see at a glance whether 50% is HIS or
-		// something he is dragging along from three marks ago.
-		QString speedText = QStringLiteral("--");
-		if (r.ownSpeed >= 0)
-			speedText = QString("%1%").arg((int)std::lround(
-				r.ownSpeed * 100.0));
-		else if (r.resolvedSpeed >= 0)
-			speedText = QString("(%1%)").arg((int)std::lround(
-				r.resolvedSpeed * 100.0));
-		auto *speedItem = new QTableWidgetItem(speedText);
-		speedItem->setTextAlignment(mid);
-		speedItem->setFlags(Qt::ItemIsSelectable | Qt::ItemIsEnabled |
-				    Qt::ItemIsEditable);
-		speedItem->setToolTip(obs_module_text("Dock.SpeedHint"));
-		speedItem->setData(Qt::UserRole, r.id);
-		if (r.ownSpeed < 0)
-			speedItem->setForeground(QBrush(QColor("#707070")));
-		events_->setItem(row, kColSpeed, speedItem);
-
-		// One cell per camera, exactly as the reference controller draws it: a tick box for
-		// "play this angle" and the comment for that angle beside it,
-		// both editable right there. This is the half of the event the
-		// operator actually works on during a match — it used to live in
-		// a panel under the table, which meant every angle change was a
-		// click away from the row it belonged to.
+		// TWO cells per camera: [☑ speed] and [comment]. Everything the
+		// operator edits about an angle is on the row it belongs to, in
+		// the column of the camera it belongs to, and none of it is
+		// behind a dialog — during a match an edit that costs a dialog is
+		// an edit that does not get made.
 		for (size_t ci = 0; ci < camCols_.size(); ci++) {
 			const int cam = camCols_[ci];
-			const QString note =
+			const int col = kColFirstCam + (int)ci * kColsPerCam;
+
+			// Left half: the enable box IS the cell (the reference controller), and its
+			// text is that angle's speed — "--" when the slider
+			// decides, "50%" when this angle has its own.
+			const bool hasSpeed = r.camSpeeds[cam] >= 0;
+			auto *on = new QTableWidgetItem(
+				hasSpeed ? QString("%1%").arg((int)std::lround(
+						   r.camSpeeds[cam] * 100.0))
+					 : QStringLiteral("--"));
+			on->setFlags(Qt::ItemIsSelectable | Qt::ItemIsEnabled |
+				     Qt::ItemIsEditable | Qt::ItemIsUserCheckable);
+			on->setCheckState(r.camOn[cam] ? Qt::Checked
+						       : Qt::Unchecked);
+			on->setTextAlignment(mid);
+			on->setData(Qt::UserRole, r.id);
+			on->setToolTip(obs_module_text("Dock.AngleSpeedHint"));
+			// Amber for a real override, grey for "the slider
+			// decides": which of the two it is has to be readable
+			// without stopping to read.
+			on->setForeground(QBrush(QColor(hasSpeed ? "#ffd07a"
+								 : "#707070")));
+			events_->setItem(row, col, on);
+
+			// Right half: the comment for that angle.
+			auto *note = new QTableWidgetItem(
 				r.camNotes[cam].empty()
 					? kNoNote
-					: QString::fromStdString(r.camNotes[cam]);
-			auto *it = new QTableWidgetItem(note);
-			it->setFlags(Qt::ItemIsSelectable | Qt::ItemIsEnabled |
-				     Qt::ItemIsEditable | Qt::ItemIsUserCheckable);
-			it->setCheckState(r.camOn[cam] ? Qt::Checked
-						       : Qt::Unchecked);
-			it->setTextAlignment(Qt::AlignVCenter | Qt::AlignLeft);
-			it->setData(Qt::UserRole, r.id);
-			// A per-angle speed has no column in the reference controller. Rather than
-			// stuff it into the comment — where it would be typed
-			// back into the note on the next edit — the cell is
-			// tinted and says the number in its tooltip; the panel
-			// under the table is where it is set.
-			if (r.camSpeeds[cam] >= 0) {
-				it->setToolTip(
-					QString("%1 · %2%")
-						.arg(obs_module_text(
-							"Dock.AngleSpeedHint"))
-						.arg((int)(r.camSpeeds[cam] * 100)));
-				it->setForeground(QBrush(QColor("#ffd07a")));
-			}
-			events_->setItem(row, kColFirstCam + (int)ci, it);
+					: QString::fromStdString(r.camNotes[cam]));
+			note->setFlags(Qt::ItemIsSelectable | Qt::ItemIsEnabled |
+				       Qt::ItemIsEditable);
+			note->setTextAlignment(Qt::AlignVCenter | Qt::AlignLeft);
+			note->setData(Qt::UserRole, r.id);
+			note->setToolTip(obs_module_text("Dock.CamNoteHint"));
+			events_->setItem(row, col + 1, note);
 		}
 	}
 	refreshing_ = false;
@@ -3241,188 +3208,58 @@ void MultiReplayDock::refreshEvents()
 			}
 		}
 	}
-	// Rebuild the inspector for the selected event. Done explicitly because
-	// selectRow() above does not emit selectionChanged when the same row was
-	// already selected (e.g. after an inspector edit bumped the version).
-	populateInspector(target);
-}
-
-void MultiReplayDock::populateInspector(int eventId)
-{
-	if (!inspector_ || !inspectorLayout_)
-		return;
-
-	// Don't tear the panel down (and steal focus) on a SAME-event refresh while
-	// the user is editing one of its fields: their own commit bumps the store
-	// version, which triggers refreshEvents() ~33ms later → a rebuild would
-	// destroy the field they just tabbed into. Values are already persisted, so
-	// skipping the rebuild is safe. A real selection change (different id) still
-	// rebuilds (focus moves anyway).
-	if (eventId == inspectorEventId_) {
-		QWidget *fw = QApplication::focusWidget();
-		if (fw && inspector_->isAncestorOf(fw))
-			return;
-	}
-	inspectorEventId_ = eventId;
-
-	// Tear down the previous rows.
-	QLayoutItem *child;
-	while ((child = inspectorLayout_->takeAt(0)) != nullptr) {
-		if (child->widget())
-			child->widget()->deleteLater();
-		delete child;
-	}
-
-	auto addHint = [this](const char *key) {
-		auto *hint = new QLabel(obs_module_text(key), inspector_);
-		hint->setStyleSheet("color: #707070; font-style: italic;");
-		inspectorLayout_->addWidget(hint);
-	};
-
-	ReplayEvent ev;
-	if (eventId <= 0 || !EventStore::instance().get(eventId, ev)) {
-		inspector_->setTitle(obs_module_text("Dock.AngleSpeeds"));
-		addHint("Dock.SelectEvent");
-		return;
-	}
-	// The toggle and the comment are also in the table (the reference controller), and they are
-	// the same store fields — editing either writes the same value. What is
-	// only here is the per-angle speed.
-	inspector_->setTitle(QString("%1 — #%2")
-				     .arg(obs_module_text("Dock.AngleSpeeds"))
-				     .arg(eventId));
-
-	Config cfg = ReplayCore::instance().getConfig();
-	bool any = false;
-	for (int i = 0; i < kEventAngles; i++) {
-		// Only show rows for cameras that have a source configured.
-		bool configured = (i < kMaxCameras) &&
-				  !cfg.cameras[i].sourceName.empty();
-		if (!configured)
-			continue;
-		any = true;
-		int a1 = i + 1;
-
-		const std::string &dn = cfg.cameras[i].displayName;
-		QString label = dn.empty() ? QString("Cam %1").arg(a1)
-					   : QString::fromStdString(dn);
-
-		auto *rowW = new QWidget(inspector_);
-		auto *row = new QHBoxLayout(rowW);
-		row->setContentsMargins(0, 0, 0, 0);
-		row->setSpacing(6);
-
-		// Enable toggle (the camera name doubles as the label).
-		auto *chk = new QCheckBox(label, rowW);
-		chk->setMinimumWidth(96);
-		chk->setChecked(ev.angles[i].enabled);
-		if (!dn.empty())
-			chk->setToolTip(QString::fromStdString(dn));
-		connect(chk, &QCheckBox::toggled, this, [eventId, a1](bool on) {
-			EventStore::instance().setAngle(eventId, a1, on);
-		});
-
-		// Comment (free text). Commit on focus-out / Enter.
-		auto *note = new QLineEdit(
-			QString::fromStdString(ev.angles[i].note), rowW);
-		note->setPlaceholderText(QStringLiteral("commento"));
-		note->setToolTip(obs_module_text("Dock.CamNoteHint"));
-		connect(note, &QLineEdit::editingFinished, this,
-			[eventId, a1, note]() {
-				EventStore::instance().setAngleNote(
-					eventId, a1,
-					note->text().trimmed().toStdString());
-			});
-
-		// Per-angle speed override (percent); empty = use default speed.
-		auto *sp = new QLineEdit(rowW);
-		sp->setPlaceholderText(QStringLiteral("vel%"));
-		sp->setToolTip(obs_module_text("Dock.AngleSpeedHint"));
-		sp->setFixedWidth(56);
-		sp->setMaxLength(4);
-		sp->setAlignment(Qt::AlignCenter);
-		if (ev.angles[i].speed >= 0)
-			sp->setText(QString::number(
-				(int)(ev.angles[i].speed * 100)));
-		connect(sp, &QLineEdit::editingFinished, this,
-			[eventId, a1, sp]() {
-				QString t = sp->text().trimmed();
-				t.remove('%');
-				bool ok = false;
-				int v = t.toInt(&ok);
-				if (!ok || t.isEmpty()) {
-					EventStore::instance().setAngleSpeed(
-						eventId, a1, -1.0);
-					sp->clear();
-				} else {
-					v = std::clamp(v, 1, 100);
-					EventStore::instance().setAngleSpeed(
-						eventId, a1, v / 100.0);
-					sp->setText(QString::number(v));
-				}
-			});
-
-		row->addWidget(chk, 0);
-		row->addWidget(note, 1);
-		row->addWidget(sp, 0);
-		inspectorLayout_->addWidget(rowW);
-	}
-	if (!any)
-		addHint("Dock.NoCameras");
 }
 
 void MultiReplayDock::onEventItemChanged(QTableWidgetItem *item)
 {
-	// In/out/duration are read-only; what an operator can change is the event
-	// speed and, in the per-camera columns, whether that angle plays and what
-	// it is called. Everything else reaching here is a rebuild writing its own
+	// In/out/duration are read-only. What an operator can change lives in the
+	// per-camera pairs: whether that angle plays, how fast, and what it is
+	// called. Everything else reaching here is a rebuild writing its own
 	// cells, which must not be read back as an operator edit.
 	if (refreshing_ || !item)
 		return;
 	const int col = item->column();
-	if (col != kColSpeed && col < kColFirstCam)
+	const int ci = camPairIndex(col);
+	if (ci < 0 || ci >= (int)camCols_.size())
 		return;
 	const int id = item->data(Qt::UserRole).toInt();
 	if (id <= 0)
 		return;
+	const int a1 = camCols_[(size_t)ci] + 1; // EventStore is 1-based
+	auto &store = EventStore::instance();
 
-	if (col >= kColFirstCam) {
-		const size_t ci = (size_t)(col - kColFirstCam);
-		if (ci >= camCols_.size())
-			return;
-		const int a1 = camCols_[ci] + 1; // EventStore is 1-based
-		// Both halves of the cell are written back on any change: the two
-		// are one edit as far as the operator is concerned, and applying
-		// both is idempotent — far cheaper than tracking which of the two
-		// Qt actually moved.
-		EventStore::instance().setAngle(id, a1,
-						item->checkState() == Qt::Checked);
+	if (isCamNoteColumn(col)) {
 		QString note = item->text().trimmed();
 		if (note == kNoNote) // the placeholder is not a comment
 			note.clear();
-		EventStore::instance().setAngleNote(id, a1, note.toStdString());
+		store.setAngleNote(id, a1, note.toStdString());
 		// No refresh from here — see the note at the end of this function.
 		return;
 	}
 
+	// The enable box and this angle's speed are one cell. Both are written
+	// back on any change: they are one edit as far as the operator is
+	// concerned, and applying both is idempotent — far cheaper than tracking
+	// which of the two Qt actually moved.
+	store.setAngle(id, a1, item->checkState() == Qt::Checked);
+
 	// Accept what an operator actually types: "50", "50%", " 50 ", and blank
-	// or "--" for "no speed of my own" — which is what makes the event fall
-	// back to the previous one's, exactly like the reference controller.
+	// or "--" for "no speed of my own", which hands the angle back to the
+	// slider. Clamped to what the engine will play (5..200 on the slider,
+	// 400 at the outside).
 	QString t = item->text().trimmed();
 	t.remove(QLatin1Char('%'));
-	t.remove(QLatin1Char('('));
-	t.remove(QLatin1Char(')'));
 	bool ok = false;
 	const int v = t.toInt(&ok);
 	if (!ok || t.isEmpty() || t == QStringLiteral("--"))
-		EventStore::instance().setSpeed(id, -1.0);
+		store.setAngleSpeed(id, a1, -1.0);
 	else
-		EventStore::instance().setSpeed(id, std::clamp(v, 1, 100) / 100.0);
+		store.setAngleSpeed(id, a1, std::clamp(v, 5, 400) / 100.0);
 	// No refresh from here: we are inside the model's own setData, and tearing
 	// the rows down under it would free the item the view is still finishing
 	// with. The store's version counter has just moved, so poll() rebuilds on
 	// its next tick (~33 ms) on a clean stack — which is also what normalises
-	// the text and re-parenthesises every event that inherits from this one.
+	// the text ("50" becomes "50%").
 }
 
 // ---------------------------------------------------------------------------

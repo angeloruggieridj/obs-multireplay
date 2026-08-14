@@ -246,48 +246,6 @@ bool EventStore::setAngleNote(int id, int angle1Based, const std::string &note)
 	return false;
 }
 
-bool EventStore::setSpeed(int id, double speed)
-{
-	std::lock_guard<std::mutex> lock(mutex_);
-	for (auto &ev : events_) {
-		if (ev.id == id) {
-			ev.speed = speed < 0 ? -1.0
-					     : std::clamp(speed, 0.01, 1.0);
-			save();
-			return true;
-		}
-	}
-	return false;
-}
-
-double EventStore::resolvedSpeedAt(size_t idx) const
-{
-	// mutex_ held by the caller.
-	//
-	// "Previous" is previous in CREATION order, which is the order marks were
-	// taken and the order the store keeps them in. Deliberately not the sorted
-	// display order: with the by-time sort on, an event inserted before others
-	// (a −20s preset taken after a −5s one) would otherwise change the speed of
-	// events that were already on screen with a value the operator had read.
-	const int list = events_[idx].list;
-	for (size_t i = idx + 1; i-- > 0;) {
-		if (events_[i].list != list)
-			continue;
-		if (events_[i].speed >= 0)
-			return events_[i].speed;
-	}
-	return -1.0;
-}
-
-double EventStore::resolvedSpeed(int id) const
-{
-	std::lock_guard<std::mutex> lock(mutex_);
-	for (size_t i = 0; i < events_.size(); i++)
-		if (events_[i].id == id)
-			return resolvedSpeedAt(i);
-	return -1.0;
-}
-
 bool EventStore::setAngleSpeed(int id, int angle1Based, double speed)
 {
 	std::lock_guard<std::mutex> lock(mutex_);
@@ -295,9 +253,13 @@ bool EventStore::setAngleSpeed(int id, int angle1Based, double speed)
 		return false;
 	for (auto &ev : events_) {
 		if (ev.id == id) {
+			// Clamped to what the playback engine accepts (5..400%),
+			// not to 100%: an angle can legitimately be the fast one
+			// (fast forward is the same control past 1×), and a
+			// value the store keeps but the engine would refuse is a
+			// number that lies to the operator.
 			ev.angles[angle1Based - 1].speed =
-				speed < 0 ? -1.0
-					  : std::clamp(speed, 0.01, 1.0);
+				speed < 0 ? -1.0 : std::clamp(speed, 0.05, 4.0);
 			save();
 			return true;
 		}
@@ -393,18 +355,13 @@ std::string EventStore::listJson(int list) const
 	obs_data_set_string(root, "listName", listNames_[list - 1].c_str());
 
 	obs_data_array_t *arr = obs_data_array_create();
-	for (size_t i = 0; i < events_.size(); i++) {
-		const auto &ev = events_[i];
+	for (const auto &ev : events_) {
 		if (ev.list != list)
 			continue;
 		obs_data_t *e = obs_data_create();
 		obs_data_set_int(e, "id", ev.id);
 		obs_data_set_int(e, "tInNs", ev.tInNs);
 		obs_data_set_int(e, "tOutNs", ev.tOutNs);
-		obs_data_set_double(e, "speed", ev.speed);
-		// What would actually play, inheritance included, so the table can
-		// show an inherited speed without asking again per row.
-		obs_data_set_double(e, "resolvedSpeed", resolvedSpeedAt(i));
 		obs_data_set_string(e, "createdMode", ev.createdMode.c_str());
 		obs_data_array_t *angles = obs_data_array_create();
 		for (const auto &a : ev.angles) {
@@ -506,7 +463,9 @@ void EventStore::save() const
 				 ev.tOutNs < 0
 					 ? -1
 					 : masterToWallNs(epoch_, ev.tOutNs));
-		obs_data_set_double(e, "speed", ev.speed);
+		// No event-level "speed" is written any more: the only speeds are
+		// the per-angle ones below and the operator's slider. An old file
+		// that still carries one is simply ignored on load.
 		obs_data_set_string(e, "createdMode", ev.createdMode.c_str());
 		obs_data_array_t *angles = obs_data_array_create();
 		for (const auto &a : ev.angles) {
@@ -580,7 +539,10 @@ void EventStore::load()
 			const int64_t outWall = obs_data_get_int(e, "out_wall_ns");
 			ev.tOutNs = outWall < 0 ? -1
 						: wallToMasterNs(epoch_, outWall);
-			ev.speed = obs_data_get_double(e, "speed");
+			// "speed" at event level (M3) is deliberately NOT read
+			// back: it no longer exists, and silently applying a
+			// speed the operator can no longer see or change would
+			// be worse than dropping it.
 			ev.createdMode =
 				obs_data_get_string(e, "createdMode");
 			obs_data_array_t *angles =

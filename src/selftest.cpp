@@ -213,6 +213,14 @@ struct DockChecks {
 	// looks exactly like a camera with no signal).
 	bool multiviewBuilt = false;
 	bool multiviewDisplaysLive = false;
+	// M5: the per-angle triplet lives IN the table — one column pair per
+	// configured camera ([enable + speed], [comment]) and NO per-event speed
+	// column. Both halves are checked on real cells: the geometry (which is
+	// what proves the event-speed column is gone) and an edit typed into the
+	// speed cell, which must reach the store as that ANGLE's speed.
+	bool angleColumnsInTable = false;
+	bool tableEditsAngleSpeed = false;
+	int eventTableColumns = 0;
 	// ...and the failure this whole widget family is famous for: a display
 	// left presenting into a native window Qt has destroyed. It used to be
 	// visible only by reading the OBS log by eye, which is the check that
@@ -482,6 +490,77 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 			"[selftest] dock: event %d drawn as '%s' (%d digits "
 			"configured)",
 			evId, cell.toUtf8().constData(), digits);
+	}
+
+	// --- the per-angle edit is IN the table, and it is per ANGLE ----------
+	// Two claims, both made on real cells of the real table:
+	//   1. the geometry is "fixed columns + TWO per configured camera". That
+	//      is what proves the per-event speed column is gone — a count alone
+	//      could be satisfied by any number of stray columns.
+	//   2. typing a speed into a camera cell sets THAT ANGLE's speed in the
+	//      store. Through itemChanged, exactly as an operator's keystroke.
+	if (selected) {
+		const Config cfg = ReplayCore::instance().getConfig();
+		int configured = 0;
+		for (int i = 0; i < kMaxCameras; i++)
+			if (!cfg.cameras[i].sourceName.empty())
+				configured++;
+		const int wantCols = MultiReplayDock::kColFirstCam +
+				     configured * MultiReplayDock::kColsPerCam;
+
+		int cols = 0;
+		int editedCam0 = -1;
+		runOnUi([&]() {
+			QTableWidget *t = dock->findChild<QTableWidget *>();
+			if (!t)
+				return;
+			cols = t->columnCount();
+			if (configured <= 0)
+				return;
+			for (int r = 0; r < t->rowCount(); r++) {
+				QTableWidgetItem *idIt =
+					t->item(r, MultiReplayDock::kColId);
+				if (!idIt ||
+				    idIt->data(Qt::UserRole).toInt() != evId)
+					continue;
+				// The FIRST camera pair's left half: enable box
+				// plus that angle's speed.
+				QTableWidgetItem *sp = t->item(
+					r, MultiReplayDock::kColFirstCam);
+				if (!sp)
+					break;
+				editedCam0 = firstCam;
+				// Which camera the first pair stands for is the
+				// first configured slot, whatever its number.
+				for (int i = 0; i < kMaxCameras; i++) {
+					if (cfg.cameras[i].sourceName.empty())
+						continue;
+					editedCam0 = i;
+					break;
+				}
+				sp->setText(QStringLiteral("50"));
+				break;
+			}
+		});
+		c.eventTableColumns = cols;
+		c.angleColumnsInTable = configured > 0 && cols == wantCols;
+
+		ReplayEvent spEv;
+		double stored = -1.0;
+		if (editedCam0 >= 0 && store.get(evId, spEv)) {
+			stored = spEv.angles[editedCam0].speed;
+			c.tableEditsAngleSpeed = std::abs(stored - 0.5) < 0.001;
+			// Put it back: the gate must not leave a 50% override on
+			// an event it is about to play at 1x.
+			store.setAngleSpeed(evId, editedCam0 + 1, -1.0);
+		}
+		obs_log((c.angleColumnsInTable && c.tableEditsAngleSpeed)
+				? LOG_INFO
+				: LOG_ERROR,
+			"[selftest] dock: event table has %d column(s) (expected %d "
+			"for %d camera(s)); typing 50 into camera %d's cell stored "
+			"%.2f",
+			cols, wantCols, configured, editedCam0 + 1, stored);
 	}
 
 	// Checked also that the range is servable, for the same modal reason.
@@ -1695,6 +1774,8 @@ void runSelfTest()
 			  dockChecks.multiviewBuilt &&
 			  dockChecks.multiviewDisplaysLive &&
 			  dockChecks.displaysNeverStranded &&
+			  dockChecks.angleColumnsInTable &&
+			  dockChecks.tableEditsAngleSpeed &&
 			  anchorsPersisted && projectOriginOk &&
 			  eventTimecodeSane && filtersIdleOutsideRec;
 
@@ -1802,6 +1883,12 @@ void runSelfTest()
 			  dockChecks.multiviewDisplaysLive);
 	obs_data_set_bool(checks, "dock_displays_never_stranded",
 			  dockChecks.displaysNeverStranded);
+	// M5: the per-angle triplet is in the table, and there is no per-event
+	// speed column left for it to be confused with.
+	obs_data_set_bool(checks, "dock_angle_columns_in_table",
+			  dockChecks.angleColumnsInTable);
+	obs_data_set_bool(checks, "dock_table_edits_angle_speed",
+			  dockChecks.tableEditsAngleSpeed);
 	obs_data_set_obj(root, "checks", checks);
 	obs_data_release(checks);
 
@@ -1848,6 +1935,8 @@ void runSelfTest()
 	obs_data_set_int(root, "obs_displays_created", dockChecks.displaysCreated);
 	obs_data_set_int(root, "obs_displays_stranded",
 			 dockChecks.displaysStranded);
+	obs_data_set_int(root, "dock_event_table_columns",
+			 dockChecks.eventTableColumns);
 
 	obs_data_set_int(root, "worst_max_packet_age_ms", worstMaxAgeMs);
 	obs_data_set_int(root, "cross_angle_skew_ms", skewNs / 1000000);

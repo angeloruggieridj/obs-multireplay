@@ -128,31 +128,53 @@ static void test_angle_edits_bounds()
 	CHECK(!store().setAngle(999, 1, true));
 }
 
-static void test_speed_clamping()
+// The ONLY speed an event carries is per-angle. There is no event-level speed
+// and no inheritance from the previous mark: a replay speed belongs to a camera
+// (the wide at 100%, the tight at 25%) or to the operator's slider.
+static void test_angle_speed_is_the_only_speed()
 {
 	reset();
 	int id = store().markIn(0, 0);
 	ReplayEvent ev;
 
-	CHECK(store().setSpeed(id, 2.0)); // over → 1.0
+	// Default: nobody set one, so the caller's default (the slider) wins.
 	CHECK(store().get(id, ev));
-	CHECK(ev.speed == 1.0);
+	for (const auto &an : ev.angles)
+		CHECK(an.speed == -1.0);
 
-	CHECK(store().setSpeed(id, 0.0)); // 0 is invalid playback → 0.01 floor
+	// Clamped to what the playback engine accepts: 5%..400%.
+	CHECK(store().setAngleSpeed(id, 1, 5.0)); // over → 4.0 (400%)
 	CHECK(store().get(id, ev));
-	CHECK(ev.speed == 0.01);
+	CHECK(ev.angles[0].speed == 4.0);
 
-	CHECK(store().setSpeed(id, -1.0)); // sentinel "inherit"
+	CHECK(store().setAngleSpeed(id, 1, 0.0)); // 0 never plays → 0.05 floor
 	CHECK(store().get(id, ev));
-	CHECK(ev.speed == -1.0);
-
-	CHECK(store().setAngleSpeed(id, 1, 5.0)); // over → 1.0
-	CHECK(store().get(id, ev));
-	CHECK(ev.angles[0].speed == 1.0);
+	CHECK(ev.angles[0].speed == 0.05);
 
 	CHECK(store().setAngleSpeed(id, 1, -2.0)); // any negative → -1 sentinel
 	CHECK(store().get(id, ev));
 	CHECK(ev.angles[0].speed == -1.0);
+
+	// Per ANGLE, not per event: setting one leaves the others alone. This is
+	// the whole point of the field, and the reason the event-level one went.
+	CHECK(store().setAngleSpeed(id, 2, 0.25));
+	CHECK(store().setAngleSpeed(id, 3, 1.0));
+	CHECK(store().get(id, ev));
+	CHECK(ev.angles[0].speed == -1.0);
+	CHECK(ev.angles[1].speed == 0.25);
+	CHECK(ev.angles[2].speed == 1.0);
+	CHECK(ev.angles[3].speed == -1.0);
+
+	// A later mark inherits NOTHING: the speed the operator set on one event's
+	// camera is that event's camera, not a mode he has silently entered.
+	int later = store().markIn(10 * S, 1);
+	CHECK(store().get(later, ev));
+	for (const auto &an : ev.angles)
+		CHECK(an.speed == -1.0);
+
+	// Unknown id / out-of-range angle are refused, not written elsewhere.
+	CHECK(!store().setAngleSpeed(9999, 1, 0.5));
+	CHECK(!store().setAngleSpeed(id, kEventAngles + 1, 0.5));
 }
 
 static void test_move_points()
@@ -321,40 +343,52 @@ static void test_pre_post_roll()
 	CHECK(ev.tInNs == 7 * S);
 }
 
-// the reference controller: an event with no speed of its own inherits the previous event's.
-static void test_speed_inheritance()
+// The per-angle triplet the operator fills in during a match — IS THIS ANGLE
+// IN, AT WHAT SPEED, WITH WHAT COMMENT — is three independent fields on the
+// same angle. The dock edits them from one table row, so nothing may couple
+// them: toggling an angle off must not forget its speed or its note.
+static void test_angle_triplet_is_independent()
 {
 	reset();
-	int a = store().markIn(10 * S, 0);
+	int id = store().markIn(10 * S, 0);
 	store().markOut(11 * S);
-	int b = store().markIn(20 * S, 0);
-	store().markOut(21 * S);
-	int c = store().markIn(30 * S, 0);
-	store().markOut(31 * S);
+	ReplayEvent ev;
 
-	// Nothing set anywhere → "no answer", so the caller's default wins.
-	CHECK(store().resolvedSpeed(a) < 0);
-	CHECK(store().resolvedSpeed(c) < 0);
+	CHECK(store().setAngle(id, 2, true));
+	CHECK(store().setAngleSpeed(id, 2, 0.5));
+	CHECK(store().setAngleNote(id, 2, "tight"));
+	CHECK(store().get(id, ev));
+	CHECK(ev.angles[1].enabled);
+	CHECK(ev.angles[1].speed == 0.5);
+	CHECK(ev.angles[1].note == "tight");
 
-	// b at 50%: b and everything after it inherit, a (before it) does not.
-	CHECK(store().setSpeed(b, 0.5));
-	CHECK(store().resolvedSpeed(a) < 0);
-	CHECK(store().resolvedSpeed(b) == 0.5);
-	CHECK(store().resolvedSpeed(c) == 0.5);
+	// Off and on again: the speed and the comment survive. An operator who
+	// unticks an angle to shorten a sequence has not thrown away his edit.
+	CHECK(store().setAngle(id, 2, false));
+	CHECK(store().get(id, ev));
+	CHECK(!ev.angles[1].enabled);
+	CHECK(ev.angles[1].speed == 0.5);
+	CHECK(ev.angles[1].note == "tight");
+	CHECK(store().setAngle(id, 2, true));
 
-	// An explicit value on c wins over the inherited one.
-	CHECK(store().setSpeed(c, 0.25));
-	CHECK(store().resolvedSpeed(c) == 0.25);
+	// Clearing the speed leaves the comment, and vice versa.
+	CHECK(store().setAngleSpeed(id, 2, -1.0));
+	CHECK(store().get(id, ev));
+	CHECK(ev.angles[1].note == "tight");
+	CHECK(store().setAngleNote(id, 2, ""));
+	CHECK(store().get(id, ev));
+	CHECK(ev.angles[1].enabled);
+	CHECK(ev.angles[1].speed == -1.0);
+	CHECK(ev.angles[1].note.empty());
 
-	// Inheritance never crosses lists: a new list starts from nothing.
-	store().selectList(2);
-	int d = store().markIn(40 * S, 0);
-	store().markOut(41 * S);
-	CHECK(store().resolvedSpeed(d) < 0);
-	store().selectList(1);
-
-	// An unknown id has no speed rather than someone else's.
-	CHECK(store().resolvedSpeed(9999) < 0);
+	// A duplicate carries the whole triplet across (the reference controller), on a new id.
+	CHECK(store().setAngleSpeed(id, 3, 0.25));
+	CHECK(store().setAngleNote(id, 3, "wide"));
+	int dup = store().duplicate(id);
+	CHECK(dup != 0 && dup != id);
+	CHECK(store().get(dup, ev));
+	CHECK(ev.angles[2].speed == 0.25);
+	CHECK(ev.angles[2].note == "wide");
 }
 
 // the reference controller: the 20 lists can be named, and the names belong to the project.
@@ -400,14 +434,14 @@ int main()
 	test_mark_in_out_preset();
 	test_mark_cancel();
 	test_angle_edits_bounds();
-	test_speed_clamping();
+	test_angle_speed_is_the_only_speed();
 	test_move_points();
 	test_move_to_list_and_select();
 	test_duplicate_and_last();
 	test_description();
 	test_chapters_text();
 	test_pre_post_roll();
-	test_speed_inheritance();
+	test_angle_triplet_is_independent();
 	test_list_names();
 	test_version_bumps();
 

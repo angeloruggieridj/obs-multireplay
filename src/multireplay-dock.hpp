@@ -132,6 +132,24 @@ public:
 	};
 	PreviewStats previewStats() const;
 
+	// Event table geometry. Public because the automated gate reads and edits
+	// REAL cells: given only a column count it could not tell "the per-event
+	// speed column is gone" from "the table is built differently today", and a
+	// gate that hardcodes 4 stops meaning anything the moment this moves.
+	//
+	// kColId must stay 0 and kColIn 1 — the gate reads the padded id off
+	// item(row, 0) and double-clicks column 1 to prove it takes program.
+	enum EventColumn {
+		kColId = 0,
+		kColIn,
+		kColOut,
+		kColDur,
+		kColFirstCam // first per-camera pair
+	};
+	// Each configured camera owns two columns: [enable box + speed] and
+	// [comment]. See the note above EventColumn's definition in the .cpp.
+	static constexpr int kColsPerCam = 2;
+
 	// What an OBS hotkey callback is handed (see registerDockHotkeys). Public
 	// only because that callback is a plain C function, as libobs requires.
 	struct HotkeyCtx {
@@ -175,9 +193,6 @@ private:
 	void updateChannelStrip();
 	void renameListDialog(); // gear menu → rename the selected list
 	void onEventItemChanged(QTableWidgetItem *item); // edit commit
-	// Inspector panel below the table: per-angle toggle · comment · vel% for the
-	// currently selected event (replaces the cramped in-table camera cards).
-	void populateInspector(int eventId);
 	// The take armed Branch Output but nothing started: disarm and say why.
 	// Called from poll() when the watchdog below expires.
 	void cancelDeadRecording();
@@ -330,14 +345,8 @@ private:
 	QTabBar *listTabs_ = nullptr; // the 20 lists, broadcast-style tabs
 	QLineEdit *search_ = nullptr;
 	QTableWidget *events_ = nullptr;
-	// Inspector: framed panel under the table; its rows are rebuilt per selection.
-	// Collapsed by default now that the enable toggle and the comment are in the
-	// table itself (the reference controller): what is left in here is the per-angle speed override,
-	// which the reference controller has no column for.
-	QGroupBox *inspector_ = nullptr;
-	QWidget *inspectorBody_ = nullptr; // hidden when the panel is collapsed
-	QVBoxLayout *inspectorLayout_ = nullptr;
-	int inspectorEventId_ = 0;
+	// (No inspector panel: the per-angle enable box, speed and comment are all
+	// in the table now, on the row and in the column they belong to.)
 	bool refreshing_ = false; // guards itemChanged during table rebuilds
 	uint64_t lastEventVersion_ = UINT64_MAX; // UINT64_MAX → refresh on first poll
 	// Largest event id seen: when a newer one appears (a fresh mark), the table
@@ -347,7 +356,7 @@ private:
 	QPushButton *toOutputBtn_ = nullptr;
 	QPushButton *loopBtn_ = nullptr;
 	QPushButton *musicBtn_ = nullptr;
-	// Which camera each per-camera table column stands for (0-based), in
+	// Which camera each per-camera table column PAIR stands for (0-based), in
 	// column order starting at kColFirstCam. Empty = no camera configured.
 	std::vector<int> camCols_;
 	// Header section currently painted green (the angle being watched), -1 =

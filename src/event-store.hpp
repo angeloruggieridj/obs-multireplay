@@ -21,17 +21,26 @@ constexpr int kEventLists = 20;
 constexpr int kEventAngles = 8; // M5: full reference parity
 
 // One broadcast-style replay event: a time range on the master timeline with
-// per-angle enable flags and notes. Footage is never touched.
+// per-angle enable flags, notes and speeds. Footage is never touched.
+//
+// THERE IS NO PER-EVENT SPEED, and there never should have been one. A replay
+// speed belongs to an ANGLE — the wide shot at 100% and the tight one at 25% of
+// the same action is the whole point of a multi-camera replay — or to the
+// operator's slider, which is the default for every angle that does not say
+// otherwise. The event-level speed added in M3 (with its inheritance from the
+// previous mark) sat between those two and answered a question nobody asks; it
+// is gone, together with its column.
 struct ReplayEvent {
 	int id = 0;        // broadcast-style fixed numeric id (new id on copy)
 	int list = 1;      // 1..20
 	int64_t tInNs = 0; // master timeline
 	int64_t tOutNs = -1; // -1 = open event (Mark In without Mark Out yet)
-	double speed = -1.0; // -1 = "--" (inherit), else 0..1
 	struct Angle {
 		bool enabled = false;
 		std::string note;
-		double speed = -1.0; // -1 = inherit event/default speed, else 0..1
+		// -1 = use the default (the dock's slider). Otherwise a factor:
+		// 0.05..4.0, the range the playback engine accepts (5..400%).
+		double speed = -1.0;
 	};
 	std::array<Angle, kEventAngles> angles;
 	std::string createdMode; // "live" | "recorded"
@@ -93,15 +102,8 @@ public:
 	// independent of which cameras are enabled and survives toggling them.
 	bool setDescription(int id, const std::string &note);
 	std::string description(int id) const; // first non-empty angle note
-	bool setSpeed(int id, double speed); // event default; <0 = "--"
-	// The speed that actually applies to `id`, with the reference controller inheritance: its own
-	// if it has one, otherwise the nearest EARLIER event of the same list that
-	// has one. <0 = nobody set one, so the caller's default (the dock slider)
-	// wins. the reference controller words it as "inherits from the previous event": an operator
-	// who drops to 50% once keeps getting 50% on the marks that follow, without
-	// touching every single one.
-	double resolvedSpeed(int id) const;
-	// Per-angle speed override; <0 = inherit the event/default speed.
+	// Per-angle speed override; <0 = use the caller's default (the slider).
+	// This is the ONLY per-event speed there is — see the note on ReplayEvent.
 	bool setAngleSpeed(int id, int angle1Based, double speed);
 	bool movePoint(int id, bool inPoint, int64_t deltaNs);
 	bool moveToList(int id, int list);
@@ -130,9 +132,6 @@ private:
 	EventStore() = default;
 	void save() const; // mutex_ must be held
 	void load();       // mutex_ must be held
-	// Inheritance walk for events_[idx]; mutex_ must be held. Split out because
-	// listJson() already holds the lock and needs the same answer.
-	double resolvedSpeedAt(size_t idx) const;
 
 	mutable std::mutex mutex_;
 	SessionEpoch epoch_; // see setSessionEpoch()
