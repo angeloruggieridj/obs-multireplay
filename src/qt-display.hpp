@@ -21,6 +21,15 @@ can see it, and libobs does not complain either. So the handle the display was
 created against is remembered, re-checked (see recheckWindow) and every
 create/destroy is logged with it: an interface that goes black must be
 diagnosable from the OBS log alone.
+
+The OTHER way this widget goes black is the display that is never created at
+all. Creation is deferred whenever the native window is not ready and the
+dock's poll retries, and both of those are correct — but a retry that keeps
+failing used to look exactly like one that succeeded half a second later: one
+line in the log, then silence. Three things fix that, and they belong together:
+the dry spell is TIMED rather than flagged (blockedMs), it is re-logged while it
+lasts, and once the handle is alive and the widget has a size the display is
+created even if Qt never raises an exposure flag that libobs does not need.
 */
 
 #pragma once
@@ -47,6 +56,18 @@ public:
 	// check that stops being done. Nothing else reads these.
 	static int createdCount() { return createdCount_.load(); }
 	static int strandedCount() { return strandedCount_.load(); }
+	// ...and how many of those creations had to be FORCED past Qt's exposure
+	// bookkeeping (see createDisplay). Zero is the normal number; a run where
+	// it is not zero worked, but worked the long way round, and that is worth
+	// seeing in the verdict instead of only in the log.
+	static int forcedCount() { return forcedCount_.load(); }
+
+	// How long this widget has been asking for a display it cannot get, in
+	// milliseconds; 0 when it is not waiting (it either has one or has not
+	// been asked). A preview widget on screen with no display behind it is a
+	// black rectangle — indistinguishable from a camera with no signal — and
+	// this is the only number that can tell the two apart from outside.
+	int64_t blockedMs() const;
 
 	// Qt must NOT paint over the native surface OBS renders into.
 	QPaintEngine *paintEngine() const override { return nullptr; }
@@ -65,7 +86,14 @@ public:
 	// not reliably tell a widget that the window under it has been replaced,
 	// and a poll is the only thing that can notice a display stranded on a
 	// dead handle. Safe to call from the UI thread at any rate.
-	void recheckWindow();
+	//
+	// `why` names the caller and is logged verbatim on every create/destroy.
+	// It is not decoration: every display in this plugin has always been
+	// logged as created "— recheck", which said nothing about WHICH of the
+	// five entry points (poll, paint, resize, show, re-parent) actually got
+	// there first, and that is the first thing you want to know when one of
+	// them stops arriving.
+	void recheckWindow(const char *why = "poll");
 
 protected:
 	void resizeEvent(QResizeEvent *event) override;
@@ -85,12 +113,21 @@ private:
 	void (*drawCb_)(void *, uint32_t, uint32_t) = nullptr;
 	void *drawData_ = nullptr;
 	bool destroying_ = false;
-	// One-shot guard so "cannot create the display yet" is logged once per
-	// dry spell instead of on every paint event.
-	bool deferralLogged_ = false;
+	// When the current dry spell began (monotonic ns), 0 = not waiting. The
+	// retry itself is driven by the dock's poll, so what this holds is not
+	// "have we tried again" but "how long have we been failing" — which is
+	// what both the forced create and the gate are decided on. It replaces a
+	// one-shot bool that logged the first failure and then said nothing ever
+	// again: a preview that never appeared left exactly one line in the log
+	// and no way to tell a slow start from a permanent one.
+	uint64_t blockedSinceNs_ = 0;
+	// Last time the dry spell was logged, so the retry is audible without
+	// being a flood at 30 Hz.
+	uint64_t blockedLoggedNs_ = 0;
 
 	static std::atomic<int> createdCount_;
 	static std::atomic<int> strandedCount_;
+	static std::atomic<int> forcedCount_;
 };
 
 } // namespace multireplay

@@ -9,6 +9,8 @@ SPDX-License-Identifier: GPL-2.0-or-later
 #include "qt-display.hpp"
 #include "plugin-support.h"
 
+#include <util/platform.h>
+
 #include <QResizeEvent>
 #include <QShowEvent>
 #include <QWindow>
@@ -80,10 +82,22 @@ unsigned long long rootOf(WId wid)
 #endif
 }
 
+// How long a widget that is on screen, sized and sitting on a live native
+// handle may stay without a display before it is created anyway. Measured on
+// this machine, exposure arrives 500-750 ms after the dock is first polled
+// (OBS is still restoring its layout at that point), so this is well clear of
+// the normal path and only ever fires when Qt's exposure flag is not coming.
+constexpr int64_t kExposureGraceMs = 3000;
+// How often a dry spell is repeated in the log. The first failure is logged
+// immediately; after that the retry has to stay audible without being a flood
+// at the poll rate.
+constexpr int64_t kBlockedLogEveryMs = 5000;
+
 } // namespace
 
 std::atomic<int> OBSQTDisplay::createdCount_{0};
 std::atomic<int> OBSQTDisplay::strandedCount_{0};
+std::atomic<int> OBSQTDisplay::forcedCount_{0};
 
 OBSQTDisplay::OBSQTDisplay(QWidget *parent) : QWidget(parent)
 {
@@ -155,24 +169,79 @@ void OBSQTDisplay::createDisplay(const char *why)
 	// The swap chain then presents into nothing for the rest of the session.
 	const WId wid = internalWinId();
 	const char *blocked = nullptr;
+	// True when the ONLY thing missing is Qt's own exposure bookkeeping: the
+	// handle is alive and the widget has a size, so libobs has everything it
+	// needs to bind a swap chain. The two are kept apart because they are
+	// waited on differently — a dead handle or a zero size is worth waiting
+	// for forever, an exposure flag is not (see below).
+	bool exposureOnly = false;
 	if (!handleAlive(wid)) {
 		blocked = "no live native window handle yet";
+	} else if (width() <= 0 || height() <= 0) {
+		blocked = "widget has no size yet";
 	} else {
 		QWindow *win = windowHandle();
-		if (!win || !win->isExposed())
+		// Two different nothings, and they used to print the same
+		// sentence. A native CHILD widget gets its QWindow late, and on
+		// Windows its exposure flag is raised by the first WM_PAINT —
+		// which a widget that returns a null paintEngine() and paints
+		// nothing is not guaranteed to receive.
+		if (!win) {
+			blocked = "no QWindow behind the native handle yet";
+			exposureOnly = true;
+		} else if (!win->isExposed()) {
 			blocked = "native window not exposed yet";
-		else if (width() <= 0 || height() <= 0)
-			blocked = "widget has no size yet";
+			exposureOnly = true;
+		}
 	}
+
+	const uint64_t nowNs = os_gettime_ns();
+	if (blocked) {
+		if (!blockedSinceNs_) {
+			blockedSinceNs_ = nowNs;
+			blockedLoggedNs_ = 0;
+		}
+		const int64_t waitedMs =
+			(int64_t)((nowNs - blockedSinceNs_) / 1000000ULL);
+
+		// Waited long enough on a handle that is real: create anyway.
+		// Exposure is Qt's word for "the window is mapped and someone
+		// asked us to paint it"; obs_display_create only needs the HWND,
+		// and this widget deliberately never paints. Refusing forever on
+		// a flag we do not depend on is how a preview stays black for a
+		// whole session while the retry keeps quietly agreeing with
+		// itself. This is the same escape hatch OBS Studio keeps for its
+		// own previews (CreateDisplay(force)).
+		if (exposureOnly && waitedMs >= kExposureGraceMs) {
+			obs_log(LOG_WARNING,
+				"[display] %s after %lld ms — the handle is live "
+				"and %dx%d, creating on it anyway [winId=0x%llx]",
+				blocked, (long long)waitedMs, width(), height(),
+				(unsigned long long)wid);
+			forcedCount_++;
+			blocked = nullptr;
+		}
+	}
+
 	if (blocked) {
 		// Not an error by itself (a dock tabbed behind another is never
-		// exposed), but a preview that never appears must leave a trace.
-		if (!deferralLogged_) {
-			deferralLogged_ = true;
-			obs_log(LOG_INFO,
-				"[display] not created (%s): %s [winId=0x%llx %dx%d]",
-				why, blocked, (unsigned long long)wid, width(),
-				height());
+		// exposed), but a preview that never appears must leave a trace —
+		// and it must keep leaving one. The single line this used to log
+		// said "not yet" and then fell silent for the rest of the
+		// session, so a start that was merely slow and one that never
+		// happened produced byte-identical logs.
+		const int64_t waitedMs =
+			(int64_t)((nowNs - blockedSinceNs_) / 1000000ULL);
+		const bool first = blockedLoggedNs_ == 0;
+		if (first ||
+		    (int64_t)((nowNs - blockedLoggedNs_) / 1000000ULL) >=
+			    kBlockedLogEveryMs) {
+			blockedLoggedNs_ = nowNs;
+			obs_log(first ? LOG_INFO : LOG_WARNING,
+				"[display] not created (%s): %s — waiting %lld ms "
+				"[winId=0x%llx %dx%d]",
+				why, blocked, (long long)waitedMs,
+				(unsigned long long)wid, width(), height());
 		}
 		return;
 	}
@@ -192,7 +261,8 @@ void OBSQTDisplay::createDisplay(const char *why)
 		return;
 	}
 	createdWinId_ = wid;
-	deferralLogged_ = false;
+	blockedSinceNs_ = 0;
+	blockedLoggedNs_ = 0;
 	createdCount_++;
 	obs_log(LOG_INFO,
 		"[display] created on winId=0x%llx (top-level 0x%llx) %ux%u — %s",
@@ -213,10 +283,21 @@ void OBSQTDisplay::destroyDisplay(const char *why)
 	obs_display_destroy(display_);
 	display_ = nullptr;
 	createdWinId_ = 0;
-	deferralLogged_ = false;
+	// A fresh dry spell starts here: whatever comes next (a re-parent, a
+	// re-dock) gets the full grace again rather than inheriting the clock of
+	// the display that just went away.
+	blockedSinceNs_ = 0;
+	blockedLoggedNs_ = 0;
 }
 
-void OBSQTDisplay::recheckWindow()
+int64_t OBSQTDisplay::blockedMs() const
+{
+	if (display_ || !blockedSinceNs_)
+		return 0;
+	return (int64_t)((os_gettime_ns() - blockedSinceNs_) / 1000000ULL);
+}
+
+void OBSQTDisplay::recheckWindow(const char *why)
 {
 	if (destroying_)
 		return;
@@ -240,14 +321,17 @@ void OBSQTDisplay::recheckWindow()
 		destroyDisplay("stale native window");
 	}
 
+	// A hidden widget must NOT create one: a multiview tile for a camera
+	// nobody configured is hidden, and a display it never asked for would
+	// still cost a present() per frame on the shared graphics thread.
 	if (!display_ && isVisible())
-		createDisplay("recheck");
+		createDisplay(why);
 }
 
 void OBSQTDisplay::resizeEvent(QResizeEvent *event)
 {
 	QWidget::resizeEvent(event);
-	recheckWindow();
+	recheckWindow("resize");
 	if (display_)
 		obs_display_resize(display_, (uint32_t)width(),
 				   (uint32_t)height());
@@ -257,7 +341,7 @@ void OBSQTDisplay::paintEvent(QPaintEvent *)
 {
 	// Nothing to paint: libobs owns this surface. A paint request does mean
 	// the window is up and mapped, which is a good moment to (re)check it.
-	recheckWindow();
+	recheckWindow("paint");
 }
 
 bool OBSQTDisplay::event(QEvent *e)
@@ -266,7 +350,12 @@ bool OBSQTDisplay::event(QEvent *e)
 	case QEvent::Show:
 		if (display_)
 			obs_display_set_enabled(display_, true);
-		recheckWindow();
+		recheckWindow("show");
+		break;
+	case QEvent::PolishRequest:
+		// The dock is being laid out for the first time. Earlier than any
+		// paint, and it arrives even for a widget that never paints.
+		recheckWindow("polish");
 		break;
 	case QEvent::Hide:
 		// Tabbed behind another dock: stop presenting, keep the display.
@@ -277,7 +366,7 @@ bool OBSQTDisplay::event(QEvent *e)
 		// The dock was moved, floated, tabbed or re-docked. The window
 		// under us may have been swapped without a WinIdChange reaching
 		// here first, so verify rather than assume.
-		recheckWindow();
+		recheckWindow("reparent");
 		break;
 	case QEvent::WinIdChange:
 		// Qt has just replaced this widget's native window. Only LET GO of

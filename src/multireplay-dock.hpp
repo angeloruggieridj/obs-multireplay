@@ -201,6 +201,14 @@ public:
 		int tiles = 0;       // preview widgets built (big + every tile)
 		int visible = 0;     // ...of which on screen
 		int withDisplay = 0; // ...of which own a live obs_display
+		// ...and of the rest, how many have been WAITING for one longer
+		// than any start-up delay explains. "withDisplay == visible" was
+		// the whole check, and it is trivially true when nothing is
+		// visible — so a dock that never got on screen passed it, and so
+		// did the first instants of every run. This is the number that
+		// says a rectangle is black because nothing is behind it.
+		int starved = 0;
+		int64_t worstBlockedMs = 0; // longest current dry spell
 	};
 	PreviewStats previewStats() const;
 

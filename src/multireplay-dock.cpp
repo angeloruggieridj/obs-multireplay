@@ -1505,6 +1505,11 @@ void MultiReplayDock::refreshTileSources()
 MultiReplayDock::PreviewStats MultiReplayDock::previewStats() const
 {
 	PreviewStats s;
+	// Long enough that a dock still being laid out is not called starved,
+	// short enough that a preview an operator is already looking at is. The
+	// display itself forces its own creation at 3 s (see qt-display), so a
+	// widget still empty at 5 s has failed for a reason no waiting will fix.
+	constexpr int64_t kStarvedMs = 5000;
 	const auto account = [&s](const OBSQTDisplay *d) {
 		if (!d)
 			return;
@@ -1512,8 +1517,14 @@ MultiReplayDock::PreviewStats MultiReplayDock::previewStats() const
 		if (!d->isVisible())
 			return;
 		s.visible++;
-		if (d->display())
+		if (d->display()) {
 			s.withDisplay++;
+			return;
+		}
+		const int64_t waited = d->blockedMs();
+		s.worstBlockedMs = std::max(s.worstBlockedMs, waited);
+		if (waited >= kStarvedMs)
+			s.starved++;
 	};
 	account(displayA_);
 	for (const PreviewTile &t : tiles_)

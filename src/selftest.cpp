@@ -215,6 +215,16 @@ struct DockChecks {
 	// looks exactly like a camera with no signal).
 	bool multiviewBuilt = false;
 	bool multiviewDisplaysLive = false;
+	// ...and the hole that check had: `withDisplay == visible` is TRUE when
+	// nothing is visible, so a dock that never made it on screen — and every
+	// run's first instants — passed it without a single display existing.
+	// Now the panel has to have pictures on screen, each with a display, and
+	// none of them may have been waiting for one longer than a start-up
+	// explains (PreviewStats::starved).
+	bool previewsNeverStarved = false;
+	int previewTilesStarved = 0;
+	int64_t worstDisplayWaitMs = 0;
+	int displaysForced = 0;
 	// M5: the per-angle triplet lives IN the table — one column pair per
 	// configured camera ([enable + speed], [comment]) and NO per-event speed
 	// column. Both halves are checked on real cells: the geometry (which is
@@ -410,18 +420,28 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 		c.previewTilesWithDisplay = st.withDisplay;
 		c.displaysCreated = OBSQTDisplay::createdCount();
 		c.displaysStranded = OBSQTDisplay::strandedCount();
+		c.displaysForced = OBSQTDisplay::forcedCount();
+		c.previewTilesStarved = st.starved;
+		c.worstDisplayWaitMs = st.worstBlockedMs;
 		// 1 big preview + 8 camera tiles + the replay tile.
 		c.multiviewBuilt = st.tiles == 10;
-		c.multiviewDisplaysLive = st.withDisplay == st.visible;
+		// There must BE pictures on screen. Without that clause this is
+		// "0 == 0" on a dock nobody ever showed, which is exactly the
+		// shape of the failure it is supposed to catch.
+		c.multiviewDisplaysLive =
+			st.visible > 0 && st.withDisplay == st.visible;
+		c.previewsNeverStarved = st.starved == 0;
 		c.displaysNeverStranded = c.displaysStranded == 0;
 		obs_log((c.multiviewBuilt && c.multiviewDisplaysLive &&
-			 c.displaysNeverStranded)
+			 c.previewsNeverStarved && c.displaysNeverStranded)
 				? LOG_INFO
 				: LOG_ERROR,
 			"[selftest] dock: %d preview widget(s), %d visible, %d with a "
-			"live display; %d display(s) created, %d stranded",
-			st.tiles, st.visible, st.withDisplay, c.displaysCreated,
-			c.displaysStranded);
+			"live display, %d starved (worst wait %lld ms); %d display(s) "
+			"created, %d forced past exposure, %d stranded",
+			st.tiles, st.visible, st.withDisplay, st.starved,
+			(long long)st.worstBlockedMs, c.displaysCreated,
+			c.displaysForced, c.displaysStranded);
 	}
 
 	// --- the zones are in the operator's order, and the bar is a scale -----
@@ -2064,6 +2084,7 @@ void runSelfTest()
 			  dockChecks.frameStepAdvances &&
 			  dockChecks.multiviewBuilt &&
 			  dockChecks.multiviewDisplaysLive &&
+			  dockChecks.previewsNeverStarved &&
 			  dockChecks.displaysNeverStranded &&
 			  dockChecks.angleColumnsInTable &&
 			  dockChecks.tableEditsAngleSpeed &&
@@ -2180,6 +2201,10 @@ void runSelfTest()
 			  dockChecks.multiviewBuilt);
 	obs_data_set_bool(checks, "dock_multiview_displays_live",
 			  dockChecks.multiviewDisplaysLive);
+	// M6: ...and none of them spent the run waiting for a display that never
+	// came. The check above cannot see that on its own — see PreviewStats.
+	obs_data_set_bool(checks, "dock_previews_never_starved",
+			  dockChecks.previewsNeverStarved);
 	obs_data_set_bool(checks, "dock_displays_never_stranded",
 			  dockChecks.displaysNeverStranded);
 	// M5: the per-angle triplet is in the table, and there is no per-event
@@ -2256,7 +2281,13 @@ void runSelfTest()
 			 dockChecks.previewTilesVisible);
 	obs_data_set_int(root, "dock_preview_tiles_with_display",
 			 dockChecks.previewTilesWithDisplay);
+	obs_data_set_int(root, "dock_preview_tiles_starved",
+			 dockChecks.previewTilesStarved);
+	obs_data_set_int(root, "dock_worst_display_wait_ms",
+			 dockChecks.worstDisplayWaitMs);
 	obs_data_set_int(root, "obs_displays_created", dockChecks.displaysCreated);
+	obs_data_set_int(root, "obs_displays_forced_past_exposure",
+			 dockChecks.displaysForced);
 	obs_data_set_int(root, "obs_displays_stranded",
 			 dockChecks.displaysStranded);
 	obs_data_set_int(root, "dock_event_table_columns",
