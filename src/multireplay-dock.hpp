@@ -21,6 +21,7 @@ start.
 
 #include <QString>
 #include <QWidget>
+#include <array>
 #include <atomic>
 #include <climits>
 #include <cstdint>
@@ -46,6 +47,7 @@ class QButtonGroup;
 class QSplitter;
 class QTimer;
 class QVBoxLayout;
+class QGridLayout;
 class QGroupBox;
 
 namespace multireplay {
@@ -118,6 +120,18 @@ public:
 	// it from its own thread while poll() writes it on the UI thread.
 	bool previewShowsReplay() const { return previewShowsReplay_.load(); }
 
+	// What the preview area actually amounts to, for the automated gate.
+	// Counting OBSQTDisplay children from outside would say how many widgets
+	// exist but not whether each got a real obs_display, and "the tile is
+	// there but black" is precisely the failure a multiview can have.
+	// UI thread only.
+	struct PreviewStats {
+		int tiles = 0;       // preview widgets built (big + every tile)
+		int visible = 0;     // ...of which on screen
+		int withDisplay = 0; // ...of which own a live obs_display
+	};
+	PreviewStats previewStats() const;
+
 	// What an OBS hotkey callback is handed (see registerDockHotkeys). Public
 	// only because that callback is a plain C function, as libobs requires.
 	struct HotkeyCtx {
@@ -133,6 +147,7 @@ private:
 	// the full-width position bar. buildBottomBar() owns the last two.
 	QWidget *buildToolbar();
 	QWidget *buildPreview();
+	QWidget *buildMultiview();
 	QWidget *buildMarkers();
 	QWidget *buildAngleMatrix();
 	QWidget *buildTransport();
@@ -220,6 +235,63 @@ private:
 
 	// --- preview render callback (runs on the OBS graphics thread) ---
 	static void drawChannelA(void *data, uint32_t cx, uint32_t cy);
+
+	// --- MULTIVIEW: one small preview per configured angle, plus the replay --
+	//
+	// The single big preview only ever showed ONE angle, so the operator had to
+	// press a camera button to find out what the other cameras were doing —
+	// which is exactly the moment he cannot afford to look away. the reference controller puts the A
+	// output big and every camera small beside it; so does this.
+	//
+	// Each tile is an obs_display_t of its own, and that cost is real: they are
+	// rendered by the SAME single graphics thread as the OBS program preview.
+	// Three things keep it bounded, in order of effect:
+	//   1. a tile exists only for a CONFIGURED camera. The others are hidden,
+	//      and a hidden OBSQTDisplay never creates its display at all (see
+	//      OBSQTDisplay::recheckWindow: it only creates when isVisible()).
+	//   2. the whole strip can be switched off (Config.showMultiview) — the
+	//      widgets stay, hidden, so nothing is created or destroyed.
+	//   3. the tiles are small, so each present() copies few pixels.
+	// The draw callback itself does what drawChannelA does and no more: copy an
+	// already-resolved pointer and take a ref. No lookup, no libobs mutex.
+	static constexpr int kMaxPreviewTiles = 9; // kMaxCameras + the replay tile
+
+	// What the graphics thread is handed for a tile: it may not dereference
+	// anything but this (see drawTile).
+	struct TileCtx {
+		MultiReplayDock *dock = nullptr;
+		int slot = 0; // index into tiles_ / tileSource_
+	};
+	struct PreviewTile {
+		QWidget *box = nullptr;
+		OBSQTDisplay *display = nullptr;
+		QLabel *caption = nullptr;
+		int cam0 = -1; // 0-based camera, -1 = the replay tile
+	};
+
+	// Re-lay the grid for the cameras that are configured now. Cheap and a
+	// no-op unless the configuration really moved: it never re-parents a tile
+	// (that would destroy its native window and strand its display), it only
+	// moves it between cells of the grid it already belongs to.
+	void rebuildMultiview();
+	// Resolve every visible tile's source on the UI thread and publish the
+	// owned refs for the graphics thread. Same discipline as previewSource_.
+	void refreshTileSources();
+	// Caption colours: green = the angle being watched, red = the angle on air.
+	void updateMultiviewTally();
+	static void drawTile(void *data, uint32_t cx, uint32_t cy);
+
+	std::array<PreviewTile, kMaxPreviewTiles> tiles_{};
+	std::array<TileCtx, kMaxPreviewTiles> tileCtx_{};
+	std::mutex tileMutex_; // pointer copy + addref only
+	std::array<obs_source_t *, kMaxPreviewTiles> tileSource_{};
+	QWidget *multiviewBox_ = nullptr;
+	QGridLayout *multiviewGrid_ = nullptr;
+	// Configuration the grid was last laid out for; re-laying it out clears
+	// nothing but still costs a relayout, so it is done only when this moves.
+	QString multiviewSig_;
+	int tileTallyPvw_ = -2; // slot painted green, -2 = never painted
+	int tileTallyPgm_ = -2; // slot painted red
 
 	// preview (single replay channel A)
 	OBSQTDisplay *displayA_ = nullptr;

@@ -28,6 +28,7 @@ diagnosable from the OBS log alone.
 #include <obs.h>
 
 #include <QWidget>
+#include <atomic>
 #include <functional>
 
 namespace multireplay {
@@ -38,6 +39,14 @@ class OBSQTDisplay : public QWidget {
 public:
 	explicit OBSQTDisplay(QWidget *parent = nullptr);
 	~OBSQTDisplay() override;
+
+	// Process-wide counters, for the automated gate. "How many displays were
+	// created" and "how many were found presenting into a window that no
+	// longer exists" were only ever visible by reading the OBS log by eye —
+	// and with a preview per angle now, reading the log by eye is exactly the
+	// check that stops being done. Nothing else reads these.
+	static int createdCount() { return createdCount_.load(); }
+	static int strandedCount() { return strandedCount_.load(); }
 
 	// Qt must NOT paint over the native surface OBS renders into.
 	QPaintEngine *paintEngine() const override { return nullptr; }
@@ -79,6 +88,9 @@ private:
 	// One-shot guard so "cannot create the display yet" is logged once per
 	// dry spell instead of on every paint event.
 	bool deferralLogged_ = false;
+
+	static std::atomic<int> createdCount_;
+	static std::atomic<int> strandedCount_;
 };
 
 } // namespace multireplay

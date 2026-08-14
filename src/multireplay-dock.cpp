@@ -180,6 +180,19 @@ QTabBar#mrListTabs::tab:selected {
 	background: #1D3D74; color: #ffffff; border-color: #2a5296;
 }
 
+/* ── multiview tiles (the reference controller's camera thumbnails beside the A output) ── */
+QWidget#mrTile { background: #000000; }
+/* the reference controller captions its thumbnails with a blue band; the angle being watched turns
+   green and the one on air red, so the operator reads tally from the picture
+   itself instead of correlating it with the angle buttons. */
+QLabel#mrTileCap {
+	background: #1D3D74; color: #dfe8f6;
+	font-size: 9px; font-weight: 700; padding: 1px 4px;
+}
+QLabel#mrTileCap[tally="pvw"] { background: #176533; color: #ffffff; }
+QLabel#mrTileCap[tally="pgm"] { background: #A81C1C; color: #ffffff; }
+QLabel#mrTileCap[tally="replay"] { background: #3a2d10; color: #ffd07a; }
+
 /* ── channel strip under the preview (the reference controller green info band) ─ */
 QLabel#mrChanBadge {
 	background: #0e4523; color: #ffffff;
@@ -478,6 +491,35 @@ QLabel *sectionLabel(const QString &text, QWidget *parent)
 	return l;
 }
 
+// Render `src` letterboxed inside a cx*cy display. Shared by the big preview
+// and by every multiview tile: they differ in WHICH source they were handed,
+// never in how it is drawn, and one copy of this arithmetic is one place where
+// an aspect-ratio bug can live.
+//
+// Runs on the OBS graphics thread. It must not look anything up.
+void renderSourceFitted(obs_source_t *src, uint32_t cx, uint32_t cy)
+{
+	const uint32_t sw = obs_source_get_width(src);
+	const uint32_t sh = obs_source_get_height(src);
+	if (sw == 0 || sh == 0)
+		return;
+	// Fit inside the widget preserving aspect ratio; bars (black) appear on
+	// whichever axis has excess space.
+	const float scale = std::min((float)cx / (float)sw, (float)cy / (float)sh);
+	const int dw = (int)((float)sw * scale);
+	const int dh = (int)((float)sh * scale);
+	const int x = ((int)cx - dw) / 2;
+	const int y = ((int)cy - dh) / 2;
+
+	gs_viewport_push();
+	gs_projection_push();
+	gs_ortho(0.0f, (float)sw, 0.0f, (float)sh, -100.0f, 100.0f);
+	gs_set_viewport(x, y, dw, dh);
+	obs_source_video_render(src);
+	gs_projection_pop();
+	gs_viewport_pop();
+}
+
 } // namespace
 
 // ---------------------------------------------------------------------------
@@ -675,28 +717,33 @@ void MultiReplayDock::drawChannelA(void *data, uint32_t cx, uint32_t cy)
 	}
 	if (!src)
 		return;
-	uint32_t sw = obs_source_get_width(src);
-	uint32_t sh = obs_source_get_height(src);
-	if (sw == 0 || sh == 0) {
-		obs_source_release(src);
+	renderSourceFitted(src, cx, cy);
+	obs_source_release(src);
+}
+
+// One multiview tile. Same contract as drawChannelA — and the same reason for
+// it: this runs on the ONE graphics thread that renders every obs_display in
+// OBS, and with up to nine tiles a single blocking lookup in here would be nine
+// chances per frame to freeze the whole interface. All it may touch is the
+// pointer poll() already resolved for this slot.
+void MultiReplayDock::drawTile(void *data, uint32_t cx, uint32_t cy)
+{
+	auto *ctx = static_cast<TileCtx *>(data);
+	if (!ctx || !ctx->dock || cx == 0 || cy == 0)
 		return;
+	MultiReplayDock *self = ctx->dock;
+	if (ctx->slot < 0 || ctx->slot >= kMaxPreviewTiles)
+		return;
+
+	obs_source_t *src = nullptr;
+	{
+		std::lock_guard<std::mutex> lk(self->tileMutex_);
+		if (self->tileSource_[ctx->slot])
+			src = obs_source_get_ref(self->tileSource_[ctx->slot]);
 	}
-	// Letterbox: fit source inside widget preserving aspect ratio.
-	// Bars (black) appear on whichever axis has excess space.
-	float scale = std::min((float)cx / (float)sw, (float)cy / (float)sh);
-	int dw = (int)((float)sw * scale);
-	int dh = (int)((float)sh * scale);
-	int x = ((int)cx - dw) / 2;
-	int y = ((int)cy - dh) / 2;
-
-	gs_viewport_push();
-	gs_projection_push();
-	gs_ortho(0.0f, (float)sw, 0.0f, (float)sh, -100.0f, 100.0f);
-	gs_set_viewport(x, y, dw, dh);
-	obs_source_video_render(src);
-	gs_projection_pop();
-	gs_viewport_pop();
-
+	if (!src)
+		return;
+	renderSourceFitted(src, cx, cy);
 	obs_source_release(src);
 }
 
@@ -786,11 +833,30 @@ MultiReplayDock::~MultiReplayDock()
 	// flight has finished.
 	if (displayA_)
 		displayA_->setRenderCallback(nullptr, nullptr);
+	// Same for every multiview tile, and for the same reason: each one has a
+	// draw callback pointing at a TileCtx that dies with this object.
+	for (PreviewTile &t : tiles_)
+		if (t.display)
+			t.display->setRenderCallback(nullptr, nullptr);
 	if (pollTimer_)
 		pollTimer_->stop();
 	if (previewSource_) {
 		obs_source_release(previewSource_);
 		previewSource_ = nullptr;
+	}
+	{
+		// Swapped out under the lock, released outside it: the last release
+		// destroys the source and enters the graphics context, and that is
+		// the thread that wants tileMutex_.
+		std::array<obs_source_t *, kMaxPreviewTiles> dying{};
+		{
+			std::lock_guard<std::mutex> lk(tileMutex_);
+			dying = tileSource_;
+			tileSource_.fill(nullptr);
+		}
+		for (obs_source_t *s : dying)
+			if (s)
+				obs_source_release(s);
 	}
 }
 
@@ -874,11 +940,22 @@ QWidget *MultiReplayDock::buildPreview()
 	v->setContentsMargins(0, 0, 0, 0);
 	v->setSpacing(0);
 
-	displayA_ = new OBSQTDisplay(this);
+	// the reference controller: the A output big on the left, every camera small on the right.
+	// One row, two stretches — the operator watches the big one and keeps the
+	// others in the corner of his eye, which is the whole reason the strip is
+	// here rather than behind a button.
+	auto *row = new QWidget(box);
+	auto *rh = new QHBoxLayout(row);
+	rh->setContentsMargins(0, 0, 0, 0);
+	rh->setSpacing(3);
+
+	displayA_ = new OBSQTDisplay(row);
 	displayA_->setRenderCallback(&MultiReplayDock::drawChannelA, this);
 	displayA_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
 	displayA_->setMinimumHeight(40);
-	v->addWidget(displayA_, 1);
+	rh->addWidget(displayA_, 3);
+	rh->addWidget(buildMultiview(), 2);
+	v->addWidget(row, 1);
 
 	// The green strip the reference controller puts directly under the A output: which list, which
 	// clip of how many, how much of it is left, the event id, how far the
@@ -900,6 +977,217 @@ QWidget *MultiReplayDock::buildPreview()
 	v->addWidget(strip);
 
 	return box;
+}
+
+// ---------------------------------------------------------------------------
+// Multiview — one small preview per configured angle, plus the replay
+// ---------------------------------------------------------------------------
+
+QWidget *MultiReplayDock::buildMultiview()
+{
+	static_assert(kMaxPreviewTiles == kMaxCameras + 1,
+		      "one tile per camera plus the replay tile");
+
+	multiviewBox_ = new QWidget(this);
+	multiviewGrid_ = new QGridLayout(multiviewBox_);
+	multiviewGrid_->setContentsMargins(0, 0, 0, 0);
+	multiviewGrid_->setSpacing(2);
+
+	// Every tile is built ONCE, here, and afterwards only shown, hidden and
+	// moved between cells of this same grid. A tile is never re-parented: Qt
+	// answers a re-parent by destroying the widget's native window, which
+	// strands the obs_display bound to it (see qt-display.hpp) — the one
+	// failure mode this whole file has to avoid.
+	for (int i = 0; i < kMaxPreviewTiles; i++) {
+		PreviewTile &t = tiles_[i];
+		t.cam0 = (i < kMaxCameras) ? i : -1;
+
+		t.box = new QWidget(multiviewBox_);
+		t.box->setObjectName(QStringLiteral("mrTile"));
+		auto *tv = new QVBoxLayout(t.box);
+		tv->setContentsMargins(0, 0, 0, 0);
+		tv->setSpacing(0);
+
+		t.display = new OBSQTDisplay(t.box);
+		t.display->setSizePolicy(QSizePolicy::Expanding,
+					 QSizePolicy::Expanding);
+		// Small on purpose: a tile costs a present() of its own on the
+		// shared graphics thread, and the operator is checking framing
+		// here, not focus.
+		t.display->setMinimumSize(80, 45);
+		tileCtx_[i].dock = this;
+		tileCtx_[i].slot = i;
+		t.display->setRenderCallback(&MultiReplayDock::drawTile,
+					     &tileCtx_[i]);
+		// Clicking a tile selects that angle: it is the shortest path there
+		// is from "that camera has it" to "put that camera up", and it is
+		// what an operator tries first. Handled in eventFilter().
+		t.display->installEventFilter(this);
+		tv->addWidget(t.display, 1);
+
+		t.caption = new QLabel(t.box);
+		t.caption->setObjectName(QStringLiteral("mrTileCap"));
+		t.caption->setTextFormat(Qt::PlainText);
+		t.caption->installEventFilter(this);
+		tv->addWidget(t.caption, 0);
+
+		t.box->setVisible(false); // rebuildMultiview() decides
+		multiviewGrid_->addWidget(t.box, i / 2, i % 2);
+	}
+
+	rebuildMultiview();
+	return multiviewBox_;
+}
+
+void MultiReplayDock::rebuildMultiview()
+{
+	if (!multiviewBox_ || !multiviewGrid_)
+		return;
+
+	const Config cfg = ReplayCore::instance().getConfig();
+
+	// Which tiles belong on screen, and what they are called. Only configured
+	// cameras: eight black rectangles on a two-camera rig is six tiles of
+	// nothing between the operator and the two that matter — and six
+	// obs_displays doing it.
+	// NOT called `slots`: with Qt keywords enabled that is a macro expanding
+	// to nothing, and the declaration silently becomes a no-op.
+	std::vector<int> tileSlots;
+	QStringList captions;
+	for (int i = 0; i < kMaxCameras; i++) {
+		if (cfg.cameras[i].sourceName.empty())
+			continue;
+		const std::string &dn = cfg.cameras[i].displayName;
+		tileSlots.push_back(i);
+		captions << QString("%1 %2").arg(i + 1).arg(
+			dn.empty() ? QString("Cam %1").arg(i + 1)
+				   : QString::fromStdString(dn));
+	}
+	// ...and the replay itself: "what will go on air" belongs next to the
+	// angles, not only in the big preview, which follows the live camera
+	// whenever the operator is watching the live edge.
+	tileSlots.push_back(kMaxCameras);
+	captions << obs_module_text("Dock.ReplayTile");
+
+	const bool show = cfg.showMultiview;
+	QStringList sigParts;
+	for (int s : tileSlots)
+		sigParts << QString::number(s);
+	const QString sig = QString::number(show ? 1 : 0) + '|' +
+			    sigParts.join(',') + '|' + captions.join(',');
+	if (sig == multiviewSig_)
+		return;
+	multiviewSig_ = sig;
+
+	multiviewBox_->setVisible(show);
+
+	// Columns: two up to four tiles, three beyond. A tile narrower than about
+	// a sixth of the dock stops being a picture and becomes a smear.
+	const int cols = tileSlots.size() <= 4 ? 2 : 3;
+	for (int i = 0; i < kMaxPreviewTiles; i++)
+		if (tiles_[i].box)
+			tiles_[i].box->setVisible(false);
+	for (size_t k = 0; k < tileSlots.size(); k++) {
+		PreviewTile &t = tiles_[tileSlots[k]];
+		if (!t.box)
+			continue;
+		t.caption->setText(captions[(int)k]);
+		t.caption->setToolTip(
+			t.cam0 >= 0 ? QString("%1 %2")
+					      .arg(obs_module_text("Dock.Angle"))
+					      .arg(t.cam0 + 1)
+				    : QString(obs_module_text("Dock.ReplayTileHint")));
+		// Moving a widget between cells of the grid it is ALREADY in does
+		// not re-parent it (QLayout::addChildWidget only calls setParent
+		// when the parent differs), so the native window — and the display
+		// bound to it — survives.
+		multiviewGrid_->addWidget(t.box, (int)k / cols, (int)k % cols);
+		t.box->setVisible(show);
+	}
+	tileTallyPvw_ = -2; // captions were just rewritten
+	tileTallyPgm_ = -2;
+	updateMultiviewTally();
+}
+
+void MultiReplayDock::refreshTileSources()
+{
+	const Config cfg = ReplayCore::instance().getConfig();
+	for (int i = 0; i < kMaxPreviewTiles; i++) {
+		PreviewTile &t = tiles_[i];
+		obs_source_t *next = nullptr;
+		// A hidden tile publishes nothing: its display is disabled anyway
+		// (OBSQTDisplay disables on QEvent::Hide), and holding a reference
+		// to a source nobody is drawing keeps it alive for no reason.
+		if (t.box && t.box->isVisible()) {
+			if (t.cam0 < 0) {
+				if (previewHasContent_)
+					next = ReplayChannel::instance()
+						       .acquireSource();
+			} else {
+				const std::string &nm =
+					cfg.cameras[t.cam0].sourceName;
+				if (!nm.empty())
+					next = obs_get_source_by_name(nm.c_str());
+			}
+		}
+		obs_source_t *prev = nullptr;
+		{
+			std::lock_guard<std::mutex> lk(tileMutex_);
+			prev = tileSource_[i];
+			tileSource_[i] = next;
+		}
+		// Released outside the lock: the last release destroys the source,
+		// which enters the graphics context — and the graphics thread is
+		// what wants tileMutex_. See the note on previewSource_.
+		if (prev)
+			obs_source_release(prev);
+	}
+}
+
+MultiReplayDock::PreviewStats MultiReplayDock::previewStats() const
+{
+	PreviewStats s;
+	const auto account = [&s](const OBSQTDisplay *d) {
+		if (!d)
+			return;
+		s.tiles++;
+		if (!d->isVisible())
+			return;
+		s.visible++;
+		if (d->display())
+			s.withDisplay++;
+	};
+	account(displayA_);
+	for (const PreviewTile &t : tiles_)
+		account(t.display);
+	return s;
+}
+
+void MultiReplayDock::updateMultiviewTally()
+{
+	const auto ps = PlaybackCoordinator::instance().playState();
+	const int pvw = currentAngle1_ - 1;
+	const int pgm = (ps.active && ps.angle1 > 0) ? ps.angle1 - 1 : -1;
+	if (pvw == tileTallyPvw_ && pgm == tileTallyPgm_)
+		return;
+	tileTallyPvw_ = pvw;
+	tileTallyPgm_ = pgm;
+	for (int i = 0; i < kMaxPreviewTiles; i++) {
+		PreviewTile &t = tiles_[i];
+		if (!t.caption)
+			continue;
+		QString tally;
+		if (t.cam0 < 0)
+			tally = QStringLiteral("replay");
+		else if (t.cam0 == pgm)
+			tally = QStringLiteral("pgm");
+		else if (t.cam0 == pvw)
+			tally = QStringLiteral("pvw");
+		if (t.caption->property("tally").toString() == tally)
+			continue;
+		t.caption->setProperty("tally", tally);
+		repolish(t.caption);
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -2108,6 +2396,12 @@ void MultiReplayDock::poll()
 	// presenting into a window that no longer exists. Two integer compares.
 	if (displayA_)
 		displayA_->recheckWindow();
+	// ...and every multiview tile, for exactly the same reason: they are
+	// re-parented by the same dock moves. Two integer compares each, and a
+	// hidden tile early-outs on isVisible().
+	for (PreviewTile &t : tiles_)
+		if (t.display)
+			t.display->recheckWindow();
 
 	// The hotkeys change the angle without going through the dock.
 	const int hotAngle1 = core.currentAngle() + 1;
@@ -2434,7 +2728,17 @@ void MultiReplayDock::poll()
 			previewLive_ = live;
 			previewCam0_ = cam0;
 		}
+		// The tiles are resolved on the same 4 Hz beat and by the same
+		// rules: a lookup on the UI thread, an owned ref published for the
+		// graphics thread. Re-running it periodically is also what catches
+		// a camera source renamed, deleted or swapped by a scene-collection
+		// change — the tile goes black instead of holding a stale pointer.
+		if (refreshStatus)
+			refreshTileSources();
 	}
+	// Cheap (two compares in the common case) and it has to follow the angle
+	// buttons and the queue, both of which move outside refreshStatus.
+	updateMultiviewTally();
 
 	recBtn_->setText(rec ? QStringLiteral("◼  STOP")
 			     : QStringLiteral("●  REC"));
@@ -2605,6 +2909,10 @@ void MultiReplayDock::renameListDialog()
 
 void MultiReplayDock::refreshAngles()
 {
+	// The multiview follows the same configuration as the angle buttons, and
+	// this is the one function every path that can change it calls. A no-op
+	// unless the set of configured cameras (or a name) really moved.
+	rebuildMultiview();
 	if (!anglesA_)
 		return;
 	Config cfg = ReplayCore::instance().getConfig();
@@ -3123,9 +3431,23 @@ void MultiReplayDock::onEventItemChanged(QTableWidgetItem *item)
 
 bool MultiReplayDock::eventFilter(QObject *watched, QEvent *event)
 {
-	// The inspector panel uses always-editable fields (commit on focus-out),
-	// so no per-widget event filtering is needed anymore. Kept as a thin
-	// override hook for future use.
+	// Clicking a multiview tile (its picture or its caption) selects that
+	// angle — the same thing the numbered angle button does, reached from the
+	// picture the operator is already looking at. The replay tile is not an
+	// angle, so it is inert.
+	if (event->type() == QEvent::MouseButtonPress) {
+		auto *me = static_cast<QMouseEvent *>(event);
+		if (me->button() == Qt::LeftButton) {
+			for (const PreviewTile &t : tiles_) {
+				if (t.cam0 < 0)
+					continue;
+				if (watched != t.display && watched != t.caption)
+					continue;
+				setAngle(t.cam0 + 1);
+				return true;
+			}
+		}
+	}
 	return QWidget::eventFilter(watched, event);
 }
 
@@ -3335,6 +3657,14 @@ void MultiReplayDock::openSettings()
 	fitCanvas->setToolTip(obs_module_text("Dock.FitCanvasHint"));
 	form->addRow(obs_module_text("Dock.FitCanvas"), fitCanvas);
 
+	// The multiview strip. Each tile is an obs_display rendered by the same
+	// graphics thread as the OBS program preview, so a rig that is short of
+	// GPU gets a switch rather than a slow dock nobody can explain.
+	auto *multiview = new QCheckBox(&dlg);
+	multiview->setChecked(cfg.showMultiview);
+	multiview->setToolTip(obs_module_text("Dock.ShowMultiviewHint"));
+	form->addRow(obs_module_text("Dock.ShowMultiview"), multiview);
+
 	// camera assignments: source + display name
 	auto *camBox = new QGroupBox(obs_module_text("Dock.Cameras"), &dlg);
 	auto *camForm = new QFormLayout(camBox);
@@ -3379,6 +3709,7 @@ void MultiReplayDock::openSettings()
 	cfg.musicSourceName = music->currentData().toString().toStdString();
 	cfg.autoSwitchScene = autoSwitch->isChecked();
 	cfg.fitReplayToCanvas = fitCanvas->isChecked();
+	cfg.showMultiview = multiview->isChecked();
 	for (int i = 0; i < kMaxCameras; i++) {
 		cfg.cameras[i].sourceName =
 			camCombos[i]->currentData().toString().toStdString();

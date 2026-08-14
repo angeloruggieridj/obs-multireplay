@@ -82,6 +82,9 @@ unsigned long long rootOf(WId wid)
 
 } // namespace
 
+std::atomic<int> OBSQTDisplay::createdCount_{0};
+std::atomic<int> OBSQTDisplay::strandedCount_{0};
+
 OBSQTDisplay::OBSQTDisplay(QWidget *parent) : QWidget(parent)
 {
 	// These are the attributes OBS Studio itself sets on its previews, and
@@ -190,6 +193,7 @@ void OBSQTDisplay::createDisplay(const char *why)
 	}
 	createdWinId_ = wid;
 	deferralLogged_ = false;
+	createdCount_++;
 	obs_log(LOG_INFO,
 		"[display] created on winId=0x%llx (top-level 0x%llx) %ux%u — %s",
 		(unsigned long long)wid, rootOf(wid), info.cx, info.cy, why);
@@ -226,6 +230,7 @@ void OBSQTDisplay::recheckWindow()
 	// swap chain into it forever, and neither Qt nor libobs says a word.
 	if (display_ &&
 	    (wid != createdWinId_ || !handleAlive(createdWinId_))) {
+		strandedCount_++;
 		obs_log(LOG_WARNING,
 			"[display] stranded: created on winId=0x%llx, widget is now "
 			"0x%llx (alive=%d) — rebuilding",

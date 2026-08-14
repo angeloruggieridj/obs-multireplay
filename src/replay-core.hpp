@@ -82,6 +82,12 @@ struct Config {
 	// than in the order the marks were taken. They differ as soon as a −20s
 	// preset is used after a −5s one.
 	bool sortEventsByTime = false;
+	// The multiview strip beside the big preview (one small picture per
+	// configured camera, plus the replay). On by default — seeing every angle
+	// at once is the reason a replay operator has a controller at all — but
+	// each tile is an obs_display on the shared graphics thread, so a rig that
+	// is short of GPU can switch the whole strip off here.
+	bool showMultiview = true;
 	// the reference controller event-id digits (default 4): ids are shown zero-padded to this
 	// width, so they stay the same length all match long and can be called out
 	// loud ("play 0142") without counting characters.

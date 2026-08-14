@@ -19,6 +19,7 @@ See selftest.hpp. This is the scripted form of the M0 gate.
 #include "plugin-support.h"
 #include "replay-channel.hpp"
 #include "replay-core.hpp"
+#include "qt-display.hpp"
 #include "replay-decoder.hpp"
 #include "segment-index.hpp"
 
@@ -205,6 +206,23 @@ struct DockChecks {
 	bool idPadded = false;
 	bool doubleClickPlays = false;
 	bool frameStepAdvances = false;
+	// M5: the preview is no longer one picture. There is a tile per camera
+	// plus one for the replay, and each is an obs_display of its own — so the
+	// two things that can go wrong are "the tiles were never built" and "a
+	// tile is on screen with no display behind it" (a black rectangle, which
+	// looks exactly like a camera with no signal).
+	bool multiviewBuilt = false;
+	bool multiviewDisplaysLive = false;
+	// ...and the failure this whole widget family is famous for: a display
+	// left presenting into a native window Qt has destroyed. It used to be
+	// visible only by reading the OBS log by eye, which is the check that
+	// stops being done as soon as there are ten of them.
+	bool displaysNeverStranded = false;
+	int previewTiles = 0;
+	int previewTilesVisible = 0;
+	int previewTilesWithDisplay = 0;
+	int displaysCreated = 0;
+	int displaysStranded = 0;
 	int previewLiveSamples = 0; // frames of the sequence spent on the live camera
 	int queuedClips = 0;
 	int ticks = 0;
@@ -336,6 +354,34 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 		"[selftest] dock: %d poll ticks in 2 s, worst gap %lld ms, "
 		"%d plugin errors logged",
 		c.ticks, (long long)c.worstGapMs, c.logErrors);
+
+	// --- the preview area: one tile per angle, plus the replay ------------
+	// Structure first, because it holds whether the dock is on screen or
+	// tabbed behind another: nine tiles plus the big preview must EXIST. Then
+	// the part that only means something when they are visible — a tile with
+	// no obs_display behind it is a black rectangle, indistinguishable from a
+	// camera that has lost signal.
+	{
+		MultiReplayDock::PreviewStats st;
+		runOnUi([&]() { st = dock->previewStats(); });
+		c.previewTiles = st.tiles;
+		c.previewTilesVisible = st.visible;
+		c.previewTilesWithDisplay = st.withDisplay;
+		c.displaysCreated = OBSQTDisplay::createdCount();
+		c.displaysStranded = OBSQTDisplay::strandedCount();
+		// 1 big preview + 8 camera tiles + the replay tile.
+		c.multiviewBuilt = st.tiles == 10;
+		c.multiviewDisplaysLive = st.withDisplay == st.visible;
+		c.displaysNeverStranded = c.displaysStranded == 0;
+		obs_log((c.multiviewBuilt && c.multiviewDisplaysLive &&
+			 c.displaysNeverStranded)
+				? LOG_INFO
+				: LOG_ERROR,
+			"[selftest] dock: %d preview widget(s), %d visible, %d with a "
+			"live display; %d display(s) created, %d stranded",
+			st.tiles, st.visible, st.withDisplay, c.displaysCreated,
+			c.displaysStranded);
+	}
 
 	// --- Mark, through the button an operator actually hits ---------------
 	auto &store = EventStore::instance();
@@ -1646,6 +1692,9 @@ void runSelfTest()
 			  dockChecks.markInheritsAngle && dockChecks.idPadded &&
 			  dockChecks.doubleClickPlays &&
 			  dockChecks.frameStepAdvances &&
+			  dockChecks.multiviewBuilt &&
+			  dockChecks.multiviewDisplaysLive &&
+			  dockChecks.displaysNeverStranded &&
 			  anchorsPersisted && projectOriginOk &&
 			  eventTimecodeSane && filtersIdleOutsideRec;
 
@@ -1745,6 +1794,14 @@ void runSelfTest()
 			  dockChecks.doubleClickPlays);
 	obs_data_set_bool(checks, "dock_frame_step_advances",
 			  dockChecks.frameStepAdvances);
+	// M5: a preview per angle plus the replay, each with a live display, and
+	// none of them stranded on a dead native window.
+	obs_data_set_bool(checks, "dock_multiview_built",
+			  dockChecks.multiviewBuilt);
+	obs_data_set_bool(checks, "dock_multiview_displays_live",
+			  dockChecks.multiviewDisplaysLive);
+	obs_data_set_bool(checks, "dock_displays_never_stranded",
+			  dockChecks.displaysNeverStranded);
 	obs_data_set_obj(root, "checks", checks);
 	obs_data_release(checks);
 
@@ -1783,6 +1840,14 @@ void runSelfTest()
 			 dockChecks.queuedClips);
 	obs_data_set_int(root, "dock_preview_live_samples_during_sequence",
 			 dockChecks.previewLiveSamples);
+	obs_data_set_int(root, "dock_preview_tiles", dockChecks.previewTiles);
+	obs_data_set_int(root, "dock_preview_tiles_visible",
+			 dockChecks.previewTilesVisible);
+	obs_data_set_int(root, "dock_preview_tiles_with_display",
+			 dockChecks.previewTilesWithDisplay);
+	obs_data_set_int(root, "obs_displays_created", dockChecks.displaysCreated);
+	obs_data_set_int(root, "obs_displays_stranded",
+			 dockChecks.displaysStranded);
 
 	obs_data_set_int(root, "worst_max_packet_age_ms", worstMaxAgeMs);
 	obs_data_set_int(root, "cross_angle_skew_ms", skewNs / 1000000);

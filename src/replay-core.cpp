@@ -1003,6 +1003,9 @@ void ReplayCore::loadConfig()
 	if (obs_data_has_user_value(data, "eventIdDigits"))
 		config_.eventIdDigits =
 			(int)obs_data_get_int(data, "eventIdDigits");
+	if (obs_data_has_user_value(data, "showMultiview"))
+		config_.showMultiview =
+			obs_data_get_bool(data, "showMultiview");
 	// The rolls are a marking rule, so the store has to know them before the
 	// first hotkey can fire — which is well before the dock exists.
 	EventStore::instance().setRollNs((int64_t)config_.preRollMs * 1000000,
@@ -1057,6 +1060,7 @@ void ReplayCore::saveConfig() const
 	obs_data_set_int(data, "postRollMs", config_.postRollMs);
 	obs_data_set_bool(data, "sortEventsByTime", config_.sortEventsByTime);
 	obs_data_set_int(data, "eventIdDigits", config_.eventIdDigits);
+	obs_data_set_bool(data, "showMultiview", config_.showMultiview);
 	obs_data_set_string(data, "recFormat", config_.recFormat.c_str());
 
 	obs_data_array_t *cams = obs_data_array_create();
