@@ -621,6 +621,8 @@ void ReplayCore::setConfig(const Config &cfg)
 		std::lock_guard<std::mutex> lock(mutex_);
 		config_ = cfg;
 		config_.eventIdDigits = std::clamp(config_.eventIdDigits, 1, 8);
+		config_.eventListCount =
+			std::clamp(config_.eventListCount, 1, kEventLists);
 		config_.preRollMs = std::max(0, config_.preRollMs);
 		config_.postRollMs = std::max(0, config_.postRollMs);
 	}
@@ -1006,6 +1008,11 @@ void ReplayCore::loadConfig()
 	if (obs_data_has_user_value(data, "showMultiview"))
 		config_.showMultiview =
 			obs_data_get_bool(data, "showMultiview");
+	if (obs_data_has_user_value(data, "eventListCount"))
+		config_.eventListCount =
+			(int)obs_data_get_int(data, "eventListCount");
+	config_.eventListCount =
+		std::clamp(config_.eventListCount, 1, kEventLists);
 	// The rolls are a marking rule, so the store has to know them before the
 	// first hotkey can fire — which is well before the dock exists.
 	EventStore::instance().setRollNs((int64_t)config_.preRollMs * 1000000,
@@ -1061,6 +1068,7 @@ void ReplayCore::saveConfig() const
 	obs_data_set_bool(data, "sortEventsByTime", config_.sortEventsByTime);
 	obs_data_set_int(data, "eventIdDigits", config_.eventIdDigits);
 	obs_data_set_bool(data, "showMultiview", config_.showMultiview);
+	obs_data_set_int(data, "eventListCount", config_.eventListCount);
 	obs_data_set_string(data, "recFormat", config_.recFormat.c_str());
 
 	obs_data_array_t *cams = obs_data_array_create();

@@ -31,6 +31,8 @@ See selftest.hpp. This is the scripted form of the M0 gate.
 #include <QItemSelectionModel>
 #include <QPushButton>
 #include <QString>
+#include <QFontMetrics>
+#include <QTabBar>
 #include <QTableWidget>
 #include <QTimer>
 
@@ -234,6 +236,13 @@ struct DockChecks {
 	// and nothing says why.
 	bool manualReorderMovesRow = false;
 	bool manualReorderDisablesAutoSort = false;
+	// M5: a renamed list must be READABLE. The tab bar keeps every tab at its
+	// natural width and scrolls; if a tab is ever laid out narrower than it
+	// asked for, Qt draws the name cut off ("PAR…") and the name is worth
+	// nothing. And the number of tabs follows the configured list count.
+	bool listTabsFitTheirNames = false;
+	bool listTabCountFollowsConfig = false;
+	int visibleListTabs = 0;
 	// ...and the failure this whole widget family is famous for: a display
 	// left presenting into a native window Qt has destroyed. It used to be
 	// visible only by reading the OBS log by eye, which is the check that
@@ -1217,6 +1226,59 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 				store.remove(id);
 	}
 
+	// --- a renamed list is a name you can read ----------------------------
+	// The complaint this answers is "PAR…": a list renamed to something
+	// meaningful was drawn cut off. A tab is cut off exactly when it is laid
+	// out narrower than it asked for, so that — and not "is there a name" — is
+	// what is checked, on a name long enough to have needed the room.
+	{
+		const int list = store.selectedList();
+		const std::string kept = store.listName(list);
+		store.setListName(list, "Falli in area avversaria");
+		// The dock re-labels the tabs on the store's version counter, which
+		// its own poll picks up on the next tick.
+		std::this_thread::sleep_for(std::chrono::milliseconds(300));
+
+		int tooNarrow = -1;
+		int visible = 0;
+		runOnUi([&]() {
+			QTabBar *tabs = dock->findChild<QTabBar *>();
+			if (!tabs)
+				return;
+			tooNarrow = 0;
+			// tabRect is the box Qt paints the label into, and it
+			// elides whatever does not fit. tabSizeHint would be the
+			// exact comparison but it is protected, so the label's own
+			// width plus a few pixels of frame is the honest proxy: a
+			// tab that has been shrunk below its text fails it.
+			const QFontMetrics fm(tabs->font());
+			for (int i = 0; i < tabs->count(); i++) {
+				if (!tabs->isTabVisible(i))
+					continue;
+				visible++;
+				const int need =
+					fm.horizontalAdvance(tabs->tabText(i)) + 8;
+				if (tabs->tabRect(i).width() < need)
+					tooNarrow++;
+			}
+		});
+		c.visibleListTabs = visible;
+		c.listTabsFitTheirNames = tooNarrow == 0 && visible > 0;
+		c.listTabCountFollowsConfig =
+			visible == std::clamp(ReplayCore::instance()
+						      .getConfig()
+						      .eventListCount,
+					      1, kEventLists);
+		obs_log((c.listTabsFitTheirNames && c.listTabCountFollowsConfig)
+				? LOG_INFO
+				: LOG_ERROR,
+			"[selftest] dock: %d list tab(s) visible (config says %d), "
+			"%d drawn narrower than their name",
+			visible, ReplayCore::instance().getConfig().eventListCount,
+			tooNarrow);
+		store.setListName(list, kept);
+	}
+
 	// Leave the operator's own project exactly as it was found.
 	if (evId > 0)
 		store.remove(evId);
@@ -1963,6 +2025,8 @@ void runSelfTest()
 			  dockChecks.skipAdvancesQueue &&
 			  dockChecks.manualReorderMovesRow &&
 			  dockChecks.manualReorderDisablesAutoSort &&
+			  dockChecks.listTabsFitTheirNames &&
+			  dockChecks.listTabCountFollowsConfig &&
 			  anchorsPersisted && projectOriginOk &&
 			  eventTimecodeSane && filtersIdleOutsideRec;
 
@@ -2087,6 +2151,12 @@ void runSelfTest()
 			  dockChecks.manualReorderMovesRow);
 	obs_data_set_bool(checks, "dock_manual_reorder_leaves_autosort_off",
 			  dockChecks.manualReorderDisablesAutoSort);
+	// M5: a renamed list is drawn in full, and the tab count is the operator's.
+	obs_data_set_bool(checks, "dock_list_tabs_fit_their_names",
+			  dockChecks.listTabsFitTheirNames);
+	obs_data_set_bool(checks, "dock_list_tab_count_follows_config",
+			  dockChecks.listTabCountFollowsConfig);
+	obs_data_set_int(root, "dock_visible_list_tabs", dockChecks.visibleListTabs);
 	obs_data_set_obj(root, "checks", checks);
 	obs_data_release(checks);
 

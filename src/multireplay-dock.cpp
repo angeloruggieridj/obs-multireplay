@@ -961,8 +961,14 @@ QWidget *MultiReplayDock::buildToolbar()
 	listTabs_->setObjectName("mrListTabs");
 	listTabs_->setDrawBase(false);
 	listTabs_->setExpanding(false);
+	// SCROLL, never elide. A named list is named so it can be read: "PAR…" is
+	// the number it replaced, minus the information. With elision off every tab
+	// is drawn at its natural width and the bar scrolls when they do not all
+	// fit — and an operator who does not want to scroll reduces the number of
+	// lists (Config.eventListCount), which is the setting that actually gives
+	// each name room.
 	listTabs_->setUsesScrollButtons(true);
-	listTabs_->setElideMode(Qt::ElideRight);
+	listTabs_->setElideMode(Qt::ElideNone);
 	listTabs_->setFocusPolicy(Qt::NoFocus);
 	for (int i = 1; i <= kEventLists; i++)
 		listTabs_->addTab(QString::number(i));
@@ -974,8 +980,9 @@ QWidget *MultiReplayDock::buildToolbar()
 		EventStore::instance().selectList(idx + 1);
 		refreshEvents();
 	});
-	h->addWidget(listTabs_, 0);
-	h->addStretch(1);
+	// The tabs take the slack, not the stretch after them: with the names on,
+	// the row's spare width belongs to the thing whose width means something.
+	h->addWidget(listTabs_, 1);
 
 	auto *mag = new QLabel(QStringLiteral("🔍"), box);
 	mag->setObjectName("mrMuted");
@@ -2150,8 +2157,13 @@ void MultiReplayDock::stepList(int delta)
 {
 	if (!listTabs_)
 		return;
-	const int next = std::clamp(listTabs_->currentIndex() + delta, 0,
-				    listTabs_->count() - 1);
+	// Only over the lists that are actually SHOWN: stepping onto a hidden tab
+	// would leave the table on a list with no tab lit.
+	const int shown =
+		std::clamp(ReplayCore::instance().getConfig().eventListCount, 1,
+			   std::min(kEventLists, listTabs_->count()));
+	const int next =
+		std::clamp(listTabs_->currentIndex() + delta, 0, shown - 1);
 	listTabs_->setCurrentIndex(next); // its signal selects the list + refreshes
 }
 
@@ -3033,6 +3045,22 @@ void MultiReplayDock::refreshListNames()
 	// the signals keeps a rebuild from ever looking like an operator switching
 	// list.
 	QSignalBlocker block(listTabs_);
+
+	// How many lists the operator asked to see. The tabs beyond it are HIDDEN,
+	// not removed: what is in those lists is still there, still saved, and
+	// comes back the moment he raises the number.
+	const int shown =
+		std::clamp(ReplayCore::instance().getConfig().eventListCount, 1,
+			   kEventLists);
+	for (int i = 1; i <= kEventLists && i <= listTabs_->count(); i++)
+		listTabs_->setTabVisible(i - 1, i <= shown);
+	// A hidden tab must not stay the current one: the table would be showing a
+	// list with no tab lit, which reads as "no list at all".
+	if (listTabs_->currentIndex() >= shown) {
+		listTabs_->setCurrentIndex(shown - 1);
+		store.selectList(shown);
+	}
+
 	for (int i = 1; i <= kEventLists && i <= listTabs_->count(); i++) {
 		const std::string nm = store.listName(i);
 		// the reference controller labels the tabs "Events 1"; a named list replaces the
@@ -3552,6 +3580,14 @@ void MultiReplayDock::openSettings()
 	idDigits->setToolTip(obs_module_text("Dock.IdDigitsHint"));
 	form->addRow(obs_module_text("Dock.IdDigits"), idDigits);
 
+	// How many of the 20 lists to show. Fewer lists = wider tabs = readable
+	// names, which is the whole reason this setting exists.
+	auto *listCount = new QSpinBox(&dlg);
+	listCount->setRange(1, kEventLists);
+	listCount->setValue(cfg.eventListCount);
+	listCount->setToolTip(obs_module_text("Dock.ListCountHint"));
+	form->addRow(obs_module_text("Dock.ListCount"), listCount);
+
 	// Clip crossfade is gone with the A/B ffmpeg_source pair it belonged to:
 	// there is a single replay input now, and a transition between clips is
 	// the operator's own (OBS transitions on the scene that holds it).
@@ -3717,6 +3753,7 @@ void MultiReplayDock::openSettings()
 	cfg.postRollMs = (int)std::lround(postRoll->value() * 1000.0);
 	cfg.sortEventsByTime = sortByTime->isChecked();
 	cfg.eventIdDigits = idDigits->value();
+	cfg.eventListCount = listCount->value();
 	cfg.videoEncoderId = enc->currentData().toString().toStdString();
 	cfg.outputSceneName = outScene->currentData().toString().toStdString();
 	cfg.musicSourceName = music->currentData().toString().toStdString();
