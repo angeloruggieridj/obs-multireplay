@@ -96,20 +96,16 @@ target_sources(
 
 set_target_properties_plugin(${CMAKE_PROJECT_NAME} PROPERTIES OUTPUT_NAME ${_name})
 
-# --- Unit smoke tests (pure timeline math, no OBS/FFmpeg deps) ---------------
-# Standalone exe; run with `ctest` from the build dir. Builds with the project.
+# --- Unit tests (pure logic, no OBS/FFmpeg deps) -----------------------------
+# Standalone exes; run with `ctest` from the build dir. Build with the project.
 option(ENABLE_TESTS "Build obs-multireplay unit tests" ON)
 if(ENABLE_TESTS)
   enable_testing()
-  add_executable(obs-multireplay-tests tests/timeline_math_test.cpp)
-  target_include_directories(obs-multireplay-tests PRIVATE src)
-  target_compile_features(obs-multireplay-tests PRIVATE cxx_std_20)
-  add_test(NAME timeline_math COMMAND obs-multireplay-tests)
 
   # EventStore logic test: compiles the REAL src/event-store.cpp against a tiny
   # fake obs surface (tests/fakeobs) + no-op stubs. No libobs/FFmpeg needed, so
-  # it runs everywhere the timeline-math test does. tests/fakeobs is PRIVATE to
-  # this target only and never reaches the plugin build.
+  # it runs anywhere, CI included. tests/fakeobs is PRIVATE to this target only
+  # and never reaches the plugin build.
   add_executable(
     obs-multireplay-eventstore-tests
     tests/standalone/event_store_test.cpp

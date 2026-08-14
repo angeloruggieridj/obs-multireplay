@@ -2,7 +2,7 @@
 
 broadcast-style **multicamera instant replay** for OBS Studio — open source, cross-platform, browser-controlled.
 
-> 🇮🇹 Progetto di porting 1:1 di broadcast replay su OBS Studio. Documento di progetto completo in [docs/DOCUMENTO-DI-PROGETTO.md](docs/DOCUMENTO-DI-PROGETTO.md).
+> 🇮🇹 Progetto di porting 1:1 di broadcast replay su OBS Studio. Stato della parità, funzione per funzione, in [docs/PARITA-REFERENCE.md](docs/PARITA-REFERENCE.md); architettura e convenzioni in [the architecture notes](the architecture notes).
 
 ## Status: Milestone 1 (PoC recorder) — work in progress
 
