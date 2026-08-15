@@ -81,6 +81,10 @@ target_sources(
     src/segment-index.hpp
     src/segment-reader.cpp
     src/segment-reader.hpp
+    # M4: pre-flight + runtime health. Findings only; never touches Program.
+    src/health-rules.hpp
+    src/health.cpp
+    src/health.hpp
     # Scripted M0 gate (no-op unless OBS_MULTIREPLAY_SELFTEST is set)
     src/selftest.cpp
     src/selftest.hpp
@@ -129,4 +133,14 @@ if(ENABLE_TESTS)
   target_include_directories(obs-multireplay-packet-tests PRIVATE src)
   target_compile_features(obs-multireplay-packet-tests PRIVATE cxx_std_20)
   add_test(NAME packet_ring COMMAND obs-multireplay-packet-tests)
+
+  # M4 health rules. Thresholds are opinions about numbers, and this is the only
+  # place they can be argued with cheaply: no OBS, no disk, no cameras, so the
+  # "disk is full" and "the angle died" cases are testable at all.
+  add_executable(
+    obs-multireplay-health-tests tests/standalone/health_rules_test.cpp
+  )
+  target_include_directories(obs-multireplay-health-tests PRIVATE src)
+  target_compile_features(obs-multireplay-health-tests PRIVATE cxx_std_20)
+  add_test(NAME health_rules COMMAND obs-multireplay-health-tests)
 endif()

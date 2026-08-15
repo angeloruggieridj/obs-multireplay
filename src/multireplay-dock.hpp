@@ -348,6 +348,9 @@ private:
 	// modal would be worse than the silence it replaces — but silence is what
 	// made him think the dock had ignored him.
 	void showNotice(const QString &text);
+	// M4: the health badge was clicked — show every finding, in full, with
+	// the numbers. Read-only, like everything else in the health path.
+	void showHealthDetails();
 	void setAngle(int angle1Based);
 	// (Re)play the selected (or last) completed event from its IN on the
 	// current angle at the resolved speed. No-op while following live (the
@@ -451,6 +454,12 @@ private:
 	QLabel *statusLbl_ = nullptr;
 	QLabel *clockLbl_ = nullptr;   // wall clock + remaining recording time
 	QLabel *projectLbl_ = nullptr; // shows active project name
+	// M4: what the health monitor found, next to the record key. Hidden while
+	// there is nothing to say — a badge that is always there is furniture, and
+	// furniture does not get looked at when it finally turns red. Amber for a
+	// degraded take, red for one that is not usable. It never acts: clicking
+	// it opens the list, and the operator decides.
+	QPushButton *healthBtn_ = nullptr;
 
 	// transport
 	int currentAngle1_ = 1; // dock-selected angle (1-based) for replay/preview

@@ -1,128 +1,106 @@
 # OBS MultiReplay
 
-broadcast-style **multicamera instant replay** for OBS Studio — open source, cross-platform, browser-controlled.
+broadcast-style **multicamera instant replay** for OBS Studio — open source, in a native dock.
 
 > 🇮🇹 Progetto di porting 1:1 di broadcast replay su OBS Studio. Stato della parità, funzione per funzione, in [docs/PARITA-REFERENCE.md](docs/PARITA-REFERENCE.md); architettura e convenzioni in [the architecture notes](the architecture notes).
 
-## Status: Milestone 1 (PoC recorder) — work in progress
+Mark an action while it is happening, put it on air a couple of seconds later,
+on any camera, at any speed — every angle on one timeline, on a laptop with an
+integrated GPU, **without adding a single encoder** to what OBS is already
+doing.
 
-| Milestone | Scope | Status |
-|---|---|---|
-| **M1 — Recorder** | Continuous 4-camera recording via [Branch Output](https://github.com/OPENSPHERE-Inc/branch-output), 20-min splits, session folder, web UI with recording control | ✅ implemented (untested in real OBS) |
-| **M2 — Playback** | "Replay A"/"Replay B" OBS sources, synced master timeline across angles, speed 0–100%, reverse, frame-step, position bar, A/B linking | ✅ implemented (untested in real OBS) |
-| **M3 — Events + multiview** | 20 event lists, mark in/out + −5/−10/−20 presets, Live/Recorded modes, per-event angles/notes/speed, play last/selected **to output** (auto scene switch & return), MJPEG multiview (4 cams + A/B) in the browser | ✅ implemented (untested in real OBS) |
-| **M4 — Export, loop, music, shortcuts** | MP4 clip export (stream-copy, instant, works while recording), Loop, music source unmute during playback, Delete All, keyboard shortcuts | ✅ implemented (untested in real OBS) |
-| **M5 — Streaming previews, audio, 8 cams, controllers** | Continuous push video previews (per-tile MJPEG streams on a dedicated port, automatic polling fallback), audio in replay playback (forward @100%), 8 cameras end-to-end, Web MIDI + WebHID ShuttlePro (experimental) | ✅ implemented (untested in real OBS) |
-| M6 — Polish | WebRTC/WHIP previews (H.264, requires libdatachannel), overlap transitions between events (dual-decoder compositing) | ⏳ |
+## How it works
 
-## How it works (M1)
+Recording is done by [Branch Output](https://github.com/OPENSPHERE-Inc/branch-output)
+(GPLv2, OPENSPHERE Inc.): one filter per camera, one Hybrid MP4 file each. This
+plugin drives those filters — and then **taps the encoders Branch Output is
+already running**, receiving their encoded packets live and keeping a bounded
+history of them in RAM.
 
-1. Install [Branch Output](https://obsproject.com/forum/resources/branch-output-streaming-recording-filter-for-source-scene.1987/) (the recording engine) and this plugin.
-2. Open `http://<obs-pc-ip>:8456` from any browser on your LAN (or the same PC).
-3. Pick up to 4 OBS sources as cameras, set the session folder (SSD), hit **●**.
-4. The plugin creates and drives one Branch Output filter per camera: Hybrid MP4,
-   automatic 20-minute splits, hardware encoder auto-detection (NVENC → QSV → AMF →
-   VAAPI → VideoToolbox → x264), per-camera start timestamps saved to `session.json`
-   for the synced timeline of M2.
+```
+Branch Output filter → its encoder ─┬→ its muxer → file        (untouched)
+                                    └→ our obs_output → packet ring (RAM)
+                                                          ↓
+                        "MultiReplay - Replay A" ← decoder ← ring / recorded files
+```
 
-Hotkeys `ReplayStartRecording` / `ReplayStopRecording` are available in OBS Settings → Hotkeys.
+Two consequences, and they are the whole design:
+
+- **0 extra encoders, 0 extra disk writes.** libobs lets a second consumer join
+  a running encoder — the same mechanism OBS uses to share one encoder between
+  streaming and recording.
+- **The timeline is measured, not estimated.** Every encoded packet carries
+  `sys_dts_usec`, the same system clock for every encoder, so one marker means
+  the same instant on every angle. Measured cross-angle skew **0 ms**, live edge
+  **138 ms** behind real time (i7-10610U, Intel UHD/QSV, 1080p30, 2 cameras).
+
+The replay is a real OBS input: put "MultiReplay - Replay A" in a scene and
+transitions, the audio mixer and every output come for free.
+
+## Using it
+
+1. Install Branch Output and this plugin, then open **View ▸ Docks ▸
+   MultiReplay**.
+2. In ⚙ **Settings**: the session folder (an SSD) and which OBS source is which
+   camera (up to 8).
+3. Add **MultiReplay - Replay A** to the scene you cut to for replays.
+4. **● REC** starts every camera together. Mark with `Mark / In / Out` or the
+   `−5s / −10s / −20s` presets, tick the angles you want on each event, play
+   them back at 5–200% — during the recording or after it.
+
+Everything the panel does is also an OBS hotkey, so a Stream Deck runs the same
+code as the buttons.
+
+Before a take starts, a pre-flight check refuses what cannot work (no camera,
+an unwritable folder, minutes of disk left, a disk too slow for the bitrate, no
+RAM for the replay buffer) and says what is merely degraded. While it runs, a
+badge next to REC reports a stalled or dead angle, frame drops or a filling
+disk — and reports is all it does: nothing in that path can stop, switch or
+restart anything on air.
 
 ## Requirements
 
-- OBS Studio ≥ 31 at build time; **OBS 32+ recommended/target** (Hybrid MP4 default, Plugin Manager)
+- OBS Studio **32+**
 - [Branch Output](https://github.com/OPENSPHERE-Inc/branch-output) ≥ 1.0.9
-- Any GPU with a hardware H.264 encoder (integrated GPUs fine), SATA SSD or better
+- A GPU with a hardware H.264 encoder (integrated is fine), SSD or better
+- Windows is the supported platform today; macOS is best-effort, Linux is
+  X11/XWayland only
 
 ## Building
 
 Built on [obs-plugintemplate](https://github.com/obsproject/obs-plugintemplate).
-**Step-by-step guide for all platforms (incl. install paths): [BUILDING.md](BUILDING.md).** Quick start:
+Step by step, all platforms: [BUILDING.md](BUILDING.md).
 
 ```sh
-# Linux
+cmake --preset windows-x64 && cmake --build --preset windows-x64   # Windows
 cmake --preset ubuntu-x86_64 && cmake --build --preset ubuntu-x86_64
-# Windows
-cmake --preset windows-x64 && cmake --build --preset windows-x64
-# macOS
 cmake --preset macos && cmake --build --preset macos
 ```
 
-## Architecture
+Unit tests need neither OBS nor FFmpeg, so they run anywhere:
+`ctest --test-dir build_x64 -C RelWithDebInfo`.
 
-```
-Browser (LAN) ⇄ embedded HTTP server (cpp-httplib) ⇄ ReplayCore ⇄ Branch Output filters ⇄ disk
-```
+The end-to-end gate builds, installs, drives a real OBS with real sources and
+writes a JSON verdict: `pwsh -File scripts/run-selftest.ps1 -Sources "C1,C2"`.
+Add `-SoakMinutes 60` for the long-run check.
 
-- `src/replay-core.*` — session, config, camera/recording state
-- `src/branch-output-control.*` — programmatic driver for `osi_branch_output` filters
-- `src/session-index.*` — master timeline: maps a single time cursor onto every camera's segment files (offsets from `session.json`, durations probed via libavformat)
-- `src/decoder.*` — FFmpeg segment decoder (seek to 1s-GOP keyframe → decode to exact frame → I420)
-- `src/replay-player.*` — playback engine per channel: play/pause, speed 0–100%, reverse (GOP cache), frame-step, angle switching, A|B linking
-- `src/replay-source.cpp` — the "MultiReplay — Replay A/B" sources to add to your replay scene
-- `src/web-server.*` — REST API + static UI (`data/ui/`)
-- `docs/` — full project document (Italian)
+## Source map
 
-### M2 usage
-
-1. Record something (M1), then click **⟳ Load session** in the web UI
-   (or `POST /api/session/load`).
-2. Add the sources **MultiReplay — Replay A/B** to an OBS scene.
-3. Use the position bar to scrub all angles in sync; switch angles with the
-   A/B `1 2 3 4` buttons; slow motion with the presets/slider; `◀` toggles
-   reverse; `‹ ›` step a single frame.
-
-M2 plays back **completed** segments (after a stop or a 20-min split).
-
-### M3 usage
-
-- The **multiview** at the bottom shows live MJPEG previews of the 4 cameras
-  plus the Replay A/B channels; click a camera tile to assign that angle to
-  the controlled channel.
-- **LIVE** (red) marks events "as they happen" while recording; switch it off
-  for Recorded mode, where marks use the position-bar time.
-- **Mark In/Out**, **−5/−10/−20** create events in the selected list (tabs
-  1–20); checkboxes pick the angles, double-click a note to edit it, click the
-  speed cell for a per-event speed ("--" inherits, the reference controller semantics).
-- **↺** plays the last event straight to program: set *Output scene* in the
-  settings (e.g. a scene containing Replay A), OBS switches to it and back
-  automatically when the event ends. **Play Events** does the same for the
-  selected events back-to-back.
-
-### M4 usage
-
-- **Export Clips** exports the selected events (or the last event) as MP4 into
-  `<session>/export/` — stream-copy, no re-encode, works while recording. The
-  clip starts at the keyframe at/before the In point (≤1s pre-roll, 1s GOP).
-  Limitation: an event must not span a 20-minute file split.
-- **Loop** repeats the playing selection; **🎵** unmutes the *Music source*
-  configured in settings during event playback and mutes it after.
-- **Delete All** (settings) wipes recordings + events, keeps configuration —
-  the reference controller behaviour for reusing the same session per game.
-- Keyboard shortcuts: `Space` play/pause · `←/→` frame step (`Shift` = ±10) ·
-  `I/O` mark in/out · `5/6/7` = −5/−10/−20 · `1–4` angle · `P` play last ·
-  `D` direction · `N` jump to now · `L` Live/Recorded.
-
-### M5 usage
-
-- **Previews are now continuous video**: each tile is a persistent MJPEG
-  stream served on **port 8457** (REST port + 1) at 12 fps. Allow that port
-  in the firewall for LAN clients; if unreachable, tiles fall back to
-  snapshot polling automatically.
-- **Audio plays in replays** at 100% forward speed (slow motion / reverse
-  are mute, like a stadium replay).
-- **8 cameras**: all selectors, tiles, angle buttons and event columns go
-  up to 8. Keyboard: digits `1-8` = angle; `Z/X/C` = −5/−10/−20 presets.
-- **🎛 Shuttle** (settings) connects a Contour ShuttlePro v2/Xpress via
-  WebHID (Chrome/Edge): jog = frame step, shuttle ring = speed+direction,
-  buttons 1-8 = angles, 9/10 = mark in/out, 11 = play last, 12 = play/pause,
-  13 = jump to now. Experimental — untested on real hardware.
-
-Deferred to M6 (heavy infrastructure, documented rationale): WebRTC/WHIP
-previews (needs libdatachannel + DTLS vendoring), overlap transitions
-between events (needs dual-decoder compositing in the replay source).
+| Path | What it is |
+|---|---|
+| `src/packet-tap.*` | Joins Branch Output's encoders and receives their packets |
+| `src/master-timeline.hpp` | Per-encoder timestamps → one shared clock (`sys_dts_usec`) |
+| `src/packet-ring.*` | Bounded live history per camera. Refuses a range it cannot serve; never clamps |
+| `src/segment-index.*`, `src/segment-reader.*` | The recorded files, anchored onto that same clock |
+| `src/replay-channel.*` | The "Replay A" OBS input: decodes and paces frames (slow motion is just wider spacing) |
+| `src/event-store.*` | 20 event lists: in/out, angles, per-angle speed and notes |
+| `src/playback-coordinator.*` | Queues events and angles, loop, music, play-to-output |
+| `src/health-rules.hpp`, `src/health.*` | Pre-flight and runtime health — findings only, never actions |
+| `src/multireplay-dock.*`, `src/qt-display.*` | The Qt dock and its previews |
+| `src/selftest.cpp` | The scripted gate |
 
 ## License
 
-GPL-2.0-or-later. Recording is powered by [Branch Output](https://github.com/OPENSPHERE-Inc/branch-output)
-(GPLv2) by OPENSPHERE Inc., used as an external plugin dependency in M1.
-Web server: [cpp-httplib](https://github.com/yhirose/cpp-httplib) (MIT, vendored).
+GPL-2.0-or-later. Recording is powered by
+[Branch Output](https://github.com/OPENSPHERE-Inc/branch-output) (GPLv2) by
+OPENSPHERE Inc., used as an external plugin dependency.

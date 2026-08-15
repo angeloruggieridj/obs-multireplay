@@ -8,6 +8,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
 #include "qt-display.hpp"
 #include "replay-core.hpp"
 #include "event-store.hpp"
+#include "health.hpp"
 #include "packet-tap.hpp"
 #include "playback-coordinator.hpp"
 #include "export.hpp"
@@ -228,6 +229,19 @@ QPushButton#mrRec[recording="true"] {
 	background: #640808; color: #ffffff; border: 1px solid #c02020;
 }
 QPushButton#mrRec[recording="true"]:hover { background: #740e0e; }
+
+/* M4 health badge: amber = degraded, red = this take is not usable. It sits
+   beside REC and is hidden entirely while there is nothing to report. */
+QPushButton#mrHealth {
+	font-weight: 700; font-size: 12px; border-radius: 4px;
+	min-height: 28px; padding: 3px 8px;
+}
+QPushButton#mrHealth[level="warn"] {
+	background: #2a2008; color: #e0a020; border: 1px solid #6a5010;
+}
+QPushButton#mrHealth[level="bad"] {
+	background: #3a0c0c; color: #ff6a4a; border: 1px solid #8a1c1c;
+}
 
 /* settings gear */
 QToolButton#mrGear {
@@ -1947,6 +1961,19 @@ QWidget *MultiReplayDock::buildBottomBar()
 		});
 		h->addWidget(recBtn_);
 
+		// M4: the health badge lives next to the record key because that
+		// is where the eye already goes when a take starts, and because
+		// what it reports is always about the take. Hidden unless there
+		// is something to say (see poll()).
+		healthBtn_ = new QPushButton(this);
+		healthBtn_->setObjectName("mrHealth");
+		healthBtn_->setCursor(Qt::PointingHandCursor);
+		healthBtn_->setFlat(true);
+		healthBtn_->hide();
+		connect(healthBtn_, &QPushButton::clicked, this,
+			&MultiReplayDock::showHealthDetails);
+		h->addWidget(healthBtn_);
+
 		// the reference controller stacks the wall clock over the remaining recording time,
 		// right of the record key, in red. Same two lines, same place.
 		auto *clockBox = new QWidget(this);
@@ -2645,6 +2672,21 @@ void MultiReplayDock::showNotice(const QString &text)
 	updateChannelStrip();
 }
 
+void MultiReplayDock::showHealthDetails()
+{
+	const auto findings = HealthMonitor::instance().findings();
+	if (findings.empty())
+		return;
+	// A message box, not a modal that blocks the take: the take is running,
+	// the operator opened this on purpose, and closing it changes nothing.
+	// Every finding, in full, with the numbers that produced it — the badge
+	// only has room for a count.
+	QMessageBox::information(
+		this, obs_module_text("Dock.HealthTitle"),
+		QString::fromStdString(
+			findingsBlock(findings, health::Level::Info)));
+}
+
 // ---------------------------------------------------------------------------
 // The green channel strip (the reference controller's information band under the A output)
 // ---------------------------------------------------------------------------
@@ -3288,6 +3330,43 @@ void MultiReplayDock::poll()
 	// Cheap (two compares in the common case) and it has to follow the angle
 	// buttons and the queue, both of which move outside refreshStatus.
 	updateMultiviewTally();
+
+	// --- M4: how is the take actually going? -----------------------------
+	// READ ONLY. The monitor samples on a thread of its own, and it has to:
+	// sampling reads PacketTap::stats(), whose lock the tap holds across a
+	// detach that blocks on Branch Output, which in turn needs this thread —
+	// so a sample taken here froze OBS outright the first time a camera went
+	// away mid-take. See the note at the top of health.hpp. findings() is a
+	// copy under a lock held for exactly as long as the copy.
+	{
+		auto &monitor = HealthMonitor::instance();
+		if (healthBtn_) {
+			const auto findings = monitor.findings();
+			const health::Level worst = health::worstOf(findings);
+			if (findings.empty()) {
+				healthBtn_->hide();
+			} else {
+				const bool bad = worst >= health::Level::Blocker;
+				healthBtn_->setText(
+					QString("%1 %2")
+						.arg(bad ? QStringLiteral("⛔")
+							 : QStringLiteral("⚠"))
+						.arg(findings.size()));
+				healthBtn_->setToolTip(QString::fromStdString(
+					findingsBlock(findings,
+						      health::Level::Info)));
+				const QString state = bad
+							      ? QStringLiteral("bad")
+							      : QStringLiteral("warn");
+				if (healthBtn_->property("level").toString() !=
+				    state) {
+					healthBtn_->setProperty("level", state);
+					repolish(healthBtn_);
+				}
+				healthBtn_->show();
+			}
+		}
+	}
 
 	recBtn_->setText(rec ? QStringLiteral("◼  STOP")
 			     : QStringLiteral("●  REC"));

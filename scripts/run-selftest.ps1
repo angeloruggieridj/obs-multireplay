@@ -27,10 +27,19 @@
   project folder, with nothing recording, to check that a REOPENED project
   still has a timeline (see the reopen pass at the bottom).
 
+.PARAMETER SoakMinutes
+  M4 soak: after the normal gate passes, record for this many minutes in a
+  project of its own and judge the SHAPE of a long run - every angle still
+  producing in every 15 s interval, ring inside its budget, resident memory not
+  climbing away from it, nothing malformed, OBS keeping its frames. 0 = skip
+  (the default: an hour of recording is not something to start by accident).
+
 .EXAMPLE
   pwsh -File scripts/run-selftest.ps1
 .EXAMPLE
-  pwsh -File scripts/run-selftest.ps1 -Sources "C1,Cam2" -Seconds 60
+  pwsh -File scripts/run-selftest.ps1 -Sources "C1,C2" -Seconds 60
+.EXAMPLE
+  pwsh -File scripts/run-selftest.ps1 -Sources "C1,C2" -SoakMinutes 60
 #>
 [CmdletBinding()]
 param(
@@ -38,7 +47,8 @@ param(
     [int]$Cams = 2,
     [string]$Sources = "",
     [switch]$SkipBuild,
-    [switch]$SkipReopen
+    [switch]$SkipReopen,
+    [int]$SoakMinutes = 0
 )
 
 $ErrorActionPreference = 'Stop'
@@ -113,10 +123,11 @@ $proc = Start-Process -FilePath $obsExe -WorkingDirectory $obsDir `
     -ArgumentList '--disable-shutdown-check', '--multi' -PassThru
 
 # --- 6. Wait for the plugin to write its verdict -----------------------------
-# Measurement window + engine checks + the dock pass, which now replays a
-# two-angle sequence end to end (two 5 s clips in real time). A run that is
+# Measurement window + engine checks + the dock pass, which replays a two-angle
+# sequence end to end (two 5 s clips in real time) + the M4 health pass, which
+# is a second short take of its own and waits out a killed camera. A run that is
 # merely slow must not be reported as "no report at all".
-$timeout = $Seconds + 120
+$timeout = $Seconds + 240
 $waited = 0
 while (-not (Test-Path $report) -and $waited -lt $timeout) {
     if ($proc.HasExited) { break }
@@ -167,8 +178,56 @@ if ($r.verdict -ne 'PASS') {
 # disk say. That is exactly the case that was broken (a flat position bar over
 # hours of usable footage), so it gets its own OBS process, on the folder the
 # first pass just left behind, with nothing recording.
+function Invoke-SoakPass {
+    param([int]$Minutes)
+
+    $soakReport = Join-Path $env:TEMP 'obs-multireplay-selftest-soak.json'
+    if (Test-Path $soakReport) { Remove-Item $soakReport -Force }
+
+    $env:OBS_MULTIREPLAY_SELFTEST_SOAK = '1'
+    $env:OBS_MULTIREPLAY_SELFTEST_SOAK_MIN = "$Minutes"
+    $env:OBS_MULTIREPLAY_SELFTEST_OUT = $soakReport
+    Remove-Item Env:OBS_MULTIREPLAY_SELFTEST_REOPEN -ErrorAction SilentlyContinue
+
+    Step "Soak pass: recording for $Minutes minute(s) in its own project"
+    $p = Start-Process -FilePath $obsExe -WorkingDirectory $obsDir `
+        -ArgumentList '--disable-shutdown-check', '--multi' -PassThru
+
+    # The pass itself is Minutes long; add the setup, the teardown and the
+    # remove_all of what may be several GB.
+    $limit = $Minutes * 60 + 180
+    $waited = 0
+    while (-not (Test-Path $soakReport) -and $waited -lt $limit) {
+        if ($p.HasExited) { break }
+        Start-Sleep -Seconds 10
+        $waited += 10
+    }
+    $have = Test-Path $soakReport
+
+    Step 'Closing OBS'
+    if (-not $p.HasExited) {
+        $p.CloseMainWindow() | Out-Null
+        Start-Sleep -Seconds 5
+        if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force }
+    }
+    Start-Sleep -Seconds 2
+    Remove-Item Env:OBS_MULTIREPLAY_SELFTEST_SOAK -ErrorAction SilentlyContinue
+
+    if (-not $have) {
+        Fail "No soak report at $soakReport - that pass did not complete."
+        return 2
+    }
+    $sj = Get-Content $soakReport -Raw
+    Write-Host '--- SOAK REPORT ---' -ForegroundColor Yellow
+    Write-Host $sj
+    if (($sj | ConvertFrom-Json).verdict -eq 'PASS') { return 0 }
+    Fail 'SOAK: FAIL'
+    return 1
+}
+
 if ($SkipReopen) {
     Write-Host 'M0 GATE: PASS (reopen pass skipped)' -ForegroundColor Green
+    if ($SoakMinutes -gt 0) { exit (Invoke-SoakPass -Minutes $SoakMinutes) }
     exit 0
 }
 
@@ -223,6 +282,7 @@ Write-Host $json2
 $r2 = $json2 | ConvertFrom-Json
 if ($r2.verdict -eq 'PASS') {
     Write-Host 'M0 GATE: PASS (take + reopen)' -ForegroundColor Green
+    if ($SoakMinutes -gt 0) { exit (Invoke-SoakPass -Minutes $SoakMinutes) }
     exit 0
 } else {
     Fail 'M0 GATE: FAIL (reopened project)'

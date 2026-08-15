@@ -7,6 +7,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
 #include "replay-core.hpp"
 #include "branch-output-control.hpp"
 #include "event-store.hpp"
+#include "health.hpp"
 #include "playback-coordinator.hpp"
 #include "packet-tap.hpp"
 #include "plugin-support.h"
@@ -137,6 +138,12 @@ void ReplayCore::restartSegmentIndex(const std::string &folder)
 	const SessionEpoch epoch = sessionEpoch();
 	SegmentIndex::instance().start(folder, segCams, epoch.masterNs,
 				       epoch.wallNs);
+
+	// The folder just changed, so whatever disk bandwidth was measured for
+	// the previous one means nothing here. Measuring is I/O, so it happens
+	// now — between takes, on a background thread — and never at REC, where
+	// it would both delay the take and compete with it (see probeDiskAsync).
+	HealthMonitor::instance().probeDiskAsync(folder);
 }
 
 void ReplayCore::load()
@@ -355,15 +362,39 @@ bool ReplayCore::startRecording(std::string &errorOut)
 		return false;
 	}
 
-	if (!branch_output::available()) {
-		errorOut = "Branch Output plugin is not installed";
-		obs_log(LOG_ERROR, "startRecording: %s", errorOut.c_str());
+	// --- M4 pre-flight ----------------------------------------------------
+	// Here and not in the dock: a take started from a hotkey, a Stream Deck
+	// or the self-test has to be refused by exactly the same rules as one
+	// started from the button, and refused BEFORE a single filter is armed.
+	// It replaces the two hand-rolled checks that used to live here (Branch
+	// Output installed, session folder set) and adds the ones that used to be
+	// discovered halfway through a match: a source that is gone, a disk with
+	// four minutes on it, a disk too slow for the bitrate, a ring that does
+	// not fit in RAM.
+	//
+	// Blockers refuse. Warnings never do — they are logged, kept for the
+	// dock's badge, and the take runs.
+	RingBudget budget;
+	budget.kbpsPerCamera = config_.videoBitrateKbps + config_.audioBitrateKbps;
+	auto &monitor = HealthMonitor::instance();
+	const health::PreflightResult preflight =
+		monitor.preflight(config_, budget.seconds);
+	monitor.rememberPreflight(preflight);
+	for (const auto &f : preflight.findings)
+		obs_log(f.level >= health::Level::Blocker ? LOG_ERROR
+							  : LOG_WARNING,
+			"[health] preflight %s: %s%s%s",
+			health::levelName(f.level), f.id.c_str(),
+			f.detail.empty() ? "" : " - ", f.detail.c_str());
+	if (!preflight.ok()) {
+		errorOut = findingsBlock(preflight.findings,
+					 health::Level::Blocker);
 		return false;
 	}
-	if (config_.sessionFolder.empty()) {
-		errorOut = "session folder is not configured";
-		return false;
-	}
+	// Visible degradation, the M4 way: a ring that does not fit is made
+	// smaller and said out loud (ring_ram_tight), never silently granted.
+	if (preflight.ringSeconds > 0)
+		budget.seconds = preflight.ringSeconds;
 
 	std::error_code ec;
 	std::string recFolder = recordingFolderLocked();
@@ -434,12 +465,25 @@ bool ReplayCore::startRecording(std::string &errorOut)
 	// (fail-SOFT in M0, fail-CLOSED from M1 once the ring is authoritative).
 	{
 		std::array<bool, kMaxTapChannels> wantTap{};
-		for (int i = 0; i < kMaxCameras && i < kMaxTapChannels; i++)
-			wantTap[i] = cameraStatus_[i].recording;
-		RingBudget budget;
-		budget.kbpsPerCamera =
-			config_.videoBitrateKbps + config_.audioBitrateKbps;
+		std::array<bool, kMaxCameras> armedCams{};
+		for (int i = 0; i < kMaxCameras; i++) {
+			armedCams[i] = cameraStatus_[i].recording;
+			if (i < kMaxTapChannels)
+				wantTap[i] = cameraStatus_[i].recording;
+		}
+		// budget was filled in (and possibly cut to fit RAM) by pre-flight.
 		PacketTap::instance().armAsync(wantTap, budget);
+
+		// The monitor's baselines belong to this take: resident memory
+		// before it, the frame counters at its start, and the ring window
+		// it was actually granted rather than the one it asked for.
+		int armedCount = 0;
+		for (bool a : armedCams)
+			armedCount += a ? 1 : 0;
+		monitor.takeStarted(armedCams, budget.seconds,
+				    (int64_t)budget.kbpsPerCamera * 1000 / 8 *
+					    armedCount,
+				    config_.sessionFolder);
 
 		// Watch the files Branch Output writes so replay can reach back
 		// past the RAM window. The epoch pair ties this session's
@@ -497,6 +541,9 @@ bool ReplayCore::stopRecording()
 		obs_log(LOG_INFO, "%s", PacketTap::instance().report().c_str());
 	PacketTap::instance().detachAll();
 	SegmentIndex::instance().stop();
+	// The take is over, so its findings are over with it: they described a
+	// recording that no longer exists (see takeStopped).
+	HealthMonitor::instance().takeStopped();
 
 	for (int i = 0; i < kMaxCameras; i++) {
 		auto &st = cameraStatus_[i];

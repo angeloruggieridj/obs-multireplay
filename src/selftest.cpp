@@ -13,6 +13,7 @@ See selftest.hpp. This is the scripted form of the M0 gate.
 
 #include "branch-output-control.hpp"
 #include "event-store.hpp"
+#include "health.hpp"
 #include "multireplay-dock.hpp"
 #include "packet-tap.hpp"
 #include "playback-coordinator.hpp"
@@ -289,6 +290,31 @@ struct DockChecks {
 	int playedFrames = 0;
 };
 
+// --- M4: hardening ----------------------------------------------------------
+// Four claims, all of them about a rig that is having a bad day:
+//   1. a take that cannot work is refused at REC, by the engine and not by the
+//      dock, so a hotkey is refused exactly like the button;
+//   2. the real rig clears pre-flight, so the refusal above is not a rig that
+//      simply refuses everything;
+//   3. the monitor really samples a running take;
+//   4. an angle that DIES is reported, by name, while the take keeps running
+//      and the Program is not touched — which is the whole M4 rule.
+struct HealthChecks {
+	bool ran = false;
+	bool recRefusesImpossibleTake = false;
+	bool preflightClearsTheRig = false;
+	bool monitorSamplesTheTake = false;
+	bool deadAngleReported = false;
+	bool deadAngleIsNotFatal = false;
+	bool findingsClearedAtStop = false;
+	int samples = 0;
+	int64_t detectMs = -1;
+	std::string refusal;     // what REC said when it refused
+	std::string deadFinding; // the id that named the killed camera
+	std::string sceneBefore;
+	std::string sceneAfter;
+};
+
 // Counts OUR error lines while the dock's timer is being watched. Only ours:
 // the claim is "the dock's poll is quiet", not "nothing in OBS ever complains".
 std::atomic<int> g_ourLogErrors{0};
@@ -304,6 +330,217 @@ void countingLogHandler(int level, const char *msg, va_list args, void *)
 	// Chain, so the run still produces its normal OBS log.
 	if (g_prevLogHandler)
 		g_prevLogHandler(level, msg, args, g_prevLogParam);
+}
+
+// A short take of its own, driven through ReplayCore::startRecording — the
+// product path, the one a hotkey uses — and then deliberately broken.
+//
+// It runs after the measurement take has been torn down, so the two never share
+// an encoder, and it puts the operator's configuration back before it returns.
+// The camera names it installs are logged first: if OBS were killed in the
+// middle of this, that log line is how they are recovered.
+HealthChecks runHealthChecks(const std::vector<obs_source_t *> &cams, int camCount,
+			     const std::array<bool, kMaxTapChannels> &want)
+{
+	HealthChecks c;
+	auto &core = ReplayCore::instance();
+	auto &monitor = HealthMonitor::instance();
+
+	int first = -1, victim = -1;
+	for (int i = 0; i < camCount; i++) {
+		if (!want[i] || !cams[i])
+			continue;
+		if (first < 0)
+			first = i;
+		else if (victim < 0)
+			victim = i;
+	}
+	if (first < 0) {
+		obs_log(LOG_ERROR, "[selftest] no armed camera — health checks skipped");
+		return c;
+	}
+	c.ran = true;
+
+	const Config original = core.getConfig();
+	Config testCfg = original;
+	for (auto &cam : testCfg.cameras)
+		cam.sourceName.clear();
+	std::string installed;
+	for (int i = 0; i < camCount && i < kMaxCameras; i++) {
+		if (!want[i] || !cams[i])
+			continue;
+		const char *n = obs_source_get_name(cams[i]);
+		testCfg.cameras[i].sourceName = n ? n : "";
+		installed += (installed.empty() ? "" : ", ") +
+			     std::to_string(i + 1) + "=" + testCfg.cameras[i].sourceName;
+	}
+	std::string originalNames;
+	for (int i = 0; i < kMaxCameras; i++)
+		if (!original.cameras[i].sourceName.empty())
+			originalNames += (originalNames.empty() ? "" : ", ") +
+					 std::to_string(i + 1) + "=" +
+					 original.cameras[i].sourceName;
+	obs_log(LOG_INFO,
+		"[selftest] health pass: camera config [%s] -> [%s] (restored at the "
+		"end of this pass)",
+		originalNames.c_str(), installed.c_str());
+
+	// --- 1. REC refuses a take that cannot work ---------------------------
+	// Not "the dock refuses": the refusal has to come out of the engine, or a
+	// take started from a hotkey or a Stream Deck would arm filters over a
+	// configuration pre-flight has already rejected.
+	{
+		Config broken = testCfg;
+		for (auto &cam : broken.cameras)
+			cam.sourceName.clear();
+		bool started = true;
+		std::string err;
+		runOnUi([&]() {
+			core.setConfig(broken);
+			started = core.startRecording(err);
+		});
+		c.refusal = err;
+		c.recRefusesImpossibleTake = !started && !err.empty() &&
+					     !core.isRecording();
+		if (started)
+			runOnUi([&]() { core.stopRecording(); });
+		obs_log(c.recRefusesImpossibleTake ? LOG_INFO : LOG_ERROR,
+			"[selftest] REC on a rig with no camera: %s (\"%s\")",
+			started ? "STARTED — pre-flight did not refuse" : "refused",
+			err.c_str());
+	}
+
+	runOnUi([&]() { core.setConfig(testCfg); });
+
+	// --- 2. ...and it clears the rig that does work -----------------------
+	{
+		const auto pf = monitor.preflight(testCfg, 90);
+		c.preflightClearsTheRig = pf.ok();
+		for (const auto &f : pf.findings)
+			obs_log(LOG_INFO, "[selftest] preflight %s: %s %s",
+				health::levelName(f.level), f.id.c_str(),
+				f.detail.c_str());
+		obs_log(c.preflightClearsTheRig ? LOG_INFO : LOG_ERROR,
+			"[selftest] pre-flight on the real rig: %s (ring %d s)",
+			c.preflightClearsTheRig ? "clear" : "REFUSED",
+			pf.ringSeconds);
+	}
+
+	// --- 3. the monitor watches a running take ----------------------------
+	const uint64_t samplesBefore = monitor.samples();
+	bool started = false;
+	std::string err;
+	runOnUi([&]() { started = core.startRecording(err); });
+	if (!started) {
+		obs_log(LOG_ERROR, "[selftest] health pass could not record: %s",
+			err.c_str());
+		runOnUi([&]() { core.setConfig(original); });
+		return c;
+	}
+	// Wait for FRAMES, not for flags. "Attached" is not "capturing": the tap
+	// can land on an encoder Branch Output is about to replace, and an angle
+	// that reports attached while receiving nothing would make the check
+	// below meaningless — it would kill a camera and then measure a survivor
+	// that was never alive either.
+	bool bothFlowing = false;
+	for (int i = 0; i < 60 && !bothFlowing; i++) {
+		std::this_thread::sleep_for(std::chrono::milliseconds(500));
+		bothFlowing = core.branchOutputRecording() &&
+			      PacketTap::instance().newestNs(first) > 0 &&
+			      (victim < 0 ||
+			       PacketTap::instance().newestNs(victim) > 0);
+	}
+	obs_log(bothFlowing ? LOG_INFO : LOG_ERROR,
+		"[selftest] health take: every armed angle producing packets: %s",
+		bothFlowing ? "yes" : "NO");
+	// Let the monitor see a few seconds of a healthy take before anything is
+	// broken on purpose.
+	std::this_thread::sleep_for(std::chrono::seconds(6));
+	c.samples = (int)(monitor.samples() - samplesBefore);
+	// A healthy take is a SILENT take: the samples happened and found nothing
+	// worth blocking on. (A warning is allowed: the gate's own machine may
+	// legitimately be short of disk or RAM, and that is not a regression.)
+	c.monitorSamplesTheTake = bothFlowing && c.samples >= 4 &&
+				  monitor.worst() < health::Level::Blocker;
+	obs_log(c.monitorSamplesTheTake ? LOG_INFO : LOG_ERROR,
+		"[selftest] health monitor took %d samples during the take, worst = %s",
+		c.samples, health::levelName(monitor.worst()));
+
+	// --- 4. kill an angle -------------------------------------------------
+	// The one thing hardening is for: a camera stops mid-match. It must be
+	// reported by name, and NOTHING else may happen — the take keeps running,
+	// the other angle keeps recording, the Program is not touched.
+	if (victim >= 0) {
+		runOnUi([&]() {
+			if (obs_source_t *sc = obs_frontend_get_current_scene()) {
+				const char *n = obs_source_get_name(sc);
+				c.sceneBefore = n ? n : "";
+				obs_source_release(sc);
+			}
+		});
+		const int64_t survivorBefore = PacketTap::instance().newestNs(first);
+
+		runOnUi([&]() {
+			const std::string fname =
+				std::string(branch_output::kFilterNamePrefix) +
+				std::to_string(victim + 1);
+			if (obs_source_t *f = obs_source_get_filter_by_name(
+				    cams[victim], fname.c_str())) {
+				branch_output::setEnabled(f, false);
+				obs_source_release(f);
+			}
+		});
+		obs_log(LOG_INFO, "[selftest] killed CAM%d mid-take on purpose",
+			victim + 1);
+
+		const std::string wanted = "CAM" + std::to_string(victim + 1);
+		const int64_t t0 = (int64_t)os_gettime_ns();
+		for (int i = 0; i < 44 && !c.deadAngleReported; i++) {
+			std::this_thread::sleep_for(std::chrono::milliseconds(500));
+			for (const auto &f : monitor.findings()) {
+				if (f.detail.rfind(wanted, 0) != 0)
+					continue;
+				if (f.id == "angle_dead" || f.id == "angle_stalled" ||
+				    f.id == "angle_no_packets" ||
+				    f.id == "angle_not_tapped") {
+					c.deadAngleReported = true;
+					c.deadFinding = f.id + " (" + f.detail + ")";
+					c.detectMs =
+						((int64_t)os_gettime_ns() - t0) /
+						1'000'000LL;
+					break;
+				}
+			}
+		}
+		runOnUi([&]() {
+			if (obs_source_t *sc = obs_frontend_get_current_scene()) {
+				const char *n = obs_source_get_name(sc);
+				c.sceneAfter = n ? n : "";
+				obs_source_release(sc);
+			}
+		});
+		const int64_t survivorAfter = PacketTap::instance().newestNs(first);
+		// "Not fatal" is three separate facts, and all three have to hold:
+		// the take is still on, the surviving angle is still capturing, and
+		// nothing switched what is on air.
+		c.deadAngleIsNotFatal = core.isRecording() &&
+					survivorAfter > survivorBefore &&
+					c.sceneAfter == c.sceneBefore;
+		obs_log(c.deadAngleReported ? LOG_INFO : LOG_ERROR,
+			"[selftest] dead angle reported after %lld ms as %s; take still "
+			"running=%s, survivor advanced=%s, program scene '%s' -> '%s'",
+			(long long)c.detectMs,
+			c.deadFinding.empty() ? "(nothing)" : c.deadFinding.c_str(),
+			core.isRecording() ? "yes" : "NO",
+			survivorAfter > survivorBefore ? "yes" : "NO",
+			c.sceneBefore.c_str(), c.sceneAfter.c_str());
+	}
+
+	runOnUi([&]() { core.stopRecording(); });
+	c.findingsClearedAtStop = monitor.findings().empty();
+	runOnUi([&]() { core.setConfig(original); });
+	obs_log(LOG_INFO, "[selftest] health pass done, camera config restored");
+	return c;
 }
 
 DockChecks runDockChecks(int firstCam, int secondCam,
@@ -1288,8 +1525,21 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 				// The LAST row, pushed up: the one move that
 				// cannot be confused with the table's own
 				// auto-selection of the newest mark.
+				//
+				// setCurrentCell with Rows|ClearAndSelect, not
+				// selectRow(): one run in five arrived at the
+				// click with an EMPTY selection ("selected at the
+				// click: []"), so ▲ correctly did nothing and the
+				// gate blamed the dock for a selection the test
+				// had failed to make. This is what a click on the
+				// row actually does — current index and full-row
+				// selection together.
 				if (t && t->rowCount() >= 2)
-					t->selectRow(t->rowCount() - 1);
+					t->setCurrentCell(
+						t->rowCount() - 1,
+						MultiReplayDock::kColId,
+						QItemSelectionModel::ClearAndSelect |
+							QItemSelectionModel::Rows);
 				if (t)
 					for (const auto &idx :
 					     t->selectionModel()->selectedRows()) {
@@ -1416,6 +1666,287 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 		store.remove(evId);
 	store.setSessionFolder(ReplayCore::instance().recordingFolder());
 	return c;
+}
+
+// ---------------------------------------------------------------------------
+// SOAK (M4): the same rig, for as long as a match lasts.
+//
+// Everything else in this file measures tens of seconds, and the faults M4 is
+// about do not exist there: a ring that leaks a few MB a minute, a disk that
+// fills, an encoder that hiccups once an hour, a counter that wraps. So this
+// pass records for -SoakMinutes minutes and samples every 15 s, then judges the
+// SHAPE of the run rather than any single number — packets kept flowing on
+// every angle, the ring stayed inside its budget, resident memory did not climb
+// away from it, nothing malformed, no discontinuity, and OBS kept its frames.
+//
+// It runs in its own project (deleted at the end: an hour of two cameras is
+// gigabytes) and puts the operator's project and camera configuration back.
+// Opt-in: nothing here runs unless the runner asks for it.
+// ---------------------------------------------------------------------------
+constexpr const char *kSoakProject = "MRSoakTest";
+
+void runSoakPass(int minutes, const std::string &outPath)
+{
+	std::this_thread::sleep_for(std::chrono::seconds(3));
+
+	auto &core = ReplayCore::instance();
+	auto &tap = PacketTap::instance();
+	auto &monitor = HealthMonitor::instance();
+
+	const std::vector<std::string> realNames =
+		splitCsv(envStr("OBS_MULTIREPLAY_SELFTEST_SOURCES"));
+	const bool useRealSources = !realNames.empty();
+	const int camCount = useRealSources
+				     ? (int)std::min<size_t>(realNames.size(),
+							     kMaxTapChannels)
+				     : std::clamp(envInt("OBS_MULTIREPLAY_SELFTEST_CAMS",
+							 2),
+						  1, kMaxTapChannels);
+
+	obs_video_info ovi{};
+	const uint32_t cx = obs_get_video_info(&ovi) ? ovi.base_width : 1920;
+	const uint32_t cy = obs_get_video_info(&ovi) ? ovi.base_height : 1080;
+
+	const Config original = core.getConfig();
+	const std::string prevProject = original.currentProjectName;
+	std::string perr;
+	runOnUi([&]() { core.newProject(kSoakProject, perr); });
+	const std::string projectFolder = core.recordingFolder();
+
+	std::vector<obs_source_t *> cams(camCount, nullptr);
+	std::vector<bool> owned(camCount, false);
+	obs_scene_t *scene = nullptr;
+	std::array<bool, kMaxTapChannels> want{};
+	int armed = 0;
+
+	Config cfg = core.getConfig();
+	for (auto &cam : cfg.cameras)
+		cam.sourceName.clear();
+
+	runOnUi([&]() {
+		for (int i = 0; i < camCount; i++) {
+			if (useRealSources)
+				cams[i] = obs_get_source_by_name(realNames[i].c_str());
+			else {
+				cams[i] = createSyntheticCamera(i, cx, cy);
+				owned[i] = cams[i] != nullptr;
+				if (cams[i]) {
+					obs_source_inc_showing(cams[i]);
+					obs_source_inc_active(cams[i]);
+				}
+			}
+		}
+		if (!useRealSources) {
+			scene = obs_scene_create("MRSoak Scene");
+			for (int i = 0; i < camCount; i++)
+				if (scene && cams[i])
+					obs_scene_add(scene, cams[i]);
+		}
+		for (int i = 0; i < camCount && i < kMaxCameras; i++) {
+			if (!cams[i])
+				continue;
+			const char *n = obs_source_get_name(cams[i]);
+			cfg.cameras[i].sourceName = n ? n : "";
+			want[i] = true;
+			armed++;
+		}
+		core.setConfig(cfg);
+	});
+
+	bool started = false;
+	std::string err;
+	runOnUi([&]() { started = core.startRecording(err); });
+	obs_log(started ? LOG_INFO : LOG_ERROR,
+		"[soak] %d min on %d camera(s), project '%s': %s%s", minutes, armed,
+		kSoakProject, started ? "recording" : "REFUSED: ", err.c_str());
+
+	// --- the long middle --------------------------------------------------
+	struct Sample {
+		int64_t tSec = 0;
+		int64_t rssMb = 0;
+		int64_t ringMb = 0;
+		int64_t worstAgeMs = 0;
+		int64_t diskFreeMb = 0;
+		uint64_t videoPackets = 0;
+		int findings = 0;
+	};
+	std::vector<Sample> samples;
+	std::vector<uint64_t> lastPackets(camCount, 0);
+	bool everyIntervalFlowed = started;
+	uint64_t malformed = 0, discontinuities = 0;
+	const uint32_t laggedBefore = obs_get_lagged_frames();
+	const uint32_t totalBefore = obs_get_total_frames();
+	const int64_t t0 = (int64_t)os_gettime_ns();
+	const int64_t rssStart = (int64_t)os_get_proc_resident_size();
+	int64_t rssPeak = rssStart;
+	health::Level worstSeen = health::Level::Ok;
+	std::string worstFinding;
+
+	const int intervals = std::max(1, minutes * 4); // one every 15 s
+	for (int k = 0; started && k < intervals; k++) {
+		std::this_thread::sleep_for(std::chrono::seconds(15));
+
+		Sample s;
+		s.tSec = ((int64_t)os_gettime_ns() - t0) / 1'000'000'000LL;
+		s.rssMb = (int64_t)os_get_proc_resident_size() / (1024 * 1024);
+		rssPeak = std::max(rssPeak, s.rssMb * 1024 * 1024);
+		int64_t ringBytes = 0;
+		for (int i = 0; i < camCount; i++) {
+			if (!want[i])
+				continue;
+			const TapStats st = tap.stats(i);
+			ringBytes += (int64_t)st.ringBytes;
+			s.videoPackets += st.videoPackets;
+			s.worstAgeMs = std::max(s.worstAgeMs, st.maxAgeUsec / 1000);
+			malformed += st.malformedPackets;
+			discontinuities += st.discontinuities;
+			// The claim that matters over an hour: EVERY angle was
+			// still producing in EVERY interval. An average hides a
+			// camera that died forty minutes ago.
+			if (st.videoPackets <= lastPackets[i])
+				everyIntervalFlowed = false;
+			lastPackets[i] = st.videoPackets;
+		}
+		s.ringMb = ringBytes / (1024 * 1024);
+		std::error_code ec;
+		auto space = std::filesystem::space(projectFolder, ec);
+		s.diskFreeMb = ec ? -1 : (int64_t)(space.available / (1024 * 1024));
+
+		const auto findings = monitor.findings();
+		s.findings = (int)findings.size();
+		if (health::worstOf(findings) > worstSeen) {
+			worstSeen = health::worstOf(findings);
+			worstFinding = findings.empty() ? "" : findings.front().id;
+		}
+		samples.push_back(s);
+		obs_log(LOG_INFO,
+			"[soak] t=%llds rss=%lld MB ring=%lld MB age=%lld ms "
+			"disk=%lld MB findings=%d",
+			(long long)s.tSec, (long long)s.rssMb, (long long)s.ringMb,
+			(long long)s.worstAgeMs, (long long)s.diskFreeMb, s.findings);
+	}
+
+	const uint32_t laggedDelta = obs_get_lagged_frames() - laggedBefore;
+	const uint32_t totalDelta = obs_get_total_frames() - totalBefore;
+	const double laggedPct = totalDelta ? 100.0 * laggedDelta / totalDelta : 0.0;
+	const int anchored = SegmentIndex::instance().anchoredCount();
+	const int unanchored = SegmentIndex::instance().unanchoredCount();
+	const int64_t ringPeakMb =
+		samples.empty()
+			? 0
+			: std::max_element(samples.begin(), samples.end(),
+					   [](const Sample &a, const Sample &b) {
+						   return a.ringMb < b.ringMb;
+					   })
+				  ->ringMb;
+	const int64_t rssGrowthMb =
+		(rssPeak - rssStart) / (1024 * 1024);
+
+	runOnUi([&]() { core.stopRecording(); });
+	std::this_thread::sleep_for(std::chrono::seconds(3));
+
+	// --- verdict ----------------------------------------------------------
+	// Memory: the ring is not a leak however big it is, so the growth is
+	// judged against the ring plus the same slack the runtime rules use.
+	const bool memoryStable =
+		rssGrowthMb <=
+		ringPeakMb + health::kMemorySlackBytes / (1024 * 1024);
+	const bool clean = malformed == 0 && discontinuities == 0;
+	const bool filesOk = anchored >= armed && unanchored == 0;
+	const bool obsOk = laggedPct <= 1.0;
+	const bool healthOk = worstSeen < health::Level::Blocker;
+	const bool pass = started && armed > 0 && everyIntervalFlowed && clean &&
+			  memoryStable && filesOk && obsOk && healthOk &&
+			  (int)samples.size() >= intervals;
+
+	obs_data_t *root = obs_data_create();
+	obs_data_set_string(root, "verdict", pass ? "PASS" : "FAIL");
+	obs_data_set_int(root, "minutes", minutes);
+	obs_data_set_int(root, "cameras_armed", armed);
+	obs_data_set_bool(root, "synthetic_sources", !useRealSources);
+	obs_data_t *checks = obs_data_create();
+	obs_data_set_bool(checks, "recording_started", started);
+	obs_data_set_bool(checks, "every_angle_flowed_every_interval",
+			  everyIntervalFlowed);
+	obs_data_set_bool(checks, "timeline_clean", clean);
+	obs_data_set_bool(checks, "memory_stable", memoryStable);
+	obs_data_set_bool(checks, "segments_anchored", filesOk);
+	obs_data_set_bool(checks, "obs_impact_ok", obsOk);
+	obs_data_set_bool(checks, "health_never_blocked", healthOk);
+	obs_data_set_obj(root, "checks", checks);
+	obs_data_release(checks);
+	obs_data_set_int(root, "samples", (long long)samples.size());
+	obs_data_set_int(root, "ring_peak_mb", ringPeakMb);
+	obs_data_set_int(root, "rss_growth_mb", rssGrowthMb);
+	obs_data_set_int(root, "segments_anchored", anchored);
+	obs_data_set_int(root, "segments_unanchored", unanchored);
+	obs_data_set_double(root, "obs_lagged_pct", laggedPct);
+	obs_data_set_int(root, "malformed_packets", (long long)malformed);
+	obs_data_set_int(root, "discontinuities", (long long)discontinuities);
+	obs_data_set_string(root, "worst_health_level", health::levelName(worstSeen));
+	obs_data_set_string(root, "worst_health_finding", worstFinding.c_str());
+	obs_data_array_t *arr = obs_data_array_create();
+	for (const auto &s : samples) {
+		obs_data_t *d = obs_data_create();
+		obs_data_set_int(d, "t_sec", s.tSec);
+		obs_data_set_int(d, "rss_mb", s.rssMb);
+		obs_data_set_int(d, "ring_mb", s.ringMb);
+		obs_data_set_int(d, "worst_age_ms", s.worstAgeMs);
+		obs_data_set_int(d, "disk_free_mb", s.diskFreeMb);
+		obs_data_set_int(d, "video_packets", (long long)s.videoPackets);
+		obs_data_set_int(d, "findings", s.findings);
+		obs_data_array_push_back(arr, d);
+		obs_data_release(d);
+	}
+	obs_data_set_array(root, "timeline", arr);
+	obs_data_array_release(arr);
+
+	// --- clean up: the soak's own footage is gigabytes --------------------
+	runOnUi([&]() {
+		for (int i = 0; i < camCount; i++) {
+			if (!cams[i])
+				continue;
+			const std::string fname =
+				std::string(branch_output::kFilterNamePrefix) +
+				std::to_string(i + 1);
+			if (obs_source_t *f = obs_source_get_filter_by_name(
+				    cams[i], fname.c_str())) {
+				branch_output::setEnabled(f, false);
+				obs_source_filter_remove(cams[i], f);
+				obs_source_release(f);
+			}
+			if (owned[i]) {
+				obs_source_dec_active(cams[i]);
+				obs_source_dec_showing(cams[i]);
+				obs_source_remove(cams[i]);
+			}
+			obs_source_release(cams[i]);
+		}
+		if (scene) {
+			obs_source_remove(obs_scene_get_source(scene));
+			obs_scene_release(scene);
+		}
+		core.setConfig(original);
+		if (!prevProject.empty()) {
+			std::string e2;
+			core.openProject(prevProject, e2);
+		}
+	});
+	// The index has to be stopped before the folder can go (its watcher holds
+	// the files open) — the same trap the first pass documents.
+	SegmentIndex::instance().stop();
+	std::error_code ec;
+	std::filesystem::remove_all(projectFolder, ec);
+	if (ec)
+		obs_log(LOG_ERROR, "[soak] could not delete %s: %s",
+			projectFolder.c_str(), ec.message().c_str());
+
+	if (!obs_data_save_json_safe(root, outPath.c_str(), "tmp", "bak"))
+		obs_log(LOG_ERROR, "[soak] could not write report to %s",
+			outPath.c_str());
+	obs_log(LOG_INFO, "[soak] VERDICT=%s — report written to %s",
+		pass ? "PASS" : "FAIL", outPath.c_str());
+	obs_data_release(root);
 }
 
 // ---------------------------------------------------------------------------
@@ -2356,6 +2887,33 @@ void runSelfTest()
 
 	SegmentIndex::instance().stop();
 
+	// --- M4: hardening, on its own short take -----------------------------
+	// After the measurement take is finished with (the tap is detached and
+	// every disk measurement above is already made) and before the cameras
+	// are taken away. The filters of this run are ended first, so the health
+	// pass starts from the same state an operator does: nothing recording.
+	HealthChecks healthChecks;
+	{
+		runOnUi([&]() {
+			for (int i = 0; i < camCount; i++) {
+				if (!want[i] || !cams[i])
+					continue;
+				const std::string fname =
+					std::string(branch_output::kFilterNamePrefix) +
+					std::to_string(i + 1);
+				if (obs_source_t *f = obs_source_get_filter_by_name(
+					    cams[i], fname.c_str())) {
+					branch_output::setEnabled(f, false);
+					obs_source_release(f);
+				}
+			}
+		});
+		// Branch Output closes its outputs on its own 1 s timer; starting a
+		// new take on top of a half-closed one would measure the teardown.
+		std::this_thread::sleep_for(std::chrono::seconds(3));
+		healthChecks = runHealthChecks(cams, camCount, want);
+	}
+
 	// Tearing down a Branch Output filter destroys its QTimer, so this goes
 	// back on the UI thread too.
 	runOnUi([&]() {
@@ -2486,7 +3044,13 @@ void runSelfTest()
 			  dockChecks.seekbarGraduated &&
 			  anchorsPersisted && projectOriginOk &&
 			  eventTimecodeSane && filtersIdleOutsideRec &&
-			  diskTimelineOk;
+			  diskTimelineOk && healthChecks.ran &&
+			  healthChecks.recRefusesImpossibleTake &&
+			  healthChecks.preflightClearsTheRig &&
+			  healthChecks.monitorSamplesTheTake &&
+			  healthChecks.deadAngleReported &&
+			  healthChecks.deadAngleIsNotFatal &&
+			  healthChecks.findingsClearedAtStop;
 
 	// --- Report -----------------------------------------------------------
 	obs_data_t *root = obs_data_create();
@@ -2631,8 +3195,31 @@ void runSelfTest()
 			  dockChecks.seekbarGraduated);
 	obs_data_set_int(root, "dock_seekbar_graduations", dockChecks.seekGraduations);
 	obs_data_set_int(root, "dock_seekbar_height_px", dockChecks.seekHeight);
+	// M4: pre-flight refuses what cannot work and clears what can; the monitor
+	// watches the take; a camera that dies is named, and nothing else happens.
+	obs_data_set_bool(checks, "preflight_refuses_impossible_take",
+			  healthChecks.recRefusesImpossibleTake);
+	obs_data_set_bool(checks, "preflight_clears_the_rig",
+			  healthChecks.preflightClearsTheRig);
+	obs_data_set_bool(checks, "health_monitor_samples_the_take",
+			  healthChecks.monitorSamplesTheTake);
+	obs_data_set_bool(checks, "dead_angle_is_reported",
+			  healthChecks.deadAngleReported);
+	// The M4 rule itself: degradation is visible and NEVER touches Program.
+	obs_data_set_bool(checks, "dead_angle_never_touches_program",
+			  healthChecks.deadAngleIsNotFatal);
+	obs_data_set_bool(checks, "health_findings_cleared_at_stop",
+			  healthChecks.findingsClearedAtStop);
 	obs_data_set_obj(root, "checks", checks);
 	obs_data_release(checks);
+
+	obs_data_set_int(root, "health_samples", healthChecks.samples);
+	obs_data_set_int(root, "health_dead_angle_detect_ms", healthChecks.detectMs);
+	obs_data_set_string(root, "health_dead_angle_finding",
+			    healthChecks.deadFinding.c_str());
+	obs_data_set_string(root, "health_rec_refusal", healthChecks.refusal.c_str());
+	obs_data_set_string(root, "health_program_scene",
+			    healthChecks.sceneAfter.c_str());
 
 	obs_data_set_int(root, "segments_anchored", segmentsAnchored);
 	obs_data_set_int(root, "anchors_on_disk_mid_take", anchorsOnDisk);
@@ -2744,6 +3331,23 @@ void maybeRunSelfTest()
 		return;
 	if (g_started.exchange(true))
 		return; // FINISHED_LOADING can fire more than once
+
+	// The soak pass (M4) is its own OBS process too, and it is the long one:
+	// it records for as many minutes as it is given, in a project of its own,
+	// which it deletes afterwards. Opt-in only.
+	if (envOn("OBS_MULTIREPLAY_SELFTEST_SOAK")) {
+		const int minutes =
+			std::max(1, envInt("OBS_MULTIREPLAY_SELFTEST_SOAK_MIN", 30));
+		std::string out = envStr("OBS_MULTIREPLAY_SELFTEST_OUT");
+		if (out.empty()) {
+			std::error_code ec;
+			out = (std::filesystem::temp_directory_path(ec) /
+			       "obs-multireplay-selftest-soak.json")
+				      .string();
+		}
+		std::thread([minutes, out]() { runSoakPass(minutes, out); }).detach();
+		return;
+	}
 
 	// The reopen pass is a second OBS process on the folder the first one
 	// left behind (see runReopenPass). It records nothing, so it must not go
