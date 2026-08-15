@@ -19,8 +19,11 @@ yet keep the packets — the ring lands in M1.
 #include <util/platform.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cinttypes>
 #include <sstream>
+#include <utility>
+#include <vector>
 
 namespace multireplay {
 
@@ -41,6 +44,10 @@ constexpr int kArmPollMs = 250;
 // Branch Output builds its infrastructure and starts its output asynchronously
 // after the filter is enabled; give it a generous window before giving up.
 constexpr int kArmMaxAttempts = 160; // ~40 s
+// How long an attached channel may stay silent before we suspect we are on the
+// wrong encoder. Comfortably longer than the first-keyframe wait (keyint is 1 s)
+// and far shorter than anyone's patience during a match.
+constexpr int64_t kSilentAttachMs = 3000;
 constexpr int kReportEveryTicks = 120; // ~30 s
 
 } // namespace
@@ -239,6 +246,18 @@ void PacketTap::unload()
 			armThread_.join();
 	}
 	detachAll();
+
+	// Give the disposal threads a moment to be done with libobs objects
+	// before the module goes away under them. Bounded: one of them may be
+	// stuck in obs_output_stop() forever (that is why they are detached),
+	// and waiting for that would trade a leak for a hang on every exit.
+	for (int i = 0; i < 30 && disposing_.load() > 0; i++)
+		std::this_thread::sleep_for(std::chrono::milliseconds(100));
+	if (disposing_.load() > 0)
+		obs_log(LOG_WARNING,
+			"[tap] %d detach(es) still finishing at unload — Branch "
+			"Output was tearing down the encoder at the same time",
+			disposing_.load());
 }
 
 void PacketTap::armAsync(const std::array<bool, kMaxTapChannels> &wanted,
@@ -309,6 +328,8 @@ void PacketTap::armLoop()
 	int tick = 0;
 
 	while (armRunning_.load()) {
+		// Filled under the lock, emptied after it: see Doomed.
+		std::vector<Doomed> doomed;
 		{
 			std::unique_lock<std::mutex> lock(mutex_);
 			armWake_.wait_for(lock,
@@ -327,8 +348,61 @@ void PacketTap::armLoop()
 						"[tap] cam%d: Branch Output is "
 						"stopping — detaching",
 						i + 1);
-					detachLocked(i);
+					doomed.push_back(detachLocked(i));
 					continue;
+				}
+
+				// Attached and SILENT: we are hanging off a
+				// Branch Output that no longer exists.
+				//
+				// Measured, not hypothesised: start a take a few
+				// seconds after the previous one stopped, and the
+				// output named "MultiReplay camN" is momentarily
+				// the OLD one — still active, still carrying the
+				// old encoder — while Branch Output builds its
+				// replacement a fraction of a second later
+				// (">>> new qsv encoder" in the log). Attach in
+				// that window and the angle reports "attached"
+				// and receives nothing for the whole match, which
+				// is the worst failure this plugin can have: a
+				// camera that looks armed and records air.
+				//
+				// It is NOT enough to compare encoders: Branch
+				// Output creates a whole new obs_output, so the
+				// dead one we hold keeps pointing at the dead
+				// encoder and the two always agree. What settles
+				// it is asking who answers to that NAME now.
+				if (ch.attached.load() &&
+				    ch.videoPackets.load() == 0 && ch.boOutput &&
+				    (int64_t)os_gettime_ns() -
+						    ch.armWallNs.load() >
+					    kSilentAttachMs * 1'000'000LL) {
+					const std::string boName =
+						std::string(branch_output::
+								    kFilterNamePrefix) +
+						std::to_string(i + 1);
+					obs_output_t *cur = obs_get_output_by_name(
+						boName.c_str());
+					const bool stale =
+						cur != ch.boOutput ||
+						!obs_output_active(ch.boOutput) ||
+						obs_output_get_video_encoder(
+							ch.boOutput) !=
+							ch.videoEncoder;
+					if (cur)
+						obs_output_release(cur);
+					if (stale) {
+						obs_log(LOG_WARNING,
+							"[tap] cam%d: attached but "
+							"silent for %lld ms and "
+							"Branch Output has moved on "
+							"— re-attaching",
+							i + 1,
+							(long long)kSilentAttachMs);
+						doomed.push_back(detachLocked(i));
+						attempts[i] = 0;
+						continue;
+					}
 				}
 
 				if (!wanted_[i] || ch.attached.load())
@@ -364,6 +438,11 @@ void PacketTap::armLoop()
 			}
 		}
 
+		// Outside the lock, always: this is where a stuck teardown would
+		// otherwise take the whole tap down with it.
+		for (auto &d : doomed)
+			dispose(std::move(d));
+
 		if (++tick >= kReportEveryTicks) {
 			tick = 0;
 			if (anyAttached())
@@ -377,6 +456,10 @@ bool PacketTap::attachLocked(int camIndex)
 	Channel &ch = channels_[camIndex];
 	if (ch.attached.load())
 		return true;
+	// A previous attachment is still being let go of (see Doomed). Attaching
+	// now would overwrite the output its stop callback still needs.
+	if (ch.disposing.load())
+		return false;
 
 	// Branch Output names its recording output after the filter's source
 	// name (plugin-main.cpp: name(obs_source_get_name(source))), and we own
@@ -536,12 +619,14 @@ bool PacketTap::attachLocked(int camIndex)
 	return true;
 }
 
-void PacketTap::detachLocked(int camIndex)
+PacketTap::Doomed PacketTap::detachLocked(int camIndex)
 {
+	Doomed d;
 	Channel &ch = channels_[camIndex];
 	if (!ch.attached.exchange(false))
-		return;
+		return d;
 
+	// Cheap and safe under the lock: this only unhooks a callback list.
 	if (ch.signalConnected && ch.boOutput) {
 		if (signal_handler_t *sh =
 			    obs_output_get_signal_handler(ch.boOutput))
@@ -550,36 +635,82 @@ void PacketTap::detachLocked(int camIndex)
 		ch.signalConnected = false;
 	}
 
-	if (ch.tapOutput) {
-		obs_output_stop(ch.tapOutput);
-		obs_output_release(ch.tapOutput);
-		ch.tapOutput = nullptr;
-	}
-	if (ch.videoEncoder) {
-		obs_encoder_release(ch.videoEncoder);
-		ch.videoEncoder = nullptr;
-	}
-	if (ch.audioEncoder) {
-		obs_encoder_release(ch.audioEncoder);
-		ch.audioEncoder = nullptr;
-	}
-	if (ch.boOutput) {
-		obs_output_release(ch.boOutput);
-		ch.boOutput = nullptr;
-	}
+	// Everything that can block leaves with the caller. The channel is
+	// unhooked already, so as far as every reader is concerned this camera
+	// is detached NOW, whatever libobs takes to finish letting go.
+	//
+	// tapOutput is the exception and it must stay: obs_output_stop() calls
+	// our tapStop(), which ends data capture on exactly that pointer. Null
+	// it here and the stop waits for a capture nobody will ever end — which
+	// is precisely how a "fix" for one hang produced a worse one, with the
+	// tap unable to attach anything for the rest of the session.
+	d.channel = &ch;
+	d.camIndex = camIndex;
+	d.tapOutput = ch.tapOutput;
+	d.boOutput = ch.boOutput;
+	d.videoEncoder = ch.videoEncoder;
+	d.audioEncoder = ch.audioEncoder;
+	d.videoPackets = ch.videoPackets.load();
+	d.audioPackets = ch.audioPackets.load();
+	ch.boOutput = nullptr;
+	ch.videoEncoder = nullptr;
+	ch.audioEncoder = nullptr;
+	ch.disposing.store(true); // no re-attach until the stop has returned
+	return d;
+}
 
-	obs_log(LOG_INFO, "[tap] cam%d detached (%" PRIu64 " video, %" PRIu64
-			  " audio packets)",
-		camIndex + 1, ch.videoPackets.load(), ch.audioPackets.load());
+void PacketTap::dispose(Doomed d)
+{
+	if (d.empty())
+		return;
+	disposing_.fetch_add(1);
+	// Detached on purpose. obs_output_stop() here can block indefinitely
+	// when Branch Output is tearing the shared encoder down at the same
+	// moment (measured: 20 s and still going), and there is nobody it would
+	// be acceptable to make wait for that — not the arm thread, which
+	// unload() joins, and certainly not the UI thread inside STOP.
+	std::thread([this, d]() {
+		if (d.tapOutput) {
+			obs_output_stop(d.tapOutput);
+			obs_output_release(d.tapOutput);
+		}
+		if (d.videoEncoder)
+			obs_encoder_release(d.videoEncoder);
+		if (d.audioEncoder)
+			obs_encoder_release(d.audioEncoder);
+		if (d.boOutput)
+			obs_output_release(d.boOutput);
+		if (d.channel) {
+			// Only now is the output really nobody's: the stop has
+			// returned, so tapStop() cannot be called on it again.
+			std::lock_guard<std::mutex> lock(mutex_);
+			if (d.channel->tapOutput == d.tapOutput)
+				d.channel->tapOutput = nullptr;
+			d.channel->disposing.store(false);
+		}
+		obs_log(LOG_INFO,
+			"[tap] cam%d detached (%" PRIu64 " video, %" PRIu64
+			" audio packets)",
+			d.camIndex + 1, d.videoPackets, d.audioPackets);
+		disposing_.fetch_sub(1);
+	}).detach();
 }
 
 void PacketTap::detachAll()
 {
-	std::lock_guard<std::mutex> lock(mutex_);
-	for (int i = 0; i < kMaxTapChannels; i++) {
-		wanted_[i] = false;
-		detachLocked(i);
+	// Called from STOP, i.e. from the UI thread. It must come back promptly
+	// whatever state Branch Output is in, so the blocking half happens after
+	// the lock is dropped, on threads of its own (see Doomed).
+	std::vector<Doomed> doomed;
+	{
+		std::lock_guard<std::mutex> lock(mutex_);
+		for (int i = 0; i < kMaxTapChannels; i++) {
+			wanted_[i] = false;
+			doomed.push_back(detachLocked(i));
+		}
 	}
+	for (auto &d : doomed)
+		dispose(std::move(d));
 }
 
 // ---------------------------------------------------------------------------

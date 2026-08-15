@@ -183,6 +183,12 @@ private:
 	// the encoder thread and must never block it.
 	struct Channel {
 		std::atomic<bool> attached{false};
+		// A detach whose obs_output_stop() has not come back yet. The
+		// tap output stays in tapOutput until then — tapStop() reads it
+		// to end data capture, and nulling it first is what made
+		// obs_output_stop() wait for a capture that could never end.
+		// No re-attach while this is true.
+		std::atomic<bool> disposing{false};
 		// Set by the Branch Output "stopping" signal (which fires on an OBS
 		// thread we do not own). The arm thread does the actual detach, so
 		// the signal never re-enters our mutex and cannot deadlock.
@@ -248,9 +254,39 @@ private:
 	// Branch Output's output is going away — detach before it tears down.
 	static void onBoOutputStopping(void *param, calldata_t *cd);
 
+	// What a detach has to dispose of, lifted out of the Channel so that the
+	// disposal happens with NO lock of ours held.
+	//
+	// This is not tidiness. obs_output_stop() on our tap output ends data
+	// capture on an encoder Branch Output may be tearing down at that very
+	// moment, and when Branch Output stops FIRST — the path we do not
+	// control: the operator disables a filter, removes a source, changes
+	// scene collection — that call was measured hanging for 20 s and never
+	// coming back. Made under mutex_, as it used to be, the hang belonged to
+	// everyone: PacketTap::stats() blocked, so the health sampler blocked;
+	// detachAll() blocked, so STOP blocked; and STOP runs on the UI thread,
+	// so OBS froze with a take still recording. Now the hang costs one
+	// detached thread and nothing else.
+	struct Channel; // defined below
+	struct Doomed {
+		Channel *channel = nullptr;
+		int camIndex = 0;
+		obs_output_t *tapOutput = nullptr;
+		obs_output_t *boOutput = nullptr;
+		obs_encoder_t *videoEncoder = nullptr;
+		obs_encoder_t *audioEncoder = nullptr;
+		uint64_t videoPackets = 0;
+		uint64_t audioPackets = 0;
+		bool empty() const { return !tapOutput && !boOutput; }
+	};
+
 	void armLoop();
 	bool attachLocked(int camIndex); // mutex_ held
-	void detachLocked(int camIndex); // mutex_ held
+	// Unhooks the channel and hands back what still has to be stopped and
+	// released. The caller MUST pass the result to dispose(), after
+	// unlocking.
+	[[nodiscard]] Doomed detachLocked(int camIndex); // mutex_ held
+	void dispose(Doomed d);                          // no lock held
 
 	mutable std::mutex mutex_;
 	std::array<Channel, kMaxTapChannels> channels_{};
@@ -258,6 +294,9 @@ private:
 
 	std::thread armThread_;
 	std::atomic<bool> armRunning_{false};
+	// Disposals still in flight (see Doomed). unload() gives them a moment
+	// to finish before libobs goes away underneath them.
+	std::atomic<int> disposing_{0};
 	std::condition_variable armWake_;
 	bool registered_ = false;
 };
