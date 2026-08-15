@@ -1853,7 +1853,7 @@ MultiReplayDock::LayoutProbe MultiReplayDock::layoutProbe() const
 void MultiReplayDock::updateMultiviewTally()
 {
 	const auto ps = pc().playState();
-	const int pvw = currentAngle1_ - 1;
+	const int pvw = currentAngle1() - 1;
 	const int pgm = (ps.active && ps.angle1 > 0) ? ps.angle1 - 1 : -1;
 	if (pvw == tileTallyPvw_ && pgm == tileTallyPgm_)
 		return;
@@ -1883,31 +1883,50 @@ void MultiReplayDock::updateMultiviewTally()
 
 QWidget *MultiReplayDock::buildAngleMatrix()
 {
+	// TWO rows, A over B, as on the reference panel. They are not decoration: the
+	// working method of a replay operator is to keep one bay on air while
+	// lining the next angle up on the other, and a single shared row makes
+	// that impossible to express. Pressing a key sets THAT channel's angle
+	// and re-cues THAT channel; which channel the transport keys drive is
+	// still the A|B selector's business, and pressing a camera key does not
+	// quietly steal it.
+	auto *box = new QWidget(this);
+	auto *bv = new QVBoxLayout(box);
+	bv->setContentsMargins(0, 0, 0, 0);
+	bv->setSpacing(2);
+	for (int ch = 0; ch < kChannels; ch++)
+		bv->addWidget(buildAngleRow((Which)ch));
+	return box;
+}
+
+QWidget *MultiReplayDock::buildAngleRow(Which which)
+{
 	auto *row = new QWidget(this);
 	auto *h = new QHBoxLayout(row);
 	h->setContentsMargins(0, 0, 0, 0);
 	h->setSpacing(3);
 
-	// the reference controller has an A row and a B row here. There is one replay channel in this
-	// plugin, so there is one row, and it keeps the "A" prefix: the operator
-	// reads it as the A row he knows, not as an unlabelled strip of numbers.
-	h->addWidget(sectionLabel(QStringLiteral("A"), row));
+	h->addWidget(sectionLabel(QString(channelLetter(which)), row));
 
-	anglesA_ = new QButtonGroup(this);
-	anglesA_->setExclusive(true);
+	auto *group = new QButtonGroup(this);
+	group->setExclusive(true);
 	for (int i = 1; i <= kNCams; i++) {
 		auto *b = new QPushButton(QString::number(i), row);
 		b->setObjectName("mrAngle");
 		b->setCheckable(true);
 		b->setCursor(Qt::PointingHandCursor);
-		b->setToolTip(QString("%1 %2")
+		b->setToolTip(QString("%1 %2 — %3")
 				      .arg(obs_module_text("Dock.Angle"))
-				      .arg(i));
-		anglesA_->addButton(b, i);
+				      .arg(i)
+				      .arg(channelLetter(which)));
+		group->addButton(b, i);
 		h->addWidget(b);
 	}
-	connect(anglesA_, &QButtonGroup::idClicked, this,
-		[this](int id) { setAngle(id); });
+	connect(group, &QButtonGroup::idClicked, this,
+		[this, which](int id) { setAngleOn(which, id); });
+	angles_[(int)which] = group;
+	if (which == Which::A)
+		anglesA_ = group; // the name the rest of the panel knows it by
 
 	return row;
 }
@@ -1946,7 +1965,7 @@ QWidget *MultiReplayDock::buildTransport()
 	connect(lastBtn, &QPushButton::clicked, this, [this]() {
 		std::string err;
 		if (!pc().playLastEvent(
-			    currentAngle1_ - 1,
+			    currentAngle1() - 1,
 			    toOutputBtn_ && toOutputBtn_->isChecked(), err))
 			QMessageBox::warning(this, "obs-multireplay",
 					     QString::fromStdString(err));
@@ -1981,14 +2000,14 @@ QWidget *MultiReplayDock::buildTransport()
 		connect(actOut, &QAction::triggered, this, [this]() {
 			std::string err;
 			if (!pc().playEvents(
-				    selectedEventIds(), currentAngle1_ - 1,
+				    selectedEventIds(), currentAngle1() - 1,
 				    /*toOutput*/ true, err))
 				showNotice(QString::fromStdString(err));
 		});
 		connect(actLast, &QAction::triggered, this, [this]() {
 			std::string err;
 			if (!pc().playLastEvent(
-				    currentAngle1_ - 1,
+				    currentAngle1() - 1,
 				    toOutputBtn_ && toOutputBtn_->isChecked(),
 				    err))
 				showNotice(QString::fromStdString(err));
@@ -2101,7 +2120,7 @@ QWidget *MultiReplayDock::buildBottomBar()
 				ExportManager::instance().exportEvent(
 					id, 0, folder.toStdString(), err);
 		});
-		h->addWidget(exp);
+
 
 		// ...and the whole selection as ONE file: the highlights reel.
 		// Same events, same order, same angles, same speeds — one clip
@@ -2129,7 +2148,7 @@ QWidget *MultiReplayDock::buildBottomBar()
 			else
 				showNotice(obs_module_text("Dock.ExportReelStarted"));
 		});
-		h->addWidget(reel);
+
 
 		// The running order is the operator's. the reference controller sorts by time or by
 		// the order marks were taken; neither is the order a highlights
@@ -2149,6 +2168,11 @@ QWidget *MultiReplayDock::buildBottomBar()
 			h->addWidget(b);
 		}
 
+		// the reference controller keeps the clip-editing keys on the left of this row and the
+		// EXPORTS at its far right, with nothing but air between them: one
+		// is what the operator does during the match, the other what he
+		// does after it, and mixing the two is how a reel gets started in
+		// the middle of the second half.
 		// Duplicate / delete / delete-all have no place of their own on the
 		// reference panel (they live in its context menu), and four more buttons
 		// on this row would be four more things to read past. They are here,
@@ -2193,6 +2217,15 @@ QWidget *MultiReplayDock::buildBottomBar()
 			});
 		}
 		h->addWidget(edit);
+
+		// the reference controller keeps the clip keys on the left of this row and the EXPORTS
+		// at its far right, with nothing but air between them: one is what
+		// the operator does during the match and the other what he does
+		// after it, and a reel is not something to start by accident in the
+		// middle of the second half.
+		h->addStretch(1);
+		h->addWidget(exp);
+		h->addWidget(reel);
 		v->addLayout(h);
 	}
 
@@ -2509,7 +2542,7 @@ QWidget *MultiReplayDock::buildMarkers()
 		if (!markable(t))
 			return;
 		// Inherit the currently selected camera angle (0-based).
-		EventStore::instance().markIn(t, currentAngle1_ - 1);
+		EventStore::instance().markIn(t, currentAngle1() - 1);
 		refreshEvents();
 	});
 	connect(out, &QPushButton::clicked, this, [this]() {
@@ -2532,7 +2565,7 @@ QWidget *MultiReplayDock::buildMarkers()
 			if (!markable(t))
 				return;
 			EventStore::instance().markInOut(t, sec,
-							 currentAngle1_ - 1);
+							 currentAngle1() - 1);
 			refreshEvents();
 		});
 		h->addWidget(b);
@@ -2618,7 +2651,7 @@ QWidget *MultiReplayDock::buildEvents()
 				return;
 			std::string err;
 			if (!pc().playEvents(
-				    {id}, currentAngle1_ - 1, /*toOutput*/ true,
+				    {id}, currentAngle1() - 1, /*toOutput*/ true,
 				    err))
 				showNotice(QString::fromStdString(err));
 		});
@@ -2758,7 +2791,7 @@ void MultiReplayDock::updateCamHeaderHighlight()
 		return;
 	int hot = -1;
 	for (size_t i = 0; i < camCols_.size(); i++)
-		if (camCols_[i] == currentAngle1_ - 1)
+		if (camCols_[i] == currentAngle1() - 1)
 			hot = kColFirstCam + (int)i * kColsPerCam;
 	if (hot == camHeaderHot_)
 		return;
@@ -2790,10 +2823,10 @@ int64_t MultiReplayDock::markTimeNs() const
 	// on the frame that was on screen and means the same instant on every
 	// other angle — no arm timestamp, no encoder-startup lag to subtract.
 	if (EventStore::instance().liveMode()) {
-		int64_t now = PacketTap::instance().newestNs(currentAngle1_ - 1);
+		int64_t now = PacketTap::instance().newestNs(currentAngle1() - 1);
 		if (now > 0) {
 			MR_DLOG("[ev] markTime LIVE master=%lldms (cam %d)",
-				(long long)(now / 1000000), currentAngle1_);
+				(long long)(now / 1000000), currentAngle1());
 			return now;
 		}
 	}
@@ -3008,7 +3041,7 @@ void MultiReplayDock::playSelected()
 {
 	std::string err;
 	if (!pc().playEvents(
-		    selectedEventIds(), currentAngle1_ - 1,
+		    selectedEventIds(), currentAngle1() - 1,
 		    toOutputBtn_ && toOutputBtn_->isChecked(), err))
 		QMessageBox::warning(this, "obs-multireplay",
 				     QString::fromStdString(err));
@@ -3016,16 +3049,28 @@ void MultiReplayDock::playSelected()
 
 void MultiReplayDock::setAngle(int angle1Based)
 {
+	// The active channel's row. This is what the hotkeys and the numbered
+	// keys mean by "the angle".
+	setAngleOn(activeChannel_, angle1Based);
+}
+
+void MultiReplayDock::setAngleOn(Which which, int angle1Based)
+{
 	if (angle1Based < 1 || angle1Based > kNCams)
 		return;
-	currentAngle1_ = angle1Based;
-	// Shared with the hotkeys, which have no way to reach the dock.
-	ReplayCore::instance().setCurrentAngle(angle1Based - 1);
-	// Re-cue the current clip on the chosen angle: re-play the selected (or
-	// last) completed event from its IN on this angle, at the angle's resolved
-	// speed. So switching angle during a replay shows the SAME clip from the
-	// same in-point on the new camera.
-	replayCurrent();
+	angle1_[(int)which] = angle1Based;
+	// Shared with the hotkeys, which have no way to reach the dock — and
+	// only the ACTIVE channel's angle can be that shared one, because there
+	// is one of it. Pressing B's camera 3 while the keys are on A sets B's
+	// angle and leaves the hotkeys where they were, which is what the two
+	// rows are for.
+	if (which == activeChannel_)
+		ReplayCore::instance().setCurrentAngle(angle1Based - 1);
+	// Re-cue the clip on the chosen angle, on the channel it belongs to:
+	// re-play the selected (or last) completed event from its IN there, at
+	// that angle's resolved speed. So switching angle during a replay shows
+	// the SAME clip from the same in-point on the new camera.
+	replayCurrentOn(which);
 }
 
 void MultiReplayDock::stepFrameForward()
@@ -3071,7 +3116,7 @@ void MultiReplayDock::stepFrameForward()
 	playheadNs_ = inNs;
 
 	std::string err;
-	if (!chan().play(currentAngle1_ - 1, inNs,
+	if (!chan().play(currentAngle1() - 1, inNs,
 					    std::min(outNs, edge), 100, err))
 		showNotice(QString("%1 — %2")
 				   .arg(obs_module_text("Dock.NoFootageHere"))
@@ -3090,17 +3135,24 @@ void MultiReplayDock::applyReplaySpeed(int pct)
 
 void MultiReplayDock::replayCurrent()
 {
+	replayCurrentOn(activeChannel_);
+}
+
+void MultiReplayDock::replayCurrentOn(Which which)
+{
 	// While following live the angle buttons only pick which camera the
 	// preview mirrors; they must not start a replay. Once the operator plays
 	// something (which clears follow-live) they re-cue it — including during
 	// recording, which the ring makes possible and is the whole point.
 	if (ReplayCore::instance().followLive())
 		return;
-	auto &pc = this->pc();
+	auto &pc = PlaybackCoordinator::instance(which);
 	std::string err;
 	std::vector<int> ids = selectedEventIds();
 	bool toOut = toOutputBtn_ && toOutputBtn_->isChecked();
-	int a0 = currentAngle1_ - 1;
+	// THIS channel's angle, not the active one's: pressing B's camera 3
+	// re-cues B on camera 3 even while the transport keys are on A.
+	int a0 = angle1_[(int)which] - 1;
 	if (ids.empty())
 		ids = {EventStore::instance().lastEventId()};
 	if (ids.empty() || ids.front() <= 0)
@@ -3251,7 +3303,7 @@ void MultiReplayDock::updateChannelStrip()
 
 	chanStrip_->setText(l1 + "\n" + l2 + "\n" + l3);
 	if (chanBadge_)
-		chanBadge_->setText(QString("A%1").arg(currentAngle1_));
+		chanBadge_->setText(QString("A%1").arg(currentAngle1()));
 
 	// --- the green band: the state of the ANGLE that is on air ------------
 	// id · angle · time left · speed, with the fill as the progress through
@@ -3274,7 +3326,7 @@ void MultiReplayDock::updateChannelStrip()
 			// and 8 s is how long the operator will be looking at it.
 			text = QString("%1   A%2   %3   %4%")
 				       .arg(evId, idDigits, 10, QLatin1Char('0'))
-				       .arg(onAir ? ps.angle1 : currentAngle1_)
+				       .arg(onAir ? ps.angle1 : currentAngle1())
 				       .arg(shortTc(remNs * 100 / (barPct > 0
 									   ? barPct
 									   : 100)))
@@ -3370,7 +3422,7 @@ void MultiReplayDock::seekToFraction(double frac)
 	playheadNs_ = inNs;
 
 	std::string err;
-	if (!chan().play(currentAngle1_ - 1, inNs, outNs,
+	if (!chan().play(currentAngle1() - 1, inNs, outNs,
 					    speedPct_, err)) {
 		// Nothing covers that instant on this angle — the ring has evicted
 		// it and no anchored file holds it. Saying so is the point: the
@@ -3379,13 +3431,13 @@ void MultiReplayDock::seekToFraction(double frac)
 		const int64_t relMs = (inNs - timelineStartNs_) / 1000000;
 		showNotice(QString("%1 (cam %2 @ %3) — %4")
 				   .arg(obs_module_text("Dock.NoFootageHere"))
-				   .arg(currentAngle1_)
+				   .arg(currentAngle1())
 				   .arg(formatTc(relMs * 1000000))
 				   .arg(QString::fromStdString(err)));
 		obs_log(LOG_WARNING,
 			"[dock] no footage on angle %d at %lld ms into the "
 			"timeline: %s",
-			currentAngle1_, (long long)relMs, err.c_str());
+			currentAngle1(), (long long)relMs, err.c_str());
 	}
 }
 
@@ -3449,8 +3501,8 @@ void MultiReplayDock::poll()
 	// The hotkeys change the angle without going through the dock.
 	const int hotAngle1 = core.currentAngle() + 1;
 	if (hotAngle1 >= 1 && hotAngle1 <= kNCams)
-		currentAngle1_ = hotAngle1;
-	const int cam0 = currentAngle1_ - 1;
+		angle1_[(int)activeChannel_] = hotAngle1;
+	const int cam0 = currentAngle1() - 1;
 
 	const bool rec = core.isRecording();
 	const bool followLive = core.followLive();
@@ -3704,30 +3756,37 @@ void MultiReplayDock::poll()
 
 	// Angle buttons: PVW green = selected, PGM red = event playing on it.
 	// Visual state is driven by the "state" property + QSS, not :checked.
-	if (anglesA_) {
+	// One row per channel, each reading ITS OWN channel: A'+[char]39+'s row shows what
+	// A is on and what A has on air, and B'+[char]39+'s row the same for B. Reading
+	// both from the active channel would light the wrong row the moment the
+	// selector moved.
+	for (int chi = 0; chi < kChannels; chi++) {
+		QButtonGroup *grp = angles_[chi];
+		if (!grp)
+			continue;
+		const auto chSt = PlaybackCoordinator::instance((Which)chi)
+					  .playState();
 		// PGM follows the angle actually on air, which is not the selected
 		// one any more: a two-angle event plays C1 then C2 while the dock
-		// still points at whichever the operator picked. Driven by the
-		// SEQUENCE so the tally does not blink off in the gap between clips.
-		bool ep = sequenceOnAir && playSt.angle1 > 0;
+		// still points at whichever the operator picked.
+		bool ep = chSt.active && chSt.angle1 > 0;
+		const int sel = angle1_[chi];
 		for (int i = 1; i <= kNCams; i++) {
-			auto *b = qobject_cast<QPushButton *>(
-				anglesA_->button(i));
+			auto *b = qobject_cast<QPushButton *>(grp->button(i));
 			if (!b || !b->isVisible())
 				continue;
-			QString st = (ep && i == playSt.angle1)
+			QString st = (ep && i == chSt.angle1)
 					     ? QStringLiteral("program")
-				   : (i == currentAngle1_)
-					     ? QStringLiteral("preview")
-					     : QString();
+				   : (i == sel) ? QStringLiteral("preview")
+						: QString();
 			if (b->property("state").toString() != st) {
 				b->setProperty("state", st);
 				repolish(b);
 			}
 		}
 		// Keep exclusive selection in sync for click handling
-		if (anglesA_->button(currentAngle1_))
-			anglesA_->button(currentAngle1_)->setChecked(true);
+		if (grp->button(sel))
+			grp->button(sel)->setChecked(true);
 	}
 
 	// The row on air gets a PGM cue on its id cell. the reference controller colours the whole
@@ -4549,7 +4608,7 @@ void MultiReplayDock::setActiveChannel(Which which, bool linked)
 					    .arg(linked ? QStringLiteral("A|B")
 							: QString(channelLetter(
 								  which)))
-					    .arg(currentAngle1_));
+					    .arg(currentAngle1()));
 	poll();
 }
 

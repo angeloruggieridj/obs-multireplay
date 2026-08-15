@@ -471,6 +471,9 @@ private:
 	// the numbers. Read-only, like everything else in the health path.
 	void showHealthDetails();
 	void setAngle(int angle1Based);
+	// The same, on a named channel: B's camera row must set B's angle even
+	// while the transport keys are on A.
+	void setAngleOn(Which which, int angle1Based);
 	// (Re)play the selected (or last) completed event from its IN on the
 	// current angle at the resolved speed. No-op while following live (the
 	// angle buttons then only pick which camera the preview mirrors).
@@ -569,7 +572,10 @@ private:
 	OBSQTDisplay *displayB_ = nullptr;
 	QLabel *labelA_ = nullptr; // the letter under each box
 	QLabel *labelB_ = nullptr;
-	QButtonGroup *anglesA_ = nullptr;
+	QButtonGroup *anglesA_ = nullptr; // channel A's row (kept by name)
+	QButtonGroup *angles_[kChannels] = {nullptr, nullptr};
+	QWidget *buildAngleRow(Which which);
+	void replayCurrentOn(Which which);
 	// the reference controller's green channel strip under the A preview.
 	QLabel *chanBadge_ = nullptr; // "A1"
 	QLabel *chanStrip_ = nullptr; // the three information lines
@@ -587,7 +593,13 @@ private:
 	QPushButton *healthBtn_ = nullptr;
 
 	// transport
-	int currentAngle1_ = 1; // dock-selected angle (1-based) for replay/preview
+	// The angle each channel is on, 1-based. the reference controller has a row of camera keys
+	// per channel because A and B are two bays: the operator lines the next
+	// replay up on B while A is on air, and one shared angle would make that
+	// impossible. currentAngle1() is the ACTIVE channel's — the one the
+	// marks, the hotkeys and ReplayCore::currentAngle() all mean.
+	int angle1_[kChannels] = {1, 1};
+	int currentAngle1() const { return angle1_[(int)activeChannel_]; }
 	// Default replay speed (slider). The engine has no speed of its own any
 	// more: it is told the speed of the clip it is asked to play.
 	int speedPct_ = 100;
