@@ -121,6 +121,21 @@ public:
 	// Event markers drawn on the timeline as amber rectangles.
 	// Each pair is (inFrac, outFrac) in [0,1].
 	void setEventMarkers(std::vector<std::pair<double, double>> markers);
+	// Which event each marker belongs to, in the same order. Without it a
+	// marker is a rectangle nobody can edit; with it, grabbing its edge
+	// moves that event's point (see the markerDragged signal).
+	void setEventMarkerIds(std::vector<int> ids);
+	// The pixel of a fraction of the whole timeline. Public because the
+	// painter, the mouse handlers and the automated gate all have to agree
+	// on where a marker edge IS, and three copies of that arithmetic would
+	// be three things to keep in step.
+	int xForFraction(double frac) const;
+	size_t markerCount() const { return markers_.size(); }
+	std::pair<double, double> markerAt(size_t i) const
+	{
+		return i < markers_.size() ? markers_[i]
+					   : std::pair<double, double>{0.0, 0.0};
+	}
 
 	// --- zoom -------------------------------------------------------
 	// The bar draws a WINDOW of the timeline, not always the whole of it.
@@ -153,6 +168,9 @@ signals:
 	void scrubMoved(double frac);          // live drag/hover position
 	void seekRequested(double frac);       // committed on release/click
 	void zoomChanged(double zoom);         // so the panel can show it
+	// An event's IN or OUT was dragged to `frac`. The bar knows nothing
+	// about events: it reports the gesture and the host moves the point.
+	void markerDragged(int eventId, bool inPoint, double frac);
 
 protected:
 	void paintEvent(QPaintEvent *) override;
@@ -184,6 +202,14 @@ private:
 	int64_t durationNs_ = 0;
 	QString emptyHint_;
 	std::vector<std::pair<double, double>> markers_;
+	std::vector<int> markerIds_;
+	// The edge being dragged: which marker, and which end of it. -1 = the
+	// gesture in progress is an ordinary scrub.
+	int dragMarker_ = -1;
+	bool dragMarkerIn_ = true;
+	// Is x within grabbing distance of a marker edge? Fills the two fields
+	// above when it is.
+	bool findMarkerEdge(int x, int &marker, bool &inPoint) const;
 	// The window on the timeline, in fractions of the whole (see setZoom).
 	double zoom_ = 1.0;
 	double viewStart_ = 0.0;
@@ -297,6 +323,12 @@ public:
 	};
 	LayoutProbe layoutProbe() const;
 
+	// Move the selected event's IN or OUT by a plain amount of time. Public
+	// for the same reason layoutProbe is: the gate drives the real thing.
+	// The keys that call it are registered hotkeys, which have no widget to
+	// click (see registerDockHotkeys).
+	void nudgeSelectedPointNs(bool inPoint, int64_t deltaNs);
+
 	// Event table geometry. Public because the automated gate reads and edits
 	// REAL cells: given only a column count it could not tell "the per-event
 	// speed column is gone" from "the table is built differently today", and a
@@ -370,6 +402,11 @@ private:
 	// clamping rules live in one tested place.
 	void setSelectedPoint(bool inPoint);
 	void nudgeSelectedPoint(bool inPoint, int frames);
+	// The same in SECONDS, for the Stream Deck: "the mark is two seconds
+	// late" is how an operator thinks, and a frame key pressed sixty times
+	// is not an answer to it.
+	// An event edge was dragged on the position bar (SeekBar::markerDragged).
+	void onMarkerDragged(int eventId, bool inPoint, double frac);
 
 	// --- which replay channel the controls drive (the reference controller's A|B / A / B) ----
 	// The panel is one set of controls over two channels, so every command
@@ -695,6 +732,8 @@ private:
 	// Raw ns (in, out) for each completed event — fractions computed in poll()
 	// so markers shift leftward as recording time grows.
 	std::vector<std::pair<int64_t, int64_t>> markerNs_;
+	// The event behind each marker, same order — what makes an edge draggable.
+	std::vector<int> markerIds_;
 };
 
 } // namespace multireplay

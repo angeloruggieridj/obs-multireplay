@@ -1029,6 +1029,49 @@ void SeekBar::paintEvent(QPaintEvent *)
 	}
 }
 
+int SeekBar::xForFraction(double frac) const
+{
+	const int m = 2;
+	const int w = std::max(1, width() - 2 * m);
+	return m + (int)std::lround(w * std::clamp(toView(frac), 0.0, 1.0));
+}
+
+void SeekBar::setEventMarkerIds(std::vector<int> ids)
+{
+	markerIds_ = std::move(ids);
+}
+
+bool SeekBar::findMarkerEdge(int x, int &marker, bool &inPoint) const
+{
+	// Six pixels either side. Wider and a click meaning "scrub here" starts
+	// grabbing edges the operator was not aiming at; narrower and the edge
+	// cannot be hit at all on a bar this short. Zoom is what makes the aim
+	// easy, and that is the other half of this feature.
+	constexpr int kGrabPx = 6;
+	int best = -1;
+	int bestDist = kGrabPx + 1;
+	bool bestIn = true;
+	for (size_t i = 0; i < markers_.size() && i < markerIds_.size(); i++) {
+		const int xin = xForFraction(markers_[i].first);
+		const int xout = xForFraction(markers_[i].second);
+		if (std::abs(x - xin) < bestDist) {
+			bestDist = std::abs(x - xin);
+			best = (int)i;
+			bestIn = true;
+		}
+		if (std::abs(x - xout) < bestDist) {
+			bestDist = std::abs(x - xout);
+			best = (int)i;
+			bestIn = false;
+		}
+	}
+	if (best < 0)
+		return false;
+	marker = best;
+	inPoint = bestIn;
+	return true;
+}
+
 void SeekBar::mousePressEvent(QMouseEvent *e)
 {
 	// No timeline, no scrub. The host would refuse the seek anyway
@@ -1037,6 +1080,22 @@ void SeekBar::mousePressEvent(QMouseEvent *e)
 	// spans nothing.
 	if (e->button() != Qt::LeftButton || durationNs_ <= 0)
 		return;
+
+	// An edge under the finger means "move this point", not "go there". A
+	// mark taken live is late, and the fastest fix is to take hold of the
+	// mark itself: no selection, no keys, no dialog.
+	int marker = -1;
+	bool inPoint = true;
+	if (findMarkerEdge(e->pos().x(), marker, inPoint)) {
+		dragMarker_ = marker;
+		dragMarkerIn_ = inPoint;
+		dragging_ = true;
+		dragFrac_ = fracAt(e->pos().x());
+		emit scrubStateChanged(true);
+		update();
+		return;
+	}
+	dragMarker_ = -1;
 	dragging_ = true;
 	// Clamp to seekable region so the user can't drag into unindexed territory.
 	dragFrac_ = std::min(fracAt(e->pos().x()), seekableFrac_);
@@ -1047,9 +1106,28 @@ void SeekBar::mousePressEvent(QMouseEvent *e)
 
 void SeekBar::mouseMoveEvent(QMouseEvent *e)
 {
-	if (!dragging_)
+	if (!dragging_) {
+		// Hovering an edge says so with the cursor, which is the only
+		// hint there is that a marker can be taken hold of at all.
+		int m = -1;
+		bool in = true;
+		setCursor(findMarkerEdge(e->pos().x(), m, in) ? Qt::SizeHorCursor
+							      : Qt::ArrowCursor);
 		return;
+	}
 	dragFrac_ = std::min(fracAt(e->pos().x()), seekableFrac_);
+	if (dragMarker_ >= 0) {
+		// Live feedback on the marker itself, so the operator sees the
+		// clip's edge follow his hand rather than a number changing
+		// after he lets go.
+		auto &mk = markers_[(size_t)dragMarker_];
+		if (dragMarkerIn_)
+			mk.first = std::min(dragFrac_, mk.second);
+		else
+			mk.second = std::max(dragFrac_, mk.first);
+		update();
+		return;
+	}
 	emit scrubMoved(dragFrac_);
 	update();
 }
@@ -1060,6 +1138,20 @@ void SeekBar::mouseReleaseEvent(QMouseEvent *e)
 		return;
 	dragging_ = false;
 	dragFrac_ = std::min(fracAt(e->pos().x()), seekableFrac_);
+	if (dragMarker_ >= 0) {
+		// The bar knows nothing about events: it reports the gesture and
+		// the host decides what it means (and whether the store will
+		// even accept it — an IN cannot pass its OUT).
+		const int id = (size_t)dragMarker_ < markerIds_.size()
+				       ? markerIds_[(size_t)dragMarker_]
+				       : 0;
+		dragMarker_ = -1;
+		emit scrubStateChanged(false);
+		if (id > 0)
+			emit markerDragged(id, dragMarkerIn_, dragFrac_);
+		update();
+		return;
+	}
 	positionFrac_ = dragFrac_;
 	emit seekRequested(dragFrac_);
 	emit scrubStateChanged(false);
@@ -1616,11 +1708,13 @@ void MultiReplayDock::rebuildMultiview()
 			dn.empty() ? QString("Cam %1").arg(i + 1)
 				   : QString::fromStdString(dn));
 	}
-	// ...and the replay itself: "what will go on air" belongs next to the
-	// angles, not only in the big preview, which follows the live camera
-	// whenever the operator is watching the live edge.
-	tileSlots.push_back(kMaxCameras);
-	captions << obs_module_text("Dock.ReplayTile");
+	// The multiview is CAMERAS only. It used to carry a "Replay" tile as
+	// well, from the time there was one channel and the big preview followed
+	// the live camera — so "what will go on air" had nowhere else to be
+	// seen. There are two output boxes above it now, A and B, bigger,
+	// labelled and always right: a third, smaller copy of the same picture
+	// is a tile taken away from the cameras and one more display on the
+	// shared graphics thread for nothing.
 
 	const bool show = cfg.showMultiview;
 	QStringList sigParts;
@@ -2372,6 +2466,11 @@ QWidget *MultiReplayDock::buildBottomBar()
 	});
 	connect(seek_, &SeekBar::seekRequested, this,
 		[this](double frac) { seekToFraction(frac); });
+	connect(seek_, &SeekBar::markerDragged, this,
+		&MultiReplayDock::onMarkerDragged);
+	// The bar has to see the mouse before a button is pressed, or the cursor
+	// could never say "this edge can be grabbed".
+	seek_->setMouseTracking(true);
 	{
 		// The zoom key sits at the right end OF THE BAR, not in a
 		// toolbar: it is about this control and nothing else, and it is
@@ -2822,6 +2921,34 @@ void MultiReplayDock::registerDockHotkeys()
 		 [](MultiReplayDock *d) { d->setSelectedPoint(true); }},
 		{"ReplaySetOutHere", "Hotkey.SetOutHere",
 		 [](MultiReplayDock *d) { d->setSelectedPoint(false); }},
+		// Whole SECONDS, which is how an operator describes the problem:
+		// "the mark is two seconds late". A frame key pressed sixty times
+		// is not an answer to that, and on a Stream Deck it is not even
+		// possible.
+		{"ReplayTrimInBack1s", "Hotkey.TrimInBack1s",
+		 [](MultiReplayDock *d) {
+			 d->nudgeSelectedPointNs(true, -1'000'000'000LL);
+		 }},
+		{"ReplayTrimInFwd1s", "Hotkey.TrimInFwd1s",
+		 [](MultiReplayDock *d) {
+			 d->nudgeSelectedPointNs(true, 1'000'000'000LL);
+		 }},
+		{"ReplayTrimOutBack1s", "Hotkey.TrimOutBack1s",
+		 [](MultiReplayDock *d) {
+			 d->nudgeSelectedPointNs(false, -1'000'000'000LL);
+		 }},
+		{"ReplayTrimOutFwd1s", "Hotkey.TrimOutFwd1s",
+		 [](MultiReplayDock *d) {
+			 d->nudgeSelectedPointNs(false, 1'000'000'000LL);
+		 }},
+		{"ReplayTrimInBack5s", "Hotkey.TrimInBack5s",
+		 [](MultiReplayDock *d) {
+			 d->nudgeSelectedPointNs(true, -5'000'000'000LL);
+		 }},
+		{"ReplayTrimInFwd5s", "Hotkey.TrimInFwd5s",
+		 [](MultiReplayDock *d) {
+			 d->nudgeSelectedPointNs(true, 5'000'000'000LL);
+		 }},
 	};
 
 	for (const Def &def : kDefs) {
@@ -3899,19 +4026,30 @@ void MultiReplayDock::poll()
 	// the events themselves do not change.
 	if (seek_ && displayDurNs_ > 0) {
 		std::vector<std::pair<double, double>> mf;
+		std::vector<int> ids;
 		mf.reserve(markerNs_.size());
-		for (const auto &[inNs, outNs] : markerNs_) {
+		for (size_t i = 0; i < markerNs_.size(); i++) {
 			// Through the same map the bar is drawn with, so a mark
 			// sits over its own footage however many takes there
 			// have been (and an event in a gap that no longer exists
 			// collapses onto the join rather than smearing over it).
+			const auto &[inNs, outNs] = markerNs_[i];
 			double inf = 0.0, outf = 0.0;
-			if (timeline_.rangeFraction(inNs, outNs, inf, outf))
+			if (timeline_.rangeFraction(inNs, outNs, inf, outf)) {
 				mf.push_back({inf, outf});
+				// The two lists are read in lockstep by the
+				// bar, so a marker that is not drawn must not
+				// leave its id behind either.
+				ids.push_back(i < markerIds_.size()
+						      ? markerIds_[i]
+						      : 0);
+			}
 		}
 		seek_->setEventMarkers(std::move(mf));
+		seek_->setEventMarkerIds(std::move(ids));
 	} else if (seek_) {
 		seek_->setEventMarkers({});
+		seek_->setEventMarkerIds({});
 	}
 }
 
@@ -4046,6 +4184,9 @@ void MultiReplayDock::refreshEvents()
 	}
 	const Qt::Alignment mid = Qt::AlignVCenter | Qt::AlignHCenter;
 	std::vector<std::pair<int64_t, int64_t>> rawMarkers;
+	// ...and which event each of them belongs to, so its edge can be taken
+	// hold of on the bar (SeekBar::markerDragged).
+	std::vector<int> rawMarkerIds;
 
 	// Marks are absolute instants on a monotonic clock that started with OBS,
 	// so a column only means something relative to where this project's
@@ -4136,6 +4277,8 @@ void MultiReplayDock::refreshEvents()
 		// displayDurNs_ so markers shift left as recording time grows.
 		if (tin != kNoInstant && tout != kNoInstant && tout > tin)
 			rawMarkers.push_back({tin, tout});
+		if (tin != kNoInstant && tout != kNoInstant && tout > tin)
+			rawMarkerIds.push_back(id);
 
 		// search filter (id / per-angle notes / angles)
 		if (!needle.isEmpty()) {
@@ -4246,6 +4389,7 @@ void MultiReplayDock::refreshEvents()
 	}
 	refreshing_ = false;
 	markerNs_ = std::move(rawMarkers);
+	markerIds_ = std::move(rawMarkerIds);
 	// Fraction conversion happens in poll() each tick via displayDurNs_.
 
 	// Keep exactly one event selected: when a newer event appears (a fresh
@@ -4309,6 +4453,41 @@ void MultiReplayDock::setSelectedPoint(bool inPoint)
 		ids.front(), inPoint ? "IN" : "OUT",
 		(long long)((playheadNs_ - from) / 1'000'000));
 	refreshEvents();
+}
+
+void MultiReplayDock::onMarkerDragged(int eventId, bool inPoint, double frac)
+{
+	if (timeline_.empty())
+		return;
+	ReplayEvent ev;
+	if (!EventStore::instance().get(eventId, ev))
+		return;
+	const int64_t want = timeline_.instantAt(frac);
+	const int64_t from = inPoint ? ev.tInNs : ev.tOutNs;
+	if (from == kNoInstant)
+		return;
+	// A delta, like every other way of moving a point: the store owns the
+	// rule that an IN cannot pass its OUT, and it is tested in one place.
+	if (!EventStore::instance().movePoint(eventId, inPoint, want - from)) {
+		showNotice(obs_module_text("Dock.TrimRefused"));
+		return;
+	}
+	obs_log(LOG_INFO, "[dock] dragged event %d's %s by %lld ms", eventId,
+		inPoint ? "IN" : "OUT", (long long)((want - from) / 1'000'000));
+	refreshEvents();
+}
+
+void MultiReplayDock::nudgeSelectedPointNs(bool inPoint, int64_t deltaNs)
+{
+	const auto ids = selectedEventIds();
+	if (ids.empty()) {
+		showNotice(obs_module_text("Dock.TrimNoSelection"));
+		return;
+	}
+	if (EventStore::instance().movePoint(ids.front(), inPoint, deltaNs))
+		refreshEvents();
+	else
+		showNotice(obs_module_text("Dock.TrimRefused"));
 }
 
 void MultiReplayDock::nudgeSelectedPoint(bool inPoint, int frames)
@@ -4726,6 +4905,27 @@ void MultiReplayDock::openSettings()
 	}
 	outPage->addRow(obs_module_text("Dock.OutputScene"), outScene);
 
+	// ...and B's own. Two channels are two OBS inputs, so they live in two
+	// scenes: with one scene for both, playing on B switched program to the
+	// scene that holds A and the operator watched A while B was the thing
+	// that was playing. Same list, same "(none)" meaning "do not touch
+	// program".
+	auto *outSceneB = new QComboBox(&dlg);
+	outSceneB->setToolTip(obs_module_text("Dock.OutputSceneBHint"));
+	for (int i = 0; i < outScene->count(); i++)
+		outSceneB->addItem(outScene->itemText(i), outScene->itemData(i));
+	{
+		const QString cur = QString::fromStdString(cfg.outputSceneNameB);
+		int idx = outSceneB->findData(cur);
+		if (idx < 0 && !cur.isEmpty()) {
+			outSceneB->addItem(cur, cur);
+			idx = outSceneB->count() - 1;
+		}
+		if (idx >= 0)
+			outSceneB->setCurrentIndex(idx);
+	}
+	outPage->addRow(obs_module_text("Dock.OutputSceneB"), outSceneB);
+
 	auto *autoSwitch = new QCheckBox(&dlg);
 	autoSwitch->setChecked(cfg.autoSwitchScene);
 	outPage->addRow(obs_module_text("Dock.AutoSwitch"), autoSwitch);
@@ -4870,6 +5070,7 @@ void MultiReplayDock::openSettings()
 	}
 	cfg.videoEncoderId = enc->currentData().toString().toStdString();
 	cfg.outputSceneName = outScene->currentData().toString().toStdString();
+	cfg.outputSceneNameB = outSceneB->currentData().toString().toStdString();
 	cfg.musicSourceName = music->currentData().toString().toStdString();
 	cfg.autoSwitchScene = autoSwitch->isChecked();
 	cfg.fitReplayToCanvas = fitCanvas->isChecked();

@@ -1039,6 +1039,8 @@ void ReplayCore::loadConfig()
 	config_.videoEncoderId = obs_data_get_string(data, "videoEncoderId");
 	config_.outputSceneName =
 		obs_data_get_string(data, "outputSceneName");
+	config_.outputSceneNameB =
+		obs_data_get_string(data, "outputSceneNameB");
 	config_.replaySourceName =
 		obs_data_get_string(data, "replaySourceName");
 	config_.musicSourceName =
@@ -1127,6 +1129,8 @@ void ReplayCore::saveConfig() const
 			    config_.videoEncoderId.c_str());
 	obs_data_set_string(data, "outputSceneName",
 			    config_.outputSceneName.c_str());
+	obs_data_set_string(data, "outputSceneNameB",
+			    config_.outputSceneNameB.c_str());
 	obs_data_set_string(data, "replaySourceName",
 			    config_.replaySourceName.c_str());
 	obs_data_set_string(data, "musicSourceName",

@@ -58,7 +58,10 @@ struct Config {
 	int audioBitrateKbps = kDefaultAudioBitrateKbps;
 	std::string videoEncoderId; // "" = auto-detect best hardware encoder
 	std::string recFormat = "hybrid_mp4";
-	std::string outputSceneName; // scene switched to program on "to output"
+	std::string outputSceneName;  // scene switched to program on "to output"
+	// ...and B's. Two channels are two inputs, so they sit in two scenes:
+	// sending both to one is how "play on B" put A on air.
+	std::string outputSceneNameB;
 	// Legacy: the replay is a plugin-provided OBS input the operator places
 	// himself, so nothing drives a Media Source any more. Kept so an existing
 	// config.json round-trips unchanged.

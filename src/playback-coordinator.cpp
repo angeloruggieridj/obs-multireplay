@@ -459,12 +459,19 @@ void PlaybackCoordinator::switchToReplayScene()
 	// an ordinary OBS input the operator puts where he wants it, so the only
 	// thing to switch to is the scene he configured. With none configured the
 	// clip still plays into the input — we just don't take program from him.
-	std::string scene = ReplayCore::instance().getConfig().outputSceneName;
+	// The scene of THIS channel. A and B are two different inputs, so they
+	// live in two different scenes, and sending both to the same one is how
+	// pressing play on B put A on air: B's clip went into B's input, which
+	// that scene does not contain, so program showed whatever A had last.
+	// Reported from the panel, and exactly right.
+	const Config cfg = ReplayCore::instance().getConfig();
+	std::string scene = which_ == Which::B ? cfg.outputSceneNameB
+					       : cfg.outputSceneName;
 	if (scene.empty()) {
 		obs_log(LOG_INFO,
-			"coordinator: no output scene configured — playing "
-			"into '%s' without switching program",
-			channel().sourceName());
+			"coordinator: no output scene configured for channel %s — "
+			"playing into '%s' without switching program",
+			channelLetter(which_), channel().sourceName());
 		return;
 	}
 	auto *ctx = new SceneSwitchCtx{scene, &previousSceneName_};

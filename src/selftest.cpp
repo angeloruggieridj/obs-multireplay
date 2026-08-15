@@ -299,6 +299,9 @@ struct DockChecks {
 	bool swapMovesClip = false;
 	bool trimMovedIn = false;
 	bool seekbarZooms = false;
+
+	bool dragMovesMarker = false;
+	bool secondsHotkeyMovesPoint = false;
 	int64_t trimDeltaMs = 0;
 	double zoomReached = 1.0;
 };
@@ -320,6 +323,8 @@ struct HealthChecks {
 	bool deadAngleReported = false;
 	bool deadAngleIsNotFatal = false;
 	bool findingsClearedAtStop = false;
+	// B has an output scene of its own (the bug where play on B put A on air).
+	bool bTakesItsOwnScene = false;
 	int samples = 0;
 	int64_t detectMs = -1;
 	std::string refusal;     // what REC said when it refused
@@ -551,6 +556,89 @@ HealthChecks runHealthChecks(const std::vector<obs_source_t *> &cams, int camCou
 
 	runOnUi([&]() { core.stopRecording(); });
 	c.findingsClearedAtStop = monitor.findings().empty();
+
+	// --- B goes to ITS OWN scene ------------------------------------------
+	// Reported from the panel: with B selected and "to output" on, program
+	// showed A. Both channels switched to the one configured scene — the one
+	// holding A's input — so B's clip played into an input nobody was
+	// looking at.
+	//
+	// Checked HERE, with nothing recording, and not among the dock checks:
+	// it needs setConfig, setConfig re-applies the Branch Output filter
+	// settings, and that makes Branch Output rebuild its encoders out from
+	// under the tap (the architecture notes's oldest trap). Run mid-take it cost the two
+	// health checks their packets — the gate caught its own test.
+	{
+		auto &store = EventStore::instance();
+		const int64_t newest = PacketTap::instance().newestNs(first);
+		int evId = 0;
+		if (newest > 0) {
+			evId = store.markIn(newest - 3'000'000'000LL, first);
+			store.markOut(newest - 1'000'000'000LL);
+			store.setAngle(evId, first + 1, true);
+		}
+		obs_source_t *sceneA = nullptr;
+		obs_source_t *sceneB = nullptr;
+		std::string beforeScene;
+		Config cfgOut = core.getConfig();
+		runOnUi([&]() {
+			if (obs_source_t *cur = obs_frontend_get_current_scene()) {
+				const char *n = obs_source_get_name(cur);
+				beforeScene = n ? n : "";
+				obs_source_release(cur);
+			}
+			obs_scene_t *sa = obs_scene_create("MRSelfTest Out A");
+			obs_scene_t *sb = obs_scene_create("MRSelfTest Out B");
+			sceneA = sa ? obs_scene_get_source(sa) : nullptr;
+			sceneB = sb ? obs_scene_get_source(sb) : nullptr;
+			cfgOut.outputSceneName = "MRSelfTest Out A";
+			cfgOut.outputSceneNameB = "MRSelfTest Out B";
+			core.setConfig(cfgOut);
+		});
+		std::string oerr;
+		std::string programAfterB;
+		if (evId > 0)
+			runOnUi([&]() {
+				PlaybackCoordinator::instance(Which::B).playEvents(
+					{evId}, first, /*toOutput*/ true, oerr,
+					PlaybackCoordinator::AngleMode::Single);
+			});
+		for (int i = 0; i < 20 && programAfterB != "MRSelfTest Out B"; i++) {
+			std::this_thread::sleep_for(std::chrono::milliseconds(100));
+			runOnUi([&]() {
+				if (obs_source_t *cur =
+					    obs_frontend_get_current_scene()) {
+					const char *n = obs_source_get_name(cur);
+					programAfterB = n ? n : "";
+					obs_source_release(cur);
+				}
+			});
+		}
+		c.bTakesItsOwnScene = programAfterB == "MRSelfTest Out B";
+		obs_log(c.bTakesItsOwnScene ? LOG_INFO : LOG_ERROR,
+			"[selftest] B to output put '%s' on program (wanted "
+			"'MRSelfTest Out B')%s%s",
+			programAfterB.c_str(), oerr.empty() ? "" : " — ",
+			oerr.c_str());
+
+		PlaybackCoordinator::instance(Which::B).stopEvents();
+		if (evId > 0)
+			store.remove(evId);
+		runOnUi([&]() {
+			if (!beforeScene.empty()) {
+				if (obs_source_t *s = obs_get_source_by_name(
+					    beforeScene.c_str())) {
+					obs_frontend_set_current_scene(s);
+					obs_source_release(s);
+				}
+			}
+			if (sceneA)
+				obs_source_remove(sceneA);
+			if (sceneB)
+				obs_source_remove(sceneB);
+		});
+	}
+
 	runOnUi([&]() { core.setConfig(original); });
 	obs_log(LOG_INFO, "[selftest] health pass done, camera config restored");
 	return c;
@@ -1437,6 +1525,89 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 				after.tOutNs == before.tOutNs ? "unchanged"
 							      : "MOVED TOO");
 			// Put it back: the checks after this one play this event.
+			store.movePoint(evId, true, before.tInNs - after.tInNs);
+		}
+
+		// --- an event edge can be dragged on the bar ------------------
+		// The operator grabs the IN of a marker and pulls it: no
+		// selection, no keys. Driven as real mouse events, at the pixel
+		// the bar itself says that edge is on.
+		{
+			ReplayEvent before;
+			store.get(evId, before);
+			bool sent = false;
+			runOnUi([&]() {
+				SeekBar *bar = dock->findChild<SeekBar *>();
+				if (!bar || bar->markerCount() == 0)
+					return;
+				const auto mk = bar->markerAt(0);
+				const int x0 = bar->xForFraction(mk.first);
+				const int x1 = std::min(bar->width() - 3, x0 + 12);
+				const int y = bar->height() / 2;
+				QMouseEvent press(QEvent::MouseButtonPress,
+						  QPointF(x0, y),
+						  bar->mapToGlobal(QPoint(x0, y)),
+						  Qt::LeftButton, Qt::LeftButton,
+						  Qt::NoModifier);
+				QMouseEvent move(QEvent::MouseMove, QPointF(x1, y),
+						 bar->mapToGlobal(QPoint(x1, y)),
+						 Qt::NoButton, Qt::LeftButton,
+						 Qt::NoModifier);
+				QMouseEvent rel(QEvent::MouseButtonRelease,
+						QPointF(x1, y),
+						bar->mapToGlobal(QPoint(x1, y)),
+						Qt::LeftButton, Qt::NoButton,
+						Qt::NoModifier);
+				QCoreApplication::sendEvent(bar, &press);
+				QCoreApplication::sendEvent(bar, &move);
+				QCoreApplication::sendEvent(bar, &rel);
+				sent = true;
+			});
+			ReplayEvent after;
+			store.get(evId, after);
+			c.dragMovesMarker = sent && after.tInNs > before.tInNs &&
+					    after.tOutNs == before.tOutNs;
+			obs_log(c.dragMovesMarker ? LOG_INFO : LOG_ERROR,
+				"[selftest] dock: dragging the IN edge moved it by "
+				"%lld ms (OUT %s)",
+				(long long)((after.tInNs - before.tInNs) / 1000000),
+				after.tOutNs == before.tOutNs ? "unchanged"
+							      : "MOVED TOO");
+			store.movePoint(evId, true, before.tInNs - after.tInNs);
+		}
+
+		// --- and the same point, by SECONDS, from a key ---------------
+		{
+			ReplayEvent before;
+			store.get(evId, before);
+			runOnUi([&]() {
+				QTableWidget *t = dock->findChild<QTableWidget *>();
+				if (!t)
+					return;
+				for (int r = 0; r < t->rowCount(); r++) {
+					QTableWidgetItem *idIt =
+						t->item(r, MultiReplayDock::kColId);
+					if (idIt &&
+					    idIt->data(Qt::UserRole).toInt() == evId) {
+						t->setCurrentCell(
+							r, MultiReplayDock::kColId,
+							QItemSelectionModel::
+									ClearAndSelect |
+								QItemSelectionModel::Rows);
+						break;
+					}
+				}
+				dock->nudgeSelectedPointNs(true, -1'000'000'000LL);
+			});
+			ReplayEvent after;
+			store.get(evId, after);
+			const int64_t movedMs =
+				(after.tInNs - before.tInNs) / 1'000'000;
+			c.secondsHotkeyMovesPoint = movedMs <= -900 && movedMs >= -1100;
+			obs_log(c.secondsHotkeyMovesPoint ? LOG_INFO : LOG_ERROR,
+				"[selftest] dock: the one-second key moved IN by "
+				"%lld ms",
+				(long long)movedMs);
 			store.movePoint(evId, true, before.tInNs - after.tInNs);
 		}
 
@@ -3329,7 +3500,9 @@ void runSelfTest()
 			  dockChecks.layoutOrderTopToBottom &&
 			  dockChecks.seekbarGraduated && dockChecks.channelBIndependent &&
 			  dockChecks.swapMovesClip && dockChecks.trimMovedIn &&
-			  dockChecks.seekbarZooms &&
+			  dockChecks.seekbarZooms && healthChecks.bTakesItsOwnScene &&
+			  dockChecks.dragMovesMarker &&
+			  dockChecks.secondsHotkeyMovesPoint &&
 			  anchorsPersisted && projectOriginOk &&
 			  eventTimecodeSane && filtersIdleOutsideRec &&
 			  diskTimelineOk && reelWritten && healthChecks.ran &&
@@ -3492,6 +3665,12 @@ void runSelfTest()
 			  dockChecks.swapMovesClip);
 	obs_data_set_bool(checks, "trim_moves_the_in_point", dockChecks.trimMovedIn);
 	obs_data_set_bool(checks, "seekbar_zooms", dockChecks.seekbarZooms);
+	obs_data_set_bool(checks, "channel_b_takes_its_own_scene",
+			  healthChecks.bTakesItsOwnScene);
+	obs_data_set_bool(checks, "seekbar_drag_moves_event_point",
+			  dockChecks.dragMovesMarker);
+	obs_data_set_bool(checks, "trim_hotkey_moves_by_seconds",
+			  dockChecks.secondsHotkeyMovesPoint);
 	obs_data_set_int(root, "channel_b_frames", dockChecks.channelBFrames);
 	obs_data_set_double(root, "seekbar_zoom_reached", dockChecks.zoomReached);
 	obs_data_set_bool(checks, "reel_exports_one_file", reelWritten);
