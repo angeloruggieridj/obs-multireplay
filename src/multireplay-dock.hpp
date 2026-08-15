@@ -121,6 +121,27 @@ public:
 	// Event markers drawn on the timeline as amber rectangles.
 	// Each pair is (inFrac, outFrac) in [0,1].
 	void setEventMarkers(std::vector<std::pair<double, double>> markers);
+
+	// --- zoom -------------------------------------------------------
+	// The bar draws a WINDOW of the timeline, not always the whole of it.
+	// Everything crossing this class's boundary stays in fractions of the
+	// WHOLE timeline — the host knows nothing about the window — so the
+	// zoom is a property of the control, which is what it is: at an hour of
+	// footage on a 900 px bar one pixel is four seconds, and an operator
+	// trimming an in-point cannot aim at a frame with that.
+	//
+	// zoom = 1 shows everything; 4 shows a quarter of it; the visible span
+	// is 1/zoom of the timeline, centred on centreFrac and clamped to the
+	// ends (a window that ran off the edge would show emptiness the
+	// timeline does not have).
+	void setZoom(double zoom, double centreFrac);
+	double zoom() const { return zoom_; }
+	// Keep `frac` inside the window, panning as little as it takes. Called
+	// as the playhead moves so a zoomed bar follows the picture instead of
+	// being left behind by it.
+	void ensureVisible(double frac);
+	double viewStart() const { return viewStart_; }
+	double viewSpan() const { return viewSpan_; }
 	// the reference controller prints the transport state ON the position bar ("0000 - 00:11.56
 	// 100%") instead of beside it, and that is where the operator's eye already
 	// is while he scrubs. Drawn centred, over the fill.
@@ -131,12 +152,17 @@ signals:
 	void scrubStateChanged(bool dragging); // press(true) / release(false)
 	void scrubMoved(double frac);          // live drag/hover position
 	void seekRequested(double frac);       // committed on release/click
+	void zoomChanged(double zoom);         // so the panel can show it
 
 protected:
 	void paintEvent(QPaintEvent *) override;
 	void mousePressEvent(QMouseEvent *) override;
 	void mouseMoveEvent(QMouseEvent *) override;
 	void mouseReleaseEvent(QMouseEvent *) override;
+	// Wheel = zoom about the cursor. On a control whose only job is
+	// position, the wheel has nothing else to mean, and zooming about the
+	// pointer keeps the frame under it still while the scale changes.
+	void wheelEvent(QWheelEvent *) override;
 
 private:
 	double fracAt(int x) const;
@@ -158,6 +184,16 @@ private:
 	int64_t durationNs_ = 0;
 	QString emptyHint_;
 	std::vector<std::pair<double, double>> markers_;
+	// The window on the timeline, in fractions of the whole (see setZoom).
+	double zoom_ = 1.0;
+	double viewStart_ = 0.0;
+	double viewSpan_ = 1.0;
+	// Fraction of the whole timeline → fraction of the window, and back.
+	double toView(double frac) const
+	{
+		return viewSpan_ > 0 ? (frac - viewStart_) / viewSpan_ : frac;
+	}
+	double fromView(double v) const { return viewStart_ + v * viewSpan_; }
 };
 
 // ---------------------------------------------------------------------------
@@ -326,6 +362,15 @@ private:
 	QWidget *buildAngleCell(int eventId, int cam0, bool on, double speed,
 				const std::string &note);
 
+	// --- trimming an event already marked --------------------------------
+	// A live mark is late by definition: the operator saw the action first.
+	// These move the SELECTED event's point — to the position bar
+	// (setSelectedPoint) or by whole frames (nudgeSelectedPoint, on hotkeys
+	// for the Stream Deck). Both go through EventStore::movePoint, so the
+	// clamping rules live in one tested place.
+	void setSelectedPoint(bool inPoint);
+	void nudgeSelectedPoint(bool inPoint, int frames);
+
 	// --- which replay channel the controls drive (the reference controller's A|B / A / B) ----
 	// The panel is one set of controls over two channels, so every command
 	// has to know where it is going. `activeChannel_` is where the eye and
@@ -346,6 +391,8 @@ private:
 	void swapChannels();
 	QButtonGroup *chanSel_ = nullptr;  // A|B / A / B
 	QPushButton *swapBtn_ = nullptr;   // ⇄
+	// Zoom factor of the position bar, and the key that resets it.
+	QPushButton *zoomBtn_ = nullptr;
 	// the reference controller paints the header of the angle being watched green. Cheap enough to
 	// call from poll(), which is also the only place that learns the angle
 	// changed under a hotkey.

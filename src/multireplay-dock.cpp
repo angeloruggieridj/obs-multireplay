@@ -58,6 +58,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
 #include <QPainter>
 #include <QLinearGradient>
 #include <QMouseEvent>
+#include <QWheelEvent>
 #include <QKeyEvent>
 #include <QFontDatabase>
 #include <QInputDialog>
@@ -634,6 +635,8 @@ int64_t SeekBar::tickStepNs() const
 		return 0;
 	// Only round steps an operator counts in: seconds, then the quarter and
 	// half minute, then minutes. A "every 3.7 s" scale is worse than none.
+	// Zoomed in, the same list gives finer marks by itself — which is the
+	// point of zooming: the scale has to get more precise, not just wider.
 	static const int64_t kStepsSec[] = {1,   2,   5,   10,   15,   30,  60,
 					    120, 300, 600, 900, 1800, 3600, 7200,
 					    10800};
@@ -641,9 +644,10 @@ int64_t SeekBar::tickStepNs() const
 	// closer and the scale turns into a smear of digits.
 	const double kMinPx = 58.0;
 	const double w = (double)trackWidth();
+	const double visibleNs = (double)durationNs_ * viewSpan_;
 	for (int64_t sec : kStepsSec) {
 		const int64_t step = sec * 1'000'000'000LL;
-		if (w * (double)step / (double)durationNs_ >= kMinPx)
+		if (w * (double)step / visibleNs >= kMinPx)
 			return step;
 	}
 	// Longer than the coarsest step: keep the coarsest rather than dropping
@@ -710,7 +714,74 @@ double SeekBar::fracAt(int x) const
 {
 	const int m = 2;
 	double w = std::max(1, width() - 2 * m);
-	return std::clamp((double)(x - m) / w, 0.0, 1.0);
+	// Pixels are window coordinates; everything this class hands out is a
+	// fraction of the WHOLE timeline, so the window is undone right here and
+	// nowhere else.
+	const double v = std::clamp((double)(x - m) / w, 0.0, 1.0);
+	return std::clamp(fromView(v), 0.0, 1.0);
+}
+
+void SeekBar::setZoom(double zoom, double centreFrac)
+{
+	// 1× is the whole timeline; past 512× a 1080p frame of a three-hour
+	// session is still several pixels wide, and there is nothing finer to
+	// aim at.
+	zoom_ = std::clamp(zoom, 1.0, 512.0);
+	viewSpan_ = 1.0 / zoom_;
+	// Clamped to the ends: a window hanging off the edge would draw empty
+	// space as if the timeline had it.
+	viewStart_ = std::clamp(centreFrac - viewSpan_ / 2.0, 0.0,
+				1.0 - viewSpan_);
+	emit zoomChanged(zoom_);
+	update();
+}
+
+void SeekBar::ensureVisible(double frac)
+{
+	if (viewSpan_ >= 1.0)
+		return;
+	// A tenth of the window of air on the side it left by: scrolling it to
+	// the very edge means it leaves again on the next frame.
+	const double pad = viewSpan_ * 0.1;
+	double start = viewStart_;
+	if (frac < viewStart_ + pad)
+		start = frac - pad;
+	else if (frac > viewStart_ + viewSpan_ - pad)
+		start = frac - viewSpan_ + pad;
+	start = std::clamp(start, 0.0, 1.0 - viewSpan_);
+	if (std::abs(start - viewStart_) < 1e-9)
+		return;
+	viewStart_ = start;
+	update();
+}
+
+void SeekBar::wheelEvent(QWheelEvent *e)
+{
+	if (durationNs_ <= 0) {
+		e->ignore();
+		return;
+	}
+	const int steps = e->angleDelta().y();
+	if (steps == 0) {
+		e->ignore();
+		return;
+	}
+	// Zoom about the POINTER, not the centre: the operator puts the cursor
+	// on the moment he cares about and scrolls, and that moment stays under
+	// the cursor while everything else spreads out around it.
+	const double at = fracAt((int)e->position().x());
+	const double factor = steps > 0 ? 1.25 : 1.0 / 1.25;
+	const double next = std::clamp(zoom_ * factor, 1.0, 512.0);
+	// Keep `at` where it is on screen: the window shrinks around it rather
+	// than around its own middle.
+	const double vAt = toView(at); // where it sits in the window now
+	const double span = 1.0 / next;
+	viewStart_ = std::clamp(at - vAt * span, 0.0, 1.0 - span);
+	zoom_ = next;
+	viewSpan_ = span;
+	emit zoomChanged(zoom_);
+	update();
+	e->accept();
 }
 
 void SeekBar::paintEvent(QPaintEvent *)
@@ -735,7 +806,10 @@ void SeekBar::paintEvent(QPaintEvent *)
 	const int y = 1;
 	const int rulerY = y + h;    // graduations live under the track
 	const int w = width() - 2 * m;
-	const double pos = dragging_ ? dragFrac_ : positionFrac_;
+	// Everything below draws in WINDOW coordinates: a fraction of the whole
+	// timeline becomes a fraction of what is on screen through toView(). At
+	// 1× the two are the same and none of this costs anything.
+	const double pos = toView(dragging_ ? dragFrac_ : positionFrac_);
 
 	// --- no timeline: say so, and mean it ---------------------------------
 	// This is not a defensive branch, it is a state the operator reaches by
@@ -781,7 +855,7 @@ void SeekBar::paintEvent(QPaintEvent *)
 	// orange event over blue ground.
 	if (pos > 0.0) {
 		p.setBrush(QColor(0x2a, 0x4a, 0x72));
-		p.drawRect(QRectF(m, y, w * pos, h));
+		p.drawRect(QRectF(m, y, w * std::clamp(pos, 0.0, 1.0), h));
 	}
 
 	// Event markers — orange, the colour the reference controller gives an event everywhere else
@@ -800,8 +874,12 @@ void SeekBar::paintEvent(QPaintEvent *)
 		if (mk.second <= mk.first)
 			continue;
 		const int ci = mi % 2;
-		double x0 = m + w * mk.first;
-		double x1 = m + w * mk.second;
+		const double v0 = toView(mk.first);
+		const double v1 = toView(mk.second);
+		if (v1 < 0.0 || v0 > 1.0)
+			continue; // outside the window entirely
+		double x0 = m + w * std::clamp(v0, 0.0, 1.0);
+		double x1 = m + w * std::clamp(v1, 0.0, 1.0);
 		double mw = std::max(x1 - x0, 2.0);
 
 		// Fill
@@ -841,7 +919,16 @@ void SeekBar::paintEvent(QPaintEvent *)
 		p.drawRect(QRect(m, rulerY, w, kSeekRulerH));
 
 		const int64_t step = tickStepNs();
-		const double pxPerNs = (double)w / (double)durationNs_;
+		// Pixels per nanosecond OF WHAT IS ON SCREEN, and where the
+		// window starts in time: the marks are absolute timecodes drawn
+		// at their own place in the window, so zooming changes the
+		// spacing and never the labels.
+		const int64_t viewStartNs =
+			(int64_t)((double)durationNs_ * viewStart_);
+		const int64_t viewEndNs =
+			(int64_t)((double)durationNs_ * (viewStart_ + viewSpan_));
+		const double pxPerNs =
+			(double)w / std::max(1.0, (double)(viewEndNs - viewStartNs));
 		const double minorPx = pxPerNs * (double)step / 5.0;
 		const bool drawMinor = minorPx >= 7.0;
 
@@ -857,8 +944,15 @@ void SeekBar::paintEvent(QPaintEvent *)
 		// even at the clamped edges.
 		int lastLabelRight = -10000;
 
-		for (int64_t t = 0; t <= durationNs_; t += step) {
-			const double x = (double)m + pxPerNs * (double)t;
+		// Start at the first whole step inside the window, not at zero:
+		// zoomed into the fiftieth minute, counting from 0 would walk
+		// three thousand invisible marks before drawing one.
+		const int64_t first = (viewStartNs / step) * step;
+		for (int64_t t = first; t <= viewEndNs; t += step) {
+			if (t < 0)
+				continue;
+			const double x =
+				(double)m + pxPerNs * (double)(t - viewStartNs);
 
 			// Minor marks between this graduation and the next.
 			if (drawMinor) {
@@ -2134,6 +2228,25 @@ QWidget *MultiReplayDock::buildBottomBar()
 	// that reaches the whole project, and the operator finds it by its scale.
 	seek_ = new SeekBar(this);
 	seek_->setToolTip(obs_module_text("Dock.SeekHint"));
+	// The zoom key: it shows the factor because a bar that is showing four
+	// seconds of an hour looks exactly like a bar over a four-second
+	// session, and the operator has to be able to tell those apart at a
+	// glance. Clicking it goes back to the whole timeline.
+	zoomBtn_ = new QPushButton(QStringLiteral("1×"), this);
+	zoomBtn_->setObjectName("mrChanSel");
+	zoomBtn_->setToolTip(obs_module_text("Dock.ZoomFit"));
+	zoomBtn_->setMinimumWidth(34);
+	zoomBtn_->setCursor(Qt::PointingHandCursor);
+	connect(zoomBtn_, &QPushButton::clicked, this,
+		[this]() { seek_->setZoom(1.0, 0.5); });
+	connect(seek_, &SeekBar::zoomChanged, this, [this](double z) {
+		zoomBtn_->setText(z <= 1.001 ? QStringLiteral("1×")
+					     : QString("%1×").arg(z, 0, 'f',
+								  z < 10 ? 1 : 0));
+		zoomBtn_->setProperty("level", z > 1.001 ? QStringLiteral("warn")
+							 : QString());
+		repolish(zoomBtn_);
+	});
 	connect(seek_, &SeekBar::scrubStateChanged, this,
 		[this](bool dragging) { seekDragging_ = dragging; });
 	connect(seek_, &SeekBar::scrubMoved, this, [this](double frac) {
@@ -2142,7 +2255,17 @@ QWidget *MultiReplayDock::buildBottomBar()
 	});
 	connect(seek_, &SeekBar::seekRequested, this,
 		[this](double frac) { seekToFraction(frac); });
-	v->addWidget(seek_);
+	{
+		// The zoom key sits at the right end OF THE BAR, not in a
+		// toolbar: it is about this control and nothing else, and it is
+		// also where the eye lands after reading the scale.
+		auto *row = new QHBoxLayout();
+		row->setContentsMargins(0, 0, 0, 0);
+		row->setSpacing(4);
+		row->addWidget(seek_, 1);
+		row->addWidget(zoomBtn_, 0, Qt::AlignBottom);
+		v->addLayout(row);
+	}
 
 	return box;
 }
@@ -2198,6 +2321,27 @@ QWidget *MultiReplayDock::buildMarkers()
 		});
 		h->addWidget(b);
 	}
+
+	// Trim: move the SELECTED event's in or out point to where the position
+	// bar stands. A mark taken live is taken late by definition — the
+	// operator saw the action first — and until now the only way to fix one
+	// was to delete it and mark again from a scrub, which is two ways of
+	// saying the same thing and one of them loses the angles and the
+	// comments. Zoom the bar, put the playhead on the frame, press.
+	//
+	// Frame nudges are hotkeys rather than four more keys on a full row (see
+	// registerDockHotkeys): a Stream Deck is where this kind of work
+	// actually happens, and the panel is already dense.
+	auto *trimIn = compactBtn(QStringLiteral("⇤IN"), this);
+	trimIn->setToolTip(obs_module_text("Dock.TrimInHint"));
+	connect(trimIn, &QPushButton::clicked, this,
+		[this]() { setSelectedPoint(true); });
+	auto *trimOut = compactBtn(QStringLiteral("OUT⇥"), this);
+	trimOut->setToolTip(obs_module_text("Dock.TrimOutHint"));
+	connect(trimOut, &QPushButton::clicked, this,
+		[this]() { setSelectedPoint(false); });
+	h->addWidget(trimIn);
+	h->addWidget(trimOut);
 
 	auto *cancel = compactBtn(obs_module_text("Dock.Cancel"), this, "mrDanger");
 	connect(cancel, &QPushButton::clicked, this, [this]() {
@@ -2544,6 +2688,23 @@ void MultiReplayDock::registerDockHotkeys()
 		 [](MultiReplayDock *d) { d->stepList(-1); }},
 		{"ReplayNextList", "Hotkey.NextList",
 		 [](MultiReplayDock *d) { d->stepList(+1); }},
+		// Trimming a mark that was taken late, one frame at a time. On
+		// keys rather than on the panel because this is Stream Deck work:
+		// the operator holds a key and watches the picture, which is the
+		// only way to find the right frame.
+		{"ReplayTrimInBack", "Hotkey.TrimInBack",
+		 [](MultiReplayDock *d) { d->nudgeSelectedPoint(true, -1); }},
+		{"ReplayTrimInForward", "Hotkey.TrimInForward",
+		 [](MultiReplayDock *d) { d->nudgeSelectedPoint(true, +1); }},
+		{"ReplayTrimOutBack", "Hotkey.TrimOutBack",
+		 [](MultiReplayDock *d) { d->nudgeSelectedPoint(false, -1); }},
+		{"ReplayTrimOutForward", "Hotkey.TrimOutForward",
+		 [](MultiReplayDock *d) { d->nudgeSelectedPoint(false, +1); }},
+		// ...and the same two points straight to the position bar.
+		{"ReplaySetInHere", "Hotkey.SetInHere",
+		 [](MultiReplayDock *d) { d->setSelectedPoint(true); }},
+		{"ReplaySetOutHere", "Hotkey.SetOutHere",
+		 [](MultiReplayDock *d) { d->setSelectedPoint(false); }},
 	};
 
 	for (const Def &def : kDefs) {
@@ -3242,6 +3403,10 @@ void MultiReplayDock::poll()
 								    (double)displayDurNs_)
 						 : 0.0;
 			seek_->setProgress(posFrac, 1.0);
+			// Zoomed in, the window follows the picture: a bar
+			// showing four seconds of an hour is useless the moment
+			// the playhead walks out of it.
+			seek_->ensureVisible(posFrac);
 			if (rec)
 				tcLbl_->setText(formatTc(relPosNs) +
 						QStringLiteral(" / ● ") +
@@ -3962,6 +4127,60 @@ void MultiReplayDock::refreshEvents()
 			}
 		}
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Trimming an event that has already been marked
+// ---------------------------------------------------------------------------
+
+void MultiReplayDock::setSelectedPoint(bool inPoint)
+{
+	const auto ids = selectedEventIds();
+	if (ids.empty()) {
+		showNotice(obs_module_text("Dock.TrimNoSelection"));
+		return;
+	}
+	if (playheadNs_ == kNoInstant) {
+		showNotice(obs_module_text("Dock.TrimNoPosition"));
+		return;
+	}
+	ReplayEvent ev;
+	if (!EventStore::instance().get(ids.front(), ev))
+		return;
+	const int64_t from = inPoint ? ev.tInNs : ev.tOutNs;
+	if (from == kNoInstant) {
+		// An open event has no OUT to move; marking one is Mark Out's
+		// job, and doing it from here would hide which key did what.
+		showNotice(obs_module_text("Dock.TrimNoPoint"));
+		return;
+	}
+	// Expressed as a delta so the store's own clamping (an IN cannot pass
+	// its OUT, and the other way round) is the one that decides — there is
+	// exactly one copy of that rule and it is already unit-tested.
+	if (!EventStore::instance().movePoint(ids.front(), inPoint,
+					      playheadNs_ - from)) {
+		showNotice(obs_module_text("Dock.TrimRefused"));
+		return;
+	}
+	obs_log(LOG_INFO, "[dock] trim: event %d %s moved by %lld ms",
+		ids.front(), inPoint ? "IN" : "OUT",
+		(long long)((playheadNs_ - from) / 1'000'000));
+	refreshEvents();
+}
+
+void MultiReplayDock::nudgeSelectedPoint(bool inPoint, int frames)
+{
+	const auto ids = selectedEventIds();
+	if (ids.empty())
+		return;
+	obs_video_info ovi{};
+	const double fps = obs_get_video_info(&ovi) && ovi.fps_den
+				   ? (double)ovi.fps_num / (double)ovi.fps_den
+				   : 30.0;
+	const int64_t frameNs = (int64_t)(1'000'000'000.0 / std::max(1.0, fps));
+	if (EventStore::instance().movePoint(ids.front(), inPoint,
+					     frameNs * frames))
+		refreshEvents();
 }
 
 // ---------------------------------------------------------------------------
