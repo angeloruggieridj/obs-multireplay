@@ -665,6 +665,31 @@ bool SegmentIndex::coversAnyCamera(int64_t masterNs) const
 	return false;
 }
 
+std::vector<std::pair<int64_t, int64_t>> SegmentIndex::recordedSpans() const
+{
+	std::vector<std::pair<int64_t, int64_t>> spans;
+	std::lock_guard<std::mutex> lock(mutex_);
+	for (const auto &cam : segments_) {
+		for (const auto &s : cam) {
+			if (!s.anchored)
+				continue;
+			// The measured length first: it is the only value that
+			// describes THIS file. endMasterNs is where the next file
+			// took over — the same thing for a split, and wrong for
+			// the last file of a take that has stopped.
+			int64_t end = kNoInstant;
+			if (s.durationNs > 0)
+				end = s.anchorMasterNs + s.durationNs;
+			else if (s.endMasterNs != kNoInstant)
+				end = s.endMasterNs;
+			if (end == kNoInstant || end <= s.anchorMasterNs)
+				continue; // unknown end: not ours to invent
+			spans.push_back({s.anchorMasterNs, end});
+		}
+	}
+	return spans;
+}
+
 std::vector<RecordingSegment> SegmentIndex::segments(int camIndex) const
 {
 	if (camIndex < 0 || camIndex >= kMaxSegmentCameras)

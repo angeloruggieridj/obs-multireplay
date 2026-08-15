@@ -30,6 +30,7 @@ See selftest.hpp. This is the scripted form of the M0 gate.
 #include <QMainWindow>
 #include <QObject>
 #include <QItemSelectionModel>
+#include <QComboBox>
 #include <QPushButton>
 #include <QString>
 #include <QFontMetrics>
@@ -867,14 +868,21 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 				if (!idIt ||
 				    idIt->data(Qt::UserRole).toInt() != evId)
 					continue;
-				// The FIRST camera pair's left half: enable box
-				// plus that angle's speed.
-				QTableWidgetItem *sp = t->item(
+				// The first camera's cell now holds ONE widget
+				// with the whole angle in it: the check, the
+				// speed and the comment. So the speed is picked
+				// from its drop-down, which is what an operator
+				// does — no item text to type into any more.
+				QWidget *cell = t->cellWidget(
 					r, MultiReplayDock::kColFirstCam);
+				QComboBox *sp =
+					cell ? cell->findChild<QComboBox *>(
+						       "mrAngleSpeed")
+					     : nullptr;
 				if (!sp)
 					break;
 				editedCam0 = firstCam;
-				// Which camera the first pair stands for is the
+				// Which camera the first column stands for is the
 				// first configured slot, whatever its number.
 				for (int i = 0; i < kMaxCameras; i++) {
 					if (cfg.cameras[i].sourceName.empty())
@@ -882,7 +890,9 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 					editedCam0 = i;
 					break;
 				}
-				sp->setText(QStringLiteral("50"));
+				const int idx = sp->findData(50);
+				if (idx >= 0)
+					sp->setCurrentIndex(idx);
 				break;
 			}
 		});
@@ -902,7 +912,7 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 				? LOG_INFO
 				: LOG_ERROR,
 			"[selftest] dock: event table has %d column(s) (expected %d "
-			"for %d camera(s)); typing 50 into camera %d's cell stored "
+			"for %d camera(s)); picking 50%% in camera %d's cell stored "
 			"%.2f",
 			cols, wantCols, configured, editedCam0 + 1, stored);
 	}
@@ -2227,7 +2237,17 @@ void runSelfTest()
 	// inherited the previous one's footage (8 anchored segments where the take
 	// wrote 2, and a mark sitting 8 minutes "after the project origin").
 	SegmentIndex::instance().stop();
-	std::filesystem::remove_all(folder, ec);
+	// Retried: a background thread of ours (the disk-bandwidth probe was one,
+	// until it stopped writing inside project folders) or the OS still
+	// holding a handle for a moment must not be the difference between "this
+	// run measures its own take" and "this run measures the last one".
+	for (int attempt = 0; attempt < 5; attempt++) {
+		ec.clear();
+		std::filesystem::remove_all(folder, ec);
+		if (!ec)
+			break;
+		std::this_thread::sleep_for(std::chrono::milliseconds(400));
+	}
 	if (ec)
 		obs_log(LOG_ERROR,
 			"[selftest] could not empty the test project %s: %s — "

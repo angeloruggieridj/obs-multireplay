@@ -34,6 +34,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
 #include <QLineEdit>
 #include <QComboBox>
 #include <QCheckBox>
+#include <QPlainTextEdit>
 #include <QTableWidget>
 #include <QItemSelectionModel>
 #include <QHeaderView>
@@ -421,16 +422,11 @@ constexpr int64_t kArmWatchNs = 4'000'000'000LL; // 4 s
 constexpr int kColFirstCam = MultiReplayDock::kColFirstCam;
 constexpr int kColsPerCam = MultiReplayDock::kColsPerCam;
 
-// Which camera PAIR a table column belongs to. -1 = not a camera column at
-// all. Kept as one function so the callers cannot drift.
+// Which camera a table column belongs to. -1 = not a camera column at all.
+// Kept as one function so the callers cannot drift.
 inline int camPairIndex(int column)
 {
 	return column < kColFirstCam ? -1 : (column - kColFirstCam) / kColsPerCam;
-}
-inline bool isCamNoteColumn(int column)
-{
-	return column >= kColFirstCam &&
-	       ((column - kColFirstCam) % kColsPerCam) == 1;
 }
 
 // A camera cell with no comment reads "-" in the reference controller, not blank: an empty cell is
@@ -764,6 +760,17 @@ void SeekBar::paintEvent(QPaintEvent *)
 				  w * (1.0 - seekableFrac_), h));
 	}
 
+	// Behind the playhead — steel blue, and it goes down FIRST, under the
+	// markers. The events are the content of this bar; the progress is where
+	// the operator happens to be in it, and a position that hides the marks
+	// it has already passed is a bar that forgets what is on it. The marker
+	// fill is semi-transparent, so on the played side both read at once:
+	// orange event over blue ground.
+	if (pos > 0.0) {
+		p.setBrush(QColor(0x2a, 0x4a, 0x72));
+		p.drawRect(QRectF(m, y, w * pos, h));
+	}
+
 	// Event markers — orange, the colour the reference controller gives an event everywhere else
 	// (the selected row). Semi-transparent fill + bright edges.
 	static const QColor kFill[2] = {
@@ -801,14 +808,6 @@ void SeekBar::paintEvent(QPaintEvent *)
 		}
 	}
 	p.setPen(Qt::NoPen);
-
-	// Behind the playhead — steel blue, drawn over the markers (the fill is
-	// opaque, so the markers AHEAD of the playhead are the ones that stay
-	// visible, and those are the ones that matter).
-	if (pos > 0.0) {
-		p.setBrush(QColor(0x2a, 0x4a, 0x72));
-		p.drawRect(QRectF(m, y, w * pos, h));
-	}
 
 	// --- the graduations --------------------------------------------------
 	// The scale, on its own strip under the track plus a matching tick INTO
@@ -2068,7 +2067,17 @@ QWidget *MultiReplayDock::buildBottomBar()
 					    obs_module_text("Dock.NextClip"));
 		nextClipBtn_->setMinimumHeight(24);
 		connect(nextClipBtn_, &QPushButton::clicked, this, [this]() {
-			if (!PlaybackCoordinator::instance().skipToNext())
+			// Logged both ways: "I pressed >> and nothing happened"
+			// is otherwise indistinguishable from "the press never
+			// arrived", and one of those is a bug in the dock.
+			const bool moved =
+				PlaybackCoordinator::instance().skipToNext();
+			const auto ps = PlaybackCoordinator::instance().playState();
+			obs_log(LOG_INFO,
+				"[dock] >> skip: %s (queue %d/%d, angle %d)",
+				moved ? "advanced" : "nothing queued", ps.queuePos,
+				ps.queued, ps.angle1);
+			if (!moved)
 				showNotice(obs_module_text("Dock.NothingQueued"));
 		});
 		h->addWidget(nextClipBtn_, 0);
@@ -2305,12 +2314,12 @@ void MultiReplayDock::rebuildEventColumns()
 	QStringList headers;
 	headers << QStringLiteral("#") << obs_module_text("Dock.In")
 		<< obs_module_text("Dock.Out") << obs_module_text("Dock.Duration");
-	// The comment header carries the camera NUMBER too ("✎ 2"): with four
-	// cameras on screen a row of identical "Note" headings leaves the
-	// operator counting columns to find out whose comment he is typing.
+	// One heading per camera now, because there is one column per camera:
+	// the check, the speed and the comment are three answers about the same
+	// angle, and they used to be split across two headings the eye had to
+	// pair up again on every row.
 	for (size_t i = 0; i < cams.size(); i++)
-		headers << camLabels[(int)i]
-			<< QString("✎ %1").arg(cams[i] + 1);
+		headers << camLabels[(int)i];
 	events_->setHorizontalHeaderLabels(headers);
 	// The camera headers carry their own label in UserRole: the "angle I am
 	// watching" marker is a prefix on the text (see updateCamHeaderHighlight),
@@ -2326,13 +2335,12 @@ void MultiReplayDock::rebuildEventColumns()
 		hh->setHighlightSections(false);
 		for (int c = 0; c < events_->columnCount(); c++)
 			hh->setSectionResizeMode(c, QHeaderView::ResizeToContents);
-		// The COMMENT half takes the slack: it holds free text and is the
-		// only column whose content has no natural width. The enable/speed
-		// half stays as narrow as "☑ 100%", so a four-camera rig still fits
-		// its four angles on screen without scrolling sideways.
+		// The camera columns take the slack and share it equally: each
+		// holds free text (the comment) and so has no natural width, and
+		// four angles that are the same width are four angles the eye can
+		// scan down without re-measuring.
 		for (int c = kColFirstCam; c < events_->columnCount(); c++)
-			if (isCamNoteColumn(c))
-				hh->setSectionResizeMode(c, QHeaderView::Stretch);
+			hh->setSectionResizeMode(c, QHeaderView::Stretch);
 		hh->setMinimumSectionSize(34);
 	}
 	refreshing_ = wasRefreshing;
@@ -2830,18 +2838,33 @@ void MultiReplayDock::updateChannelStrip()
 		}
 		clipBar_->setState(frac, text, onAir);
 	}
-	if (nextClipBtn_)
-		nextClipBtn_->setEnabled(ps.active);
+	// >> stays ENABLED, always. It used to follow ps.active, which is read
+	// here at 30 Hz — so for the first frames of a sequence the key was still
+	// disabled and a press landed on nothing. During a match that is a lost
+	// press with no explanation, and "the button was grey for 40 ms" is not
+	// something anybody can see. The handler already refuses honestly when
+	// there is nothing queued (it says so on the strip and in the log), which
+	// is the better place for that answer.
+	//
+	// It cost the gate three runs to find, because a disabled button swallows
+	// click() in silence: the check saw a queue that never advanced and blamed
+	// the coordinator.
 
 	// --- the position bar: where the TIMELINE stands ----------------------
 	// Not the clip state (that is the band above). Position and length of the
 	// recorded timeline, which is the thing this bar actually controls.
 	if (seek_) {
-		const int64_t rel = (timelineStartNs_ != kNoInstant &&
-				     playheadNs_ != kNoInstant &&
-				     playheadNs_ > timelineStartNs_)
-					    ? playheadNs_ - timelineStartNs_
-					    : 0;
+		// "How far in" means how much FOOTAGE is behind the playhead, so
+		// the number on the bar and the length beside it are the same
+		// kind of quantity even when the session has pauses in it.
+		const int64_t rel =
+			!timeline_.empty() && playheadNs_ != kNoInstant
+				? timeline_.footageBefore(playheadNs_)
+				: ((timelineStartNs_ != kNoInstant &&
+				    playheadNs_ != kNoInstant &&
+				    playheadNs_ > timelineStartNs_)
+					   ? playheadNs_ - timelineStartNs_
+					   : 0);
 		seek_->setOverlayText(shortTc(rel) + "  /  " +
 				      shortTc(displayDurNs_));
 		// The bar needs the LENGTH, not just the fraction: the graduations
@@ -2868,9 +2891,17 @@ void MultiReplayDock::seekToFraction(double frac)
 	if (timelineStartNs_ == kNoInstant || displayDurNs_ <= 0)
 		return;
 	frac = std::clamp(frac, 0.0, 1.0);
-	const int64_t inNs =
-		timelineStartNs_ + (int64_t)(frac * (double)displayDurNs_);
-	const int64_t edge = timelineStartNs_ + displayDurNs_;
+	// Through the map: the bar's axis is footage, so 50% is halfway through
+	// what was RECORDED, not halfway through the afternoon. Without it, a
+	// session with a pause in it had a stretch of bar that resolved to an
+	// instant no camera covers — a click that could only ever answer "no
+	// footage here".
+	const int64_t inNs = timeline_.empty()
+				     ? timelineStartNs_ +
+					       (int64_t)(frac * (double)displayDurNs_)
+				     : timeline_.instantAt(frac);
+	const int64_t edge = timeline_.empty() ? timelineStartNs_ + displayDurNs_
+					       : timeline_.lastNs();
 	const int64_t outNs = std::min(edge, inNs + kScrubReviewNs);
 	if (outNs <= inNs)
 		return;
@@ -3031,10 +3062,47 @@ void MultiReplayDock::poll()
 	const int64_t diskEndNs = SegmentIndex::instance().newestNs(cam0);
 	const int64_t endNs =
 		std::max(liveEdgeNs > 0 ? liveEdgeNs : kNoInstant, diskEndNs);
-	displayDurNs_ = (startNs != kNoInstant && endNs != kNoInstant &&
-			 endNs > startNs)
-				? endNs - startNs
-				: 0;
+
+	// --- the axis is FOOTAGE, not wall time -------------------------------
+	// Stop after two minutes, talk to somebody for one, press REC again: on a
+	// wall-time axis the bar grows to three minutes and one of them scrubs to
+	// nothing — a hole the operator has to know is there and step over. So
+	// the bar is drawn over the recorded spans only, joined end to end (see
+	// timeline-map.hpp): the second take continues the first at 2:00, every
+	// position on the bar is an instant footage covers, and the total is how
+	// much material there is rather than how long the session lasted.
+	{
+		// The spans on DISK are read on the slow beat only. They change
+		// when a file is anchored or its length measured — a few times a
+		// minute — and reading them takes SegmentIndex's lock, which its
+		// watcher holds while it demuxes a file. Asking thirty times a
+		// second put a disk read in the way of the GUI thread, and the
+		// dock went unresponsive for exactly as long as the measurement
+		// took (the gate caught it: a >> press that never got serviced).
+		if (refreshStatus || diskSpans_.empty()) {
+			diskSpans_.clear();
+			for (const auto &[s, e] :
+			     SegmentIndex::instance().recordedSpans())
+				diskSpans_.push_back({s, e});
+		}
+		// The take in progress has no measured length on disk yet, so it
+		// comes from what the tap holds — the only span that grows, and
+		// it merges with the file it belongs to. This one IS cheap
+		// (the ring's own lock, held for a compare).
+		std::vector<TimelineSpan> spans = diskSpans_;
+		const int64_t liveStart = tap.oldestReplayableNs(cam0);
+		if (liveEdgeNs > 0 && liveStart > 0 && liveEdgeNs > liveStart)
+			spans.push_back({liveStart, liveEdgeNs});
+		timeline_.setSpans(std::move(spans));
+	}
+	// Everything below still speaks in master instants; only the conversion
+	// to a position on the bar goes through the map.
+	displayDurNs_ = timeline_.totalNs();
+	if (displayDurNs_ <= 0)
+		displayDurNs_ = (startNs != kNoInstant && endNs != kNoInstant &&
+				 endNs > startNs)
+					? endNs - startNs
+					: 0;
 	// Anchored footage counts as content even with a dead live edge: that is
 	// exactly a project reopened in a later OBS run (nothing captured yet, but
 	// yesterday's files are on the timeline). Without startNs the preview would
@@ -3106,11 +3174,15 @@ void MultiReplayDock::poll()
 		playheadNs_ = posNs;
 	else if (followLive && liveEdgeNs > 0 && !sequenceOnAir)
 		playheadNs_ = liveEdgeNs;
-	const int64_t relPosNs = (startNs != kNoInstant &&
-				  playheadNs_ != kNoInstant &&
-				  playheadNs_ > startNs)
-					 ? playheadNs_ - startNs
-					 : 0;
+	// Footage behind the playhead, not wall time behind it — the same axis
+	// the bar is drawn on (see timeline-map.hpp).
+	const int64_t relPosNs =
+		!timeline_.empty() && playheadNs_ != kNoInstant
+			? timeline_.footageBefore(playheadNs_)
+			: ((startNs != kNoInstant && playheadNs_ != kNoInstant &&
+			    playheadNs_ > startNs)
+				   ? playheadNs_ - startNs
+				   : 0);
 
 	if (!seekDragging_) {
 		if (followLive && liveFrontFed) {
@@ -3476,13 +3548,12 @@ void MultiReplayDock::poll()
 		std::vector<std::pair<double, double>> mf;
 		mf.reserve(markerNs_.size());
 		for (const auto &[inNs, outNs] : markerNs_) {
-			double inf = std::clamp((double)(inNs - timelineStartNs_) /
-							(double)displayDurNs_,
-						0.0, 1.0);
-			double outf = std::clamp((double)(outNs - timelineStartNs_) /
-							 (double)displayDurNs_,
-						 0.0, 1.0);
-			if (outf > inf)
+			// Through the same map the bar is drawn with, so a mark
+			// sits over its own footage however many takes there
+			// have been (and an event in a gap that no longer exists
+			// collapses onto the join rather than smearing over it).
+			double inf = 0.0, outf = 0.0;
+			if (timeline_.rangeFraction(inNs, outNs, inf, outf))
 				mf.push_back({inf, outf});
 		}
 		seek_->setEventMarkers(std::move(mf));
@@ -3797,55 +3868,27 @@ void MultiReplayDock::refreshEvents()
 					mid));
 		events_->setItem(row, kColDur, roItem(dur, mid));
 
-		// TWO cells per camera: [☑ speed] and [comment]. Everything the
-		// operator edits about an angle is on the row it belongs to, in
-		// the column of the camera it belongs to, and none of it is
-		// behind a dialog — during a match an edit that costs a dialog is
-		// an edit that does not get made.
+		// ONE cell per camera, holding the three things an operator says
+		// about that angle: does it play, how fast, and what is it. They
+		// were two columns and it read as two subjects; with four cameras
+		// on screen the eye had to pair them up again every time. Now the
+		// unit on screen is the unit in the operator's head — the angle —
+		// and none of it is behind a dialog, because during a match an
+		// edit that costs a dialog is an edit that does not get made.
 		for (size_t ci = 0; ci < camCols_.size(); ci++) {
 			const int cam = camCols_[ci];
 			const int col = kColFirstCam + (int)ci * kColsPerCam;
-
-			// Left half: the enable box IS the cell (the reference controller), and its
-			// text is that angle's speed — "--" when the slider
-			// decides, "50%" when this angle has its own.
-			const bool hasSpeed = r.camSpeeds[cam] >= 0;
-			auto *on = new QTableWidgetItem(
-				hasSpeed ? QString("%1%").arg((int)std::lround(
-						   r.camSpeeds[cam] * 100.0))
-					 : QStringLiteral("--"));
-			on->setFlags(Qt::ItemIsSelectable | Qt::ItemIsEnabled |
-				     Qt::ItemIsEditable | Qt::ItemIsUserCheckable);
-			on->setCheckState(r.camOn[cam] ? Qt::Checked
-						       : Qt::Unchecked);
-			on->setTextAlignment(mid);
-			on->setData(Qt::UserRole, r.id);
-			on->setToolTip(obs_module_text("Dock.AngleSpeedHint"));
-			// Amber for a real override, grey for "the slider
-			// decides": which of the two it is has to be readable
-			// without stopping to read.
-			on->setForeground(QBrush(QColor(hasSpeed ? "#ffd07a"
-								 : "#707070")));
-			// ResizeToContents measures the ITEM, and the item cannot
-			// know how wide the check indicator will be drawn — that
-			// size comes from the stylesheet. Left to itself the cell
-			// came out a few pixels short and Qt drew "7…" instead of
-			// "70%": a speed the operator cannot read is worse than no
-			// speed at all. Wide enough for the box plus "100%".
-			on->setSizeHint(QSize(66, 22));
-			events_->setItem(row, col, on);
-
-			// Right half: the comment for that angle.
-			auto *note = new QTableWidgetItem(
-				r.camNotes[cam].empty()
-					? kNoNote
-					: QString::fromStdString(r.camNotes[cam]));
-			note->setFlags(Qt::ItemIsSelectable | Qt::ItemIsEnabled |
-				       Qt::ItemIsEditable);
-			note->setTextAlignment(Qt::AlignVCenter | Qt::AlignLeft);
-			note->setData(Qt::UserRole, r.id);
-			note->setToolTip(obs_module_text("Dock.CamNoteHint"));
-			events_->setItem(row, col + 1, note);
+			events_->setCellWidget(
+				row, col, buildAngleCell(r.id, cam, r.camOn[cam],
+							 r.camSpeeds[cam],
+							 r.camNotes[cam]));
+			// The cell still carries an item underneath: the gate and
+			// the selection model both address rows through items, and
+			// a cell that is only a widget is a hole in that.
+			auto *slot = new QTableWidgetItem(QString());
+			slot->setFlags(Qt::ItemIsSelectable | Qt::ItemIsEnabled);
+			slot->setData(Qt::UserRole, r.id);
+			events_->setItem(row, col, slot);
 		}
 	}
 	refreshing_ = false;
@@ -3876,56 +3919,101 @@ void MultiReplayDock::refreshEvents()
 	}
 }
 
+QWidget *MultiReplayDock::buildAngleCell(int eventId, int cam0, bool on,
+					 double speed, const std::string &note)
+{
+	// [☑] [speed ▾] [comment ▾] — one widget, one angle, three answers.
+	// Widgets rather than a delegate on purpose: the check has to toggle on
+	// the FIRST click and the two menus have to open on the first click too.
+	// With a delegate each of those is a click to select, then a click to
+	// edit, and in a live gallery that second click is the one that does not
+	// happen.
+	auto *w = new QWidget(events_);
+	auto *h = new QHBoxLayout(w);
+	h->setContentsMargins(4, 0, 4, 0);
+	h->setSpacing(4);
+
+	auto *box = new QCheckBox(w);
+	box->setChecked(on);
+	box->setToolTip(obs_module_text("Dock.AngleOnHint"));
+	h->addWidget(box);
+
+	auto *sp = new QComboBox(w);
+	sp->setObjectName("mrAngleSpeed");
+	sp->setToolTip(obs_module_text("Dock.AngleSpeedHint"));
+	// "--" first: it is the common case (the slider decides) and it must be
+	// one click away from any override.
+	sp->addItem(QStringLiteral("--"), -1);
+	for (int pct : {25, 33, 50, 75, 100, 200})
+		sp->addItem(QString("%1%").arg(pct), pct);
+	const int pct = speed >= 0 ? (int)std::lround(speed * 100.0) : -1;
+	int idx = sp->findData(pct);
+	if (idx < 0 && pct > 0) { // a speed typed elsewhere (an older project)
+		sp->addItem(QString("%1%").arg(pct), pct);
+		idx = sp->count() - 1;
+	}
+	sp->setCurrentIndex(idx < 0 ? 0 : idx);
+	// Amber for an override, grey for "the slider decides": which of the two
+	// it is has to be readable without stopping to read it.
+	sp->setStyleSheet(pct > 0 ? "color:#ffd07a;" : "color:#707070;");
+	h->addWidget(sp);
+
+	auto *cm = new QComboBox(w);
+	cm->setObjectName("mrAngleNote");
+	cm->setEditable(true); // free text stays free text
+	cm->setInsertPolicy(QComboBox::NoInsert);
+	cm->setToolTip(obs_module_text("Dock.CamNoteHint"));
+	cm->addItem(QString()); // "no comment" is the first choice, not a gap
+	for (const auto &p : ReplayCore::instance().getConfig().commentPresets)
+		cm->addItem(QString::fromStdString(p));
+	cm->setCurrentText(QString::fromStdString(note));
+	cm->lineEdit()->setPlaceholderText(kNoNote);
+	h->addWidget(cm, 1);
+
+	const int a1 = cam0 + 1; // EventStore is 1-based
+
+	connect(box, &QCheckBox::toggled, this, [this, eventId, a1](bool v) {
+		if (refreshing_)
+			return;
+		EventStore::instance().setAngle(eventId, a1, v);
+	});
+	connect(sp, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+		[this, sp, eventId, a1](int) {
+			if (refreshing_)
+				return;
+			const int v = sp->currentData().toInt();
+			EventStore::instance().setAngleSpeed(
+				eventId, a1, v > 0 ? v / 100.0 : -1.0);
+		});
+	// Both ways a comment can arrive: picked from the operator's own list, or
+	// typed. editingFinished rather than textChanged — writing to the store
+	// on every keystroke would bump its version and have poll() rebuild the
+	// table out from under the cursor.
+	connect(cm->lineEdit(), &QLineEdit::editingFinished, this,
+		[this, cm, eventId, a1]() {
+			if (refreshing_)
+				return;
+			EventStore::instance().setAngleNote(
+				eventId, a1, cm->currentText().trimmed().toStdString());
+		});
+	connect(cm, QOverload<int>::of(&QComboBox::activated), this,
+		[this, cm, eventId, a1](int) {
+			if (refreshing_)
+				return;
+			EventStore::instance().setAngleNote(
+				eventId, a1, cm->currentText().trimmed().toStdString());
+		});
+	return w;
+}
+
 void MultiReplayDock::onEventItemChanged(QTableWidgetItem *item)
 {
-	// In/out/duration are read-only. What an operator can change lives in the
-	// per-camera pairs: whether that angle plays, how fast, and what it is
-	// called. Everything else reaching here is a rebuild writing its own
-	// cells, which must not be read back as an operator edit.
-	if (refreshing_ || !item)
-		return;
-	const int col = item->column();
-	const int ci = camPairIndex(col);
-	if (ci < 0 || ci >= (int)camCols_.size())
-		return;
-	const int id = item->data(Qt::UserRole).toInt();
-	if (id <= 0)
-		return;
-	const int a1 = camCols_[(size_t)ci] + 1; // EventStore is 1-based
-	auto &store = EventStore::instance();
-
-	if (isCamNoteColumn(col)) {
-		QString note = item->text().trimmed();
-		if (note == kNoNote) // the placeholder is not a comment
-			note.clear();
-		store.setAngleNote(id, a1, note.toStdString());
-		// No refresh from here — see the note at the end of this function.
-		return;
-	}
-
-	// The enable box and this angle's speed are one cell. Both are written
-	// back on any change: they are one edit as far as the operator is
-	// concerned, and applying both is idempotent — far cheaper than tracking
-	// which of the two Qt actually moved.
-	store.setAngle(id, a1, item->checkState() == Qt::Checked);
-
-	// Accept what an operator actually types: "50", "50%", " 50 ", and blank
-	// or "--" for "no speed of my own", which hands the angle back to the
-	// slider. Clamped to what the engine will play (5..200 on the slider,
-	// 400 at the outside).
-	QString t = item->text().trimmed();
-	t.remove(QLatin1Char('%'));
-	bool ok = false;
-	const int v = t.toInt(&ok);
-	if (!ok || t.isEmpty() || t == QStringLiteral("--"))
-		store.setAngleSpeed(id, a1, -1.0);
-	else
-		store.setAngleSpeed(id, a1, std::clamp(v, 5, 400) / 100.0);
-	// No refresh from here: we are inside the model's own setData, and tearing
-	// the rows down under it would free the item the view is still finishing
-	// with. The store's version counter has just moved, so poll() rebuilds on
-	// its next tick (~33 ms) on a clean stack — which is also what normalises
-	// the text ("50" becomes "50%").
+	// Nothing in this table is edited through its ITEMS any more: in, out and
+	// duration are read-only, and everything an operator changes about an
+	// angle lives in the widget that cell holds (see buildAngleCell). The
+	// connection stays so that a future editable column cannot arrive
+	// silently unhandled.
+	(void)item;
 }
 
 // ---------------------------------------------------------------------------
@@ -4212,6 +4300,22 @@ void MultiReplayDock::openSettings()
 	listCount->setToolTip(obs_module_text("Dock.ListCountHint"));
 	evPage->addRow(obs_module_text("Dock.ListCount"), listCount);
 
+	// The comments this operator writes over and over. One per line, and the
+	// order is the order of the drop-down on every angle cell — so the ones
+	// he reaches for during a match go at the top. Free text is never taken
+	// away: this is a shortcut, not a vocabulary.
+	auto *presets = new QPlainTextEdit(&dlg);
+	{
+		QString joined;
+		for (const auto &p : cfg.commentPresets)
+			joined += QString::fromStdString(p) + "\n";
+		presets->setPlainText(joined);
+	}
+	presets->setPlaceholderText(obs_module_text("Dock.CommentPresetsHint"));
+	presets->setToolTip(obs_module_text("Dock.CommentPresetsHint"));
+	presets->setMaximumHeight(96);
+	evPage->addRow(obs_module_text("Dock.CommentPresets"), presets);
+
 	// ── Interface ─────────────────────────────────────────────────────
 	QFormLayout *uiPage = addPage("Dock.SetInterface", "Dock.SetInterfaceBlurb");
 
@@ -4272,6 +4376,13 @@ void MultiReplayDock::openSettings()
 	cfg.sortEventsByTime = sortByTime->isChecked();
 	cfg.eventIdDigits = idDigits->value();
 	cfg.eventListCount = listCount->value();
+	cfg.commentPresets.clear();
+	for (const QString &line :
+	     presets->toPlainText().split(QLatin1Char('\n'), Qt::SkipEmptyParts)) {
+		const QString t = line.trimmed();
+		if (!t.isEmpty())
+			cfg.commentPresets.push_back(t.toStdString());
+	}
 	cfg.videoEncoderId = enc->currentData().toString().toStdString();
 	cfg.outputSceneName = outScene->currentData().toString().toStdString();
 	cfg.musicSourceName = music->currentData().toString().toStdString();

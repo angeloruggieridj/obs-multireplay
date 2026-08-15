@@ -98,6 +98,12 @@ struct Config {
 	// width, so they stay the same length all match long and can be called out
 	// loud ("play 0142") without counting characters.
 	int eventIdDigits = 4;
+	// The comments an operator uses over and over ("Gol", "Fallo",
+	// "Esultanza"). They fill the drop-down on every per-angle comment cell;
+	// typing something else is still allowed, because the list is a shortcut
+	// and not a vocabulary. Empty by default: an empty list simply means the
+	// cell behaves as the plain text field it was before.
+	std::vector<std::string> commentPresets;
 	std::array<CameraConfig, kMaxCameras> cameras;
 };
 

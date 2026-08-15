@@ -40,6 +40,11 @@ private:
 		int eventId;
 		int angle;            // 0-based
 		int64_t tInNs, tOutNs; // master timeline
+		// The speed THIS angle is marked at (1.0 = untouched). A replay
+		// the operator set to 50% is a 50% replay wherever it goes: an
+		// export that quietly ran at 100% handed him a different clip
+		// from the one he had just watched.
+		double speed = 1.0;
 		std::string outPath;
 		std::string state = "queued"; // queued|running|done|failed
 		std::string detail;

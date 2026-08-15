@@ -22,6 +22,9 @@ start.
 // kNoInstant: the dock stores master-timeline instants, and "there is none" is
 // not zero. See the note there before comparing one against 0.
 #include "segment-index.hpp"
+// The position bar's axis: recorded spans joined end to end, no wall-clock
+// holes. Pure logic, no OBS types.
+#include "timeline-map.hpp"
 
 #include <QString>
 #include <QWidget>
@@ -266,9 +269,11 @@ public:
 		kColDur,
 		kColFirstCam // first per-camera pair
 	};
-	// Each configured camera owns two columns: [enable box + speed] and
-	// [comment]. See the note above EventColumn's definition in the .cpp.
-	static constexpr int kColsPerCam = 2;
+	// ONE column per configured camera, holding the three things an operator
+	// says about that angle — plays / how fast / what it is — in a single
+	// cell widget (see buildAngleCell). It was two columns and read as two
+	// subjects. See the note above EventColumn's definition in the .cpp.
+	static constexpr int kColsPerCam = 1;
 
 	// What an OBS hotkey callback is handed (see registerDockHotkeys). Public
 	// only because that callback is a plain C function, as libobs requires.
@@ -311,6 +316,9 @@ private:
 	// only when the configuration really changed — rebuilding clears the
 	// table).
 	void rebuildEventColumns();
+	// The per-angle cell: [☑] [speed ▾] [comment ▾]. Owned by the table.
+	QWidget *buildAngleCell(int eventId, int cam0, bool on, double speed,
+				const std::string &note);
 	// the reference controller paints the header of the angle being watched green. Cheap enough to
 	// call from poll(), which is also the only place that learns the angle
 	// changed under a hotkey.
@@ -582,7 +590,15 @@ private:
 	// segment-index.hpp — and testing one for > 0 is what made a reopened
 	// project draw a flat bar after a reboot.
 	int64_t timelineStartNs_ = kNoInstant; // oldest replayable instant
-	int64_t displayDurNs_ = 0;             // how much of it there is
+	int64_t displayDurNs_ = 0;             // how much FOOTAGE there is
+	// The position bar's axis: the recorded spans joined end to end, so a
+	// session with pauses in it has no holes to step over and no stretch of
+	// bar that resolves to an instant nothing covers. Rebuilt each poll from
+	// SegmentIndex plus the take in progress. See timeline-map.hpp.
+	TimelineMap timeline_;
+	// The disk half of it, cached: reading it takes SegmentIndex's lock, and
+	// its watcher holds that while demuxing a file. See poll().
+	std::vector<TimelineSpan> diskSpans_;
 	// Where the PROJECT's footage begins, which is what event timecodes and
 	// YouTube chapters are measured from. Deliberately not timelineStartNs_:
 	// that one follows the selected angle, so the whole table renumbered

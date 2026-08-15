@@ -127,6 +127,15 @@ public:
 	// than offering a row that does nothing when clicked.
 	bool coversAnyCamera(int64_t masterNs) const;
 
+	// Every stretch of master time that footage on disk covers, on ANY
+	// camera, as (start, end) pairs — unsorted and possibly overlapping,
+	// since the cameras of one take cover the same minutes. This is what the
+	// position bar is drawn over: the recording, not the wall clock (see
+	// timeline-map.hpp). A segment whose end is not known yet is left out
+	// rather than estimated; while a take runs the live edge covers it, and
+	// afterwards refreshDurations() measures it.
+	std::vector<std::pair<int64_t, int64_t>> recordedSpans() const;
+
 	std::vector<RecordingSegment> segments(int camIndex) const;
 	int anchoredCount() const;
 	// Files seen but not anchorable (their opening had already left the

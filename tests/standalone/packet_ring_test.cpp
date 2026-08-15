@@ -18,6 +18,7 @@ subtly wrong on air. So the properties pinned here are:
 #include "packet-ring.hpp"
 #include "segment-anchor.hpp"
 #include "session-clock.hpp"
+#include "timeline-map.hpp"
 
 #include <cstdint>
 #include <cstdio>
@@ -525,6 +526,92 @@ static void test_session_clock_does_not_overflow()
 	      skewed.masterNs + 1000);
 }
 
+// --- the position bar's axis (timeline-map.hpp) -----------------------------
+// The operator records, stops, waits, records again. What the bar must show is
+// the MATERIAL, joined end to end — not the afternoon, with a hole in it.
+
+static void test_timeline_joins_two_takes()
+{
+	TimelineMap m;
+	// Two minutes, a minute of nothing, two more minutes.
+	m.setSpans({{0, ms(120000)}, {ms(180000), ms(300000)}});
+	CHECK(m.spanCount() == 2);
+	// Four minutes of footage, not five of session.
+	CHECK(m.totalNs() == ms(240000));
+
+	// The join: the last instant of take 1 and the first of take 2 are
+	// neighbours on the bar.
+	CHECK(m.fractionOf(ms(120000)) == 0.5);
+	CHECK(m.fractionOf(ms(180000)) == 0.5);
+	// Halfway along the bar is the start of take 2, not the middle of the
+	// pause — which is the whole point.
+	CHECK(m.instantAt(0.5) == ms(180000));
+	CHECK(m.instantAt(0.25) == ms(60000));
+	CHECK(m.instantAt(0.75) == ms(240000));
+
+	// Round trip on instants that footage covers.
+	for (int64_t t : {ms(1), ms(60000), ms(119999), ms(180001), ms(299999)})
+		CHECK(m.instantAt(m.fractionOf(t)) == t);
+}
+
+static void test_timeline_gap_has_no_position_of_its_own()
+{
+	TimelineMap m;
+	m.setSpans({{0, ms(120000)}, {ms(180000), ms(300000)}});
+	CHECK(m.covers(ms(60000)));
+	CHECK(!m.covers(ms(150000))); // inside the pause
+	CHECK(!m.covers(ms(400000))); // past the end
+	// It still has to answer, and it answers with the join rather than a
+	// position inside footage that does not exist.
+	CHECK(m.fractionOf(ms(150000)) == 0.5);
+	// Before the first frame and after the last.
+	CHECK(m.fractionOf(-ms(5000)) == 0.0);
+	CHECK(m.fractionOf(ms(999999)) == 1.0);
+}
+
+static void test_timeline_merges_file_splits()
+{
+	TimelineMap m;
+	// A 20-minute split: the next file starts a few ms after the previous
+	// one ends. That is one recording, and a seam drawn there would be a lie.
+	m.setSpans({{0, ms(1200000)}, {ms(1200040), ms(2400000)}});
+	CHECK(m.spanCount() == 1);
+	CHECK(m.totalNs() == ms(2400000));
+
+	// Overlap (two cameras of the same take) collapses too.
+	TimelineMap two;
+	two.setSpans({{ms(1000), ms(61000)}, {ms(1200), ms(61200)}});
+	CHECK(two.spanCount() == 1);
+	CHECK(two.totalNs() == ms(60200));
+}
+
+static void test_timeline_handles_negative_instants()
+{
+	// Footage recorded before the machine's last boot maps to negative
+	// master instants (see kNoInstant). Nothing here may treat that as
+	// "empty".
+	TimelineMap m;
+	m.setSpans({{-ms(300000), -ms(180000)}, {-ms(60000), ms(60000)}});
+	CHECK(m.spanCount() == 2);
+	CHECK(m.totalNs() == ms(240000));
+	CHECK(m.fractionOf(-ms(240000)) == 0.25);
+	CHECK(m.instantAt(0.0) == -ms(300000));
+	CHECK(m.instantAt(1.0) == ms(60000));
+}
+
+static void test_timeline_empty_is_empty()
+{
+	TimelineMap m;
+	CHECK(m.empty());
+	CHECK(m.totalNs() == 0);
+	CHECK(m.fractionOf(1234) < 0.0); // "there is no bar", not "position 0"
+	CHECK(!m.covers(1234));
+	// Spans that say nothing are dropped rather than drawn as zero-width.
+	m.setSpans({{500, 500}, {900, 100}});
+	CHECK(m.empty());
+	CHECK(m.spanCount() == 0);
+}
+
 int main()
 {
 	test_rescale();
@@ -552,6 +639,12 @@ int main()
 	test_session_clock_across_sessions();
 	test_session_clock_identity_when_unseated();
 	test_session_clock_does_not_overflow();
+
+	test_timeline_joins_two_takes();
+	test_timeline_gap_has_no_position_of_its_own();
+	test_timeline_merges_file_splits();
+	test_timeline_handles_negative_instants();
+	test_timeline_empty_is_empty();
 
 	if (g_fail == 0)
 		std::printf("OK: all packet-ring / master-timeline tests passed\n");

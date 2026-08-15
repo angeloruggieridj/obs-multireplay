@@ -67,16 +67,32 @@ bool ExportManager::exportEvent(int eventId, int angle1Based,
 	{
 		std::lock_guard<std::mutex> lock(mutex_);
 		for (int angle : angles) {
+			// The speed the operator gave THIS angle. -1 means "the
+			// slider decides", and the slider is a live control with
+			// no meaning in a file written an hour later, so an
+			// export with no override is an export at 100%.
+			const double sp = (angle >= 0 && angle < kEventAngles &&
+					   ev.angles[angle].speed > 0)
+						  ? ev.angles[angle].speed
+						  : 1.0;
+			const int pct = (int)std::lround(sp * 100.0);
+
 			fs::path out(folder);
+			// The speed goes in the name when it is not 100%: two
+			// exports of one event at two speeds are two clips, and
+			// the second must not silently overwrite the first.
 			out /= "event" + std::to_string(ev.id) + "_list" +
 			       std::to_string(ev.list) + "_cam" +
-			       std::to_string(angle + 1) + ".mp4";
+			       std::to_string(angle + 1) +
+			       (pct == 100 ? "" : "_" + std::to_string(pct) + "pct") +
+			       ".mp4";
 
 			Job job;
 			job.eventId = ev.id;
 			job.angle = angle;
 			job.tInNs = ev.tInNs;
 			job.tOutNs = ev.tOutNs;
+			job.speed = sp;
 			job.outPath = out.string();
 			jobs_.push_back(std::move(job));
 		}
@@ -187,11 +203,23 @@ bool ExportManager::runJob(Job &job)
 		return false;
 	}
 
+	// Slow motion is spacing, here as much as in the player: the packets are
+	// copied untouched and their timestamps are stretched. No re-encode, so
+	// the clip is still written in a fraction of real time.
+	//
+	// The audio goes with it, though — it is left out entirely when the
+	// speed is not 100%. Stretching audio timestamps the same way would
+	// play it at the wrong pitch with gaps in it, and there is no
+	// resampler on this path. A stadium replay in slow motion is silent,
+	// which is also what this plugin's own playback does.
+	const bool stretched = job.speed > 0 && std::abs(job.speed - 1.0) > 0.001;
 	std::vector<int> streamMap((size_t)in->nb_streams, -1);
 	for (unsigned i = 0; i < in->nb_streams; i++) {
 		AVCodecParameters *par = in->streams[i]->codecpar;
 		if (par->codec_type != AVMEDIA_TYPE_VIDEO &&
 		    par->codec_type != AVMEDIA_TYPE_AUDIO)
+			continue;
+		if (stretched && par->codec_type == AVMEDIA_TYPE_AUDIO)
 			continue;
 		AVStream *os = avformat_new_stream(out, nullptr);
 		avcodec_parameters_copy(os->codecpar, par);
@@ -271,6 +299,18 @@ bool ExportManager::runJob(Job &job)
 			pkt->duration = av_rescale_q(pkt->duration,
 						     ist->time_base,
 						     ost->time_base);
+			if (stretched) {
+				// 50% = twice the spacing. Applied AFTER the
+				// baseline subtraction so the frames the edit
+				// list trims (the ones between the keyframe and
+				// IN, at negative pts) stretch with the rest and
+				// the clip still starts exactly on IN.
+				const double f = 1.0 / job.speed;
+				pkt->pts = (int64_t)std::llround((double)pkt->pts * f);
+				pkt->dts = (int64_t)std::llround((double)pkt->dts * f);
+				pkt->duration =
+					(int64_t)std::llround((double)pkt->duration * f);
+			}
 			pkt->stream_index = streamMap[(size_t)sIdx];
 			pkt->pos = -1;
 			if (av_interleaved_write_frame(out, pkt) < 0) {

@@ -77,6 +77,8 @@ target_sources(
     src/segment-anchor.hpp
     # monotonic <-> wall clock: what makes a project survive an OBS restart
     src/session-clock.hpp
+    # the position bar's axis: recorded spans, joined, no wall-clock holes
+    src/timeline-map.hpp
     src/segment-index.cpp
     src/segment-index.hpp
     src/segment-reader.cpp

@@ -143,7 +143,12 @@ void ReplayCore::restartSegmentIndex(const std::string &folder)
 	// the previous one means nothing here. Measuring is I/O, so it happens
 	// now — between takes, on a background thread — and never at REC, where
 	// it would both delay the take and compete with it (see probeDiskAsync).
-	HealthMonitor::instance().probeDiskAsync(folder);
+	//
+	// The SESSION folder, not this project's: write speed belongs to the
+	// disk, and a probe file inside the project is a file in a directory the
+	// operator (or the gate) may be about to delete.
+	HealthMonitor::instance().probeDiskAsync(
+		ReplayCore::instance().getConfig().sessionFolder);
 }
 
 void ReplayCore::load()
@@ -1088,6 +1093,20 @@ void ReplayCore::loadConfig()
 		}
 		obs_data_array_release(cams);
 	}
+	// The operator's own comment list. Absent in a project written before it
+	// existed, which simply means no shortcuts and a plain text field.
+	config_.commentPresets.clear();
+	if (obs_data_array_t *pre = obs_data_get_array(data, "commentPresets")) {
+		const size_t count = obs_data_array_count(pre);
+		for (size_t i = 0; i < count; i++) {
+			obs_data_t *item = obs_data_array_item(pre, i);
+			const char *t = obs_data_get_string(item, "text");
+			if (t && *t)
+				config_.commentPresets.push_back(t);
+			obs_data_release(item);
+		}
+		obs_data_array_release(pre);
+	}
 	obs_data_release(data);
 }
 
@@ -1134,6 +1153,16 @@ void ReplayCore::saveConfig() const
 	}
 	obs_data_set_array(data, "cameras", cams);
 	obs_data_array_release(cams);
+
+	obs_data_array_t *pre = obs_data_array_create();
+	for (const auto &p : config_.commentPresets) {
+		obs_data_t *item = obs_data_create();
+		obs_data_set_string(item, "text", p.c_str());
+		obs_data_array_push_back(pre, item);
+		obs_data_release(item);
+	}
+	obs_data_set_array(data, "commentPresets", pre);
+	obs_data_array_release(pre);
 
 	char *dir = obs_module_config_path("");
 	if (dir) {

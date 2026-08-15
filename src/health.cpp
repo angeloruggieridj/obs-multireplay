@@ -187,12 +187,17 @@ health::PreflightResult HealthMonitor::preflight(const Config &cfg,
 		if (!ec)
 			in.diskFreeBytes = (int64_t)space.available;
 	}
-	// The measured number is only used for the folder it was measured on: a
+	// The measured number is only used for the volume it was measured on: a
 	// session folder moved from an NVMe to a USB disk must not inherit the
-	// NVMe's verdict.
+	// NVMe's verdict. The key is the SESSION folder, not the project inside
+	// it — write speed is a property of the disk, and probing inside the
+	// project meant leaving an 8 MiB file in a directory somebody else was
+	// entitled to delete (the gate does exactly that, and the wipe failed
+	// with "used by another process", so that run silently measured the
+	// previous run's footage).
 	{
 		std::lock_guard<std::mutex> lock(mutex_);
-		if (!probedFolder_.empty() && probedFolder_ == folder)
+		if (!probedFolder_.empty() && probedFolder_ == cfg.sessionFolder)
 			in.diskWriteBytesPerSec = diskWriteBps_.load();
 	}
 
