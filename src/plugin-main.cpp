@@ -45,15 +45,22 @@ void onFrontendEvent(enum obs_frontend_event event, void *)
 		if (!multireplay::ReplayCore::instance().isRecording())
 			multireplay::ReplayCore::instance()
 				.disarmPersistedFilters();
-		multireplay::ReplayChannel::instance().ensureSource();
-		// The scene collection has just been (re)loaded, so this is where
-		// the operator's items that show the replay input exist again -
-		// and where the "fit to canvas" setting has to be seeded into the
-		// channel, which re-applies it on every clip afterwards.
-		multireplay::ReplayChannel::instance().applyCanvasFit(
-			multireplay::ReplayCore::instance()
-				.getConfig()
-				.fitReplayToCanvas);
+		// Both channels: A and B are two inputs of one type, and the
+		// second has to be adopted (or created) on exactly the same beat
+		// as the first.
+		for (int i = 0; i < multireplay::kChannels; i++) {
+			auto &ch = multireplay::ReplayChannel::instance(
+				(multireplay::Which)i);
+			ch.ensureSource();
+			// The scene collection has just been (re)loaded, so this
+			// is where the operator's items that show a replay input
+			// exist again - and where the "fit to canvas" setting has
+			// to be seeded into the channel, which re-applies it on
+			// every clip afterwards.
+			ch.applyCanvasFit(multireplay::ReplayCore::instance()
+						  .getConfig()
+						  .fitReplayToCanvas);
+		}
 		// No-op unless OBS_MULTIREPLAY_SELFTEST is set.
 		multireplay::maybeRunSelfTest();
 	}
@@ -121,7 +128,9 @@ void obs_module_unload(void)
 	obs_frontend_remove_dock(kDockId);
 	// Detach from Branch Output's encoders before anything else tears down.
 	multireplay::PacketTap::instance().unload();
-	multireplay::ReplayChannel::instance().unload();
+	for (int i = 0; i < multireplay::kChannels; i++)
+		multireplay::ReplayChannel::instance((multireplay::Which)i)
+			.unload();
 	multireplay::ReplayCore::instance().unload();
 	obs_log(LOG_INFO, "plugin unloaded");
 }

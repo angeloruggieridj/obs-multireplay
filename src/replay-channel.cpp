@@ -25,7 +25,10 @@ namespace multireplay {
 namespace {
 
 constexpr const char *kSourceId = "multireplay_channel";
-constexpr const char *kSourceName = "MultiReplay - Replay A";
+// One name per channel. "Replay A" keeps the name it has always had, so an
+// existing scene collection is untouched by B arriving.
+constexpr const char *kSourceNames[kChannels] = {"MultiReplay - Replay A",
+						 "MultiReplay - Replay B"};
 
 // The source object itself is deliberately inert: it owns no playback state and
 // makes no decisions. ReplayChannel pushes frames into it. That keeps the OBS
@@ -37,7 +40,9 @@ struct ChannelSource {
 
 const char *sourceGetName(void *)
 {
-	return kSourceName;
+	// The TYPE's name, which is what OBS shows in "Add source" — not a
+	// channel's. The two channels are two inputs of this one type.
+	return "MultiReplay Replay";
 }
 
 void *sourceCreate(obs_data_t *, obs_source_t *source)
@@ -160,10 +165,11 @@ video_format obsFormatFor(FrameFormat f)
 
 } // namespace
 
-ReplayChannel &ReplayChannel::instance()
+ReplayChannel &ReplayChannel::instance(Which which)
 {
-	static ReplayChannel ch;
-	return ch;
+	static ReplayChannel a(Which::A);
+	static ReplayChannel b(Which::B);
+	return which == Which::B ? b : a;
 }
 
 ReplayChannel::~ReplayChannel()
@@ -171,13 +177,20 @@ ReplayChannel::~ReplayChannel()
 	unload();
 }
 
-const char *ReplayChannel::sourceName()
+const char *ReplayChannel::sourceNameOf(Which which)
 {
-	return kSourceName;
+	return kSourceNames[which == Which::B ? 1 : 0];
+}
+
+const char *ReplayChannel::sourceName() const
+{
+	return sourceNameOf(which_);
 }
 
 void ReplayChannel::load()
 {
+	// The TYPE is registered once for both channels; each instance then goes
+	// on to adopt or create its own input by name.
 	static bool registered = false;
 	if (registered)
 		return;
@@ -222,7 +235,7 @@ void ReplayChannel::ensureSource()
 	// mixer holding a dead source ("Tried to sort VolumeControl for
 	// 'MultiReplay - Replay A' but source is null"). Taking the new ref
 	// first keeps the object alive across the swap.
-	obs_source_t *existing = obs_get_source_by_name(kSourceName);
+	obs_source_t *existing = obs_get_source_by_name(sourceName());
 	obs_source_t *previous = source_;
 	source_ = existing; // already add-ref'd, may be null
 	if (previous)
@@ -231,17 +244,17 @@ void ReplayChannel::ensureSource()
 		return;
 
 	obs_data_t *settings = obs_data_create();
-	source_ = obs_source_create(kSourceId, kSourceName, settings, nullptr);
+	source_ = obs_source_create(kSourceId, sourceName(), settings, nullptr);
 	obs_data_release(settings);
 
 	if (!source_) {
-		obs_log(LOG_ERROR, "[channel] could not create '%s'", kSourceName);
+		obs_log(LOG_ERROR, "[channel] could not create '%s'", sourceName());
 		return;
 	}
 	// We pace playback ourselves, so buffering would only add latency on top
 	// of a schedule that is already correct.
 	obs_source_set_async_unbuffered(source_, true);
-	obs_log(LOG_INFO, "[channel] created OBS input '%s'", kSourceName);
+	obs_log(LOG_INFO, "[channel] created OBS input '%s'", sourceName());
 }
 
 void ReplayChannel::applyCanvasFit(bool enable)
@@ -285,7 +298,7 @@ void ReplayChannel::fitSceneItems()
 		obs_log(LOG_INFO,
 			"[channel] fitted %d scene item(s) of '%s' to the %ux%u "
 			"canvas (aspect preserved)",
-			ctx.changed, kSourceName, ctx.cx, ctx.cy);
+			ctx.changed, sourceName(), ctx.cx, ctx.cy);
 }
 
 obs_source_t *ReplayChannel::acquireSource()

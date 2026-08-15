@@ -231,6 +231,19 @@ QPushButton#mrRec[recording="true"] {
 }
 QPushButton#mrRec[recording="true"]:hover { background: #740e0e; }
 
+/* Channel selector A|B / A / B and the swap. Small, square and always visible:
+   it is the answer to "where is this key going", and an operator who has to
+   look for it has already pressed something on the wrong channel. */
+QPushButton#mrChanSel {
+	background: #14161a; color: #7a879a; border: 1px solid #262b33;
+	border-radius: 3px; padding: 2px 6px; font-weight: 700; font-size: 11px;
+	min-height: 22px;
+}
+QPushButton#mrChanSel:hover { background: #1b1f26; color: #c8d2de; }
+QPushButton#mrChanSel:checked {
+	background: #1d3d74; color: #ffffff; border-color: #2f5da8;
+}
+
 /* M4 health badge: amber = degraded, red = this take is not usable. It sits
    beside REC and is hidden entirely while there is nothing to report. */
 QPushButton#mrHealth {
@@ -1496,7 +1509,7 @@ void MultiReplayDock::refreshTileSources()
 		if (t.box && t.box->isVisible()) {
 			if (t.cam0 < 0) {
 				if (previewHasContent_)
-					next = ReplayChannel::instance()
+					next = chan()
 						       .acquireSource();
 			} else {
 				const std::string &nm =
@@ -1580,7 +1593,7 @@ MultiReplayDock::LayoutProbe MultiReplayDock::layoutProbe() const
 
 void MultiReplayDock::updateMultiviewTally()
 {
-	const auto ps = PlaybackCoordinator::instance().playState();
+	const auto ps = pc().playState();
 	const int pvw = currentAngle1_ - 1;
 	const int pgm = (ps.active && ps.angle1 > 0) ? ps.angle1 - 1 : -1;
 	if (pvw == tileTallyPvw_ && pgm == tileTallyPgm_)
@@ -1673,7 +1686,7 @@ QWidget *MultiReplayDock::buildTransport()
 				     obs_module_text("Dock.PlayLast"));
 	connect(lastBtn, &QPushButton::clicked, this, [this]() {
 		std::string err;
-		if (!PlaybackCoordinator::instance().playLastEvent(
+		if (!pc().playLastEvent(
 			    currentAngle1_ - 1,
 			    toOutputBtn_ && toOutputBtn_->isChecked(), err))
 			QMessageBox::warning(this, "obs-multireplay",
@@ -1708,21 +1721,21 @@ QWidget *MultiReplayDock::buildTransport()
 		more->setMenu(menu);
 		connect(actOut, &QAction::triggered, this, [this]() {
 			std::string err;
-			if (!PlaybackCoordinator::instance().playEvents(
+			if (!pc().playEvents(
 				    selectedEventIds(), currentAngle1_ - 1,
 				    /*toOutput*/ true, err))
 				showNotice(QString::fromStdString(err));
 		});
 		connect(actLast, &QAction::triggered, this, [this]() {
 			std::string err;
-			if (!PlaybackCoordinator::instance().playLastEvent(
+			if (!pc().playLastEvent(
 				    currentAngle1_ - 1,
 				    toOutputBtn_ && toOutputBtn_->isChecked(),
 				    err))
 				showNotice(QString::fromStdString(err));
 		});
 		connect(actStop, &QAction::triggered, this,
-			[]() { PlaybackCoordinator::instance().stopEvents(); });
+			[this]() { pc().stopEvents(); });
 	}
 
 	nowBtn_ = new QPushButton(QStringLiteral("NOW"), this);
@@ -1744,12 +1757,12 @@ QWidget *MultiReplayDock::buildTransport()
 	loopBtn_ = toggleBtn(obs_module_text("Dock.Loop"), this,
 			     obs_module_text("Dock.Loop"));
 	connect(loopBtn_, &QPushButton::toggled, this,
-		[](bool on) { PlaybackCoordinator::instance().setLoop(on); });
+		[this](bool on) { pc().setLoop(on); });
 
 	musicBtn_ = toggleBtn(QStringLiteral("♫"), this,
 			      obs_module_text("Dock.Music"));
-	connect(musicBtn_, &QPushButton::toggled, this, [](bool on) {
-		PlaybackCoordinator::instance().setMusicEnabled(on);
+	connect(musicBtn_, &QPushButton::toggled, this, [this](bool on) {
+		pc().setMusicEnabled(on);
 	});
 
 	toOutputBtn_ = toggleBtn(obs_module_text("Dock.ToOutput"), this,
@@ -1778,16 +1791,16 @@ QWidget *MultiReplayDock::buildTransport()
 	connect(playPauseBtn_, &QPushButton::clicked, this, [this]() {
 		// There is no free-running playhead to pause any more: the engine
 		// plays a clip. ▶ re-cues the selected event, ⏸ stops it.
-		if (ReplayChannel::instance().playing()) {
-			PlaybackCoordinator::instance().stopEvents();
+		if (chan().playing()) {
+			pc().stopEvents();
 			return;
 		}
 		ReplayCore::instance().setFollowLive(false);
 		replayCurrent();
 	});
-	connect(nowBtn_, &QPushButton::clicked, this, []() {
+	connect(nowBtn_, &QPushButton::clicked, this, [this]() {
 		// the reference controller NOW: drop the replay and watch the live edge again.
-		PlaybackCoordinator::instance().stopEvents();
+		pc().stopEvents();
 		ReplayCore::instance().setFollowLive(true);
 	});
 
@@ -1888,7 +1901,7 @@ QWidget *MultiReplayDock::buildBottomBar()
 					    QMessageBox::Yes | QMessageBox::No,
 					    QMessageBox::No) != QMessageBox::Yes)
 					return;
-				PlaybackCoordinator::instance().stopEvents();
+				pc().stopEvents();
 				EventStore::instance().clearAll();
 			});
 		}
@@ -1949,7 +1962,7 @@ QWidget *MultiReplayDock::buildBottomBar()
 				// Stop any event playing BEFORE arming: a new take
 				// must not start while a clip is still being paced
 				// into the replay input.
-				PlaybackCoordinator::instance().stopEvents();
+				pc().stopEvents();
 				std::string err;
 				if (!core.startRecording(err))
 					QMessageBox::warning(
@@ -2061,6 +2074,38 @@ QWidget *MultiReplayDock::buildBottomBar()
 		clipBar_ = new ClipBar(this);
 		h->addWidget(clipBar_, 1);
 
+		// the reference controller's channel selector, right where the reference controller puts it: A|B / A / B,
+		// then the swap. It says where the transport keys, the marks and
+		// the play buttons go — not what is on air, which is whatever the
+		// operator's scenes are showing.
+		chanSel_ = new QButtonGroup(this);
+		chanSel_->setExclusive(true);
+		const std::pair<const char *, int> chanChoices[] = {
+			{"A|B", 2}, {"A", 0}, {"B", 1}};
+		for (const auto &[label, code] : chanChoices) {
+			auto *b = new QPushButton(QString::fromUtf8(label), this);
+			b->setObjectName("mrChanSel");
+			b->setCheckable(true);
+			b->setChecked(code == 0); // A, as it has always been
+			b->setMinimumWidth(30);
+			b->setCursor(Qt::PointingHandCursor);
+			chanSel_->addButton(b, code);
+			h->addWidget(b, 0);
+		}
+		connect(chanSel_, &QButtonGroup::idClicked, this, [this](int code) {
+			setActiveChannel(code == 1 ? Which::B : Which::A,
+					 code == 2);
+		});
+
+		swapBtn_ = new QPushButton(QStringLiteral("⇄"), this);
+		swapBtn_->setObjectName("mrChanSel");
+		swapBtn_->setToolTip(obs_module_text("Dock.SwapChannels"));
+		swapBtn_->setMinimumWidth(28);
+		swapBtn_->setCursor(Qt::PointingHandCursor);
+		connect(swapBtn_, &QPushButton::clicked, this,
+			&MultiReplayDock::swapChannels);
+		h->addWidget(swapBtn_, 0);
+
 		// ">>", never the ⏭ glyph: EXACTLY ONE button in this dock may
 		// carry that one (the frame step), and the gate finds it by it.
 		nextClipBtn_ = transportBtn(QStringLiteral(">>"), this,
@@ -2071,8 +2116,8 @@ QWidget *MultiReplayDock::buildBottomBar()
 			// is otherwise indistinguishable from "the press never
 			// arrived", and one of those is a bug in the dock.
 			const bool moved =
-				PlaybackCoordinator::instance().skipToNext();
-			const auto ps = PlaybackCoordinator::instance().playState();
+				pc().skipToNext();
+			const auto ps = pc().playState();
 			obs_log(LOG_INFO,
 				"[dock] >> skip: %s (queue %d/%d, angle %d)",
 				moved ? "advanced" : "nothing queued", ps.queuePos,
@@ -2212,7 +2257,7 @@ QWidget *MultiReplayDock::buildEvents()
 			if (id <= 0)
 				return;
 			std::string err;
-			if (!PlaybackCoordinator::instance().playEvents(
+			if (!pc().playEvents(
 				    {id}, currentAngle1_ - 1, /*toOutput*/ true,
 				    err))
 				showNotice(QString::fromStdString(err));
@@ -2400,7 +2445,7 @@ int64_t MultiReplayDock::markTimeNs() const
 	// looking. It stays as the fallback for a playhead that was never set.
 	if (playheadNs_ != kNoInstant)
 		return playheadNs_;
-	return ReplayChannel::instance().positionNs();
+	return chan().positionNs();
 }
 
 bool MultiReplayDock::markable(int64_t tNs)
@@ -2557,7 +2602,7 @@ void MultiReplayDock::moveSelectedEvent(int delta)
 void MultiReplayDock::playSelected()
 {
 	std::string err;
-	if (!PlaybackCoordinator::instance().playEvents(
+	if (!pc().playEvents(
 		    selectedEventIds(), currentAngle1_ - 1,
 		    toOutputBtn_ && toOutputBtn_->isChecked(), err))
 		QMessageBox::warning(this, "obs-multireplay",
@@ -2615,13 +2660,13 @@ void MultiReplayDock::stepFrameForward()
 	// Same discipline as a scrub: kill the queue first so its finish callback
 	// cannot cut in, and consume the transition so poll() does not read the
 	// stop as "the sequence ended, go back to live".
-	PlaybackCoordinator::instance().stopEvents();
+	pc().stopEvents();
 	prevSequenceActive_ = false;
 	core.setFollowLive(false);
 	playheadNs_ = inNs;
 
 	std::string err;
-	if (!ReplayChannel::instance().play(currentAngle1_ - 1, inNs,
+	if (!chan().play(currentAngle1_ - 1, inNs,
 					    std::min(outNs, edge), 100, err))
 		showNotice(QString("%1 — %2")
 				   .arg(obs_module_text("Dock.NoFootageHere"))
@@ -2633,7 +2678,7 @@ void MultiReplayDock::applyReplaySpeed(int pct)
 	// Default speed for every angle without an override — the coordinator
 	// resolves it when it builds the queue, including for the hotkeys.
 	speedPct_ = std::clamp(pct, 5, 200);
-	PlaybackCoordinator::instance().setDefaultSpeedPct(speedPct_);
+	pc().setDefaultSpeedPct(speedPct_);
 	// Always restart from the in-point so the saved IN is respected (the reference controller).
 	replayCurrent();
 }
@@ -2646,7 +2691,7 @@ void MultiReplayDock::replayCurrent()
 	// recording, which the ring makes possible and is the whole point.
 	if (ReplayCore::instance().followLive())
 		return;
-	auto &pc = PlaybackCoordinator::instance();
+	auto &pc = this->pc();
 	std::string err;
 	std::vector<int> ids = selectedEventIds();
 	bool toOut = toOutputBtn_ && toOutputBtn_->isChecked();
@@ -2721,7 +2766,7 @@ void MultiReplayDock::updateChannelStrip()
 	};
 
 	auto &store = EventStore::instance();
-	const auto ps = PlaybackCoordinator::instance().playState();
+	const auto ps = pc().playState();
 
 	// Which event this strip is about: the one on air, else the one selected,
 	// else the last mark taken — the same order the transport keys use, so
@@ -2909,7 +2954,7 @@ void MultiReplayDock::seekToFraction(double frac)
 	// Scrubbing is "review from here" (see kScrubReviewNs): the engine has no
 	// playhead to park, it plays ranges. Stop the queue first so its own
 	// finish callback cannot cut in over the review clip.
-	PlaybackCoordinator::instance().stopEvents();
+	pc().stopEvents();
 	// ...and consume that stop ourselves. poll() sends a finished SEQUENCE back
 	// to the live edge, which is right when a replay ends and wrong here: it
 	// would drag the operator off the very instant he just chose.
@@ -2920,7 +2965,7 @@ void MultiReplayDock::seekToFraction(double frac)
 	playheadNs_ = inNs;
 
 	std::string err;
-	if (!ReplayChannel::instance().play(currentAngle1_ - 1, inNs, outNs,
+	if (!chan().play(currentAngle1_ - 1, inNs, outNs,
 					    speedPct_, err)) {
 		// Nothing covers that instant on this angle — the ring has evicted
 		// it and no anchored file holds it. Saying so is the point: the
@@ -2977,7 +3022,7 @@ void MultiReplayDock::cancelDeadRecording()
 void MultiReplayDock::poll()
 {
 	auto &core = ReplayCore::instance();
-	auto &chan = ReplayChannel::instance();
+	auto &chan = this->chan();
 	auto &tap = PacketTap::instance();
 
 	// The preview's obs_display is bound to a native window handle, and OBS
@@ -3003,7 +3048,7 @@ void MultiReplayDock::poll()
 	const bool rec = core.isRecording();
 	const bool followLive = core.followLive();
 	const bool playing = chan.playing();
-	const auto playSt = PlaybackCoordinator::instance().playState();
+	const auto playSt = pc().playState();
 	const bool eventActive = playSt.active;
 
 	// --- is the REPLAY on screen? (the sequence, not the clip) -----------
@@ -3225,7 +3270,7 @@ void MultiReplayDock::poll()
 	// while his finger is on it.
 	{
 		const int coordPct =
-			PlaybackCoordinator::instance().defaultSpeedPct();
+			pc().defaultSpeedPct();
 		if (speed_ && coordPct != speedPct_ && !speed_->isSliderDown()) {
 			speedPct_ = coordPct;
 			QSignalBlocker block(speed_);
@@ -3917,6 +3962,76 @@ void MultiReplayDock::refreshEvents()
 			}
 		}
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Which channel the controls drive (the reference controller's A|B / A / B)
+// ---------------------------------------------------------------------------
+
+PlaybackCoordinator &MultiReplayDock::pc() const
+{
+	return PlaybackCoordinator::instance(activeChannel_);
+}
+
+ReplayChannel &MultiReplayDock::chan() const
+{
+	return ReplayChannel::instance(activeChannel_);
+}
+
+std::vector<Which> MultiReplayDock::targetChannels() const
+{
+	// A|B is not "A and also B sometimes": it is one command going to both,
+	// which is the whole reason a two-channel panel is one panel.
+	if (linkedAB_)
+		return {Which::A, Which::B};
+	return {activeChannel_};
+}
+
+void MultiReplayDock::setActiveChannel(Which which, bool linked)
+{
+	activeChannel_ = which;
+	linkedAB_ = linked;
+	// The preview, the badge and the transport all read these on the next
+	// tick; nothing is stopped or started by CHOOSING a channel, because in
+	// the reference controller the selector picks where the keys go, not what is on air.
+	previewCam0_ = -1; // force the preview source to be re-resolved
+	if (chanBadge_)
+		chanBadge_->setText(QString("%1%2")
+					    .arg(linked ? QStringLiteral("A|B")
+							: QString(channelLetter(
+								  which)))
+					    .arg(currentAngle1_));
+	poll();
+}
+
+void MultiReplayDock::swapChannels()
+{
+	// ⇄ — what A is playing goes to B and B's goes to A. Each channel is
+	// asked to play the OTHER's clip from its IN: there is no way to hand a
+	// half-played clip across, and starting from the top is what an operator
+	// means by "put that on the other channel".
+	auto &pa = PlaybackCoordinator::instance(Which::A);
+	auto &pb = PlaybackCoordinator::instance(Which::B);
+	const auto sa = pa.playState();
+	const auto sb = pb.playState();
+	if (!sa.active && !sb.active) {
+		showNotice(obs_module_text("Dock.NothingQueued"));
+		return;
+	}
+	pa.stopEvents();
+	pb.stopEvents();
+	std::string err;
+	// B takes what A had, A takes what B had. Angles come across with the
+	// clips: the point of the swap is to keep watching the same two things
+	// the other way round.
+	if (sa.active && sa.eventId > 0)
+		pb.playEvents({sa.eventId}, sa.angle1 - 1, false, err,
+			      PlaybackCoordinator::AngleMode::Single);
+	if (sb.active && sb.eventId > 0)
+		pa.playEvents({sb.eventId}, sb.angle1 - 1, false, err,
+			      PlaybackCoordinator::AngleMode::Single);
+	obs_log(LOG_INFO, "[dock] swap: A(event %d angle %d) <-> B(event %d angle %d)",
+		sa.eventId, sa.angle1, sb.eventId, sb.angle1);
 }
 
 QWidget *MultiReplayDock::buildAngleCell(int eventId, int cam0, bool on,

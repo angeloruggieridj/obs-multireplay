@@ -7,6 +7,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
 #pragma once
 
 #include "event-store.hpp"
+#include "replay-channel.hpp" // Which, and the channel this one drives
 
 #include <atomic>
 #include <cstdint>
@@ -28,7 +29,13 @@ namespace multireplay {
 // program and the previous scene is restored when the queue completes.
 class PlaybackCoordinator {
 public:
-	static PlaybackCoordinator &instance();
+	// One per replay channel: A and B each have their own queue, their own
+	// clip on air and their own idea of what "next" means. Defaulted to A,
+	// so every call site that means "the replay" keeps meaning it.
+	static PlaybackCoordinator &instance(Which which = Which::A);
+	Which which() const { return which_; }
+	// The channel this coordinator drives.
+	ReplayChannel &channel() const { return ReplayChannel::instance(which_); }
 
 	// How many clips one event is worth.
 	enum class AngleMode {
@@ -111,7 +118,8 @@ public:
 	void onClipFinished(uint64_t gen);
 
 private:
-	PlaybackCoordinator() = default;
+	explicit PlaybackCoordinator(Which which = Which::A) : which_(which) {}
+	const Which which_ = Which::A;
 	void startNext();       // plays queue_[queuePos_]
 	void onEventFinished(); // queue advance; caller holds mutex_
 	void switchToReplayScene();

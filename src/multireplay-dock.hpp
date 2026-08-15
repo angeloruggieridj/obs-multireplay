@@ -25,6 +25,12 @@ start.
 // The position bar's axis: recorded spans joined end to end, no wall-clock
 // holes. Pure logic, no OBS types.
 #include "timeline-map.hpp"
+// Which (A/B) — the panel drives two channels now.
+#include "replay-channel.hpp"
+
+namespace multireplay {
+class PlaybackCoordinator;
+}
 
 #include <QString>
 #include <QWidget>
@@ -319,6 +325,27 @@ private:
 	// The per-angle cell: [☑] [speed ▾] [comment ▾]. Owned by the table.
 	QWidget *buildAngleCell(int eventId, int cam0, bool on, double speed,
 				const std::string &note);
+
+	// --- which replay channel the controls drive (the reference controller's A|B / A / B) ----
+	// The panel is one set of controls over two channels, so every command
+	// has to know where it is going. `activeChannel_` is where the eye and
+	// the transport are; `linkedAB_` is the reference controller's A|B, where a command goes to
+	// BOTH — which is what makes two channels useful without doubling the
+	// panel.
+	Which activeChannel_ = Which::A;
+	bool linkedAB_ = false;
+	// The coordinator/channel the next command belongs to.
+	PlaybackCoordinator &pc() const;
+	ReplayChannel &chan() const;
+	// Every channel a command applies to right now: both under A|B, one
+	// otherwise. Callers loop over it rather than testing linkedAB_ at
+	// twenty call sites and getting one of them wrong.
+	std::vector<Which> targetChannels() const;
+	void setActiveChannel(Which which, bool linked);
+	// the reference controller's ⇄: what A is playing goes to B and the other way round.
+	void swapChannels();
+	QButtonGroup *chanSel_ = nullptr;  // A|B / A / B
+	QPushButton *swapBtn_ = nullptr;   // ⇄
 	// the reference controller paints the header of the angle being watched green. Cheap enough to
 	// call from poll(), which is also the only place that learns the angle
 	// changed under a hotkey.

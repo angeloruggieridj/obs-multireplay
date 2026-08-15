@@ -39,12 +39,30 @@ no re-encoding, no reopening, no seeking.
 
 namespace multireplay {
 
+// the reference controller has two replay channels and so do we. They are two INSTANCES of this
+// class, not two classes and not one class with a second set of fields: a
+// channel is a source, a worker thread and a clip, and there is nothing about
+// the second one that differs from the first except its name.
+//
+// One registered source TYPE, two named inputs. The type is inert (see
+// ChannelSource in the .cpp), so nothing about it needs to know which channel
+// it belongs to; the instance pushing frames into it does.
+enum class Which { A = 0, B = 1 };
+inline constexpr int kChannels = 2;
+inline const char *channelLetter(Which w)
+{
+	return w == Which::A ? "A" : "B";
+}
+
 class ReplayChannel {
 public:
-	static ReplayChannel &instance();
+	// Defaulted to A so the call sites that only ever meant "the replay
+	// channel" keep saying exactly that.
+	static ReplayChannel &instance(Which which = Which::A);
 
-	// Registers the source type. Call from obs_module_load, before any
-	// scene collection can reference it.
+	// Registers the source type (once, however many channels there are) and
+	// binds this instance to its own name. Call from obs_module_load, before
+	// any scene collection can reference it.
 	void load();
 	void unload();
 
@@ -52,8 +70,10 @@ public:
 	// repeatedly (FINISHED_LOADING / SCENE_COLLECTION_CHANGED).
 	void ensureSource();
 
+	Which which() const { return which_; }
 	// The OBS input name the operator will look for.
-	static const char *sourceName();
+	const char *sourceName() const;
+	static const char *sourceNameOf(Which which);
 
 	// Make every scene item that shows the replay input fill the canvas,
 	// keeping its aspect ratio (the transform OBS calls "Fit to screen":
@@ -113,7 +133,7 @@ public:
 	void setOnFinished(std::function<void()> fn);
 
 private:
-	ReplayChannel() = default;
+	explicit ReplayChannel(Which which = Which::A) : which_(which) {}
 	~ReplayChannel();
 	ReplayChannel(const ReplayChannel &) = delete;
 	ReplayChannel &operator=(const ReplayChannel &) = delete;
@@ -122,6 +142,7 @@ private:
 	void joinWorker();
 	void fitSceneItems(); // applyCanvasFit's body; no lock held
 
+	const Which which_;
 	obs_source_t *source_ = nullptr; // owned (ref held)
 	mutable std::mutex mutex_;
 

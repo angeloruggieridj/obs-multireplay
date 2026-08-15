@@ -86,10 +86,13 @@ void finishedTask(void *param)
 
 } // namespace
 
-PlaybackCoordinator &PlaybackCoordinator::instance()
+PlaybackCoordinator &PlaybackCoordinator::instance(Which which)
 {
-	static PlaybackCoordinator coordinator;
-	return coordinator;
+	// Two queues, one per channel. They share nothing: A finishing a clip
+	// must not advance B, and B going to program must not stop A.
+	static PlaybackCoordinator a(Which::A);
+	static PlaybackCoordinator b(Which::B);
+	return which == Which::B ? b : a;
 }
 
 void PlaybackCoordinator::setDefaultSpeedPct(int pct)
@@ -302,7 +305,7 @@ bool PlaybackCoordinator::playLastEvent(int angle0, bool toOutput,
 void PlaybackCoordinator::stopEvents()
 {
 	std::lock_guard<std::mutex> lock(mutex_);
-	ReplayChannel::instance().stop();
+	channel().stop();
 	playGen_++; // any finish callback still in flight is now stale
 	queue_.clear();
 	queuePos_ = 0; // no queue, no position into one
@@ -346,7 +349,7 @@ bool PlaybackCoordinator::skipToNext()
 	// the queue a second time on top of the advance we are about to do. With
 	// the generation moved, onClipFinished() drops it.
 	playGen_++;
-	ReplayChannel::instance().stop();
+	channel().stop();
 	// Exactly what the natural end of a clip does — including Loop, and
 	// including ending the sequence when this was the last item.
 	onEventFinished();
@@ -368,12 +371,12 @@ void PlaybackCoordinator::startNext()
 		const uint64_t gen = ++playGen_;
 		// Installed before play() so the worker picks up the callback that
 		// belongs to THIS clip.
-		ReplayChannel::instance().setOnFinished([gen]() {
+		channel().setOnFinished([gen]() {
 			obs_queue_task(OBS_TASK_UI, finishedTask,
 				       (void *)(uintptr_t)gen, false);
 		});
 		std::string err;
-		if (ReplayChannel::instance().play(item.angle, item.tInNs,
+		if (channel().play(item.angle, item.tInNs,
 						   item.tOutNs, item.speedPct,
 						   err)) {
 			obs_log(LOG_INFO,
@@ -398,7 +401,7 @@ void PlaybackCoordinator::startNext()
 	// NEW queue could not start a single item the clip of the OLD one was still
 	// running - the operator saw the previous angle carry on over a play he had
 	// just replaced, with the dock reporting idle.
-	ReplayChannel::instance().stop();
+	channel().stop();
 	active_ = false;
 	if (toOutput_)
 		restorePreviousScene();
@@ -461,7 +464,7 @@ void PlaybackCoordinator::switchToReplayScene()
 		obs_log(LOG_INFO,
 			"coordinator: no output scene configured — playing "
 			"into '%s' without switching program",
-			ReplayChannel::sourceName());
+			channel().sourceName());
 		return;
 	}
 	auto *ctx = new SceneSwitchCtx{scene, &previousSceneName_};

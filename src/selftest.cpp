@@ -2721,7 +2721,7 @@ void runSelfTest()
 					"into '%s' at 1x in %lld ms (OBS reports %ux%u, "
 					"%d preroll)",
 					playedFrames, audioBuffers,
-					ReplayChannel::sourceName(),
+					ReplayChannel::sourceNameOf(Which::A),
 					(long long)playElapsedMs, w, h,
 					(int)st.framesPreroll);
 			}
