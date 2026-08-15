@@ -37,7 +37,9 @@ See selftest.hpp. This is the scripted form of the M0 gate.
 #include <QFontMetrics>
 #include <QTabBar>
 #include <QTableWidget>
+#include <QCoreApplication>
 #include <QTimer>
+#include <QWheelEvent>
 
 #include <algorithm>
 #include <array>
@@ -290,6 +292,15 @@ struct DockChecks {
 	int64_t markInNs = 0;
 	int64_t markOutNs = 0;
 	int playedFrames = 0;
+	// Channel B, the swap, the trim keys and the zoom — the four things
+	// that shipped without a check and therefore without a claim.
+	int channelBFrames = 0;
+	bool channelBIndependent = false;
+	bool swapMovesClip = false;
+	bool trimMovedIn = false;
+	bool seekbarZooms = false;
+	int64_t trimDeltaMs = 0;
+	double zoomReached = 1.0;
 };
 
 // --- M4: hardening ----------------------------------------------------------
@@ -1286,6 +1297,184 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 					(void *)skipBtn, kerr.c_str());
 			}
 			pc.stopEvents();
+		}
+
+		// --- CHANNEL B: it exists, it plays, and it is not A ----------
+		// Everything above drives A. A second channel that is never
+		// played is a second channel that is broken with nobody the
+		// wiser — so this plays the same event on B THROUGH THE PANEL
+		// (the A|B selector, then play) and demands frames out of B's
+		// own engine while A stays exactly where it was left.
+		{
+			auto &chB = ReplayChannel::instance(Which::B);
+			auto &pcB = PlaybackCoordinator::instance(Which::B);
+			const uint64_t aBefore = chan.stats().framesPushed;
+			QPushButton *selB = nullptr;
+			runOnUi([&]() {
+				for (QPushButton *b :
+				     dock->findChildren<QPushButton *>())
+					if (b->objectName() ==
+						    QStringLiteral("mrChanSel") &&
+					    b->text() == QStringLiteral("B"))
+						selB = b;
+				if (selB)
+					selB->click(); // the keys now drive B
+			});
+			std::string berr;
+			bool startedB = false;
+			if (selB) {
+				for (int a = 1; a <= kEventAngles; a++)
+					store.setAngle(evId, a, a == a1);
+				runOnUi([&]() {
+					startedB = pcB.playEvents(
+						{evId}, firstCam, false, berr,
+						PlaybackCoordinator::AngleMode::
+							Single);
+				});
+			}
+			for (int i = 0; i < 60 && chB.stats().framesPushed == 0; i++)
+				std::this_thread::sleep_for(
+					std::chrono::milliseconds(50));
+			c.channelBFrames = (int)chB.stats().framesPushed;
+			// A must NOT have moved: two channels sharing a worker
+			// are one channel with extra buttons.
+			c.channelBIndependent =
+				c.channelBFrames > 0 &&
+				chan.stats().framesPushed == aBefore;
+			obs_log(c.channelBIndependent ? LOG_INFO : LOG_ERROR,
+				"[selftest] dock: channel B played %d frame(s) "
+				"(started=%s), A untouched at %llu: %s",
+				c.channelBFrames, startedB ? "yes" : "no",
+				(unsigned long long)aBefore,
+				c.channelBIndependent ? "yes" : "NO");
+
+			// --- ⇄ hands the clip across ----------------------------
+			// B is playing and A is idle, so after the swap the clip
+			// has to be on A. That is the whole point of the key.
+			QPushButton *swapBtn = nullptr;
+			runOnUi([&]() {
+				for (QPushButton *b :
+				     dock->findChildren<QPushButton *>())
+					if (b->text() == QStringLiteral("⇄"))
+						swapBtn = b;
+				if (swapBtn)
+					swapBtn->click();
+			});
+			for (int i = 0; i < 60; i++) {
+				if (pc.playState().active &&
+				    pc.playState().eventId == evId)
+					break;
+				std::this_thread::sleep_for(
+					std::chrono::milliseconds(50));
+			}
+			c.swapMovesClip = swapBtn && pc.playState().active &&
+					  pc.playState().eventId == evId;
+			obs_log(c.swapMovesClip ? LOG_INFO : LOG_ERROR,
+				"[selftest] dock: ⇄ moved event %d from B to A: %s",
+				evId, c.swapMovesClip ? "yes" : "NO");
+
+			pcB.stopEvents();
+			pc.stopEvents();
+			// Hand the panel back to A, or every check after this one
+			// would be driving a channel it does not know about.
+			runOnUi([&]() {
+				for (QPushButton *b :
+				     dock->findChildren<QPushButton *>())
+					if (b->objectName() ==
+						    QStringLiteral("mrChanSel") &&
+					    b->text() == QStringLiteral("A"))
+						b->click();
+			});
+		}
+
+		// --- the trim keys move the point they say they move ----------
+		// ⇤IN with the playhead parked one second later must move the
+		// event's IN by about a second — and not touch its OUT. A trim
+		// that quietly moved the wrong end would be found on air.
+		{
+			ReplayEvent before;
+			store.get(evId, before);
+			bool clicked = false;
+			runOnUi([&]() {
+				QTableWidget *t = dock->findChild<QTableWidget *>();
+				if (t) {
+					for (int r = 0; r < t->rowCount(); r++) {
+						QTableWidgetItem *idIt = t->item(
+							r, MultiReplayDock::kColId);
+						if (idIt &&
+						    idIt->data(Qt::UserRole).toInt() ==
+							    evId) {
+							t->setCurrentCell(
+								r,
+								MultiReplayDock::kColId,
+								QItemSelectionModel::
+										ClearAndSelect |
+									QItemSelectionModel::
+										Rows);
+							break;
+						}
+					}
+				}
+				for (QPushButton *b :
+				     dock->findChildren<QPushButton *>())
+					if (b->text() == QStringLiteral("⇤IN")) {
+						b->click();
+						clicked = true;
+					}
+			});
+			ReplayEvent after;
+			store.get(evId, after);
+			c.trimDeltaMs = (after.tInNs - before.tInNs) / 1'000'000;
+			// The playhead is wherever the checks above left it, so the
+			// claim is "IN moved to the playhead and OUT did not
+			// move", not a particular number of milliseconds.
+			c.trimMovedIn = clicked && after.tOutNs == before.tOutNs &&
+					after.tInNs != before.tInNs;
+			obs_log(c.trimMovedIn ? LOG_INFO : LOG_ERROR,
+				"[selftest] dock: ⇤IN moved event %d's IN by %lld ms "
+				"(OUT %s)",
+				evId, (long long)c.trimDeltaMs,
+				after.tOutNs == before.tOutNs ? "unchanged"
+							      : "MOVED TOO");
+			// Put it back: the checks after this one play this event.
+			store.movePoint(evId, true, before.tInNs - after.tInNs);
+		}
+
+		// --- the position bar zooms -----------------------------------
+		// A wheel notch over the bar has to change the scale, and the key
+		// beside it has to put it back. Driven as a real wheel event, so
+		// the widget's own handler is what is being tested.
+		{
+			double zoomed = 1.0, reset = 1.0;
+			runOnUi([&]() {
+				SeekBar *bar = dock->findChild<SeekBar *>();
+				if (!bar)
+					return;
+				QWheelEvent ev(QPointF(bar->width() / 2.0,
+						       bar->height() / 2.0),
+					       bar->mapToGlobal(QPoint(
+						       bar->width() / 2,
+						       bar->height() / 2)),
+					       QPoint(0, 0), QPoint(0, 120),
+					       Qt::NoButton, Qt::NoModifier,
+					       Qt::NoScrollPhase, false);
+				for (int i = 0; i < 4; i++)
+					QCoreApplication::sendEvent(bar, &ev);
+				zoomed = bar->zoom();
+				for (QPushButton *b :
+				     dock->findChildren<QPushButton *>())
+					if (b->objectName() ==
+						    QStringLiteral("mrChanSel") &&
+					    b->text().endsWith(QStringLiteral("×")))
+						b->click();
+				reset = bar->zoom();
+			});
+			c.zoomReached = zoomed;
+			c.seekbarZooms = zoomed > 1.5 && reset <= 1.001;
+			obs_log(c.seekbarZooms ? LOG_INFO : LOG_ERROR,
+				"[selftest] dock: four wheel notches took the bar to "
+				"%.2f×, the key put it back to %.2f×",
+				zoomed, reset);
 		}
 
 		// --- the angle button wins ------------------------------------
@@ -3138,7 +3327,9 @@ void runSelfTest()
 			  dockChecks.listTabsFitTheirNames &&
 			  dockChecks.listTabCountFollowsConfig &&
 			  dockChecks.layoutOrderTopToBottom &&
-			  dockChecks.seekbarGraduated &&
+			  dockChecks.seekbarGraduated && dockChecks.channelBIndependent &&
+			  dockChecks.swapMovesClip && dockChecks.trimMovedIn &&
+			  dockChecks.seekbarZooms &&
 			  anchorsPersisted && projectOriginOk &&
 			  eventTimecodeSane && filtersIdleOutsideRec &&
 			  diskTimelineOk && reelWritten && healthChecks.ran &&
@@ -3294,6 +3485,15 @@ void runSelfTest()
 	obs_data_set_int(root, "dock_seekbar_height_px", dockChecks.seekHeight);
 	// M4: pre-flight refuses what cannot work and clears what can; the monitor
 	// watches the take; a camera that dies is named, and nothing else happens.
+	// Channel B, the swap, the trim keys and the zoom.
+	obs_data_set_bool(checks, "channel_b_plays_on_its_own",
+			  dockChecks.channelBIndependent);
+	obs_data_set_bool(checks, "swap_moves_the_clip_across",
+			  dockChecks.swapMovesClip);
+	obs_data_set_bool(checks, "trim_moves_the_in_point", dockChecks.trimMovedIn);
+	obs_data_set_bool(checks, "seekbar_zooms", dockChecks.seekbarZooms);
+	obs_data_set_int(root, "channel_b_frames", dockChecks.channelBFrames);
+	obs_data_set_double(root, "seekbar_zoom_reached", dockChecks.zoomReached);
 	obs_data_set_bool(checks, "reel_exports_one_file", reelWritten);
 	obs_data_set_int(root, "reel_bytes", reelBytes);
 	obs_data_set_bool(checks, "preflight_refuses_impossible_take",

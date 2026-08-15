@@ -213,6 +213,16 @@ QLabel#mrChanBadge {
 	background: #0e4523; color: #ffffff;
 	font-weight: 700; font-size: 11px; padding: 2px 7px;
 }
+/* The letter under each output box. the reference controller puts A on a green bar and B on a
+   blue one, and that colour is how the operator tells the two boxes apart
+   from across the room — faster than reading a letter. The one being driven
+   by the keys is the bright one. */
+QLabel#mrChanTag {
+	background: #12161c; color: #6b7787;
+	font-weight: 700; font-size: 10px; padding: 1px 0;
+}
+QLabel#mrChanTag[chan="A"][active="true"] { background: #146433; color: #ffffff; }
+QLabel#mrChanTag[chan="B"][active="true"] { background: #1d3d74; color: #ffffff; }
 QLabel#mrChanStrip {
 	background: #146433; color: #dff3e2;
 	font-size: 10px; padding: 2px 7px;
@@ -1144,6 +1154,29 @@ void MultiReplayDock::drawChannelA(void *data, uint32_t cx, uint32_t cy)
 	obs_source_release(src);
 }
 
+// Channel B's box. Same contract as drawChannelA, and deliberately simpler:
+// B has no live-camera mirror. A is where the operator watches the match
+// (follow-live puts the selected camera in it); B is a replay bay — what it
+// shows is whatever B last played, and black when B has played nothing. Giving
+// it a live mirror too would put the same picture in both boxes for most of a
+// match, which is two boxes saying one thing.
+void MultiReplayDock::drawChannelB(void *data, uint32_t cx, uint32_t cy)
+{
+	auto *self = static_cast<MultiReplayDock *>(data);
+	if (!self || cx == 0 || cy == 0)
+		return;
+	obs_source_t *src = nullptr;
+	{
+		std::lock_guard<std::mutex> lk(self->previewMutex_);
+		if (self->previewSourceB_)
+			src = obs_source_get_ref(self->previewSourceB_);
+	}
+	if (!src)
+		return;
+	renderSourceFitted(src, cx, cy);
+	obs_source_release(src);
+}
+
 // One multiview tile. Same contract as drawChannelA — and the same reason for
 // it: this runs on the ONE graphics thread that renders every obs_display in
 // OBS, and with up to nine tiles a single blocking lookup in here would be nine
@@ -1431,11 +1464,49 @@ QWidget *MultiReplayDock::buildPreview()
 	rh->setContentsMargins(0, 0, 0, 0);
 	rh->setSpacing(3);
 
-	displayA_ = new OBSQTDisplay(row);
-	displayA_->setRenderCallback(&MultiReplayDock::drawChannelA, this);
-	displayA_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-	displayA_->setMinimumHeight(40);
-	rh->addWidget(displayA_, 3);
+	// TWO outputs side by side, as in the reference controller: A on the left, B on the right,
+	// each under its own letter. One box for two channels would mean the
+	// operator has to remember which one he is looking at — and the point of
+	// a second channel is having the next replay ready while the first is on
+	// air, which cannot be done if only one of them can be seen.
+	auto *aBox = new QWidget(row);
+	{
+		auto *av = new QVBoxLayout(aBox);
+		av->setContentsMargins(0, 0, 0, 0);
+		av->setSpacing(1);
+		displayA_ = new OBSQTDisplay(aBox);
+		displayA_->setRenderCallback(&MultiReplayDock::drawChannelA, this);
+		displayA_->setSizePolicy(QSizePolicy::Expanding,
+					 QSizePolicy::Expanding);
+		displayA_->setMinimumHeight(40);
+		av->addWidget(displayA_, 1);
+		labelA_ = new QLabel(QStringLiteral("A"), aBox);
+		labelA_->setObjectName("mrChanTag");
+		labelA_->setProperty("chan", QStringLiteral("A"));
+		labelA_->setProperty("active", true); // A is where the panel starts
+		labelA_->setAlignment(Qt::AlignCenter);
+		av->addWidget(labelA_);
+	}
+	auto *bBox = new QWidget(row);
+	{
+		auto *bv = new QVBoxLayout(bBox);
+		bv->setContentsMargins(0, 0, 0, 0);
+		bv->setSpacing(1);
+		displayB_ = new OBSQTDisplay(bBox);
+		displayB_->setRenderCallback(&MultiReplayDock::drawChannelB, this);
+		displayB_->setSizePolicy(QSizePolicy::Expanding,
+					 QSizePolicy::Expanding);
+		displayB_->setMinimumHeight(40);
+		bv->addWidget(displayB_, 1);
+		labelB_ = new QLabel(QStringLiteral("B"), bBox);
+		labelB_->setObjectName("mrChanTag");
+		labelB_->setProperty("chan", QStringLiteral("B"));
+		labelB_->setProperty("active", false);
+		labelB_->setAlignment(Qt::AlignCenter);
+		bv->addWidget(labelB_);
+	}
+	rh->addWidget(aBox, 3);
+	rh->addWidget(bBox, 3);
 	rh->addWidget(buildMultiview(), 2);
 	v->addWidget(row, 1);
 
@@ -2194,7 +2265,21 @@ QWidget *MultiReplayDock::buildBottomBar()
 		h->setContentsMargins(0, 0, 0, 0);
 		h->setSpacing(3);
 		clipBar_ = new ClipBar(this);
+		// FULL WIDTH and nothing beside it, as in the reference controller. The green band is
+		// the one thing on this panel that has to be readable from across
+		// the room; keys parked at its end shorten it and, worse, read as
+		// belonging to it. They now live in the rows above, with the
+		// other keys of their own kind.
 		h->addWidget(clipBar_, 1);
+		v->addLayout(h);
+	}
+
+	// The keys that used to sit beside the green band, in the rows where
+	// they belong (the reference controller's own arrangement, see reference-gui/GUI.png).
+	{
+		auto *h = new QHBoxLayout();
+		h->setContentsMargins(0, 0, 0, 0);
+		h->setSpacing(3);
 
 		// the reference controller's channel selector, right where the reference controller puts it: A|B / A / B,
 		// then the swap. It says where the transport keys, the marks and
@@ -2248,7 +2333,11 @@ QWidget *MultiReplayDock::buildBottomBar()
 				showNotice(obs_module_text("Dock.NothingQueued"));
 		});
 		h->addWidget(nextClipBtn_, 0);
-		v->addLayout(h);
+		h->addStretch(1);
+		// This row is read left to right as "which channel, then what to
+		// do to it", so it ends where the operator's eye is going next:
+		// the bar underneath.
+		v->insertLayout(v->count() - 1, h);
 	}
 
 	// ── Row 4: the position bar over the whole recorded timeline ──────
@@ -3221,6 +3310,8 @@ void MultiReplayDock::poll()
 	// presenting into a window that no longer exists. Two integer compares.
 	if (displayA_)
 		displayA_->recheckWindow();
+	if (displayB_)
+		displayB_->recheckWindow();
 	// ...and every multiview tile, for exactly the same reason: they are
 	// re-parented by the same dock moves. Two integer compares each, and a
 	// hidden tile early-outs on isVisible().
@@ -3628,6 +3719,30 @@ void MultiReplayDock::poll()
 				obs_source_release(prev);
 			previewLive_ = live;
 			previewCam0_ = cam0;
+		}
+		// Channel B's box, on the same 4 Hz beat and by the same rules: a
+		// lookup here, an owned reference published for the graphics
+		// thread. B is a replay bay with no live mirror, so this is
+		// simply B's input — and nothing at all until B has played
+		// something, which draws black rather than a stale picture.
+		if (refreshStatus) {
+			obs_source_t *nextB =
+				PlaybackCoordinator::instance(Which::B)
+							.playState()
+							.active ||
+						ReplayChannel::instance(Which::B)
+							.positionNs() > 0
+					? ReplayChannel::instance(Which::B)
+						  .acquireSource()
+					: nullptr;
+			obs_source_t *prevB = nullptr;
+			{
+				std::lock_guard<std::mutex> lk(previewMutex_);
+				prevB = previewSourceB_;
+				previewSourceB_ = nextB;
+			}
+			if (prevB)
+				obs_source_release(prevB);
 		}
 		// The tiles are resolved on the same 4 Hz beat and by the same
 		// rules: a lookup on the UI thread, an owned ref published for the
@@ -4242,6 +4357,14 @@ void MultiReplayDock::setActiveChannel(Which which, bool linked)
 	// tick; nothing is stopped or started by CHOOSING a channel, because in
 	// the reference controller the selector picks where the keys go, not what is on air.
 	previewCam0_ = -1; // force the preview source to be re-resolved
+	// The letters under the two boxes say which one the keys are driving —
+	// both lit under A|B, because under A|B they are.
+	if (labelA_ && labelB_) {
+		labelA_->setProperty("active", linked || which == Which::A);
+		labelB_->setProperty("active", linked || which == Which::B);
+		repolish(labelA_);
+		repolish(labelB_);
+	}
 	if (chanBadge_)
 		chanBadge_->setText(QString("%1%2")
 					    .arg(linked ? QStringLiteral("A|B")

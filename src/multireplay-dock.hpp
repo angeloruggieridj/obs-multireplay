@@ -466,6 +466,9 @@ private:
 
 	// --- preview render callback (runs on the OBS graphics thread) ---
 	static void drawChannelA(void *data, uint32_t cx, uint32_t cy);
+	// Channel B's box: whatever B last played, black before that. No live
+	// mirror — see the note on drawChannelB.
+	static void drawChannelB(void *data, uint32_t cx, uint32_t cy);
 
 	// --- MULTIVIEW: one small preview per configured angle, plus the replay --
 	//
@@ -526,6 +529,9 @@ private:
 
 	// preview (single replay channel A)
 	OBSQTDisplay *displayA_ = nullptr;
+	OBSQTDisplay *displayB_ = nullptr;
+	QLabel *labelA_ = nullptr; // the letter under each box
+	QLabel *labelB_ = nullptr;
 	QButtonGroup *anglesA_ = nullptr;
 	// the reference controller's green channel strip under the A preview.
 	QLabel *chanBadge_ = nullptr; // "A1"
@@ -611,6 +617,7 @@ private:
 	// mutex, no engine lock.
 	std::mutex previewMutex_;               // pointer copy + addref only
 	obs_source_t *previewSource_ = nullptr; // owned ref, read by the GFX thread
+	obs_source_t *previewSourceB_ = nullptr; // the same, for channel B
 	// UI-thread-only bookkeeping: what previewSource_ was resolved FOR, so a
 	// tick that cannot have changed the answer does no lookup at all.
 	bool previewLive_ = false;
