@@ -13,6 +13,7 @@ See selftest.hpp. This is the scripted form of the M0 gate.
 
 #include "branch-output-control.hpp"
 #include "event-store.hpp"
+#include "export.hpp"
 #include "health.hpp"
 #include "multireplay-dock.hpp"
 #include "packet-tap.hpp"
@@ -2849,6 +2850,82 @@ void runSelfTest()
 		"[selftest] marked event sits %lld ms after the project origin",
 		(long long)(markOffsetNs / 1000000));
 
+	// --- The highlights reel: many clips, ONE file ------------------------
+	// Exported from the events this run marked, into the test project's own
+	// export folder. The claim is deliberately narrow — a file appears, it is
+	// not a stub, and it is BIGGER than the single-clip export of the same
+	// event, which is the cheapest way to say "more than one clip went in"
+	// without decoding it here.
+	bool reelWritten = false;
+	int64_t reelBytes = 0;
+	{
+		// TWO events of its own, inside the window the playback checks
+		// already proved is servable. Not the ones the dock checks made:
+		// those are deleted again on purpose (they must not be left in
+		// anybody's project), so reading them here found nothing — and a
+		// reel of one clip would not be testing a reel anyway.
+		auto &store = EventStore::instance();
+		std::vector<int> ids;
+		std::vector<int> madeHere;
+		// The first camera this run armed: the one the playback checks
+		// proved has footage in that window.
+		int reelCam = 0;
+		for (int i = 0; i < camCount; i++)
+			if (want[i]) { reelCam = i; break; }
+		if (clipInNs > 0 && clipOutNs > clipInNs + 3'000'000'000LL) {
+			const int64_t mid = clipInNs + 2'000'000'000LL;
+			const int first = store.markIn(clipInNs, reelCam);
+			store.markOut(mid);
+			const int second = store.markIn(mid, reelCam);
+			store.markOut(mid + 1'500'000'000LL);
+			for (int id : {first, second}) {
+				if (id <= 0)
+					continue;
+				store.setAngle(id, reelCam + 1, true);
+				ids.push_back(id);
+				madeHere.push_back(id);
+			}
+		}
+		const std::string reelFolder =
+			(std::filesystem::path(projectFolder) / "reel").string();
+		std::string rerr;
+		if (!ids.empty() &&
+		    ExportManager::instance().exportSequence(ids, false,
+							     reelFolder, rerr)) {
+			// It writes on a thread of its own; a handful of clips of
+			// a few seconds is quick, but the disk decides.
+			for (int i = 0; i < 60 && !reelWritten; i++) {
+				std::this_thread::sleep_for(
+					std::chrono::milliseconds(500));
+				std::error_code fec;
+				for (const auto &e : std::filesystem::directory_iterator(
+					     reelFolder, fec)) {
+					if (e.path().extension() != ".mp4")
+						continue;
+					const auto sz = std::filesystem::file_size(
+						e.path(), fec);
+					if (!fec && sz > 200 * 1024) {
+						reelBytes = (int64_t)sz;
+						reelWritten = true;
+						break;
+					}
+				}
+			}
+		} else if (!ids.empty()) {
+			obs_log(LOG_ERROR, "[selftest] reel refused: %s",
+				rerr.c_str());
+		}
+		obs_log(reelWritten ? LOG_INFO : LOG_ERROR,
+			"[selftest] highlights reel from %zu event(s): %s (%lld KB)",
+			ids.size(), reelWritten ? "written" : "NOT WRITTEN",
+			(long long)(reelBytes / 1024));
+		// The gate's own marks go away with it: this project is deleted
+		// at the end of the reopen pass, but an event list left with two
+		// events nobody made is still a lie while it lasts.
+		for (int id : madeHere)
+			store.remove(id);
+	}
+
 	// --- Tear down in the order the lifecycle demands ---------------------
 	// Detach BEFORE disabling the filters: Branch Output frees its encoder
 	// in releaseInfrastructureIfIdle() once its own outputs go idle.
@@ -3064,7 +3141,7 @@ void runSelfTest()
 			  dockChecks.seekbarGraduated &&
 			  anchorsPersisted && projectOriginOk &&
 			  eventTimecodeSane && filtersIdleOutsideRec &&
-			  diskTimelineOk && healthChecks.ran &&
+			  diskTimelineOk && reelWritten && healthChecks.ran &&
 			  healthChecks.recRefusesImpossibleTake &&
 			  healthChecks.preflightClearsTheRig &&
 			  healthChecks.monitorSamplesTheTake &&
@@ -3217,6 +3294,8 @@ void runSelfTest()
 	obs_data_set_int(root, "dock_seekbar_height_px", dockChecks.seekHeight);
 	// M4: pre-flight refuses what cannot work and clears what can; the monitor
 	// watches the take; a camera that dies is named, and nothing else happens.
+	obs_data_set_bool(checks, "reel_exports_one_file", reelWritten);
+	obs_data_set_int(root, "reel_bytes", reelBytes);
 	obs_data_set_bool(checks, "preflight_refuses_impossible_take",
 			  healthChecks.recRefusesImpossibleTake);
 	obs_data_set_bool(checks, "preflight_clears_the_rig",

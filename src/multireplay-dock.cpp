@@ -1938,6 +1938,34 @@ QWidget *MultiReplayDock::buildBottomBar()
 		});
 		h->addWidget(exp);
 
+		// ...and the whole selection as ONE file: the highlights reel.
+		// Same events, same order, same angles, same speeds — one clip
+		// after another, with the operator's music over it if the ♫ key
+		// is down. The music key doubles as the choice here rather than
+		// asking in a dialog: it is already the panel's answer to "do I
+		// want music with my replays".
+		auto *reel = compactBtn(obs_module_text("Dock.ExportReel"), this);
+		reel->setToolTip(obs_module_text("Dock.ExportReelHint"));
+		connect(reel, &QPushButton::clicked, this, [this]() {
+			auto ids = selectedEventIds();
+			if (ids.empty()) {
+				showNotice(obs_module_text("Dock.SelectToReorder"));
+				return;
+			}
+			QString folder = QFileDialog::getExistingDirectory(
+				this, obs_module_text("Dock.ExportFolder"));
+			if (folder.isEmpty())
+				return;
+			const bool music = musicBtn_ && musicBtn_->isChecked();
+			std::string err;
+			if (!ExportManager::instance().exportSequence(
+				    ids, music, folder.toStdString(), err))
+				showNotice(QString::fromStdString(err));
+			else
+				showNotice(obs_module_text("Dock.ExportReelStarted"));
+		});
+		h->addWidget(reel);
+
 		// The running order is the operator's. the reference controller sorts by time or by
 		// the order marks were taken; neither is the order a highlights
 		// reel goes out in, and the only way to get that one is by hand.
