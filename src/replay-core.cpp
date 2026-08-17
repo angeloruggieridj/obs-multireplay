@@ -612,6 +612,18 @@ void ReplayCore::disarmPersistedFilters()
 			"disarmed %d persisted recording filter(s) — "
 			"recording starts only via REC",
 			ctx.disarmed);
+
+	// The scene collection has just been (re)loaded, which is the moment the
+	// filters it persisted come back — including the ones belonging to a
+	// project that is no longer open. Disarming them is not enough: they are
+	// still filters of ours on sources this project does not use, and the
+	// count of filters is what anybody reads as the count of angles.
+	Config cfg;
+	{
+		std::lock_guard<std::mutex> lock(mutex_);
+		cfg = config_;
+	}
+	branch_output::pruneFilters(cfg);
 }
 
 bool ReplayCore::deleteAllSession(std::string &errorOut)
@@ -878,6 +890,15 @@ void ReplayCore::reapplyFilterSettings()
 		std::lock_guard<std::mutex> lock(mutex_);
 		cfg = config_;
 	}
+	// TAKE THE OLD ONES OFF FIRST. This function used to only ADD: it walked
+	// the configured cameras and made sure each had its filter, so a slot that
+	// stopped being configured — or was pointed at a different source — kept
+	// the filter it had. Open a three-camera project, then a two-camera one,
+	// and the scene collection still carries three of our filters while REC
+	// arms two: the rig declares more angles than it records, which is the one
+	// thing an operator cannot be asked to notice mid-match.
+	branch_output::pruneFilters(cfg);
+
 	for (int i = 0; i < kMaxCameras; i++) {
 		if (cfg.cameras[i].sourceName.empty())
 			continue;
@@ -1084,6 +1105,15 @@ void ReplayCore::loadConfig()
 			(int)obs_data_get_int(data, "continuePastOutMs");
 	// Clamped here rather than trusted: this value lengthens what goes on air.
 	config_.continuePastOutMs = std::clamp(config_.continuePastOutMs, 0, 60000);
+	if (obs_data_has_user_value(data, "eventFadeMs"))
+		config_.eventFadeMs = (int)obs_data_get_int(data, "eventFadeMs");
+	// Same reason as above, plus a floor that is not zero: a dip shorter than
+	// about a tenth of a second is a flicker, not a transition, and 0 already
+	// means "cut" — so anything between is rounded up to something an eye can
+	// read as deliberate.
+	config_.eventFadeMs = config_.eventFadeMs <= 0
+				      ? 0
+				      : std::clamp(config_.eventFadeMs, 100, 4000);
 	if (obs_data_has_user_value(data, "eventIdDigits"))
 		config_.eventIdDigits =
 			(int)obs_data_get_int(data, "eventIdDigits");
@@ -1175,6 +1205,7 @@ void ReplayCore::saveConfig() const
 	obs_data_set_int(data, "postRollMs", config_.postRollMs);
 	obs_data_set_bool(data, "sortEventsByTime", config_.sortEventsByTime);
 	obs_data_set_int(data, "continuePastOutMs", config_.continuePastOutMs);
+	obs_data_set_int(data, "eventFadeMs", config_.eventFadeMs);
 	obs_data_set_int(data, "eventIdDigits", config_.eventIdDigits);
 	obs_data_set_bool(data, "showMultiview", config_.showMultiview);
 	obs_data_set_int(data, "eventListCount", config_.eventListCount);

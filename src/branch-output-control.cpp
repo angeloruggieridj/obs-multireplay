@@ -10,6 +10,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <filesystem>
 #include <string>
+#include <vector>
 
 namespace multireplay {
 namespace branch_output {
@@ -166,6 +167,79 @@ obs_source_t *ensureFilter(obs_source_t *target, int camIndex, const Config &cfg
 
 	obs_data_release(settings);
 	return filter; // caller releases
+}
+
+int pruneFilters(const Config &cfg)
+{
+	// EVERY FILTER WE OWN IS ACCOUNTED FOR, or the rig lies about itself.
+	//
+	// A filter is named after its SLOT ("MultiReplay cam3") and lives on the
+	// source that slot pointed at when it was created. Nothing removed it when
+	// the slot changed: open a project with three cameras, then a project with
+	// two, and cam3's filter is still sitting on yesterday's source — armed by
+	// nobody, invisible on this panel, and counted by anyone (the operator, the
+	// health rules, Branch Output's own dock) who asks how many angles this
+	// session records. Three declared, two armed.
+	//
+	// So a filter of ours is kept only when the slot it is named for is
+	// configured AND names the very source it is attached to; anything else is
+	// removed. Two references are taken during the enumeration and the removal
+	// happens after it: obs_enum_sources holds libobs' source list while it
+	// calls back, and taking a filter off a source inside that callback is a
+	// re-entrancy nobody has to risk for a loop this short.
+	struct Doomed {
+		obs_source_t *target;
+		obs_source_t *filter;
+		std::string name;
+	};
+	struct Ctx {
+		const Config *cfg;
+		std::vector<Doomed> doomed;
+	} ctx{&cfg, {}};
+
+	obs_enum_sources(
+		[](void *param, obs_source_t *source) {
+			auto *c = static_cast<Ctx *>(param);
+			const char *sn = obs_source_get_name(source);
+			for (int i = 0; i < kMaxCameras; i++) {
+				const std::string name =
+					std::string(kFilterNamePrefix) +
+					std::to_string(i + 1);
+				obs_source_t *f = obs_source_get_filter_by_name(
+					source, name.c_str());
+				if (!f)
+					continue;
+				const std::string &want = c->cfg->cameras[i].sourceName;
+				const bool belongs = !want.empty() && sn && want == sn;
+				if (belongs) {
+					obs_source_release(f);
+					continue;
+				}
+				c->doomed.push_back(
+					{obs_source_get_ref(source), f, name});
+			}
+			return true;
+		},
+		&ctx);
+
+	int removed = 0;
+	for (Doomed &d : ctx.doomed) {
+		// Disarm first: removing a filter Branch Output still considers
+		// armed asks it to tear a running output down inside our call.
+		obs_source_set_enabled(d.filter, false);
+		if (d.target)
+			obs_source_filter_remove(d.target, d.filter);
+		obs_log(LOG_INFO,
+			"Removed stale Branch Output filter '%s' from '%s' — that "
+			"angle is not part of this project",
+			d.name.c_str(),
+			d.target ? obs_source_get_name(d.target) : "?");
+		obs_source_release(d.filter);
+		if (d.target)
+			obs_source_release(d.target);
+		removed++;
+	}
+	return removed;
 }
 
 void setEnabled(obs_source_t *filter, bool enabled)

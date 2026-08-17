@@ -20,10 +20,13 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #include <obs-module.h>
 #include <obs-frontend-api.h>
 
+#include <QWidget> // the dock's parent: OBS's main window (see obs_module_post_load)
+
 #include "plugin-support.h"
 #include "multireplay-dock.hpp"
 #include "replay-core.hpp"
 #include "packet-tap.hpp"
+#include "playback-coordinator.hpp"
 #include "replay-channel.hpp"
 #include "selftest.hpp"
 
@@ -69,6 +72,13 @@ void onFrontendEvent(enum obs_frontend_event event, void *)
 			ch.applyCanvasFit(multireplay::ReplayCore::instance()
 						  .getConfig()
 						  .fitReplayToCanvas);
+			// A collection saved by an earlier build can carry our
+			// dip filter, which then sits in the operator's filter
+			// list for ever. It is removed at full opacity now, so
+			// this is the one sweep that clears the old ones.
+			multireplay::PlaybackCoordinator::instance(
+				(multireplay::Which)i)
+				.clearDip();
 		}
 		// No-op unless OBS_MULTIREPLAY_SELFTEST is set.
 		multireplay::maybeRunSelfTest();
@@ -95,9 +105,15 @@ void onFrontendEvent(enum obs_frontend_event event, void *)
 			multireplay::MultiReplayDock::prepareForShutdown();
 		else
 			multireplay::MultiReplayDock::releasePreviewRefs();
-		for (int i = 0; i < multireplay::kChannels; i++)
+		for (int i = 0; i < multireplay::kChannels; i++) {
 			multireplay::ReplayChannel::instance((multireplay::Which)i)
 				.releaseSource();
+			// The music bed is a private source of ours sitting on a
+			// mixer channel: same rule, same moment.
+			multireplay::PlaybackCoordinator::instance(
+				(multireplay::Which)i)
+				.releaseMusic();
+		}
 	}
 }
 } // namespace
@@ -149,7 +165,25 @@ void obs_module_post_load(void)
 
 	// Register the native dock now that the Qt frontend is ready. OBS wraps
 	// the widget in a dock and takes ownership of it (removed by id below).
-	auto *dock = new multireplay::MultiReplayDock();
+	//
+	// BUILT AS A CHILD OF THE MAIN WINDOW, and that is not tidiness. Built
+	// parentless it is a TOP-LEVEL widget while its constructor runs, and the
+	// constructor creates OBSQTDisplay children that ask for a native window
+	// (WA_NativeWindow). Qt answers that by giving the top level of the tree a
+	// real handle — i.e. the dock itself — and the WA_NativeWindow it sets
+	// there sticks. A moment later obs_frontend_add_dock_by_id re-parents the
+	// dock into a QDockWidget, and what is left is a NON-top-level widget with
+	// a QWindow of its own: from then on every dialog and popup that computes
+	// its transient parent from the nearest native ancestor finds that window,
+	// and Qt refuses it —
+	//   QWidgetWindow(0x..., name="MultiReplayDockWindow") must be a top level
+	//   window.
+	// which is the warning in the log. With the main window as the parent the
+	// top level that gets the handle is the main window (which has one
+	// already), the dock stays alien, and the transient parent every dialog
+	// computes is a real top level.
+	auto *main = static_cast<QWidget *>(obs_frontend_get_main_window());
+	auto *dock = new multireplay::MultiReplayDock(main);
 	if (!obs_frontend_add_dock_by_id(kDockId, obs_module_text("Dock.Title"),
 					 dock)) {
 		obs_log(LOG_ERROR, "Failed to register the obs-multireplay dock");

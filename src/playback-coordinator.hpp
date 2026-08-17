@@ -11,6 +11,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <atomic>
 #include <cstdint>
+#include <functional> // the dip's completion callback
 #include <mutex>
 #include <string>
 #include <vector>
@@ -131,10 +132,25 @@ public:
 	void setLoop(bool loop) { loop_ = loop; }
 	bool loop() const { return loop_; }
 
-	// the reference controller music toggle: unmute the configured OBS audio source while a
-	// queue plays, mute it again at the end.
+	// the reference controller music toggle: the bed that plays under a replay and stops with it.
 	void setMusicEnabled(bool enabled) { musicEnabled_ = enabled; }
 	bool musicEnabled() const { return musicEnabled_; }
+
+	// Why the ♫ key would produce nothing, in the operator's words, or empty
+	// when it will work. Asked BEFORE playing, so "the music did not come on"
+	// is answered on the panel instead of being discovered after the replay.
+	std::string musicProblem() const;
+
+	// Let go of the private music player. Called on the way out of a scene
+	// collection and on exit, for the same reason the channels release their
+	// inputs: anything still held when OBS clears its data is reported to the
+	// operator as a plugin that leaked.
+	void releaseMusic();
+
+	// Take the dip filter off the replay input. Called once the scene
+	// collection has loaded: an older build left the filter behind, so it was
+	// saved with the collection and comes back on every launch.
+	void clearDip() { setDip(1.0); }
 
 	// Default replay speed (the dock's slider), used for every angle that has
 	// no per-angle override. Lives here because the hotkeys queue events too,
@@ -168,7 +184,26 @@ private:
 	void onEventFinished(); // queue advance; caller holds mutex_
 	void switchToReplayScene();
 	void restorePreviousScene();
-	void setMusicMuted(bool muted);
+	// Start/stop the music bed. Was setMusicMuted(), which only ever unmuted
+	// an OBS source the operator had to have wired into an active scene
+	// himself — see the definition for the two ways that produced silence and
+	// said nothing about it.
+	void applyMusic(bool on);
+	// Our own player for Config.musicFilePath. A file needs no scene and no
+	// wiring: it goes on a spare output channel while the replay runs and
+	// comes off at the end.
+	obs_source_t *musicSrc_ = nullptr;
+
+	// THE DIP BETWEEN TWO EVENTS (Config.eventFadeMs; 0 = cut, the default).
+	// Not a cross-dissolve — see the definitions for why the engine cannot
+	// offer one, and why fading the input out and back in is the thing that
+	// actually separates two actions.
+	void startNextDipped(int fadeMs); // caller holds mutex_
+public:
+	void setDip(double opacity); // public only so clearDip() above is inline
+private:
+	void rampDip(double from, double to, int ms, uint64_t gen,
+		     std::function<void()> done);
 
 	// One queue item per event, on the angle the operator selected. Speed is
 	// resolved at queue-build time (per-angle override, else the default).
@@ -210,7 +245,11 @@ private:
 	bool toOutput_ = false;
 	// Bumped on every clip start and on every stop: a finish callback that
 	// carries an older generation belongs to a queue that no longer exists.
-	uint64_t playGen_ = 0;
+	// ATOMIC because the dip between two events reads it from a QTimer that
+	// is not holding mutex_ — a fade that outlived its sequence has to be
+	// able to notice, and it cannot take the lock to find out (it runs on the
+	// GUI thread, which is where stopEvents() is holding it from).
+	std::atomic<uint64_t> playGen_{0};
 	std::atomic<bool> loop_{false};
 	std::atomic<bool> musicEnabled_{false};
 	std::atomic<int> defaultSpeedPct_{100};

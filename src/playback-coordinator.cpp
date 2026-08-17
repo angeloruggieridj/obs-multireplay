@@ -22,6 +22,8 @@ SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
 #include <cmath>
+#include <filesystem> // the music file is checked before it is played
+#include <memory>     // the dip's shared step counter
 #include <mutex>
 
 namespace multireplay {
@@ -416,7 +418,7 @@ bool PlaybackCoordinator::playEvents(const std::vector<int> &eventIds,
 	if (toOutput_)
 		switchToReplayScene();
 	if (musicEnabled_)
-		setMusicMuted(false);
+		applyMusic(true);
 	lastStartError_.clear();
 	startNext();
 	// startNext() clears active_ when every item was refused, and it used to
@@ -506,7 +508,12 @@ void PlaybackCoordinator::stopEvents()
 	queuePos_ = 0; // no queue, no position into one
 	if (active_ && toOutput_)
 		restorePreviousScene();
-	setMusicMuted(true);
+	applyMusic(false);
+	// Stop can land in the middle of a dip, and a replay input left at half
+	// brightness for the rest of the evening is a far worse bug than a
+	// transition that did not finish. The generation bump above already tells
+	// the running ramp to give up; this is what it gives up TO.
+	setDip(1.0);
 	active_ = false;
 }
 
@@ -673,16 +680,27 @@ void PlaybackCoordinator::startNext()
 	active_ = false;
 	if (toOutput_)
 		restorePreviousScene();
-	setMusicMuted(true);
+	applyMusic(false);
 }
 
 void PlaybackCoordinator::onEventFinished()
 {
 	// mutex_ held by caller.
+	const size_t prev = queuePos_;
 	queuePos_++;
 	if (queuePos_ < queue_.size()) {
-		// hard cut between events (overlap transitions: future work)
-		startNext();
+		// A CUT between two angles, a DIP between two events — see
+		// Config.eventFadeMs. Two angles are two lenses on one action and
+		// the operator is comparing them frame for frame; two events are
+		// two different things happening, and running one straight into
+		// the next is what a highlights sequence reads badly as.
+		const int fadeMs = ReplayCore::instance().getConfig().eventFadeMs;
+		const bool newEvent = prev < queue_.size() &&
+				      queue_[prev].eventId != queue_[queuePos_].eventId;
+		if (fadeMs > 0 && newEvent)
+			startNextDipped(fadeMs);
+		else
+			startNext();
 	} else if (loop_ && !queue_.empty()) {
 		// the reference controller Loop: restart the selection
 		queuePos_ = 0;
@@ -691,21 +709,294 @@ void PlaybackCoordinator::onEventFinished()
 		active_ = false;
 		if (toOutput_)
 			restorePreviousScene();
-		setMusicMuted(true);
+		applyMusic(false);
 	}
 }
 
-void PlaybackCoordinator::setMusicMuted(bool muted)
+// ---------------------------------------------------------------------------
+// The dip between two events
+// ---------------------------------------------------------------------------
+//
+// Not a cross-dissolve, and not by preference: mixing the tail of one clip into
+// the head of the next means having both decoded at the same time, and this
+// engine pushes ONE decoded clip at a time into ONE OBS input. What it can do
+// for free is fade that input out and back in — which is what separates two
+// actions, and is exactly what the cut was failing to do in a highlights run.
+//
+// The fade is OBS's own Color Correction filter (id "color_filter", version 2 —
+// checked against obs-filters/color-correction-filter.c, whose opacity is a
+// double 0..1). A private filter on our own input: no pixel work of ours, no
+// shader of ours, and it disappears with the source. Opacity 1 is a no-op, so
+// the filter can live there for the whole session and cost nothing between
+// dips.
+//
+// Timing runs on the GUI thread through QTimer, because that is the thread the
+// queue is advanced on (onClipFinished arrives via the OBS UI task queue) and
+// because a fade needs a clock the audio thread must not be asked to keep.
+namespace {
+constexpr const char *kFadeFilterName = "MultiReplay Dip";
+constexpr int kFadeStepMs = 16; // ~60 Hz: the eye's limit, not the frame rate's
+
+// Set our fade filter's opacity on `src`, creating it on the way down and
+// TAKING IT OFF AGAIN at the top. Returns false when OBS has no
+// colour-correction filter to give (a stripped build), and then the caller cuts
+// — a dip nobody can draw is not worth holding a replay for.
+//
+// Removing it at opacity 1 is not tidiness. A filter left on the replay input
+// is saved with the scene collection, so it comes back on the next launch and
+// sits in the operator's filter list for ever — one more thing on his source
+// that he did not put there and cannot explain. Measured: after one gate run
+// the collection already carried 'MultiReplay Dip' on both replay inputs. A
+// create/destroy per event boundary is a few microseconds once per clip.
+bool setDipOpacity(obs_source_t *src, double opacity)
 {
-	std::string name =
-		ReplayCore::instance().getConfig().musicSourceName;
-	if (name.empty())
-		return;
-	obs_source_t *src = obs_get_source_by_name(name.c_str());
-	if (src) {
-		obs_source_set_muted(src, muted);
-		obs_source_release(src);
+	if (!src)
+		return false;
+	if (opacity >= 0.999) {
+		if (obs_source_t *f = obs_source_get_filter_by_name(
+			    src, kFadeFilterName)) {
+			obs_source_filter_remove(src, f);
+			obs_source_release(f);
+		}
+		return true;
 	}
+	obs_source_t *f = obs_source_get_filter_by_name(src, kFadeFilterName);
+	if (!f) {
+		obs_data_t *s = obs_data_create();
+		obs_data_set_double(s, "opacity", opacity);
+		f = obs_source_create_private("color_filter", kFadeFilterName, s);
+		obs_data_release(s);
+		if (!f) {
+			obs_log(LOG_WARNING,
+				"[dip] OBS has no colour-correction filter — "
+				"events will be cut, not dipped");
+			return false;
+		}
+		obs_source_filter_add(src, f);
+		obs_source_release(f);
+		return true;
+	}
+	obs_data_t *s = obs_source_get_settings(f);
+	obs_data_set_double(s, "opacity", opacity);
+	obs_source_update(f, s);
+	obs_data_release(s);
+	obs_source_release(f);
+	return true;
+}
+} // namespace
+
+void PlaybackCoordinator::setDip(double opacity)
+{
+	obs_source_t *src = channel().acquireSource();
+	if (!src)
+		return;
+	setDipOpacity(src, opacity);
+	obs_source_release(src);
+}
+
+void PlaybackCoordinator::rampDip(double from, double to, int ms,
+				  uint64_t gen, std::function<void()> done)
+{
+	// A shared step counter rather than a wall clock: the timer is the clock,
+	// and reading a second one only lets the two disagree.
+	const int steps = std::max(1, ms / kFadeStepMs);
+	auto step = std::make_shared<int>(0);
+	auto *t = new QTimer(qApp);
+	t->setInterval(kFadeStepMs);
+	// Every capture named: `[=, this]` is ill-formed before C++20 and this
+	// plugin is built on three compilers.
+	QObject::connect(t, &QTimer::timeout, qApp,
+			 [this, t, from, to, steps, step, gen, done]() {
+		// The queue this dip belonged to may have been stopped or
+		// replaced while it ran. Leave the input fully opaque and go:
+		// a replay held at half brightness because a fade outlived its
+		// sequence is worse than any missed transition.
+		if (gen != playGen_.load()) {
+			t->stop();
+			t->deleteLater();
+			setDip(1.0);
+			return;
+		}
+		++*step;
+		const double k = std::min(1.0, (double)*step / (double)steps);
+		setDip(from + (to - from) * k);
+		if (*step < steps)
+			return;
+		t->stop();
+		t->deleteLater();
+		if (done)
+			done();
+	});
+	t->start();
+}
+
+void PlaybackCoordinator::startNextDipped(int fadeMs)
+{
+	// mutex_ held by caller.
+	//
+	// Half out, half in. The next clip is started at the BOTTOM of the dip,
+	// so the first frames of the new event arrive while the input is still
+	// dark — which is what makes the two halves read as one gesture rather
+	// than as a gap followed by a fade.
+	const int half = std::max(kFadeStepMs, fadeMs / 2);
+	const uint64_t gen = playGen_.load();
+	rampDip(1.0, 0.0, half, gen, [this, half, gen]() {
+		{
+			std::lock_guard<std::mutex> lock(mutex_);
+			if (gen != playGen_.load()) {
+				setDip(1.0);
+				return;
+			}
+			startNext();
+		}
+		rampDip(0.0, 1.0, half, gen, nullptr);
+	});
+}
+
+// The spare libobs mixer channel the music bed rides on.
+//
+// OBS Studio itself uses 0 for the program scene and 1..6 for the audio devices
+// configured in Settings ▸ Audio, and libobs has room for far more. 7 is the
+// first one nobody is using, and a source put there is in the program mix
+// without being in anybody's scene — which is the whole difficulty with playing
+// a music FILE from a plugin. It is set while a replay runs and cleared at the
+// end, so it cannot outlive the thing it belongs to.
+static constexpr uint32_t kMusicChannel = 7;
+
+std::string PlaybackCoordinator::musicProblem() const
+{
+	const Config cfg = ReplayCore::instance().getConfig();
+	if (!cfg.musicFilePath.empty()) {
+		std::error_code ec;
+		if (!std::filesystem::exists(cfg.musicFilePath, ec))
+			return "the music file does not exist: " +
+			       cfg.musicFilePath;
+		return {};
+	}
+	if (cfg.musicSourceName.empty())
+		return "no music is configured: set a music file or a music "
+		       "source in Settings";
+
+	obs_source_t *src = obs_get_source_by_name(cfg.musicSourceName.c_str());
+	if (!src)
+		return "the music source '" + cfg.musicSourceName +
+		       "' does not exist in this scene collection";
+	// UNMUTING A SOURCE NOBODY IS LISTENING TO IS SILENCE. A source that is
+	// not in an active scene contributes nothing to the mix however unmuted
+	// it is, and that is the failure that says nothing: the key lights up,
+	// the replay rolls, no music. Said out loud instead.
+	const bool active = obs_source_active(src);
+	obs_source_release(src);
+	if (!active)
+		return "the music source '" + cfg.musicSourceName +
+		       "' is not in an active scene, so unmuting it cannot be "
+		       "heard — put it in a scene, or set a music file instead";
+	return {};
+}
+
+void PlaybackCoordinator::applyMusic(bool on)
+{
+	const Config cfg = ReplayCore::instance().getConfig();
+
+	// --- a FILE: our own player, no scene required ------------------------
+	// This is the half that never worked at all. Config.musicFilePath was
+	// only ever read by the reel exporter, so choosing a file and pressing ♫
+	// played nothing and reported nothing. A file has no source and no scene
+	// item behind it, so there is nothing to unmute — it needs a player, and
+	// the player needs somewhere in the mix to be heard from.
+	if (on && !cfg.musicFilePath.empty()) {
+		std::error_code ec;
+		if (!std::filesystem::exists(cfg.musicFilePath, ec)) {
+			obs_log(LOG_WARNING, "[music] file not found: %s",
+				cfg.musicFilePath.c_str());
+			return;
+		}
+		if (!musicSrc_) {
+			obs_data_t *s = obs_data_create();
+			obs_data_set_string(s, "local_file",
+					    cfg.musicFilePath.c_str());
+			// A bed loops and does not close between replays: a
+			// second replay must not wait for the file to be
+			// reopened, and one that outlasts the track must not
+			// fall silent halfway through.
+			obs_data_set_bool(s, "looping", true);
+			obs_data_set_bool(s, "close_when_inactive", false);
+			obs_data_set_bool(s, "restart_on_activate", true);
+			musicSrc_ = obs_source_create_private(
+				"ffmpeg_source", "MultiReplay Music", s);
+			obs_data_release(s);
+			if (!musicSrc_) {
+				obs_log(LOG_WARNING,
+					"[music] could not create the player for %s",
+					cfg.musicFilePath.c_str());
+				return;
+			}
+			obs_log(LOG_INFO, "[music] player created for %s",
+				cfg.musicFilePath.c_str());
+		} else {
+			// The path may have changed in Settings since the last
+			// replay; updating is cheaper than rebuilding, and keeps
+			// one player for the whole session.
+			obs_data_t *s = obs_source_get_settings(musicSrc_);
+			const char *cur = obs_data_get_string(s, "local_file");
+			if (!cur || cfg.musicFilePath != cur) {
+				obs_data_set_string(s, "local_file",
+						    cfg.musicFilePath.c_str());
+				obs_source_update(musicSrc_, s);
+			}
+			obs_data_release(s);
+		}
+		obs_source_set_muted(musicSrc_, false);
+		obs_set_output_source(kMusicChannel, musicSrc_);
+		// FROM THE TOP, every time. A bed parked at the end of its track
+		// is silence with the volume up, which is exactly what the
+		// second replay of an evening would have got.
+		obs_source_media_restart(musicSrc_);
+		return;
+	}
+
+	if (!on && musicSrc_) {
+		obs_set_output_source(kMusicChannel, nullptr);
+		obs_source_media_stop(musicSrc_);
+	}
+
+	// --- an OBS SOURCE: the operator's own, unmuted while the replay runs -
+	if (cfg.musicSourceName.empty())
+		return;
+	obs_source_t *src = obs_get_source_by_name(cfg.musicSourceName.c_str());
+	if (!src) {
+		if (on)
+			obs_log(LOG_WARNING,
+				"[music] source '%s' does not exist",
+				cfg.musicSourceName.c_str());
+		return;
+	}
+	obs_source_set_muted(src, !on);
+	// A media source is not only muted, it is also PARKED. Unmuting one that
+	// played to its end during the last replay produces nothing at all, so
+	// its transport is driven too when it has one.
+	if (obs_source_get_output_flags(src) & OBS_SOURCE_CONTROLLABLE_MEDIA) {
+		if (on)
+			obs_source_media_restart(src);
+		else
+			obs_source_media_stop(src);
+	}
+	if (on && !obs_source_active(src))
+		obs_log(LOG_WARNING,
+			"[music] source '%s' is not in an active scene — "
+			"unmuting it cannot be heard",
+			cfg.musicSourceName.c_str());
+	obs_source_release(src);
+}
+
+void PlaybackCoordinator::releaseMusic()
+{
+	if (!musicSrc_)
+		return;
+	obs_set_output_source(kMusicChannel, nullptr);
+	obs_source_release(musicSrc_);
+	musicSrc_ = nullptr;
+	obs_log(LOG_INFO, "[music] player released");
 }
 
 void PlaybackCoordinator::switchToReplayScene()

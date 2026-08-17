@@ -38,6 +38,17 @@ bool available();
 // ReplayCore::startRecording() is the only caller allowed to use it.
 obs_source_t *ensureFilter(obs_source_t *target, int camIndex, const Config &cfg);
 
+// Remove every filter of ours that this configuration does not claim, and
+// return how many went. A filter is ours by name ("MultiReplay camN"), so it is
+// kept only when slot N is configured AND names the source it is attached to.
+//
+// Without this the count of filters and the count of angles drift apart the
+// first time a project is opened with fewer cameras than the last one: cam3's
+// filter stays on yesterday's source, so the rig declares three angles and arms
+// two. Must run on the UI thread, like every other create/destroy of a Branch
+// Output filter (its start conditions are evaluated from a QTimer).
+int pruneFilters(const Config &cfg);
+
 // Enable/disable the filter (this is what starts/stops the Branch Output
 // recording when stream_recording=true and no stream server is configured).
 void setEnabled(obs_source_t *filter, bool enabled);

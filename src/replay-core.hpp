@@ -142,6 +142,22 @@ struct Config {
 	// Only the LAST clip of a queue is extended: the ones before it have to end
 	// where they end, or the sequence never reaches the next angle.
 	int continuePastOutMs = 0;
+	// BETWEEN TWO EVENTS of a sequence: 0 = cut (the default and what this
+	// always did), otherwise the length of a dip through black.
+	//
+	// Between two ANGLES of the same event it stays a cut whatever this says:
+	// those are two lenses on one action and the operator is comparing them,
+	// so a dissolve there hides the very frames he is looking at. Between two
+	// events the cut is the thing that reads badly — a highlights run goes
+	// from one action straight into another with nothing to separate them.
+	//
+	// It is a DIP, not a cross-dissolve, and that is a consequence of the
+	// engine rather than a preference: mixing the tail of one clip into the
+	// head of the next means decoding both at once, and this replay pushes
+	// one decoded clip at a time into one OBS input. Fading that input out
+	// and back in costs nothing and separates the two actions, which is what
+	// the cut was failing to do.
+	int eventFadeMs = 0;
 	// How many of the 20 event lists the dock SHOWS (1..20, default 20). The
 	// storage is always 20 — hiding a list never deletes what is in it — but
 	// twenty tabs on a dock-width strip leave each name a few pixels, and a

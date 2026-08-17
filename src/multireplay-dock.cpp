@@ -49,6 +49,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
 #include <QFile>
 #include <QDir>
 #include <QGroupBox>
+#include <QFrame>
 #include <QListWidget>
 #include <QStackedWidget>
 #include <QMessageBox>
@@ -215,6 +216,20 @@ QLabel#mrSettingsTitle {
 }
 QLabel#mrSettingsBlurb { color: #7a8490; font-size: 10px; }
 
+/* The two numbers an operator opens Settings to read before kick-off: how much
+   disk is left, and how much recording that is. A card each — as one line of
+   text the second number had no caption at all, and "09:12" with no word in
+   front of it reads as a clock. */
+QFrame#mrStatCard {
+	background: #121212; border: 1px solid #262626; border-radius: 3px;
+}
+QLabel#mrStatCaption {
+	color: #7a8490; font-size: 10px; font-weight: 600;
+	letter-spacing: 0.6px; text-transform: uppercase;
+}
+QLabel#mrStatValue { color: #e6ecf4; font-size: 19px; font-weight: 700; }
+QLabel#mrStatUnit { color: #7a8490; font-size: 11px; padding-bottom: 3px; }
+
 /* ── multiview tiles (the reference controller's camera thumbnails beside the A output) ── */
 QWidget#mrTile { background: #000000; }
 /* the reference controller captions its thumbnails with a blue band; the angle being watched turns
@@ -343,6 +358,14 @@ QPushButton#mrDanger:hover { background: #1e1010; border-color: #442020; }
 }
 #MultiReplayDock QCheckBox::indicator:checked { background: #1c8a38; border-color: #22a040; }
 
+)QSS"
+// SPLIT HERE, and it is the compiler's rule rather than a section boundary:
+// MSVC refuses a single string literal over 16380 bytes (C2026, "trailing
+// characters will be truncated" — a stylesheet silently missing its second
+// half). Adjacent literals are concatenated at translation, so the sheet is
+// still one string; it just arrives in two pieces. Any section boundary will do
+// when the next rule pushes it over again.
+R"QSS(
 /* ── inputs ──────────────────────────────────────────────── */
 #MultiReplayDock QComboBox, #MultiReplayDock QLineEdit {
 	background: #181818; color: #c0c0c0;
@@ -351,6 +374,16 @@ QPushButton#mrDanger:hover { background: #1e1010; border-color: #442020; }
 }
 #MultiReplayDock QComboBox:hover, #MultiReplayDock QLineEdit:hover { border-color: #424242; }
 #MultiReplayDock QComboBox::drop-down { border: 0; width: 16px; }
+/* AN EDITABLE COMBO IS A COMBO WITH A LINE EDIT INSIDE IT, and the rule above
+   matches BOTH. So the per-angle speed and tag cells were paying for the box
+   twice: the combo's own 3px/7px padding, its border and its min-height, and
+   then the child line edit's again inside them. The text ended up pushed down
+   and right of the centre it had been told to sit in — which is what "the tag
+   and the custom percentages are not vertically centred" looks like. The child
+   contributes nothing of its own; the combo around it already draws the frame. */
+#MultiReplayDock QComboBox QLineEdit {
+	background: transparent; border: 0; padding: 0; min-height: 0;
+}
 #MultiReplayDock QComboBox QAbstractItemView {
 	background: #181818; color: #c0c0c0; border: 1px solid #2c2c2c;
 	selection-background-color: #1a2e52; selection-color: #d0d8f0; outline: 0;
@@ -607,6 +640,115 @@ QLabel *sectionLabel(const QString &text, QWidget *parent)
 	auto *l = new QLabel(text.toUpper(), parent);
 	l->setObjectName(QStringLiteral("mrSectionLabel"));
 	return l;
+}
+
+// A row of controls that WRAPS instead of squeezing.
+//
+// The panel is height-bound and its width is whatever the operator docked it
+// at: a QHBoxLayout answers "not enough width" by taking it off the buttons
+// until the glyphs are unreadable and the hit target is smaller than a
+// fingertip — which is precisely how a transport key stops being pressable in
+// the middle of a match. Every control here is fixed-size on purpose, so the
+// only honest answer to a narrow panel is another line.
+//
+// The consequence that matters is the other way round: because the height of a
+// band is a function of its width, a WIDE dock puts the same keys on fewer
+// lines and gives the height back to the table. That is what "redistribute
+// when there is no vertical room" means in a layout — the keys move between
+// lines, they never shrink.
+//
+// heightForWidth() is what tells the parent layout that, and minimumSize() is
+// the promise that nothing is ever narrower than its own widest control.
+class FlowLayout : public QLayout {
+public:
+	explicit FlowLayout(QWidget *parent, int hSpacing = 4, int vSpacing = 3)
+		: QLayout(parent), hSpace_(hSpacing), vSpace_(vSpacing)
+	{
+		setContentsMargins(0, 0, 0, 0);
+	}
+	~FlowLayout() override
+	{
+		while (QLayoutItem *it = takeAt(0))
+			delete it;
+	}
+
+	void addItem(QLayoutItem *item) override { items_.append(item); }
+	int count() const override { return (int)items_.size(); }
+	QLayoutItem *itemAt(int i) const override
+	{
+		return (i >= 0 && i < items_.size()) ? items_.at(i) : nullptr;
+	}
+	QLayoutItem *takeAt(int i) override
+	{
+		return (i >= 0 && i < items_.size()) ? items_.takeAt(i) : nullptr;
+	}
+	Qt::Orientations expandingDirections() const override { return {}; }
+	bool hasHeightForWidth() const override { return true; }
+	int heightForWidth(int w) const override
+	{
+		return doLayout(QRect(0, 0, w, 0), true);
+	}
+	void setGeometry(const QRect &r) override
+	{
+		QLayout::setGeometry(r);
+		doLayout(r, false);
+	}
+	QSize sizeHint() const override { return minimumSize(); }
+	QSize minimumSize() const override
+	{
+		// The widest single control, never the sum: the sum is what makes a
+		// band refuse to wrap and start squeezing again.
+		QSize s(0, 0);
+		for (const QLayoutItem *it : items_)
+			s = s.expandedTo(it->minimumSize());
+		const QMargins m = contentsMargins();
+		return s + QSize(m.left() + m.right(), m.top() + m.bottom());
+	}
+
+private:
+	int doLayout(const QRect &rect, bool testOnly) const
+	{
+		const QMargins m = contentsMargins();
+		const QRect eff = rect.adjusted(m.left(), m.top(), -m.right(),
+						-m.bottom());
+		int x = eff.x(), y = eff.y(), lineHeight = 0;
+		for (QLayoutItem *it : items_) {
+			const QSize sz = it->sizeHint();
+			int next = x + sz.width();
+			if (lineHeight > 0 && next - hSpace_ > eff.right() + 1) {
+				x = eff.x();
+				y += lineHeight + vSpace_;
+				next = x + sz.width();
+				lineHeight = 0;
+			}
+			if (!testOnly)
+				it->setGeometry(QRect(QPoint(x, y), sz));
+			x = next + hSpace_;
+			lineHeight = std::max(lineHeight, sz.height());
+		}
+		return y + lineHeight - rect.y() + m.bottom();
+	}
+
+	QList<QLayoutItem *> items_;
+	int hSpace_;
+	int vSpace_;
+};
+
+// A widget whose only job is to hold a FlowLayout and report its own height as
+// a function of its width. Without the height-for-width size policy the parent
+// QVBoxLayout asks for sizeHint() once, at a width that is not the one the
+// widget ends up with, and the last wrapped line is drawn outside the widget.
+QWidget *flowBand(QWidget *parent, const QList<QWidget *> &children)
+{
+	auto *band = new QWidget(parent);
+	auto *fl = new FlowLayout(band);
+	for (QWidget *w : children)
+		if (w)
+			fl->addWidget(w);
+	QSizePolicy sp(QSizePolicy::Preferred, QSizePolicy::Minimum);
+	sp.setHeightForWidth(true);
+	band->setSizePolicy(sp);
+	return band;
 }
 
 // Put a captioned FRAME round a group of controls, the way MARK already had one.
@@ -1418,9 +1560,15 @@ void MultiReplayDock::drawTile(void *data, uint32_t cx, uint32_t cy)
 MultiReplayDock::MultiReplayDock(QWidget *parent) : QWidget(parent)
 {
 	setObjectName("MultiReplayDock");
-	// Taller than before: the reference controller zoning is vertical (preview, list, two rows
-	// of controls, position bar) where the old layout was two columns.
-	setMinimumSize(700, 340);
+	// WIDTH is the only hard floor. A hard minimum HEIGHT is what let the
+	// panel be dragged shorter than its own controls need: an explicit
+	// minimumSize wins over the layout's computed one, so Qt happily handed
+	// out 340 px and the QVBoxLayout paid for it by squeezing every child
+	// towards a minimum of nothing — buttons a few pixels tall that cannot be
+	// hit. With the height left to the layout (and the control bands pinned at
+	// Minimum, see buildBottomBar) the panel simply refuses to go shorter than
+	// the keys, and the picture above is what gives way instead.
+	setMinimumWidth(560);
 	setStyleSheet(QString::fromUtf8(kDockStyle));
 
 	auto *root = new QVBoxLayout(this);
@@ -1635,13 +1783,8 @@ QWidget *MultiReplayDock::buildToolbar()
 	monitorsBtn_->setChecked(true);
 	monitorsBtn_->setCursor(Qt::PointingHandCursor);
 	monitorsBtn_->setToolTip(obs_module_text("Dock.MonitorsHint"));
-	connect(monitorsBtn_, &QPushButton::toggled, this, [this](bool on) {
-		if (monitorsRow_)
-			monitorsRow_->setVisible(on);
-		if (monitorsStrip_)
-			monitorsStrip_->setVisible(on);
-		obs_log(LOG_INFO, "[dock] monitors %s", on ? "shown" : "hidden");
-	});
+	connect(monitorsBtn_, &QPushButton::toggled, this,
+		[this](bool on) { applyMonitorsVisible(on); });
 	h->addWidget(monitorsBtn_);
 	h->addStretch(1);
 	v->addWidget(topRow);
@@ -1781,7 +1924,29 @@ QWidget *MultiReplayDock::buildPreview()
 	monitorsStrip_ = strip; // goes away with the monitors it belongs to
 	v->addWidget(strip);
 
+	previewPane_ = box; // the splitter child the Monitors key gives back
 	return box;
+}
+
+// The Monitors key, applied. Hiding the two rows inside the pane was not
+// enough: the pane is a QSplitter child, the splitter had already given it a
+// share of the height, and an empty child keeps that share — so the table below
+// stayed exactly as short as it was with a band of nothing above it, which is
+// the opposite of what the key is for. A hidden splitter child contributes
+// nothing and its handle goes with it, so the list takes the whole panel.
+//
+// The rows are hidden too, and deliberately: a hidden OBSQTDisplay does not
+// create its display at all (see qt-display.hpp), which is the GPU cost this
+// key exists to put down.
+void MultiReplayDock::applyMonitorsVisible(bool on)
+{
+	if (monitorsRow_)
+		monitorsRow_->setVisible(on);
+	if (monitorsStrip_)
+		monitorsStrip_->setVisible(on);
+	if (previewPane_)
+		previewPane_->setVisible(on);
+	obs_log(LOG_INFO, "[dock] monitors %s", on ? "shown" : "hidden");
 }
 
 // ---------------------------------------------------------------------------
@@ -2462,7 +2627,17 @@ QWidget *MultiReplayDock::buildTransport()
 	musicBtn_ = toggleBtn(QStringLiteral("♫"), this,
 			      obs_module_text("Dock.Music"));
 	connect(musicBtn_, &QPushButton::toggled, this, [this](bool on) {
-		pc().setMusicEnabled(on);
+		for (Which w : targetChannels())
+			PlaybackCoordinator::instance(w).setMusicEnabled(on);
+		// SAY IT NOW, not after the replay. The two ways music produces
+		// nothing — a file that is not there, a source that is in no
+		// active scene — are both invisible while the key is being
+		// pressed and both silent while the replay runs.
+		if (!on)
+			return;
+		const std::string why = pc().musicProblem();
+		if (!why.empty())
+			showNotice(QString::fromStdString(why));
 	});
 
 	toOutputBtn_ = toggleBtn(obs_module_text("Dock.ToOutput"), this,
@@ -2540,16 +2715,16 @@ QWidget *MultiReplayDock::buildBottomBar()
 	auto *v = new QVBoxLayout(box);
 	v->setContentsMargins(0, 0, 0, 0);
 	v->setSpacing(3);
+	// The control bands must never be the thing that gives height back: with a
+	// Preferred policy a QVBoxLayout that is short of room shrinks every child
+	// towards its minimum, and the minimum of a row of buttons is a row of
+	// buttons nobody can hit. Minimum vertically = "sizeHint is the floor" —
+	// the splitter above (stretch 1, and a picture that is happy at any size)
+	// is what absorbs a short dock.
+	box->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Minimum);
 
 	// ── Row 1: mark keys · angle row · clip actions ───────────────────
 	{
-		auto *h = new QHBoxLayout();
-		h->setSpacing(4);
-		h->addWidget(buildMarkers());
-		h->addStretch(1);
-		h->addWidget(buildAngleMatrix());
-		h->addStretch(1);
-
 		// the reference controller's "Export Clips", in the reference controller's corner.
 		auto *exp = compactBtn(obs_module_text("Dock.ExportClips"), this);
 		connect(exp, &QPushButton::clicked, this, [this]() {
@@ -2601,16 +2776,22 @@ QWidget *MultiReplayDock::buildBottomBar()
 		// Two keys rather than drag-and-drop: a drag inside a table whose
 		// cells are all editable is a click away from starting an edit
 		// instead, and during a match that is the wrong thing to risk.
+		// Order keys and the ⋯ menu act on the same thing (the selected
+		// rows), so they wrap together or not at all.
+		auto *orderBox = new QWidget(this);
+		auto *ob = new QHBoxLayout(orderBox);
+		ob->setContentsMargins(0, 0, 0, 0);
+		ob->setSpacing(3);
 		for (const auto &mv : {std::pair<const char *, int>{"▲", -1},
 				       std::pair<const char *, int>{"▼", +1}}) {
 			const int delta = mv.second;
-			auto *b = transportBtn(QString::fromUtf8(mv.first), this,
+			auto *b = transportBtn(QString::fromUtf8(mv.first), orderBox,
 					       obs_module_text(delta < 0
 								       ? "Dock.MoveUp"
 								       : "Dock.MoveDown"));
 			connect(b, &QPushButton::clicked, this,
 				[this, delta]() { moveSelectedEvent(delta); });
-			h->addWidget(b);
+			ob->addWidget(b);
 		}
 
 		// the reference controller keeps the clip-editing keys on the left of this row and the
@@ -2622,7 +2803,7 @@ QWidget *MultiReplayDock::buildBottomBar()
 		// reference panel (they live in its context menu), and four more buttons
 		// on this row would be four more things to read past. They are here,
 		// one click away, and on the table's right-click menu as well.
-		auto *edit = new QToolButton(this);
+		auto *edit = new QToolButton(orderBox);
 		edit->setObjectName("mrGear");
 		edit->setText(QStringLiteral("⋯"));
 		edit->setToolButtonStyle(Qt::ToolButtonTextOnly);
@@ -2661,17 +2842,26 @@ QWidget *MultiReplayDock::buildBottomBar()
 				EventStore::instance().clearAll();
 			});
 		}
-		h->addWidget(edit);
+		ob->addWidget(edit);
 
 		// the reference controller keeps the clip keys on the left of this row and the EXPORTS
 		// at its far right, with nothing but air between them: one is what
 		// the operator does during the match and the other what he does
 		// after it, and a reel is not something to start by accident in the
-		// middle of the second half.
-		h->addStretch(1);
-		h->addWidget(exp);
-		h->addWidget(reel);
-		v->addLayout(h);
+		// middle of the second half. On a narrow panel that air is the first
+		// thing to go — the exports wrap onto their own line rather than the
+		// keys losing their labels.
+		auto *exportBox = new QWidget(this);
+		auto *eb = new QHBoxLayout(exportBox);
+		eb->setContentsMargins(0, 0, 0, 0);
+		eb->setSpacing(3);
+		exp->setParent(exportBox);
+		reel->setParent(exportBox);
+		eb->addWidget(exp);
+		eb->addWidget(reel);
+
+		v->addWidget(flowBand(box, {buildMarkers(), buildAngleMatrix(),
+					    orderBox, exportBox}));
 	}
 
 	// ── Row 2: ⚙ · REC · clock  |  transport  |  slow-motion speed ────
@@ -2679,8 +2869,6 @@ QWidget *MultiReplayDock::buildBottomBar()
 	// keys this read as a single undifferentiated field, and none of the three
 	// groups had a name the operator could use.
 	{
-		auto *h = new QHBoxLayout();
-		h->setSpacing(4);
 		// The recording group gets its own container so the zone frame has
 		// something to wrap.
 		auto *recZone = new QWidget(this);
@@ -2795,13 +2983,10 @@ QWidget *MultiReplayDock::buildBottomBar()
 		// and a widget cannot be added before it exists.
 		buildSpeedDial();
 
-		h->addWidget(zoneBox(obs_module_text("Dock.ZoneRec"), recZone, this),
-			     0);
-		h->addStretch(1);
-		h->addWidget(zoneBox(obs_module_text("Dock.ZoneTransport"),
-				     buildTransport(), this),
-			     0);
-		h->addStretch(1);
+		QWidget *recZoneBox =
+			zoneBox(obs_module_text("Dock.ZoneRec"), recZone, this);
+		QWidget *transportZoneBox = zoneBox(
+			obs_module_text("Dock.ZoneTransport"), buildTransport(), this);
 
 		// Slow-motion presets, the reference controller's set (25/33/50/75/100) plus the 2×
 		// that is its fast forward — the engine takes any speed, since a
@@ -2845,11 +3030,11 @@ QWidget *MultiReplayDock::buildBottomBar()
 		dialRow->addWidget(speed_, 1);
 		dialRow->addWidget(speedLbl_, 0);
 		sv->addLayout(dialRow);
-		h->addWidget(zoneBox(obs_module_text("Dock.ZoneSpeed"), speedBox,
-				     this),
-			     0);
 
-		v->addLayout(h);
+		v->addWidget(flowBand(
+			box, {recZoneBox, transportZoneBox,
+			      zoneBox(obs_module_text("Dock.ZoneSpeed"), speedBox,
+				      this)}));
 	}
 
 	// ── Row 3: the green ON-AIR band, and the key that skips past it ──
@@ -4261,6 +4446,30 @@ void MultiReplayDock::updateChannelStrip()
 		// which is the one thing the band is for. Now the fill spans the
 		// queue, the joins between the clips are drawn on it, and the text
 		// carries the sequence's own remaining time beside the clip's.
+		// --- the join, and why the band used to spike ---------------------
+		// See clipBarJoinPos_ in the header: between two clips of a sequence
+		// the queue has already moved on while positionNs() still reports the
+		// last frame of the clip that ended, which reads as "this clip is
+		// 100% done" — and since the sequence fill is built from it, the band
+		// jumped to full at every white join before falling back.
+		if (!onAir) {
+			clipBarQueuePos_ = 0;
+			clipBarAtJoin_ = false;
+		} else {
+			if (ps.queuePos != clipBarQueuePos_) {
+				// Not the first clip of the sequence: that one has no
+				// previous clip to be showing the tail of.
+				if (clipBarQueuePos_ != 0) {
+					clipBarJoinPos_ = clipPos;
+					clipBarAtJoin_ = true;
+				}
+				clipBarQueuePos_ = ps.queuePos;
+			}
+			if (clipBarAtJoin_ && clipPos != clipBarJoinPos_)
+				clipBarAtJoin_ = false;
+		}
+		const bool atJoin = clipBarAtJoin_;
+
 		std::vector<double> joins;
 		int64_t seqTotalNs = 0, seqDoneNs = 0;
 		if (onAir && ps.queued > 1 &&
@@ -4291,13 +4500,20 @@ void MultiReplayDock::updateChannelStrip()
 			// reverse that place walks back towards the IN. An emptying
 			// band is what "this replay is running out" looks like from
 			// across a gallery, in either direction.
-			frac = (double)(clipPos - ev.tInNs) / (double)dur;
+			frac = atJoin ? 0.0
+				      : (double)(clipPos - ev.tInNs) / (double)dur;
+			// At a join the whole clip is still to come, whichever
+			// direction it runs: the position we can see belongs to the
+			// clip that just ended.
 			const int64_t remNs =
-				reverseOnAir
-					? (clipPos > ev.tInNs ? clipPos - ev.tInNs
-							      : 0)
-					: (ev.tOutNs > clipPos ? ev.tOutNs - clipPos
-							       : 0);
+				atJoin ? dur
+				       : (reverseOnAir
+						  ? (clipPos > ev.tInNs
+							     ? clipPos - ev.tInNs
+							     : 0)
+						  : (ev.tOutNs > clipPos
+							     ? ev.tOutNs - clipPos
+							     : 0));
 			// Remaining in WALL time: at 50% a 4 s clip has 8 s left,
 			// and 8 s is how long the operator will be looking at it.
 			// The ◀ is not decoration: backwards at 50% and forwards at
@@ -5876,24 +6092,50 @@ QWidget *MultiReplayDock::buildAngleCell(int eventId, int cam0, bool on,
 			EventStore::instance().setAngleSpeed(
 				eventId, a1, v > 0 ? v / 100.0 : -1.0);
 		});
-	// Both ways a comment can arrive: picked from the operator's own list, or
-	// typed. editingFinished rather than textChanged — writing to the store
-	// on every keystroke would bump its version and have poll() rebuild the
-	// table out from under the cursor.
+	// A TAG REACHES THE STORE THE MOMENT IT IS ON SCREEN, whichever way it got
+	// there. It used to be written from activated() and editingFinished(), and
+	// a tag picked out of the list could be lost between them: activated is the
+	// popup's signal, editingFinished is the line edit's, and the paths a
+	// selection takes through an editable combo do not always raise both — a
+	// pick followed by a click straight onto another row left the cell showing
+	// the word and the store holding nothing.
+	//
+	// currentTextChanged is the one signal that is raised by all of them
+	// (picked, typed, completed, cleared), so there is one way in instead of
+	// two that have to cover each other. It also fires per keystroke, and that
+	// is affordable precisely BECAUSE the table refuses to rebuild while a line
+	// edit inside it has focus (see refreshEvents): the version bump is noticed
+	// only after the operator has finished. The comparison keeps even that
+	// honest — re-writing the same text would bump the version for nothing.
+	connect(cm, &QComboBox::currentTextChanged, this,
+		[this, eventId, a1](const QString &text) {
+			if (refreshing_)
+				return;
+			const std::string want = text.trimmed().toStdString();
+			auto &store = EventStore::instance();
+			ReplayEvent ev;
+			if (store.get(eventId, ev) &&
+			    ev.angles[a1 - 1].note == want)
+				return;
+			store.setAngleNote(eventId, a1, want);
+		});
+	// Finishing the edit is what promotes a word to this session's list: it is
+	// the point at which the operator has decided on it. Doing it per keystroke
+	// would offer "G", "Go" and "Gol" on every other row.
 	connect(cm->lineEdit(), &QLineEdit::editingFinished, this,
-		[this, cm, eventId, a1]() {
+		[this, cm]() {
 			if (refreshing_)
 				return;
 			rememberComment(cm->currentText().trimmed());
-			EventStore::instance().setAngleNote(
-				eventId, a1, cm->currentText().trimmed().toStdString());
 		});
+	// ...and a tag picked out of the list is just as much a decision, so it
+	// joins the session list too. It never used to: only typed words did, so
+	// choosing a preset on one event offered nothing on the next.
 	connect(cm, QOverload<int>::of(&QComboBox::activated), this,
-		[this, cm, eventId, a1](int) {
+		[this, cm](int) {
 			if (refreshing_)
 				return;
-			EventStore::instance().setAngleNote(
-				eventId, a1, cm->currentText().trimmed().toStdString());
+			rememberComment(cm->currentText().trimmed());
 		});
 	return w;
 }
@@ -6073,7 +6315,17 @@ void MultiReplayDock::openSettings()
 	// poll() only asks four times a second — a dialog that opens a few times an
 	// evening may ask, and must not grow a second copy of the syscall.
 	{
+		// TWO NUMBERS, TWO BOXES. They were one string — "743.2 GiB • 09:12"
+		// against a right-aligned form label — and the second half had no name
+		// at all: a bullet, then four digits and a colon, which reads as a
+		// clock as easily as it reads as a duration. They are also not the same
+		// kind of fact (one is the disk's, one is this session's at this
+		// bitrate), so they get a card each, with the unit under the number and
+		// the caption over it.
 		QString space = obs_module_text("Dock.SessionSpaceUnknown");
+		QString spaceUnit;
+		QString rec = obs_module_text("Dock.SessionSpaceUnknown");
+		QString recUnit;
 		Data st(core.statusJson());
 		if (st) {
 			const int64_t freeBytes =
@@ -6083,22 +6335,62 @@ void MultiReplayDock::openSettings()
 			if (freeBytes > 0) {
 				const double gib =
 					(double)freeBytes / (1024.0 * 1024 * 1024);
-				space = QString::number(gib, 'f', 1) +
-					QStringLiteral(" GiB");
-				// The number that means something: gigabytes are the
-				// disk's unit, minutes are the operator's.
-				if (mins >= 0)
-					space += QString(" • %1")
-							 .arg(QString::asprintf(
-								 "%02lld:%02lld",
-								 (long long)(mins / 60),
-								 (long long)(mins % 60)));
+				space = QString::number(gib, 'f', 1);
+				spaceUnit = QStringLiteral("GiB");
+			}
+			if (mins >= 0) {
+				rec = QString::asprintf("%lld:%02lld",
+							(long long)(mins / 60),
+							(long long)(mins % 60));
+				recUnit = obs_module_text("Dock.SessionHoursUnit");
 			}
 		}
-		auto *lbl = new QLabel(space, &dlg);
-		lbl->setObjectName("mrSettingsValue");
-		lbl->setToolTip(obs_module_text("Dock.SessionSpaceHint"));
-		recPage->addRow(obs_module_text("Dock.SessionSpace"), lbl);
+
+		// One card: caption, big value, unit. A QFrame so the stylesheet has
+		// something to draw a border on.
+		const auto card = [&](const char *capKey, const QString &value,
+				      const QString &unit,
+				      const char *tipKey) -> QWidget * {
+			auto *f = new QFrame(&dlg);
+			f->setObjectName(QStringLiteral("mrStatCard"));
+			f->setFrameShape(QFrame::NoFrame); // the stylesheet draws it
+			f->setToolTip(obs_module_text(tipKey));
+			auto *cv = new QVBoxLayout(f);
+			cv->setContentsMargins(12, 8, 12, 8);
+			cv->setSpacing(1);
+			auto *cap = new QLabel(obs_module_text(capKey), f);
+			cap->setObjectName(QStringLiteral("mrStatCaption"));
+			cv->addWidget(cap);
+			auto *row = new QHBoxLayout();
+			row->setContentsMargins(0, 0, 0, 0);
+			row->setSpacing(4);
+			auto *val = new QLabel(value, f);
+			val->setObjectName(QStringLiteral("mrStatValue"));
+			val->setFont(QFont(monoFamily()));
+			row->addWidget(val, 0, Qt::AlignBottom);
+			if (!unit.isEmpty()) {
+				auto *u = new QLabel(unit, f);
+				u->setObjectName(QStringLiteral("mrStatUnit"));
+				row->addWidget(u, 0, Qt::AlignBottom);
+			}
+			row->addStretch(1);
+			cv->addLayout(row);
+			return f;
+		};
+
+		auto *cards = new QWidget(&dlg);
+		auto *ch = new QHBoxLayout(cards);
+		ch->setContentsMargins(0, 0, 0, 6);
+		ch->setSpacing(8);
+		ch->addWidget(card("Dock.SessionSpace", space, spaceUnit,
+				   "Dock.SessionSpaceHint"),
+			      1);
+		ch->addWidget(card("Dock.SessionHours", rec, recUnit,
+				   "Dock.SessionHoursHint"),
+			      1);
+		// Spanning row: these are a header for the page, not a field with a
+		// label on its left.
+		recPage->addRow(cards);
 	}
 
 	auto *folderRow = new QHBoxLayout();
@@ -6358,6 +6650,20 @@ void MultiReplayDock::openSettings()
 	transMs->setToolTip(obs_module_text("Dock.TransitionMsHint"));
 	outPage->addRow(obs_module_text("Dock.TransitionMs"), transMs);
 
+	// BETWEEN TWO EVENTS of one sequence: cut, or dip through black. One
+	// control rather than a mode plus a duration, the way the split length and
+	// "continue past the OUT" are already written here: zero IS the cut, and it
+	// says so in words at the bottom of the range instead of leaving a
+	// duration that means nothing next to a switch that turned it off.
+	auto *evFade = new QSpinBox(&dlg);
+	evFade->setRange(0, 4000);
+	evFade->setSingleStep(50);
+	evFade->setSuffix(" ms");
+	evFade->setSpecialValueText(obs_module_text("Dock.EventFadeCut"));
+	evFade->setValue(cfg.eventFadeMs);
+	evFade->setToolTip(obs_module_text("Dock.EventFadeHint"));
+	outPage->addRow(obs_module_text("Dock.EventFade"), evFade);
+
 	// SAID OUT LOUD, not discovered later: these transitions are how the replay
 	// goes ON AIR. The exported highlights reel does NOT use them, and cannot
 	// without re-encoding every clip — it is a stream copy, which is why the
@@ -6567,6 +6873,7 @@ void MultiReplayDock::openSettings()
 	cfg.transitionInName = transIn->currentData().toString().toStdString();
 	cfg.transitionOutName = transOut->currentData().toString().toStdString();
 	cfg.transitionMs = transMs->value();
+	cfg.eventFadeMs = evFade->value();
 	cfg.autoSwitchScene = autoSwitch->isChecked();
 	cfg.fitReplayToCanvas = fitCanvas->isChecked();
 	cfg.showMultiview = multiview->isChecked();

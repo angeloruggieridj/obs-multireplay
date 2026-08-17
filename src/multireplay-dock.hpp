@@ -458,7 +458,26 @@ private:
 	QPushButton *monitorsBtn_ = nullptr;
 	QWidget *monitorsRow_ = nullptr;
 	QWidget *monitorsStrip_ = nullptr;
+	// The splitter pane the two rows above live in. Hiding the rows is not
+	// enough: the splitter keeps the pane's share of the height and the list
+	// below it stays exactly as short as it was, with a band of nothing on
+	// top. A hidden splitter child gives its height back (and takes its handle
+	// with it), which is what "put the monitors down" has to mean.
+	QWidget *previewPane_ = nullptr;
+	// Applies the Monitors key to the pane and the rows inside it.
+	void applyMonitorsVisible(bool on);
 	QWidget *angleRowBox_[2] = {};       // the A row and the B row of camera keys
+	// THE JOIN between two clips of one sequence. The coordinator advances the
+	// queue on the finished callback, but the engine has not pushed a frame of
+	// the next clip yet — so for those few tens of milliseconds positionNs()
+	// still reports the LAST frame of the clip that just ended. Read literally
+	// that says "this clip is over" about a clip that has not begun, and the
+	// green band filled to 100% at every white join and then dropped back.
+	// While waiting, the fill is pinned to the join; any change in the reported
+	// position clears the wait, because a finished clip pushes nothing.
+	int clipBarQueuePos_ = 0;
+	int64_t clipBarJoinPos_ = 0;
+	bool clipBarAtJoin_ = false;
 	// A comment typed on one event, offered on all of them for the rest of the
 	// session. Not persisted — see rememberComment() for why a comment must
 	// not be able to reach setConfig().
