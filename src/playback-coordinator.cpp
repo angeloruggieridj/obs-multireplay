@@ -334,6 +334,15 @@ PlaybackCoordinator::PlayState PlaybackCoordinator::playState() const
 	s.queuedAngles.reserve(queue_.size());
 	for (const QueueItem &q : queue_)
 		s.queuedAngles.push_back(q.angle + 1); // 0-based → 1-based
+	s.queuedWallNs.reserve(queue_.size());
+	for (const QueueItem &q : queue_) {
+		const int64_t len = q.tOutNs > q.tInNs ? q.tOutNs - q.tInNs : 0;
+		const int pct = q.speedPct > 0 ? q.speedPct : 100;
+		// Wall time, not footage time: at 50% four seconds of footage is
+		// eight seconds of watching, and the band counts down what the
+		// operator is about to sit through.
+		s.queuedWallNs.push_back(len * 100 / pct);
+	}
 	if (active_ && queuePos_ < queue_.size()) {
 		s.eventId = queue_[queuePos_].eventId;
 		s.angle1 = queue_[queuePos_].angle + 1; // 0-based → 1-based
@@ -343,6 +352,34 @@ PlaybackCoordinator::PlayState PlaybackCoordinator::playState() const
 			    ReplayChannel::Direction::Reverse;
 	}
 	return s;
+}
+
+bool PlaybackCoordinator::setLiveSpeedPct(int pct)
+{
+	std::lock_guard<std::mutex> lock(mutex_);
+	if (!active_ || queuePos_ >= queue_.size() || !channel().playing())
+		return false;
+	const int clamped = std::clamp(pct, 5, 400);
+	// The queue's record too, or playState() would keep reporting the speed
+	// the clip STARTED at and the green band would print a number that stopped
+	// being true the moment the operator moved the dial.
+	queue_[queuePos_].speedPct = clamped;
+	channel().setSpeedPct(clamped);
+	obs_log(LOG_INFO, "coordinator: live speed → %d%% on event %d angle %d",
+		clamped, queue_[queuePos_].eventId, queue_[queuePos_].angle + 1);
+	return true;
+}
+
+void PlaybackCoordinator::setPaused(bool paused)
+{
+	// No lock: this is one atomic in the channel, and taking mutex_ here would
+	// put the pause key behind whatever the queue is doing.
+	channel().setPaused(paused);
+}
+
+bool PlaybackCoordinator::paused() const
+{
+	return channel().paused();
 }
 
 bool PlaybackCoordinator::skipToNext()

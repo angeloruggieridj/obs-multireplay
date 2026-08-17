@@ -226,6 +226,16 @@ struct DockChecks {
 	// something played.
 	bool stepBackMovesPlayhead = false;
 	bool reverseButtonPlaysBackwards = false;
+	// The transport fixes. All four used to be answered by "stop and play it
+	// again from the in-point", which is not what any of them mean — so each
+	// check is about WHERE the playhead is afterwards, not about whether
+	// something is playing.
+	bool pauseHoldsAndResumes = false;
+	bool speedChangeKeepsPosition = false;
+	bool selectionCuesEvent = false;
+	bool angleKeysFollowCameras = false;
+	bool clipBarSpansSequence = false;
+	int visibleAngleKeys = 0;
 	// M5: the preview is no longer one picture. There is a tile per camera
 	// plus one for the replay, and each is an obs_display of its own — so the
 	// two things that can go wrong are "the tiles were never built" and "a
@@ -1409,6 +1419,224 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 			pc.stopEvents();
 		}
 
+		// --- pause holds the frame, and play carries on FROM IT -------
+		// The pause key used to stop the queue, so the next press re-cued
+		// the event and played it again from the IN: the operator paused on
+		// the moment he wanted and then lost it. What is checked is the
+		// thing that was wrong — where the playhead is when it resumes —
+		// not merely that something is playing again.
+		{
+			std::string perr;
+			if (pc.playEvents({evId}, firstCam, false, perr)) {
+				for (int i = 0; i < 40 && chan.stats().framesPushed < 3;
+				     i++)
+					std::this_thread::sleep_for(
+						std::chrono::milliseconds(50));
+				pc.setPaused(true);
+				std::this_thread::sleep_for(
+					std::chrono::milliseconds(200));
+				const int64_t held = chan.positionNs();
+				// Frozen: half a second of wall time must not move
+				// the picture on.
+				std::this_thread::sleep_for(
+					std::chrono::milliseconds(500));
+				const int64_t stillHeld = chan.positionNs();
+				pc.setPaused(false);
+				std::this_thread::sleep_for(
+					std::chrono::milliseconds(300));
+				const int64_t after = chan.positionNs();
+				c.pauseHoldsAndResumes =
+					held > 0 && stillHeld == held &&
+					after > held &&
+					// ...and it did NOT start again from the
+					// top, which is the actual bug: a restart
+					// would land at or before where the pause
+					// was, not after it.
+					after - held < 2'000'000'000LL;
+				obs_log(c.pauseHoldsAndResumes ? LOG_INFO : LOG_ERROR,
+					"[selftest] dock: pause held %lld ms for "
+					"500 ms (still %lld ms), resumed to %lld ms",
+					(long long)(held / 1000000),
+					(long long)(stillHeld / 1000000),
+					(long long)(after / 1000000));
+			}
+			pc.stopEvents();
+		}
+
+		// --- a speed change re-spaces the clip, it does not restart it -
+		// Same shape of bug and the same kind of check: what matters is
+		// that the picture the operator was looking at is still the picture
+		// he is looking at, one dial-turn later.
+		{
+			std::string perr;
+			if (pc.playEvents({evId}, firstCam, false, perr)) {
+				for (int i = 0; i < 40 && chan.stats().framesPushed < 3;
+				     i++)
+					std::this_thread::sleep_for(
+						std::chrono::milliseconds(50));
+				const int64_t before = chan.positionNs();
+				const bool took = pc.setLiveSpeedPct(25);
+				std::this_thread::sleep_for(
+					std::chrono::milliseconds(200));
+				const int64_t after = chan.positionNs();
+				// Forward from where it was, and slowly: at 25% two
+				// tenths of a second is ~50 ms of footage, so a
+				// restart (which would go backwards) and a runaway
+				// are both excluded.
+				c.speedChangeKeepsPosition =
+					took && before > 0 && after >= before &&
+					after - before < 500'000'000LL;
+				obs_log(c.speedChangeKeepsPosition ? LOG_INFO
+								   : LOG_ERROR,
+					"[selftest] dock: 100%%→25%% mid-clip moved "
+					"the playhead %lld ms → %lld ms (accepted: "
+					"%s)",
+					(long long)(before / 1000000),
+					(long long)(after / 1000000),
+					took ? "yes" : "NO");
+				pc.setLiveSpeedPct(100);
+			}
+			pc.stopEvents();
+		}
+
+		// --- choosing a row LOADS it ----------------------------------
+		// Selecting an event used to do nothing until Play was pressed, so
+		// the operator picked clips he could not see. Driven through the
+		// table's own selection so the check goes through the same signal a
+		// mouse does — and asserted on the frame that reached the source,
+		// because "a cue was requested" and "a picture arrived" are not the
+		// same claim.
+		{
+			pc.stopEvents();
+			chan.stop();
+			std::this_thread::sleep_for(std::chrono::milliseconds(150));
+			ReplayEvent cueEv;
+			const bool haveEv = store.get(evId, cueEv);
+			int row = -1;
+			runOnUi([&]() {
+				QTableWidget *t = dock->findChild<QTableWidget *>();
+				if (!t)
+					return;
+				t->clearSelection();
+				for (int r = 0; r < t->rowCount(); r++) {
+					QTableWidgetItem *it = t->item(r, 0);
+					if (it && it->data(Qt::UserRole).toInt() ==
+							  evId) {
+						row = r;
+						t->selectRow(r);
+						break;
+					}
+				}
+			});
+			int64_t landed = 0;
+			for (int i = 0; i < 40; i++) {
+				if (chan.stats().framesPushed > 0) {
+					landed = chan.stats().firstFrameNs;
+					break;
+				}
+				std::this_thread::sleep_for(
+					std::chrono::milliseconds(50));
+			}
+			// On the event's IN, within a frame: a cue that landed
+			// somewhere else is a cue of the wrong moment.
+			const int64_t frameNs =
+				(int64_t)(1e9 / (canvasFps > 0 ? canvasFps : 30.0));
+			c.selectionCuesEvent =
+				row >= 0 && haveEv && landed > 0 &&
+				std::llabs(landed - cueEv.tInNs) <= frameNs;
+			obs_log(c.selectionCuesEvent ? LOG_INFO : LOG_ERROR,
+				"[selftest] dock: selecting row %d cued %lld ms "
+				"(event IN %lld ms)",
+				row, (long long)(landed / 1000000),
+				(long long)(haveEv ? cueEv.tInNs / 1000000 : 0));
+			chan.stop();
+		}
+
+		// --- the angle keys are the CAMERAS, by name ------------------
+		// One key per configured camera, starting from the left, labelled
+		// with the camera's name and never wider than its neighbours. Eight
+		// keys on a two-camera rig is six keys that do nothing, and a key
+		// that grows with its label moves every other key out from under
+		// the operator's fingers when a camera is renamed.
+		{
+			int visible = 0, named = 0, widths = 0, firstW = 0;
+			const Config kc = ReplayCore::instance().getConfig();
+			int configured = 0;
+			for (int i = 0; i < kEventAngles && i < kMaxCameras; i++)
+				if (!kc.cameras[i].sourceName.empty())
+					configured = i + 1;
+			runOnUi([&]() {
+				for (QPushButton *b :
+				     dock->findChildren<QPushButton *>()) {
+					if (b->objectName() !=
+					    QStringLiteral("mrAngle"))
+						continue;
+					if (!b->isVisibleTo(dock))
+						continue;
+					visible++;
+					if (firstW == 0)
+						firstW = b->width();
+					if (b->width() == firstW)
+						widths++;
+					// The NAME, not the number: a key whose
+					// text is just its index never got the
+					// camera's label.
+					bool isNumber = false;
+					b->text().toInt(&isNumber);
+					if (!isNumber || b->text().isEmpty())
+						named++;
+				}
+			});
+			// Two rows (A and B), so twice the configured count.
+			c.angleKeysFollowCameras = configured > 0 &&
+						   visible == configured * 2 &&
+						   widths == visible && named > 0;
+			c.visibleAngleKeys = visible;
+			obs_log(c.angleKeysFollowCameras ? LOG_INFO : LOG_ERROR,
+				"[selftest] dock: %d angle key(s) visible for %d "
+				"configured camera(s) across 2 rows, %d named, all "
+				"%d px: %s",
+				visible, configured, named, firstW,
+				widths == visible ? "yes" : "NO");
+		}
+
+		// --- the green band spans the SEQUENCE ------------------------
+		// With two angles queued the fill used to be the progress through
+		// the clip on air, so it filled up and started again twice and
+		// nothing said when the replay would be over. Now it spans the
+		// queue and draws the join between the clips.
+		{
+			for (int a = 1; a <= kEventAngles; a++)
+				store.setAngle(evId, a, false);
+			store.setAngle(evId, a1, true);
+			store.setAngle(evId, a2, true);
+			std::string berr;
+			if (pc.playEvents({evId}, firstCam, false, berr)) {
+				for (int i = 0; i < 40 && chan.stats().framesPushed < 3;
+				     i++)
+					std::this_thread::sleep_for(
+						std::chrono::milliseconds(50));
+				size_t joins = 0;
+				double frac = 1.0;
+				runOnUi([&]() {
+					if (ClipBar *cb =
+						    dock->findChild<ClipBar *>()) {
+						joins = cb->clipJoinCount();
+						frac = cb->progress();
+					}
+				});
+				// One join for two clips, and the fill is still in
+				// the first half: scaled to one clip it would
+				// already be most of the way across.
+				c.clipBarSpansSequence = joins == 1 && frac < 0.5;
+				obs_log(c.clipBarSpansSequence ? LOG_INFO : LOG_ERROR,
+					"[selftest] dock: green band shows %d join(s) "
+					"for a 2-clip queue, fill %.3f",
+					(int)joins, frac);
+			}
+			pc.stopEvents();
+		}
+
 		// --- CHANNEL B: it exists, it plays, and it is not A ----------
 		// Everything above drives A. A second channel that is never
 		// played is a second channel that is broken with nobody the
@@ -1654,12 +1882,12 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 				for (int i = 0; i < 4; i++)
 					QCoreApplication::sendEvent(bar, &ev);
 				zoomed = bar->zoom();
-				for (QPushButton *b :
-				     dock->findChildren<QPushButton *>())
-					if (b->objectName() ==
-						    QStringLiteral("mrChanSel") &&
-					    b->text().endsWith(QStringLiteral("×")))
-						b->click();
+				// The key is a MENU of spans now, not a reset, and
+				// clicking it would park this thread inside
+				// QMenu::exec(). So the check calls what the
+				// menu's own "100%" entry calls — the same
+				// function, one frame short of the mouse.
+				dock->zoomWholeTimeline();
 				reset = bar->zoom();
 			});
 			c.zoomReached = zoomed;
@@ -3633,6 +3861,11 @@ void runSelfTest()
 			  reverseCacheWithinBudget &&
 			  dockChecks.stepBackMovesPlayhead &&
 			  dockChecks.reverseButtonPlaysBackwards &&
+			  dockChecks.pauseHoldsAndResumes &&
+			  dockChecks.speedChangeKeepsPosition &&
+			  dockChecks.selectionCuesEvent &&
+			  dockChecks.angleKeysFollowCameras &&
+			  dockChecks.clipBarSpansSequence &&
 			  dockChecks.found &&
 			  dockChecks.pollRuns && dockChecks.pollResponsive &&
 			  dockChecks.pollQuiet && dockChecks.markOnTimeline &&
@@ -3795,6 +4028,22 @@ void runSelfTest()
 			  dockChecks.stepBackMovesPlayhead);
 	obs_data_set_bool(checks, "dock_reverse_button_plays_backwards",
 			  dockChecks.reverseButtonPlaysBackwards);
+	// The transport, after the fixes: pause holds the frame and play carries on
+	// FROM it, a speed change re-spaces the clip instead of restarting it,
+	// picking a row loads that event, the angle keys are the configured cameras
+	// by name, and the green band spans the whole queue.
+	obs_data_set_bool(checks, "dock_pause_holds_and_resumes",
+			  dockChecks.pauseHoldsAndResumes);
+	obs_data_set_bool(checks, "dock_speed_change_keeps_position",
+			  dockChecks.speedChangeKeepsPosition);
+	obs_data_set_bool(checks, "dock_selection_cues_event",
+			  dockChecks.selectionCuesEvent);
+	obs_data_set_bool(checks, "dock_angle_keys_follow_cameras",
+			  dockChecks.angleKeysFollowCameras);
+	obs_data_set_int(root, "dock_visible_angle_keys",
+			 dockChecks.visibleAngleKeys);
+	obs_data_set_bool(checks, "dock_clip_bar_spans_sequence",
+			  dockChecks.clipBarSpansSequence);
 	// M5: a preview per angle plus the replay, each with a live display, and
 	// none of them stranded on a dead native window.
 	obs_data_set_bool(checks, "dock_multiview_built",

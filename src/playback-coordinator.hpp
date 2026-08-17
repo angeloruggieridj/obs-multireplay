@@ -106,6 +106,12 @@ public:
 		// a clip running backwards at 50% and one running forwards at
 		// 50% are the same numbers and not the same picture.
 		bool reverse = false;
+		// How long each clip of the queue will take TO WATCH, in order:
+		// its length divided by the speed it is played at. The green band
+		// is the state of the whole sequence, and a single clip's duration
+		// cannot say how far through three clips the operator is — nor
+		// where to draw the joins between them.
+		std::vector<int64_t> queuedWallNs;
 	};
 	PlayState playState() const;
 
@@ -123,6 +129,19 @@ public:
 	// and they cannot reach the dock.
 	void setDefaultSpeedPct(int pct);
 	int defaultSpeedPct() const { return defaultSpeedPct_.load(); }
+
+	// Change the speed of the clip ON AIR without restarting it, and keep the
+	// queue's own record of it straight so the green band still reports the
+	// speed of the picture in front of the operator. Returns false when there
+	// is nothing playing to re-speed, which is when the caller should fall back
+	// to re-cueing.
+	bool setLiveSpeedPct(int pct);
+
+	// the reference controller's pause key. Freezes the clip on air on the frame it is showing;
+	// pressing it again carries on FROM THERE, which is the whole point — it
+	// used to stop and then play again from the in-point.
+	void setPaused(bool paused);
+	bool paused() const;
 
 	// Invoked (via the OBS UI task queue) when the playing clip ends by
 	// itself. `gen` identifies the queue generation it belongs to, so a

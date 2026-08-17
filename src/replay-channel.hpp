@@ -138,6 +138,22 @@ public:
 	void stop();
 	bool playing() const { return playing_.load(); }
 
+	// --- pause and speed, WITHOUT restarting the clip ----------------------
+	// Both used to be done by stopping and playing again from the IN, and both
+	// were wrong for the same reason: the operator is looking at a frame, and
+	// the answer to "pause" or "half speed" is not "go back to the beginning".
+	//
+	// The pacing is an ANCHOR (a wall instant paired with the master instant
+	// shown at it) rather than a start time plus an offset. A speed change
+	// re-anchors on the picture currently on screen, so every frame after it is
+	// spaced by the new speed and none of the frames already shown are
+	// retro-dated. A pause slides the anchor forward for as long as it lasts,
+	// which is exactly what "this time did not happen" means to a clip.
+	void setSpeedPct(int pct);
+	int speedPct() const;
+	void setPaused(bool paused);
+	bool paused() const { return paused_.load(); }
+
 	// Add-ref'd; caller releases. Null before ensureSource().
 	obs_source_t *acquireSource();
 
@@ -203,11 +219,45 @@ private:
 	//
 	// Returns true if the run reached its own end (or its maxFrames), false
 	// if it was aborted or could not decode.
+	// The speed is not a parameter: it lives in the anchor, so that changing
+	// it mid-clip is the same operation as setting it (see setSpeedPct).
 	bool playReverse(obs_source_t *source, ReplayDecoder &dec,
-			 const std::vector<LivePacket> &clip, double speed,
-			 int64_t presentInNs, int64_t presentOutNs, int maxFrames);
+			 const std::vector<LivePacket> &clip, int64_t presentInNs,
+			 int64_t presentOutNs, int maxFrames);
 	void joinWorker();
 	void fitSceneItems(); // applyCanvasFit's body; no lock held
+
+	// Where the clip is on the wall clock. See setSpeedPct() for why this is
+	// an anchor and not a start time.
+	struct Pacing {
+		uint64_t anchorWall = 0;  // when anchorMaster was due
+		int64_t anchorMaster = 0; // master instant of that frame
+		double speed = 1.0;
+		int dir = +1; // +1 forwards, -1 backwards
+		bool paused = false;
+		uint64_t pausedAt = 0;
+		// The master instant of the frame on screen. A speed change
+		// re-anchors here, because that frame is what the operator is
+		// looking at when he turns the dial.
+		int64_t shownMaster = 0;
+		bool seated = false;
+
+		uint64_t dueFor(int64_t masterNs) const
+		{
+			const double off = (double)(dir * (masterNs - anchorMaster));
+			return anchorWall + (uint64_t)(off / (speed > 0 ? speed : 1.0));
+		}
+	};
+	// Seat the anchor on the first frame of a run.
+	void seatPacing(int64_t masterNs, int dir);
+	// Sleep until that frame is due, honouring a speed change or a pause that
+	// arrives mid-wait; returns the wall instant it is due at, or 0 if the run
+	// was aborted. Also publishes the frame as the one on screen.
+	uint64_t waitForFrame(int64_t masterNs);
+
+	mutable std::mutex pacingMutex_;
+	Pacing pacing_;
+	std::atomic<bool> paused_{false};
 
 	const Which which_;
 	obs_source_t *source_ = nullptr; // owned (ref held)

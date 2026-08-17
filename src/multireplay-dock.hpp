@@ -242,7 +242,16 @@ public:
 	explicit ClipBar(QWidget *parent = nullptr);
 
 	// progress in [0,1]; `text` is drawn centred over the fill.
-	void setState(double progressFrac, const QString &text, bool onAir);
+	//
+	// `clipJoins` are the fractions where one clip of the SEQUENCE ends and
+	// the next begins, drawn as white uprights. With more than one clip queued
+	// the progress is the progress through the whole sequence, not through the
+	// clip on air: a band that filled up and started again three times told the
+	// operator nothing about when the replay would be over, which is the one
+	// thing it is there to say. The uprights are what keeps the individual
+	// clips visible inside that.
+	void setState(double progressFrac, const QString &text, bool onAir,
+		      const std::vector<double> &clipJoins = {});
 
 	// What the band is currently saying. For the automated gate: "the bar
 	// exists" is not the claim worth checking — "while a clip is on air the
@@ -250,6 +259,7 @@ public:
 	QString overlayText() const { return text_; }
 	double progress() const { return progress_; }
 	bool onAir() const { return onAir_; }
+	size_t clipJoinCount() const { return joins_.size(); }
 
 protected:
 	void paintEvent(QPaintEvent *) override;
@@ -258,6 +268,7 @@ private:
 	double progress_ = 0.0;
 	QString text_;
 	bool onAir_ = false;
+	std::vector<double> joins_;
 };
 
 class MultiReplayDock : public QWidget {
@@ -266,6 +277,12 @@ class MultiReplayDock : public QWidget {
 public:
 	explicit MultiReplayDock(QWidget *parent = nullptr);
 	~MultiReplayDock() override;
+
+	// Put the position bar back over the whole timeline — the zoom menu's
+	// "100%" entry, and the way back from any span. Public because the gate
+	// drives it directly: clicking the key opens a modal menu, which would park
+	// the checking thread inside QMenu::exec().
+	void zoomWholeTimeline();
 
 	// What the preview is showing: true = the replay (a clip, a scrub review,
 	// or the frame the last one ended on), false = the live camera mirror.
@@ -391,6 +408,38 @@ private:
 	// table).
 	void rebuildEventColumns();
 	// The per-angle cell: [☑] [speed ▾] [comment ▾]. Owned by the table.
+	// The speed dial. Built separately because buildTransport() PLACES it
+	// (under the keys) and a widget cannot be added to a layout before it
+	// exists.
+	void buildSpeedDial();
+	// Show one angle key per CONFIGURED camera, labelled with its name. Called
+	// on the slow beat of poll(); a no-op unless the cameras changed.
+	void refreshAngleRows();
+	// A comment typed on one event, offered on all of them for the rest of the
+	// session. Not persisted — see rememberComment() for why a comment must
+	// not be able to reach setConfig().
+	void rememberComment(const QString &text);
+	QStringList sessionComments_;
+	static constexpr int kMaxSessionComments = 24;
+	// Set when the comment list grew, or when a rebuild had to be deferred
+	// because an editor was open. poll() clears it by rebuilding.
+	bool commentsDirty_ = false;
+	bool eventsDirty_ = false;
+	// True while the dock is re-selecting a row itself (refreshEvents keeps the
+	// newest mark selected). Distinguishes "the operator picked this event",
+	// which cues it, from "the table was rebuilt", which must not.
+	bool reselecting_ = false;
+
+	// Fixed, so a renamed camera cannot stretch the row and move every other
+	// key out from under the operator's fingers.
+	static constexpr int kAngleKeyWidth = 64;
+	// 8 = kMaxCameras (replay-core.hpp, which this header does not include —
+	// the .cpp static_asserts the two agree).
+	QPushButton *angleKeys_[2][8] = {};
+	// What the rows were last built for; refreshAngleRows() compares against it
+	// rather than rewriting eight labels thirty times a second.
+	QString angleRowSig_;
+
 	QWidget *buildAngleCell(int eventId, int cam0, bool on, double speed,
 				const std::string &note);
 
@@ -490,6 +539,16 @@ private:
 	// the reference controller's ◀ key: play what is selected (or the last event) BACKWARDS, from
 	// its OUT to its IN, through the same queue as ▶.
 	void playSelectedReverse();
+	// The position bar's zoom: a menu of SPANS (whole timeline, 1 h, 30/10/5/1
+	// min) rather than a factor, because "show me the last five minutes" is what
+	// an operator wants and the factor that gets there depends on how long the
+	// session happens to be.
+	void showZoomMenu();
+	// Put the selected event's IN frame on the selected channel(s) without
+	// playing it, so choosing a row in the table shows it. Two pictures, which
+	// is the shortest thing the engine can serve, and it comes to rest on the
+	// first of them.
+	void cueSelected();
 	// Apply a replay speed (5..200): becomes the default for events without a
 	// per-angle override, and re-cues the current clip from its in-point at
 	// the new speed (broadcast-style).
@@ -621,7 +680,10 @@ private:
 	// the one that matches the current speed (the reference controller fills it green).
 	QButtonGroup *speedChips_ = nullptr;
 	QLabel *speedLbl_ = nullptr;
-	QLabel *tcLbl_ = nullptr;
+	// (There used to be a QLabel here printing "position / length" under the
+	// transport keys. The position bar prints it on itself, which is where the
+	// eye already is; two copies of the same timecode is two things to
+	// reconcile.)
 	QPushButton *playPauseBtn_ = nullptr;
 	QPushButton *nowBtn_ = nullptr;
 	bool seekDragging_ = false;
