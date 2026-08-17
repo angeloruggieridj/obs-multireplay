@@ -14,114 +14,146 @@
 
 [English](#english) · [Italiano](#italiano)
 
+<img src="assets/screenshot-dock.png" alt="The MultiReplay dock inside OBS Studio" width="100%">
+
 </div>
 
 ---
 
 ## English
 
-OBS MultiReplay turns OBS Studio into a replay desk. Every camera is recorded at
-the same time on one shared timeline, so a single mark is the *same instant* on
-every angle — press a key during the action, then play it back from any lens, at
-any speed, forwards or backwards, while the match is still being recorded.
+Press a key while the action happens, and play it back a second later — from any
+camera, at any speed, forwards or backwards, **while the match is still being
+recorded**.
 
-The whole thing lives in a native Qt dock inside OBS. There is no browser, no
-web server and no second application to keep on screen.
+Every angle is recorded at the same time on one shared timeline, so a single
+mark means the *same frame* on every camera. The whole panel is a native Qt dock
+inside OBS: no browser, no web server, no second application to keep on screen.
 
-### Why it is fast
+### How it works, and why that matters
 
-The replay does **not** read the files being written. The live edge comes from
-the encoded packets of the encoders OBS is *already* running for the recording,
-kept in a bounded ring in RAM.
+The replay does **not** read the files being written to disk. It reads the
+encoded packets coming out of the encoders OBS is *already* running for the
+recording, and keeps the last minutes of them in a bounded ring in RAM.
 
-* **No extra encoders and no extra disk writes.** Nothing is encoded twice.
-* **~140 ms from the action to the replay** on an Intel iGPU at 1080p30,
-  measured, where reading a growing file costs about a second of fragment flush.
-* **Zero skew between angles.** Every packet carries the same system clock, so
-  the alignment between cameras is read, not estimated.
-* **A range is served exactly or refused.** Nothing is ever clamped to
-  "near enough", which is how a plausible-looking wrong replay reaches air.
+| | |
+|---|---|
+| **No second encode** | Your machine encodes each camera once, for the recording. The replay costs no extra encoder and writes nothing of its own. |
+| **~140 ms to the live edge** | Measured on an Intel iGPU at 1080p30. Tailing a growing file costs roughly a second, because that is how often the muxer flushes a fragment. |
+| **Zero skew between angles** | Every packet carries the same system clock, so the alignment between cameras is *read*, not estimated. Cutting between two angles of one action lands on the same frame. |
+| **Exact or refused** | A range the engine cannot serve frame-accurately is refused, never rounded to "near enough". Rounding is how a wrong replay that looks plausible reaches air. |
 
-### Features
+### What it does
 
-**Recording**
+#### Recording
 
-* Up to **8 camera angles**, recorded simultaneously, one file series each.
-* One **master timeline**: a mark means the same frame on every camera.
-* **Pre-flight before REC** — free space expressed in *minutes of footage*,
-  measured disk bandwidth against the requested bitrate, RAM for the ring,
-  cameras actually present. It refuses what cannot work and says why.
-* **Runtime health** while recording: per-angle packet flow, dropped frames,
-  ring occupancy, disk. It reports; it never takes anything off air by itself.
+* **Up to 8 camera angles at once.** Each gets its own file series; all of them
+  share one master timeline, which is what makes a single mark meaningful on
+  every camera at once.
+* **A pre-flight that refuses impossible takes.** Before REC it checks the free
+  space *expressed in minutes of footage at your bitrate*, measures the disk's
+  actual write bandwidth against what the take will demand, works out whether
+  the replay ring fits in RAM, and confirms the cameras are really there. If
+  something cannot work it says so and does not start; if something is merely
+  tight it degrades visibly and tells you by how much.
+* **Health monitoring during the take.** Packet flow per angle, dropped frames,
+  ring occupancy, disk. A dead camera is named within a couple of seconds. It
+  reports and nothing else: no rule in it can take anything off air by itself,
+  because a gallery that drops out because a disk got slow has turned a
+  recoverable problem into a broadcast one.
 
-**Marking**
+#### Marking
 
-* **In / Out**, and the `-5s` `-10s` `-20s` keys for the action that just
-  happened.
-* **Pre-roll and post-roll** applied at marking time, so the In you read in the
-  list is the In that will play — and it stays editable.
-* **Frame-accurate trim** of an event already marked, from buttons or hotkeys.
-* **20 event lists**, renameable, with search.
-* Per-angle **enable, speed and tag** in a single cell — the unit on screen is
-  the unit in your head. Tags are your own vocabulary, importable and
-  exportable as plain text.
-* **Manual running order**, saved with the project: a highlights reel does not
-  go out in the order the marks were taken.
+* **In / Out, and the −5s / −10s / −20s keys.** You always mark *after* seeing
+  the action, so the interesting keys are the ones that reach backwards.
+* **Pre-roll and post-roll**, applied at the moment of marking rather than at
+  playback. The In you read in the list is the In that will play, and it stays
+  editable.
+* **Trim to the frame** on an event already marked, from the buttons or from a
+  hotkey held down while you watch the picture. A mark taken live is late by
+  definition; before this the only remedy was deleting it and marking again,
+  which loses the angles and the notes.
+* **20 event lists**, renameable, with search across ids, tags and angles.
+* **One cell per angle, holding all three answers**: does this camera play, at
+  what speed, and what is it. No dialog anywhere — during a match, an edit that
+  costs a dialog is an edit that does not get made.
+* **Your own tag vocabulary.** A word typed on one event is offered on every
+  other one for the rest of the session, and the club's list ("Goal", "Foul",
+  "Save") imports and exports as plain text, one per line.
+* **A running order you control.** A highlights reel does not go out in the
+  order the marks were taken; the order is saved with the project.
 
-**Playback**
+#### Playback
 
-* **Two replay bays, A and B** (B optional). Each is an ordinary OBS input you
-  place in your own scenes, so transitions, the audio mixer and every output
-  come for free. `A|B / A / B` says where the transport goes; the swap key
-  exchanges what the two are playing.
-* **Speed 5-200%**, slider and presets, applied *while the thumb moves* — slow
-  motion is only wider spacing between frames, so nothing is re-encoded and the
-  clip never restarts. The **audio is time-stretched and keeps its pitch**.
-* **Pause holds the frame**, and playing again carries on from there.
-* **Reverse playback** and **single-frame step in both directions**.
-* **Position bar** over the whole recorded timeline — graduated, zoomable by
-  time span (last minute, five, ten…), with draggable event markers. Stops
-  between takes are joins, not gaps: every position on the bar is footage.
-* **Multiview** of every configured camera, with preview/program tally.
-* **Play to Program** with your own in and out transitions (stingers included),
-  and a **cut or a dip between events**.
-* **Music bed** under the replay, from a file or from one of your OBS sources.
+* **Two replay bays, A and B** (B is optional and off by default). Each one is
+  an ordinary OBS input that you place in your own scenes — so transitions, the
+  audio mixer and every output work exactly as they already do. Keep one bay on
+  air while you prepare the next.
+* **Speed 5–200%, applied while the slider moves.** Slow motion here is only
+  wider spacing between frames: nothing is re-encoded and the clip does not
+  restart, so you can judge the speed by watching the picture instead of aiming
+  at it. **The audio is time-stretched and keeps its pitch** — slow motion is
+  not silent and not comical.
+* **Pause holds the frame**, and pressing play again carries on from there
+  rather than from the in-point.
+* **Reverse playback** and **single-frame step in both directions**, because
+  finding the right frame means passing it and coming back.
+* **A position bar over the whole recorded timeline** — graduated, zoomable by
+  time span ("show me the last five minutes", not "zoom 8×"), with event
+  markers you can drag by their edges. Stops between takes are drawn as joins,
+  not gaps: every position on the bar is footage that exists.
+* **Multiview** of every configured camera, with tally — green for the angle you
+  are watching, red for the one on air. Click a tile to select that angle.
+* **To Program, with your transitions.** Separate in and out transitions
+  (stingers included), and between two events either a **cut or a dip through
+  black**. Between two *angles* of the same event it stays a cut on purpose: you
+  are comparing two lenses on one action, and a dissolve hides exactly the
+  frames you are looking at.
+* **A music bed** under the replay, from an audio file or from one of your own
+  OBS sources.
 
-**Export**
+#### Export
 
-* **Frame-accurate MP4 per event**, by stream copy: exact on the In, no
-  re-encode, seconds to write. Per-angle speeds are honoured.
-* **Highlights reel in a single file** — your events, your order, your angles,
-  with your music over them.
-* **YouTube chapters** to the clipboard and to a file.
+* **One MP4 per event, frame-accurate**, written by stream copy: exact on the
+  In, no re-encode, seconds rather than minutes. Per-angle speeds are honoured,
+  so an angle you marked at 50% exports at 50%.
+* **A highlights reel in a single file** — your events, in your order, on your
+  angles, with your music over them. Also stream-copied.
+* **YouTube chapters**, to the clipboard and to a file in the project folder.
 
-**Control surface**
+#### Control surface
 
-* A **hotkey for everything**, visible in OBS's own Hotkeys settings and
-  therefore mappable from a Stream Deck through OBS's native integration.
-* A **keyboard layer** on the dock: arrows step a frame (a second with Shift),
-  up/down walk the events, `+`/`-` change speed, Enter plays. Typing always
-  wins — the search box and the tag cells are two pixels from these commands.
+* **A hotkey for every command**, registered with OBS itself — so they appear in
+  OBS's Hotkeys settings and a Stream Deck reaches them through OBS's native
+  integration, with no extra plugin in between.
+* **A keyboard layer on the dock**: arrows step a frame (a second with Shift),
+  up/down walk the event list, `+`/`−` change speed, Enter plays. Typing always
+  wins — the search box and the tag cells are two pixels away from these
+  commands, and writing "Foul" must not send the panel back a frame.
 
 ### Requirements
 
 | | |
 |---|---|
 | OBS Studio | **32 or newer** |
-| Branch Output | [OPENSPHERE-Inc/branch-output](https://github.com/OPENSPHERE-Inc/branch-output) — the recording layer |
-| Platforms | Windows (primary) · macOS · Linux (X11/XWayland) |
+| Branch Output | [OPENSPHERE-Inc/branch-output](https://github.com/OPENSPHERE-Inc/branch-output) — this is the recording layer, and MultiReplay does nothing without it |
+| Platforms | Windows (primary) · macOS · Linux (X11/XWayland; native Wayland is not supported) |
 
 ### Installation
 
 1. Install **Branch Output** first, and set its `Interlock` to `Always ON`.
-2. Download the installer for your platform from the
-   [releases page](https://github.com/angeloruggieridj/obs-multireplay/releases).
+   Without that it will not start recording, and MultiReplay will tell you so
+   rather than let you mark events over footage that does not exist.
+2. Download the package for your platform from the
+   [releases page](https://github.com/angeloruggieridj/obs-multireplay/releases)
+   and install it.
 3. Restart OBS. The dock appears under **Docks ▸ MultiReplay**.
-4. Open **⚙ ▸ Settings ▸ Cameras**, point each slot at one of your sources, and
-   add **MultiReplay - Replay A** to a scene of yours.
+4. Open **⚙ ▸ Settings ▸ Cameras** and point each slot at one of your sources.
+5. Add **MultiReplay - Replay A** to a scene of yours — it is an ordinary OBS
+   input, and it has to be in a scene to be seen and heard.
 
-On Windows, plugins are only scanned in `%ProgramData%\obs-studio\plugins` —
-the installer puts it there.
+On Windows, OBS only scans `%ProgramData%\obs-studio\plugins`; the installer
+puts the plugin there.
 
 ### Building from source
 
@@ -132,128 +164,164 @@ cmake --preset windows-x64          # or macos / ubuntu-x86_64
 cmake --build --preset windows-x64 --config RelWithDebInfo
 ```
 
-Dependencies are pinned in `buildspec.json` and **must match the OBS version**
-you build against, or the module fails to load with a bare "module not found".
+The dependency versions are pinned in `buildspec.json` and **must match the OBS
+version** you build against; if they do not, the module fails to load with a
+bare "module not found" and nothing else.
 
 ### Licence
 
 GPL-2.0-or-later. See [LICENSE](LICENSE).
 
 The recording layer is provided by the Branch Output plugin (GPL-2.0). This
-project clones the layout, arrangement and terminology of established broadcast
-replay controllers; it contains none of their code, assets or branding.
+project reproduces the layout, arrangement and terminology of established
+broadcast replay controllers, so that an operator finds every control where his
+hand already goes; it contains none of their code, assets or branding.
 
 ---
 
 ## Italiano
 
-OBS MultiReplay trasforma OBS Studio in una regia di replay. Tutte le camere
-vengono registrate insieme su un'unica timeline, quindi una sola marcatura è lo
-*stesso istante* su ogni angolo: premi un tasto durante l'azione e poi la rivedi
-da qualsiasi obiettivo, a qualsiasi velocità, avanti o indietro, mentre la
-partita è ancora in registrazione.
+Premi un tasto mentre l'azione succede e un secondo dopo la rivedi: da qualsiasi
+camera, a qualsiasi velocità, avanti o indietro, **mentre la partita è ancora in
+registrazione**.
 
-Tutto vive in una dock Qt nativa dentro OBS. Niente browser, niente server web,
-nessuna seconda applicazione da tenere sullo schermo.
+Tutti gli angoli vengono registrati insieme su un'unica timeline, quindi una
+sola marcatura indica lo *stesso fotogramma* su ogni camera. Il pannello è una
+dock Qt nativa dentro OBS: niente browser, niente server web, nessuna seconda
+applicazione da tenere sullo schermo.
 
-### Perché è veloce
+### Come funziona, e perché cambia le cose
 
-Il replay **non** legge i file in scrittura. Il fronte live arriva dai pacchetti
-già codificati dagli encoder che OBS sta **già** facendo girare per la
-registrazione, tenuti in un ring limitato in RAM.
+Il replay **non** legge i file mentre vengono scritti. Legge i pacchetti già
+codificati che escono dagli encoder che OBS sta *già* usando per registrare, e
+ne tiene gli ultimi minuti in un buffer circolare in RAM.
 
-* **Zero encoder aggiuntivi e zero scritture su disco** nostre. Niente viene
-  codificato due volte.
-* **~140 ms dall'azione al replay** su iGPU Intel a 1080p30, misurati, contro
-  circa un secondo di flush del frammento leggendo un file in crescita.
-* **Zero scarto fra gli angoli.** Ogni pacchetto porta lo stesso orologio di
-  sistema: l'allineamento fra camere si legge, non si stima.
-* **Un intervallo si serve esatto o si rifiuta.** Non viene mai "avvicinato":
-  è così che un replay sbagliato dall'aria plausibile finisce in onda.
+| | |
+|---|---|
+| **Nessuna seconda codifica** | Il computer codifica ogni camera una volta sola, per la registrazione. Il replay non aggiunge encoder e non scrive niente di suo. |
+| **~140 ms per raggiungere il live** | Misurati su iGPU Intel a 1080p30. Inseguire un file in scrittura costa circa un secondo, perché è ogni quanto il muxer scarica un frammento. |
+| **Nessuno scarto fra gli angoli** | Ogni pacchetto porta lo stesso orologio di sistema: l'allineamento fra le camere si legge, non si stima. Passare da un angolo all'altro della stessa azione cade sullo stesso fotogramma. |
+| **O esatto, o rifiutato** | Un intervallo che il motore non può servire al fotogramma viene rifiutato, mai arrotondato a "quasi". È l'arrotondamento che manda in onda un replay sbagliato ma credibile. |
 
-### Funzionalità
+### Cosa sa fare
 
-**Registrazione**
+#### Registrazione
 
-* Fino a **8 angoli camera**, registrati insieme, una serie di file ciascuno.
-* Una **master timeline**: una marcatura è lo stesso fotogramma su ogni camera.
-* **Pre-flight prima del REC** — spazio libero espresso in *minuti di girato*,
-  banda del disco **misurata** contro il bitrate richiesto, RAM per il ring,
-  sorgenti camera effettivamente presenti. Rifiuta ciò che non può funzionare e
-  dice perché.
-* **Monitoraggio durante la take**: flusso pacchetti per angolo, frame persi,
-  occupazione del ring, disco. Segnala; non toglie mai nulla dall'aria da solo.
+* **Fino a 8 angoli camera insieme.** Ognuno ha la sua serie di file, ma tutti
+  condividono una sola master timeline: è questo che rende una singola
+  marcatura valida su tutte le camere contemporaneamente.
+* **Un controllo pre-volo che rifiuta le take impossibili.** Prima del REC
+  verifica lo spazio libero *espresso in minuti di girato al tuo bitrate*,
+  misura davvero la banda in scrittura del disco e la confronta con quella che
+  la take richiede, calcola se il buffer di replay entra in RAM e conferma che
+  le camere ci siano. Se qualcosa non può funzionare lo dice e non parte; se è
+  solo al limite degrada in modo visibile e ti dice di quanto.
+* **Monitoraggio durante la take.** Flusso di pacchetti per angolo, frame persi,
+  occupazione del buffer, disco. Una camera morta viene segnalata per nome nel
+  giro di un paio di secondi. Si limita a segnalare, e non è una mancanza: una
+  regia che si toglie dall'aria da sola perché il disco ha rallentato ha
+  trasformato un problema recuperabile in un problema di trasmissione.
 
-**Marcatura**
+#### Marcatura
 
-* **In / Out** e i tasti `-5s` `-10s` `-20s` per l'azione appena successa.
-* **Pre-roll e post-roll** applicati al momento della marcatura, così l'In che
-  leggi in lista è quello che parte — e resta modificabile.
-* **Trim al fotogramma** di un evento già marcato, da bottone o da hotkey.
-* **20 liste eventi**, rinominabili, con ricerca.
-* **Spunta, velocità e tag per singolo angolo in una sola cella**: l'unità sullo
-  schermo è l'unità nella tua testa. I tag sono il tuo vocabolario, importabile
-  ed esportabile in testo semplice.
-* **Ordinamento manuale**, salvato col progetto: una reel di highlights non esce
-  nell'ordine in cui hai preso le marcature.
+* **In / Out e i tasti −5s / −10s / −20s.** Si marca sempre *dopo* aver visto
+  l'azione, quindi i tasti che servono davvero sono quelli che tornano indietro.
+* **Pre-roll e post-roll**, applicati al momento della marcatura e non in
+  riproduzione: l'In che leggi nella lista è quello che partirà, e resta
+  modificabile.
+* **Correzione al fotogramma** di un evento già marcato, dai pulsanti o tenendo
+  premuta una scorciatoia mentre guardi l'immagine. Una marcatura presa in
+  diretta è in ritardo per definizione; prima l'unico rimedio era cancellarla e
+  rifarla, perdendo angoli e commenti.
+* **20 liste di eventi**, rinominabili, con ricerca su id, tag e angoli.
+* **Una cella per angolo, con dentro tutte e tre le risposte**: se questa camera
+  va riprodotta, a che velocità e con che commento. Nessuna finestra di dialogo:
+  durante una partita, una modifica che costa un dialog è una modifica che non
+  viene fatta.
+* **I tuoi tag.** Una parola scritta su un evento viene proposta su tutti gli
+  altri per il resto della sessione, e il vocabolario della società ("Gol",
+  "Fallo", "Parata") si importa e si esporta come testo semplice, uno per riga.
+* **La scaletta la decidi tu.** Una raccolta di highlights non esce nell'ordine
+  in cui hai preso le marcature; l'ordine viene salvato insieme al progetto.
 
-**Riproduzione**
+#### Riproduzione
 
-* **Due baie di replay, A e B** (la B è opzionale). Ognuna è un normale input
-  OBS che metti nelle tue scene: transizioni, mixer audio e output vengono
-  gratis. `A|B / A / B` dice dove va il trasporto; il tasto di scambio inverte
-  ciò che le due stanno suonando.
-* **Velocità 5-200%**, slider e preset, applicata **mentre muovi il pollice**:
-  lo slow motion è solo una spaziatura più larga fra i fotogrammi, quindi non si
-  ri-codifica niente e la clip non riparte mai da capo. **L'audio viene stirato
-  e mantiene la tonalità.**
-* **La pausa tiene il fotogramma**, e il play riprende da lì.
-* **Riproduzione all'indietro** e **step di un fotogramma nelle due direzioni**.
-* **Barra di posizione** su tutta la timeline registrata: graduata, con zoom per
-  intervallo di tempo (ultimo minuto, cinque, dieci…) e marcatori evento
-  trascinabili. Gli stop fra due take sono giunzioni, non buchi: ogni posizione
-  sulla barra è girato vero.
-* **Multiview** di tutte le camere configurate, con tally preview/program.
-* **Messa in onda** con le tue transizioni di andata e ritorno (stinger
-  compresi) e **stacco o dissolvenza tra un evento e l'altro**.
-* **Musica** sotto il replay, da file o da una tua sorgente OBS.
+* **Due canali di replay, A e B** (il B è opzionale e di default è spento).
+  Ognuno è un normale input di OBS che metti nelle tue scene, quindi
+  transizioni, mixer audio e uscite funzionano esattamente come già fanno. Puoi
+  tenere un canale in onda mentre prepari l'altro.
+* **Velocità dal 5 al 200%, applicata mentre trascini lo slider.** Qui lo slow
+  motion è solo una spaziatura più larga fra i fotogrammi: non si ricodifica
+  niente e la clip non riparte da capo, così la velocità la scegli guardando
+  l'immagine invece di indovinarla. **L'audio viene rallentato mantenendo la
+  tonalità**: il rallentatore non è muto, e non suona un'ottava sotto.
+* **La pausa congela il fotogramma**, e premendo di nuovo play si riparte da lì
+  e non dall'inizio della clip.
+* **Riproduzione all'indietro** e **avanzamento di un fotogramma nelle due
+  direzioni**, perché trovare il fotogramma giusto vuol dire superarlo e
+  tornare indietro.
+* **Una barra di posizione su tutto il girato** — graduata, con zoom per
+  intervallo di tempo ("fammi vedere gli ultimi cinque minuti", non "zoom 8×") e
+  marcatori degli eventi che puoi trascinare per i bordi. Gli stop fra una take
+  e l'altra sono disegnati come giunzioni, non come buchi: ogni punto della
+  barra corrisponde a girato che esiste davvero.
+* **Multiview** di tutte le camere configurate, con tally: verde l'angolo che
+  stai guardando, rosso quello in onda. Un clic su un riquadro seleziona quella
+  camera.
+* **Messa in onda con le tue transizioni.** Transizione di andata e di ritorno
+  separate (stinger compresi) e, fra un evento e l'altro, **stacco oppure
+  dissolvenza al nero**. Fra due *angoli* dello stesso evento resta uno stacco,
+  ed è voluto: stai confrontando due obiettivi sulla stessa azione, e una
+  dissolvenza nasconderebbe proprio i fotogrammi che vuoi vedere.
+* **Una base musicale** sotto il replay, da un file audio o da una tua sorgente
+  di OBS.
 
-**Esportazione**
+#### Esportazione
 
-* **MP4 per evento, al fotogramma**, in stream copy: esatto sull'In, nessuna
-  ri-codifica, secondi per scriverlo. Le velocità per angolo vengono rispettate.
-* **Reel di highlights in un unico file** — i tuoi eventi, il tuo ordine, i tuoi
-  angoli, con la tua musica sopra.
-* **Capitoli YouTube** negli appunti e su file.
+* **Un MP4 per evento, esatto al fotogramma**, scritto copiando i pacchetti:
+  parte precisa sull'In, nessuna ricodifica, secondi invece di minuti. Le
+  velocità per angolo vengono rispettate, quindi un angolo marcato al 50% esce
+  al 50%.
+* **Una raccolta di highlights in un unico file**: i tuoi eventi, nel tuo
+  ordine, sugli angoli che hai scelto, con la tua musica sopra. Anche questa
+  senza ricodifica.
+* **Capitoli per YouTube**, negli appunti e in un file nella cartella del
+  progetto.
 
-**Superficie di controllo**
+#### Comandi
 
-* Una **hotkey per ogni comando**, visibile nelle Scorciatoie di OBS e quindi
-  mappabile da Stream Deck tramite l'integrazione nativa di OBS.
-* Uno **strato tastiera** sulla dock: le frecce spostano di un fotogramma (di un
-  secondo con Shift), su/giù scorrono gli eventi, `+`/`-` cambiano velocità,
-  Invio riproduce. Scrivere vince sempre: la ricerca e le celle dei tag stanno a
-  due pixel da questi comandi.
+* **Una scorciatoia per ogni comando**, registrata dentro OBS: compaiono nelle
+  Scorciatoie di OBS e uno Stream Deck le raggiunge attraverso l'integrazione
+  nativa di OBS, senza altri plugin di mezzo.
+* **Un livello tastiera sulla dock**: le frecce spostano di un fotogramma (di un
+  secondo con Shift), su e giù scorrono la lista, `+` e `−` cambiano velocità,
+  Invio riproduce. Se stai scrivendo vince la scrittura: la casella di ricerca e
+  le celle dei tag sono a due pixel da questi comandi, e scrivere "Fallo" non
+  deve mandare il pannello indietro di un fotogramma.
 
 ### Requisiti
 
 | | |
 |---|---|
 | OBS Studio | **32 o successivo** |
-| Branch Output | [OPENSPHERE-Inc/branch-output](https://github.com/OPENSPHERE-Inc/branch-output) — è lo strato di registrazione |
-| Piattaforme | Windows (principale) · macOS · Linux (X11/XWayland) |
+| Branch Output | [OPENSPHERE-Inc/branch-output](https://github.com/OPENSPHERE-Inc/branch-output) — è lo strato che registra, e senza di lui MultiReplay non fa niente |
+| Piattaforme | Windows (principale) · macOS · Linux (X11/XWayland; Wayland nativo non è supportato) |
 
 ### Installazione
 
-1. Installa prima **Branch Output** e metti il suo `Interlock` su `Always ON`.
-2. Scarica l'installer per la tua piattaforma dalla
-   [pagina delle release](https://github.com/angeloruggieridj/obs-multireplay/releases).
-3. Riavvia OBS. La dock compare sotto **Dock ▸ MultiReplay**.
-4. Apri **⚙ ▸ Impostazioni ▸ Telecamere**, punta ogni slot su una tua sorgente e
-   aggiungi **MultiReplay - Replay A** a una tua scena.
+1. Installa prima **Branch Output** e imposta il suo `Interlock` su
+   `Always ON`. Senza, non avvia la registrazione — e MultiReplay te lo dice,
+   invece di lasciarti marcare eventi su girato che non esiste.
+2. Scarica il pacchetto per la tua piattaforma dalla
+   [pagina delle release](https://github.com/angeloruggieridj/obs-multireplay/releases)
+   e installalo.
+3. Riavvia OBS. La dock compare in **Pannelli ▸ MultiReplay**.
+4. Apri **⚙ ▸ Impostazioni ▸ Telecamere** e punta ogni slot su una tua sorgente.
+5. Aggiungi **MultiReplay - Replay A** a una tua scena: è un normale input di
+   OBS, e per vederlo e sentirlo deve stare in una scena.
 
-Su Windows OBS scansiona i plugin solo in `%ProgramData%\obs-studio\plugins`:
-l'installer li mette lì.
+Su Windows OBS cerca i plugin solo in `%ProgramData%\obs-studio\plugins`, ed è
+lì che li mette l'installer.
 
 ### Compilare dai sorgenti
 
@@ -264,15 +332,16 @@ cmake --preset windows-x64          # oppure macos / ubuntu-x86_64
 cmake --build --preset windows-x64 --config RelWithDebInfo
 ```
 
-Le dipendenze sono pinnate in `buildspec.json` e **devono corrispondere alla
-versione di OBS** con cui compili, altrimenti il modulo non si carica e dice
-solo "module not found".
+Le versioni delle dipendenze sono fissate in `buildspec.json` e **devono
+corrispondere alla versione di OBS** con cui compili; se non corrispondono il
+modulo non si carica e l'unico messaggio che ottieni è "module not found".
 
 ### Licenza
 
 GPL-2.0-or-later. Vedi [LICENSE](LICENSE).
 
 Lo strato di registrazione è fornito dal plugin Branch Output (GPL-2.0). Questo
-progetto clona layout, disposizione e terminologia dei controller di replay
-professionali affermati; non contiene nulla del loro codice, dei loro asset o
-del loro marchio.
+progetto riprende disposizione, organizzazione e terminologia dei controller di
+replay professionali affermati, così che chi li ha usati trovi ogni comando dove
+la mano va già da sola; non contiene nulla del loro codice, dei loro asset o del
+loro marchio.
