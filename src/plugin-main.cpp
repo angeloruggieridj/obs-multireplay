@@ -48,7 +48,16 @@ void onFrontendEvent(enum obs_frontend_event event, void *)
 		// Both channels: A and B are two inputs of one type, and the
 		// second has to be adopted (or created) on exactly the same beat
 		// as the first.
+		const bool wantB = multireplay::ReplayCore::instance()
+					   .getConfig()
+					   .enableChannelB;
 		for (int i = 0; i < multireplay::kChannels; i++) {
+			// ...but only the bays the operator asked for. Creating B's
+			// input unconditionally put a source in his scene collection
+			// he never wanted and would have to delete by hand, on a rig
+			// where one bay is the whole job.
+			if (i == 1 && !wantB)
+				continue;
 			auto &ch = multireplay::ReplayChannel::instance(
 				(multireplay::Which)i);
 			ch.ensureSource();
@@ -63,6 +72,32 @@ void onFrontendEvent(enum obs_frontend_event event, void *)
 		}
 		// No-op unless OBS_MULTIREPLAY_SELFTEST is set.
 		multireplay::maybeRunSelfTest();
+		return;
+	}
+
+	// --- LET GO OF THE SOURCES BEFORE OBS CLEARS THEM ---------------------
+	// OBS clears scene data on the way out of a collection and on the way out
+	// of the program, and anything still referenced then produces
+	//   Not all sources were cleared when clearing scene data: ...
+	// which OBS reports to the operator as a plugin that failed to release its
+	// resources — a dialog on shutdown, which is exactly where nobody wants
+	// one. We hold refs in two places (each channel's own input, and the two
+	// preview pointers the dock publishes for the graphics thread), and both
+	// have to be dropped here rather than in obs_module_unload: the module is
+	// unloaded well AFTER the scene data has gone.
+	if (event == OBS_FRONTEND_EVENT_SCENE_COLLECTION_CLEANUP ||
+	    event == OBS_FRONTEND_EVENT_EXIT) {
+		// On EXIT the dock also stops polling: a collection CHANGE is
+		// followed by more work (the new collection has to be adopted), but
+		// an exit is not, and a tick between here and the clearing would take
+		// a fresh reference to the very sources we have just let go of.
+		if (event == OBS_FRONTEND_EVENT_EXIT)
+			multireplay::MultiReplayDock::prepareForShutdown();
+		else
+			multireplay::MultiReplayDock::releasePreviewRefs();
+		for (int i = 0; i < multireplay::kChannels; i++)
+			multireplay::ReplayChannel::instance((multireplay::Which)i)
+				.releaseSource();
 	}
 }
 } // namespace

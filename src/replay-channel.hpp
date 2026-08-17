@@ -76,6 +76,12 @@ public:
 	// Adopt the existing source of our name or create one. Safe to call
 	// repeatedly (FINISHED_LOADING / SCENE_COLLECTION_CHANGED).
 	void ensureSource();
+	// Stop playing and DROP the reference to our input, without unregistering
+	// the type. Called when OBS is about to clear scene data (a collection
+	// change, or shutdown): a reference still held at that moment is reported
+	// to the operator as a plugin that failed to release its resources — and
+	// reported in a dialog, on the way out. ensureSource() re-adopts afterwards.
+	void releaseSource();
 
 	Which which() const { return which_; }
 	// The OBS input name the operator will look for.
@@ -136,6 +142,12 @@ public:
 	bool play(int camIndex, int64_t inNs, int64_t outNs, int speedPct,
 		  std::string &errorOut, Source source = Source::Auto);
 	void stop();
+	// Stop AND forget. A new (or newly opened) project has no clip on any bay,
+	// so the stats have to go with it: the dock decides whether a bay's box has
+	// anything to show by asking whether it has ever pushed a frame, and a
+	// channel that remembers last project's clip kept a stale picture on screen
+	// under a project that was empty.
+	void reset();
 	bool playing() const { return playing_.load(); }
 
 	// --- pause and speed, WITHOUT restarting the clip ----------------------

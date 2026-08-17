@@ -329,6 +329,21 @@ void ReplayChannel::unload()
 	}
 }
 
+void ReplayChannel::releaseSource()
+{
+	// Stop FIRST and outside the lock: the worker holds its own ref while it
+	// pushes frames, and releasing ours while it is mid-push would leave it
+	// pushing into a source OBS is dismantling.
+	stop();
+	std::lock_guard<std::mutex> lock(mutex_);
+	if (!source_)
+		return;
+	obs_source_release(source_);
+	source_ = nullptr;
+	obs_log(LOG_INFO, "[channel] released '%s' before OBS cleared scene data",
+		sourceName());
+}
+
 void ReplayChannel::ensureSource()
 {
 	std::lock_guard<std::mutex> lock(mutex_);
@@ -630,6 +645,18 @@ void ReplayChannel::stop()
 {
 	joinWorker();
 	playing_.store(false);
+}
+
+void ReplayChannel::reset()
+{
+	stop();
+	{
+		std::lock_guard<std::mutex> lock(statsMutex_);
+		stats_ = PlaybackStats{};
+	}
+	paused_.store(false);
+	std::lock_guard<std::mutex> lock(pacingMutex_);
+	pacing_ = Pacing{};
 }
 
 void ReplayChannel::playbackLoop()

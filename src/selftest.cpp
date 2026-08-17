@@ -236,6 +236,12 @@ struct DockChecks {
 	bool angleKeysFollowCameras = false;
 	bool clipBarSpansSequence = false;
 	int visibleAngleKeys = 0;
+	// The second bay is optional, and OFF is the default: with it off the B box
+	// and the A|B/A/B selector are absent, with it on they are there.
+	bool channelBIsOptional = false;
+	// Nothing still referenced when OBS clears scene data: a held reference there
+	// becomes a dialog telling the operator a plugin leaked.
+	bool releasesSourcesOnCleanup = false;
 	// M5: the preview is no longer one picture. There is a tile per camera
 	// plus one for the replay, and each is an obs_display of its own — so the
 	// two things that can go wrong are "the tiles were never built" and "a
@@ -1550,6 +1556,73 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 				row, (long long)(landed / 1000000),
 				(long long)(haveEv ? cueEv.tInNs / 1000000 : 0));
 			chan.stop();
+		}
+
+		// --- one bay or two, and the panel says which ------------------
+		// The second bay is OPTIONAL now, and off is the default: on a
+		// single-bay rig the B box, the A|B/A/B selector and the swap key
+		// are absent rather than greyed out, and every command means A.
+		// Both states are driven here — off first (nobody would notice a
+		// default that quietly showed two bays), then on, which is what the
+		// channel-B checks below need.
+		// Read-only ON PURPOSE. Proving it by flipping the setting would mean
+		// calling setConfig() in the middle of the take, and setConfig()
+		// re-points the segment index — a gate that disturbs the anchoring it
+		// is about to check is a gate that fails for its own reasons. The
+		// self-test's setup turns B on before recording starts, so what is
+		// asserted here is that the FLAG and the WIDGETS agree, in whichever
+		// state the run is configured for.
+		{
+			const bool want =
+				ReplayCore::instance().getConfig().enableChannelB;
+			bool selectorShown = false;
+			runOnUi([&]() {
+				for (QPushButton *b :
+				     dock->findChildren<QPushButton *>())
+					if (b->objectName() ==
+						    QStringLiteral("mrChanSel") &&
+					    b->text() == QStringLiteral("A|B") &&
+					    b->isVisibleTo(dock))
+						selectorShown = true;
+			});
+			const bool boxShown = dock->layoutProbe().channelBVisible;
+			c.channelBIsOptional =
+				boxShown == want && selectorShown == want;
+			obs_log(c.channelBIsOptional ? LOG_INFO : LOG_ERROR,
+				"[selftest] dock: channel B configured %s — box %s, "
+				"A|B selector %s",
+				want ? "on" : "off", boxShown ? "shown" : "hidden",
+				selectorShown ? "shown" : "hidden");
+		}
+
+		// --- nothing is still held when OBS clears scene data ---------
+		// OBS clears scene data on the way out of a collection and on the
+		// way out of the program, and anything still referenced then is
+		// reported to the OPERATOR as a plugin that failed to release its
+		// resources — in a dialog, on shutdown. It happened: the dock's
+		// destructor released A's preview and the multiview tiles but never
+		// B's preview, and the destructor runs long after the clearing
+		// anyway, so the cleanup path released nothing at all. OBS named
+		// "MultiReplay - Replay B", then "C1" and "C2" (the tiles), which
+		// are the operator's own cameras.
+		//
+		// Driven through the same static the module's frontend handler
+		// calls, then counted — a log line saying "released" is not the
+		// claim; zero references held is.
+		{
+			const int before = dock->heldSourceRefs();
+			runOnUi([&]() { MultiReplayDock::releasePreviewRefs(); });
+			const int after = dock->heldSourceRefs();
+			c.releasesSourcesOnCleanup = after == 0;
+			obs_log(c.releasesSourcesOnCleanup ? LOG_INFO : LOG_ERROR,
+				"[selftest] dock: held %d source ref(s), %d after the "
+				"scene-data cleanup hook",
+				before, after);
+			// Put them back for the checks below. The dock's own timer
+			// re-resolves them on its slow beat (4 Hz), so a wait is all
+			// this needs — and it keeps the check out of poll(), which is
+			// the dock's business and not the gate's.
+			std::this_thread::sleep_for(std::chrono::milliseconds(600));
 		}
 
 		// --- the angle keys are the CAMERAS, by name ------------------
@@ -2954,6 +3027,23 @@ void runSelfTest()
 	// is really a wrong folder.
 	const std::string projectFolder = folder.string();
 
+	// TWO BAYS for this run. The second one is optional now and off by default,
+	// but half a dozen checks below drive it (it plays, it takes its own scene,
+	// the swap moves a clip across), and with it off its input is never even
+	// created. Set HERE, before REC: setConfig() re-points the segment index, so
+	// doing it mid-take would disturb the anchoring the run is about to measure.
+	// The operator's own config is restored at the end of the health pass.
+	{
+		Config abCfg = ReplayCore::instance().getConfig();
+		if (!abCfg.enableChannelB) {
+			abCfg.enableChannelB = true;
+			runOnUi([&]() { ReplayCore::instance().setConfig(abCfg); });
+			obs_log(LOG_INFO,
+				"[selftest] channel B enabled for this run "
+				"(the default is off)");
+		}
+	}
+
 	// --- Acquire the cameras and arm Branch Output ------------------------
 	// All of this runs on the UI thread (see runOnUi): a Branch Output filter
 	// created off it never starts recording.
@@ -3866,6 +3956,8 @@ void runSelfTest()
 			  dockChecks.selectionCuesEvent &&
 			  dockChecks.angleKeysFollowCameras &&
 			  dockChecks.clipBarSpansSequence &&
+			  dockChecks.channelBIsOptional &&
+			  dockChecks.releasesSourcesOnCleanup &&
 			  dockChecks.found &&
 			  dockChecks.pollRuns && dockChecks.pollResponsive &&
 			  dockChecks.pollQuiet && dockChecks.markOnTimeline &&
@@ -4044,6 +4136,12 @@ void runSelfTest()
 			 dockChecks.visibleAngleKeys);
 	obs_data_set_bool(checks, "dock_clip_bar_spans_sequence",
 			  dockChecks.clipBarSpansSequence);
+	// The second bay is optional and off by default: absent, not greyed out.
+	obs_data_set_bool(checks, "dock_channel_b_is_optional",
+			  dockChecks.channelBIsOptional);
+	// ...and it lets go of every source before OBS clears scene data.
+	obs_data_set_bool(checks, "dock_releases_sources_on_cleanup",
+			  dockChecks.releasesSourcesOnCleanup);
 	// M5: a preview per angle plus the replay, each with a live display, and
 	// none of them stranded on a dead native window.
 	obs_data_set_bool(checks, "dock_multiview_built",

@@ -62,6 +62,16 @@ struct Config {
 	// ...and B's. Two channels are two inputs, so they sit in two scenes:
 	// sending both to one is how "play on B" put A on air.
 	std::string outputSceneNameB;
+	// IS THERE A SECOND BAY AT ALL? Off by default, and off means off: no B
+	// box in the panel, no "MultiReplay - Replay B" input created, no A|B/A/B
+	// selector, no swap key — every command means channel A, which is the whole
+	// of what a one-bay operator ever wants. A second replay channel is a second
+	// decode and a second input in his scene collection, and neither should
+	// arrive merely because the plugin was installed.
+	bool enableChannelB = false;
+	// With A|B linked, only ONE scene can be in Program, so "to output" has to
+	// be told which bay's scene it means. false = A's, true = B's.
+	bool abOutputUsesB = false;
 	// Legacy: the replay is a plugin-provided OBS input the operator places
 	// himself, so nothing drives a Media Source any more. Kept so an existing
 	// config.json round-trips unchanged.

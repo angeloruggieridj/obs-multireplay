@@ -335,6 +335,28 @@ QPushButton#mrDanger:hover { background: #1e1010; border-color: #442020; }
 	background: #181818; color: #c0c0c0; border: 1px solid #2c2c2c;
 	selection-background-color: #1a2e52; selection-color: #d0d8f0; outline: 0;
 }
+/* The rows of an open list. Without an explicit item rule the view inherits the
+   padding of the CLOSED box above (3px 7px plus its min-height), which leaves
+   each row taller than its text and the text sitting at the bottom of it —
+   which is exactly how a centred list stops looking centred. The height is
+   stated here and the horizontal centring is set per item, in code, because
+   Qt draws item text through the delegate and no stylesheet reaches it. */
+#MultiReplayDock QComboBox QAbstractItemView::item {
+	min-height: 20px; padding: 0px; border: 0;
+}
+
+/* ── zones: a captioned frame round each group of controls ───────
+   Quiet on purpose. The border is there to say "these keys belong together",
+   which needs one pixel and no colour — a loud box would compete with the
+   green band and the red REC key, which are the two things on this panel that
+   are allowed to shout. */
+QFrame#mrZone {
+	border: 1px solid #23262b; border-radius: 4px; background: #101215;
+}
+QLabel#mrZoneTitle {
+	color: #5c6674; font-size: 8px; font-weight: 700; letter-spacing: 1.2px;
+	padding: 0px; margin: 0px;
+}
 
 /* ── speed slider — steel blue ───────────────────────────── */
 QSlider#mrSpeed::groove:horizontal {
@@ -394,6 +416,11 @@ QSplitter::handle:horizontal { background: #1e1e1e; width: 5px; }
 )QSS";
 
 namespace {
+
+// The live dock, so the module's frontend-event handler can reach it when OBS is
+// about to clear scene data (see releasePreviewRefs). One dock at a time: it is
+// registered by id and OBS builds exactly one.
+MultiReplayDock *g_dock = nullptr;
 
 constexpr int kNCams = kMaxCameras; // 8
 // multireplay-dock.hpp cannot see kMaxCameras (it does not include replay-core),
@@ -560,6 +587,42 @@ QLabel *sectionLabel(const QString &text, QWidget *parent)
 	auto *l = new QLabel(text.toUpper(), parent);
 	l->setObjectName(QStringLiteral("mrSectionLabel"));
 	return l;
+}
+
+// Put a captioned FRAME round a group of controls, the way MARK already had one.
+//
+// A dock this dense reads as one field of keys otherwise, and an operator
+// learning it has nothing to hang a name on — "the speed keys" and "the
+// transport keys" are two ideas that looked like one row. The caption is the
+// name he will use out loud; the border is what makes the group a thing rather
+// than a coincidence of position.
+//
+// The content keeps its own parent chain (addWidget reparents it into the
+// frame), so layoutProbe()'s mapTo(this, …) still reports the same order.
+// The caption is INLINE, at the left of the content, and that is not a style
+// choice: a caption on its own line above costs ~18 px of height per zone, and
+// this dock is height-bound (five of them piled the search row, the list tabs
+// and the table on top of each other at the top of the panel, because a
+// QVBoxLayout that cannot fit gives every child its minimum). Sideways it costs
+// ~26 px each, which the row's stretches absorb — the panel has width to spare
+// and no height at all.
+QWidget *zoneBox(const QString &title, QWidget *content, QWidget *parent)
+{
+	auto *box = new QFrame(parent);
+	box->setObjectName(QStringLiteral("mrZone"));
+	box->setFrameShape(QFrame::NoFrame); // the stylesheet draws it
+	auto *h = new QHBoxLayout(box);
+	h->setContentsMargins(5, 1, 5, 1);
+	h->setSpacing(5);
+	auto *cap = new QLabel(title.toUpper(), box);
+	cap->setObjectName(QStringLiteral("mrZoneTitle"));
+	// Wrapped narrow so a two-word caption stacks instead of widening the zone.
+	cap->setWordWrap(true);
+	cap->setMaximumWidth(34);
+	cap->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+	h->addWidget(cap, 0);
+	h->addWidget(content, 1);
+	return box;
 }
 
 // Render `src` letterboxed inside a cx*cy display. Shared by the big preview
@@ -1168,7 +1231,9 @@ void SeekBar::mouseReleaseEvent(QMouseEvent *e)
 
 ClipBar::ClipBar(QWidget *parent) : QWidget(parent)
 {
-	setFixedHeight(24);
+	// 28, not 24: the >> key lives on this band (right end) and a 22 px key
+	// inside 24 px of bar, with margins, had its bottom border clipped.
+	setFixedHeight(28);
 	setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
 	// Deliberately NOT a pointing-hand cursor and deliberately not clickable:
 	// the bar directly under it IS clickable, and a bar that looks draggable
@@ -1403,17 +1468,15 @@ MultiReplayDock::MultiReplayDock(QWidget *parent) : QWidget(parent)
 
 	// After the widgets exist: every one of these acts on one of them.
 	registerDockHotkeys();
+	// Reachable from the module's frontend handler (see releasePreviewRefs).
+	g_dock = this;
 
-	// A NEW PANEL DRIVES A, NOT BOTH. Asserted here rather than left to the
-	// member initialisers and a setChecked() buried in the selector loop: under
-	// A|B every command goes to both bays, so a panel that came up linked would
-	// load the same event into A and B and there is no reading of the reference controller in which
-	// that is the resting state. One call sets the flag, the badge, the two
-	// letters and the checked key together, so they cannot disagree.
-	setActiveChannel(Which::A, /*linked*/ false);
-	if (chanSel_)
-		if (QAbstractButton *a = chanSel_->button(0))
-			a->setChecked(true);
+	// HOW MANY BAYS, and therefore what the panel even shows. One call sets the
+	// flag, the badge, the two letters, the checked key and the visibility of
+	// the whole B half together, so they cannot disagree: with B off everything
+	// means A, with B on the resting state is A|B (the operator who asked for a
+	// second bay asked for it to be used).
+	applyChannelBVisibility();
 
 	refreshAngleRows();
 	refreshAngles();
@@ -1423,6 +1486,9 @@ MultiReplayDock::MultiReplayDock(QWidget *parent) : QWidget(parent)
 
 MultiReplayDock::~MultiReplayDock()
 {
+	// FIRST of all: nothing may reach a dock that is being taken apart.
+	if (g_dock == this)
+		g_dock = nullptr;
 	// FIRST, before anything else is torn down: a hotkey firing from the
 	// hotkey thread must not find a half-destroyed dock. obs_hotkey_unregister
 	// takes libobs' hotkey mutex, so it returns only once no callback is in
@@ -1448,24 +1514,18 @@ MultiReplayDock::~MultiReplayDock()
 			t.display->setRenderCallback(nullptr, nullptr);
 	if (pollTimer_)
 		pollTimer_->stop();
-	if (previewSource_) {
-		obs_source_release(previewSource_);
-		previewSource_ = nullptr;
-	}
-	{
-		// Swapped out under the lock, released outside it: the last release
-		// destroys the source and enters the graphics context, and that is
-		// the thread that wants tileMutex_.
-		std::array<obs_source_t *, kMaxPreviewTiles> dying{};
-		{
-			std::lock_guard<std::mutex> lk(tileMutex_);
-			dying = tileSource_;
-			tileSource_.fill(nullptr);
-		}
-		for (obs_source_t *s : dying)
-			if (s)
-				obs_source_release(s);
-	}
+	// BOTH preview refs. B's was missed, and it was the only source OBS ever
+	// complained about: "Not all sources were cleared when clearing scene data:
+	// MultiReplay - Replay B", which OBS shows the operator as a plugin that
+	// failed to release its resources — a dialog on the way out. A held ref is
+	// invisible until something actually uses that bay, which is why it lasted
+	// as long as B went unexercised.
+	// Every owned reference the dock holds — the two previews and the multiview
+	// tiles — in one place, so the destructor and the "OBS is about to clear
+	// scene data" path cannot drift apart. They did: the destructor released the
+	// tiles and A's preview, the cleanup path released neither, and OBS named
+	// what was left in a dialog on the way out.
+	dropPreviewRefs();
 }
 
 // ---------------------------------------------------------------------------
@@ -1619,7 +1679,8 @@ QWidget *MultiReplayDock::buildPreview()
 		labelA_->setAlignment(Qt::AlignCenter);
 		av->addWidget(labelA_);
 	}
-	auto *bBox = new QWidget(row);
+	bBox_ = new QWidget(row);
+	QWidget *bBox = bBox_;
 	{
 		auto *bv = new QVBoxLayout(bBox);
 		bv->setContentsMargins(0, 0, 0, 0);
@@ -1863,6 +1924,83 @@ MultiReplayDock::PreviewStats MultiReplayDock::previewStats() const
 
 // Where the zones ended up, in the dock's own coordinates. See LayoutProbe in
 // the header for why the gate is allowed to ask.
+int MultiReplayDock::heldSourceRefs() const
+{
+	int n = 0;
+	{
+		std::lock_guard<std::mutex> lk(previewMutex_);
+		n += previewSource_ ? 1 : 0;
+		n += previewSourceB_ ? 1 : 0;
+	}
+	std::lock_guard<std::mutex> lk(tileMutex_);
+	for (obs_source_t *s : tileSource_)
+		n += s ? 1 : 0;
+	return n;
+}
+
+void MultiReplayDock::releasePreviewRefs()
+{
+	// The static half only finds the live dock; the work is the member below,
+	// so the destructor can do it too WITHOUT going through the pointer it has
+	// already cleared.
+	if (g_dock)
+		g_dock->dropPreviewRefs();
+}
+
+void MultiReplayDock::prepareForShutdown()
+{
+	if (!g_dock)
+		return;
+	// STOP POLLING FIRST, then let go. Releasing alone was not enough: the poll
+	// timer runs at 30 Hz and re-resolves these references on its slow beat, so
+	// between "OBS says it is exiting" and "OBS clears scene data" a tick could
+	// slip in and take a fresh reference — and OBS then named that one source in
+	// the dialog. Measured: the take pass came out clean and the reopen pass,
+	// where shutdown follows polling more closely, still reported one.
+	if (g_dock->pollTimer_)
+		g_dock->pollTimer_->stop();
+	g_dock->dropPreviewRefs();
+}
+
+void MultiReplayDock::dropPreviewRefs()
+{
+	obs_source_t *a = nullptr;
+	obs_source_t *b = nullptr;
+	{
+		// Swapped out under the lock, released outside it: the last release
+		// destroys the source and enters the graphics context, which is the
+		// thread that wants previewMutex_.
+		std::lock_guard<std::mutex> lk(previewMutex_);
+		a = previewSource_;
+		b = previewSourceB_;
+		previewSource_ = nullptr;
+		previewSourceB_ = nullptr;
+	}
+	if (a)
+		obs_source_release(a);
+	if (b)
+		obs_source_release(b);
+
+	// ...and the MULTIVIEW tiles, which are the operator's own cameras. These
+	// were the "- C1 / - C2" in the same OBS complaint: one owned reference per
+	// tile, dropped only in the destructor, which runs long after scene data has
+	// been cleared. Same swap-then-release discipline (see above) for the same
+	// reason: the last release enters the graphics context.
+	{
+		std::array<obs_source_t *, kMaxPreviewTiles> dying{};
+		{
+			std::lock_guard<std::mutex> lk(tileMutex_);
+			dying = tileSource_;
+			tileSource_.fill(nullptr);
+		}
+		for (obs_source_t *s : dying)
+			if (s)
+				obs_source_release(s);
+	}
+	// So poll() resolves them all again rather than trusting its cache.
+	previewCam0_ = -1;
+}
+
 MultiReplayDock::LayoutProbe MultiReplayDock::layoutProbe() const
 {
 	LayoutProbe lp;
@@ -1882,6 +2020,7 @@ MultiReplayDock::LayoutProbe MultiReplayDock::layoutProbe() const
 	lp.tableY = topOf(events_);
 	lp.clipBarY = topOf(clipBar_);
 	lp.seekY = topOf(seek_);
+	lp.channelBVisible = bBox_ && bBox_->isVisibleTo(this);
 	if (seek_) {
 		lp.seekHeight = seek_->height();
 		lp.seekGraduations = seek_->graduations();
@@ -1934,8 +2073,11 @@ QWidget *MultiReplayDock::buildAngleMatrix()
 	auto *bv = new QVBoxLayout(box);
 	bv->setContentsMargins(0, 0, 0, 0);
 	bv->setSpacing(2);
-	for (int ch = 0; ch < kChannels; ch++)
-		bv->addWidget(buildAngleRow((Which)ch));
+	for (int ch = 0; ch < kChannels; ch++) {
+		QWidget *r = buildAngleRow((Which)ch);
+		angleRowBox_[ch] = r;
+		bv->addWidget(r);
+	}
 	return box;
 }
 
@@ -2021,6 +2163,49 @@ QWidget *MultiReplayDock::buildAngleRow(Which which)
 		anglesA_ = group; // the name the rest of the panel knows it by
 
 	return row;
+}
+
+void MultiReplayDock::applyChannelBVisibility()
+{
+	const bool on = ReplayCore::instance().getConfig().enableChannelB;
+	if (channelBApplied_ == (on ? 1 : 0))
+		return;
+	channelBApplied_ = on ? 1 : 0;
+	channelBEnabled_ = on;
+
+	// The B box, B's angle row, the A|B/A/B selector and the swap key are all
+	// one decision. With one bay they are not "disabled" — they are ABSENT: a
+	// greyed-out selector on a single-channel rig is three keys of furniture
+	// and a question the operator has to answer every time he looks at it.
+	if (bBox_)
+		bBox_->setVisible(on);
+	if (angleRowBox_[1])
+		angleRowBox_[1]->setVisible(on);
+	if (swapBtn_)
+		swapBtn_->setVisible(on);
+	if (chanSel_)
+		for (QAbstractButton *b : chanSel_->buttons())
+			b->setVisible(on);
+
+	if (on) {
+		// TWO bays, so the resting state is BOTH: the reference controller's A|B is what makes a
+		// two-bay panel one panel, and the operator who asked for a second
+		// bay asked for it to be used. He can still pick A or B.
+		setActiveChannel(Which::A, /*linked*/ true);
+		if (QAbstractButton *ab = chanSel_ ? chanSel_->button(2) : nullptr)
+			ab->setChecked(true);
+		// The input only exists once he has asked for it.
+		ReplayChannel::instance(Which::B).ensureSource();
+	} else {
+		// One bay: everything means A, and B is stopped rather than left
+		// running behind a hidden box.
+		setActiveChannel(Which::A, /*linked*/ false);
+		if (QAbstractButton *ab = chanSel_ ? chanSel_->button(0) : nullptr)
+			ab->setChecked(true);
+		PlaybackCoordinator::instance(Which::B).stopEvents();
+		ReplayChannel::instance(Which::B).reset();
+	}
+	obs_log(LOG_INFO, "[dock] channel B %s", on ? "enabled (A|B)" : "disabled");
 }
 
 void MultiReplayDock::refreshAngleRows()
@@ -2174,6 +2359,11 @@ QWidget *MultiReplayDock::buildTransport()
 	nowBtn_->setCursor(Qt::PointingHandCursor);
 	nowBtn_->setToolTip(obs_module_text("Dock.JumpToNow"));
 	nowBtn_->setMinimumWidth(38);
+	// The stylesheet asks for min-height 28 (see #mrNow) — 6 px taller than its
+	// neighbours in this row — and a layout that sizes itself to the others cut
+	// the bottom border off. Stated on the widget so the row cannot allocate
+	// less than the border needs.
+	nowBtn_->setMinimumHeight(30);
 
 	// ⏮ U+23EE / ⏭ U+23ED — one frame back, one frame forward (the reference controller
 	// frame-by-frame). EXACTLY ONE button in this dock may carry each of these
@@ -2399,9 +2589,18 @@ QWidget *MultiReplayDock::buildBottomBar()
 	}
 
 	// ── Row 2: ⚙ · REC · clock  |  transport  |  slow-motion speed ────
+	// Three ZONES, each captioned and framed (see zoneBox): as one long row of
+	// keys this read as a single undifferentiated field, and none of the three
+	// groups had a name the operator could use.
 	{
 		auto *h = new QHBoxLayout();
 		h->setSpacing(4);
+		// The recording group gets its own container so the zone frame has
+		// something to wrap.
+		auto *recZone = new QWidget(this);
+		auto *rh = new QHBoxLayout(recZone);
+		rh->setContentsMargins(0, 0, 0, 0);
+		rh->setSpacing(4);
 
 		auto *gear = new QToolButton(this);
 		gear->setObjectName("mrGear");
@@ -2436,7 +2635,7 @@ QWidget *MultiReplayDock::buildBottomBar()
 			connect(actChapters, &QAction::triggered, this,
 				&MultiReplayDock::copyYouTubeChapters);
 		}
-		h->addWidget(gear);
+		rh->addWidget(gear);
 
 		recBtn_ = new QPushButton(QStringLiteral("●  REC"), this);
 		recBtn_->setObjectName("mrRec");
@@ -2460,7 +2659,7 @@ QWidget *MultiReplayDock::buildBottomBar()
 			}
 			poll();
 		});
-		h->addWidget(recBtn_);
+		rh->addWidget(recBtn_);
 
 		// M4: the health badge lives next to the record key because that
 		// is where the eye already goes when a take starts, and because
@@ -2473,7 +2672,7 @@ QWidget *MultiReplayDock::buildBottomBar()
 		healthBtn_->hide();
 		connect(healthBtn_, &QPushButton::clicked, this,
 			&MultiReplayDock::showHealthDetails);
-		h->addWidget(healthBtn_);
+		rh->addWidget(healthBtn_);
 
 		// the reference controller stacks the wall clock over the remaining recording time,
 		// right of the record key, in red. Same two lines, same place.
@@ -2488,21 +2687,35 @@ QWidget *MultiReplayDock::buildBottomBar()
 		statusLbl_->setObjectName("mrMuted");
 		cv->addWidget(clockLbl_);
 		cv->addWidget(statusLbl_);
-		h->addWidget(clockBox);
+		rh->addWidget(clockBox);
 
-		// The speed dial is BUILT here and PLACED by buildTransport(),
-		// under the keys (see the channel row there). Built first because
-		// buildTransport() adds it to a layout, and a widget cannot be
-		// added before it exists.
+		// The speed dial is BUILT here and PLACED in its own zone below the
+		// preset keys. Built first because the zone adds it to a layout,
+		// and a widget cannot be added before it exists.
 		buildSpeedDial();
 
+		h->addWidget(zoneBox(obs_module_text("Dock.ZoneRec"), recZone, this),
+			     0);
 		h->addStretch(1);
-		h->addWidget(buildTransport());
+		h->addWidget(zoneBox(obs_module_text("Dock.ZoneTransport"),
+				     buildTransport(), this),
+			     0);
 		h->addStretch(1);
 
 		// Slow-motion presets, the reference controller's set (25/33/50/75/100) plus the 2×
 		// that is its fast forward — the engine takes any speed, since a
-		// speed is only the spacing between frames.
+		// speed is only the spacing between frames. The DIAL goes directly
+		// underneath them, in its own row: the presets and the dial are one
+		// control with two resolutions, and putting the dial anywhere else
+		// makes the operator look in two places to answer one question.
+		auto *speedBox = new QWidget(this);
+		auto *sv = new QVBoxLayout(speedBox);
+		sv->setContentsMargins(0, 0, 0, 0);
+		sv->setSpacing(2);
+		auto *chipRow = new QHBoxLayout();
+		chipRow->setContentsMargins(0, 0, 0, 0);
+		chipRow->setSpacing(3);
+
 		speedChips_ = new QButtonGroup(this);
 		speedChips_->setExclusive(false);
 		const std::pair<int, const char *> speedPresets[] = {
@@ -2511,7 +2724,7 @@ QWidget *MultiReplayDock::buildBottomBar()
 		for (const auto &[pct, lbl] : speedPresets) {
 			int p = pct; // copy: capturing a structured binding is
 				     // non-portable
-			auto *b = compactBtn(QString::fromUtf8(lbl), this,
+			auto *b = compactBtn(QString::fromUtf8(lbl), speedBox,
 					     "mrSpeedChip");
 			speedChips_->addButton(b, p);
 			connect(b, &QPushButton::clicked, this, [this, p]() {
@@ -2521,8 +2734,19 @@ QWidget *MultiReplayDock::buildBottomBar()
 					"%.2f\xc3\x97", p / 100.0));
 				applyReplaySpeed(p);
 			});
-			h->addWidget(b);
+			chipRow->addWidget(b);
 		}
+		sv->addLayout(chipRow);
+
+		auto *dialRow = new QHBoxLayout();
+		dialRow->setContentsMargins(0, 0, 0, 0);
+		dialRow->setSpacing(4);
+		dialRow->addWidget(speed_, 1);
+		dialRow->addWidget(speedLbl_, 0);
+		sv->addLayout(dialRow);
+		h->addWidget(zoneBox(obs_module_text("Dock.ZoneSpeed"), speedBox,
+				     this),
+			     0);
 
 		v->addLayout(h);
 	}
@@ -2546,8 +2770,10 @@ QWidget *MultiReplayDock::buildBottomBar()
 		// band is where his eye already is.
 		nextClipBtn_ = transportBtn(QStringLiteral(">>"), clipBar_,
 					    obs_module_text("Dock.NextClip"));
-		nextClipBtn_->setMinimumHeight(20);
-		nextClipBtn_->setMaximumHeight(20);
+		// 22 px, and the band is 28 (see ClipBar's ctor): capped at 20 the
+		// key was shorter than the stylesheet's own min-height and Qt drew
+		// its bottom border outside the space it had been given.
+		nextClipBtn_->setFixedHeight(22);
 		connect(nextClipBtn_, &QPushButton::clicked, this, [this]() {
 			// Logged both ways: "I pressed >> and nothing happened"
 			// is otherwise indistinguishable from "the press never
@@ -2566,7 +2792,12 @@ QWidget *MultiReplayDock::buildBottomBar()
 		bl->addStretch(1);
 		bl->addWidget(nextClipBtn_, 0, Qt::AlignVCenter);
 
-		h->addWidget(clipBar_, 1);
+		auto *wrap = new QWidget(this);
+		auto *wl = new QHBoxLayout(wrap);
+		wl->setContentsMargins(0, 0, 0, 0);
+		wl->addWidget(clipBar_, 1);
+		h->addWidget(zoneBox(obs_module_text("Dock.ZoneOnAir"), wrap, this),
+			     1);
 		v->addLayout(h);
 	}
 
@@ -2609,13 +2840,7 @@ QWidget *MultiReplayDock::buildBottomBar()
 			&MultiReplayDock::swapChannels);
 		h->addWidget(swapBtn_, 0);
 
-		// The speed dial lives HERE, under the transport keys it belongs to
-		// and across the width of the panel, instead of squeezed to 70 px at
-		// the end of the key row. It is the control an operator moves most
-		// often during a match and it was the smallest thing on the panel.
-		h->addSpacing(8);
-		h->addWidget(speed_, 1);
-		h->addWidget(speedLbl_, 0);
+		h->addStretch(1);
 		// This row is read left to right as "which channel, then what to
 		// do to it", so it ends where the operator's eye is going next:
 		// the bar underneath.
@@ -2672,12 +2897,14 @@ QWidget *MultiReplayDock::buildBottomBar()
 		// The zoom key sits at the right end OF THE BAR, not in a
 		// toolbar: it is about this control and nothing else, and it is
 		// also where the eye lands after reading the scale.
-		auto *row = new QHBoxLayout();
+		auto *barBox = new QWidget(this);
+		auto *row = new QHBoxLayout(barBox);
 		row->setContentsMargins(0, 0, 0, 0);
 		row->setSpacing(4);
 		row->addWidget(seek_, 1);
 		row->addWidget(zoomBtn_, 0, Qt::AlignBottom);
-		v->addLayout(row);
+		v->addWidget(zoneBox(obs_module_text("Dock.ZoneTimeline"), barBox,
+				     this));
 	}
 
 	return box;
@@ -3224,12 +3451,43 @@ void MultiReplayDock::moveSelectedEvent(int delta)
 	refreshEvents();
 }
 
+bool MultiReplayDock::playOnTargets(const std::vector<int> &ids,
+				    ReplayChannel::Direction direction,
+				    std::string &errorOut)
+{
+	// EVERY bay the selector points at, which under A|B is both — that is what
+	// A|B promises and it was not being kept: play went to the active channel
+	// only, so A|B behaved exactly like A and the second bay sat idle behind a
+	// lit key.
+	//
+	// "To output" is the one thing that CANNOT go to both, because Program is
+	// one scene. So it goes to the bay the operator nominated in Settings
+	// (Config.abOutputUsesB) and the other bay plays without touching Program.
+	const bool toOut = toOutputBtn_ && toOutputBtn_->isChecked();
+	const bool useB = ReplayCore::instance().getConfig().abOutputUsesB;
+	const auto targets = targetChannels();
+	bool any = false;
+	for (Which w : targets) {
+		const bool thisOne =
+			toOut && (targets.size() == 1 ||
+				  (useB ? w == Which::B : w == Which::A));
+		std::string err;
+		if (PlaybackCoordinator::instance(w).playEvents(
+			    ids, angle1_[(int)w] - 1, thisOne, err,
+			    PlaybackCoordinator::AngleMode::AllEnabled,
+			    direction))
+			any = true;
+		else if (errorOut.empty())
+			errorOut = err;
+	}
+	return any;
+}
+
 void MultiReplayDock::playSelected()
 {
 	std::string err;
-	if (!pc().playEvents(
-		    selectedEventIds(), currentAngle1() - 1,
-		    toOutputBtn_ && toOutputBtn_->isChecked(), err))
+	if (!playOnTargets(selectedEventIds(),
+			   ReplayChannel::Direction::Forward, err))
 		QMessageBox::warning(this, "obs-multireplay",
 				     QString::fromStdString(err));
 }
@@ -3390,10 +3648,7 @@ void MultiReplayDock::playSelectedReverse()
 		return;
 	}
 	std::string err;
-	if (!pc().playEvents(ids, currentAngle1() - 1,
-			     toOutputBtn_ && toOutputBtn_->isChecked(), err,
-			     PlaybackCoordinator::AngleMode::AllEnabled,
-			     ReplayChannel::Direction::Reverse))
+	if (!playOnTargets(ids, ReplayChannel::Direction::Reverse, err))
 		showNotice(QString::fromStdString(err));
 }
 
@@ -3402,7 +3657,6 @@ void MultiReplayDock::applyReplaySpeed(int pct)
 	// Default speed for every angle without an override — the coordinator
 	// resolves it when it builds the queue, including for the hotkeys.
 	speedPct_ = std::clamp(pct, 5, 200);
-	bool live = false;
 	for (Which w : targetChannels()) {
 		PlaybackCoordinator::instance(w).setDefaultSpeedPct(speedPct_);
 		// LIVE if something is playing: the clip carries on from the frame
@@ -3410,13 +3664,13 @@ void MultiReplayDock::applyReplaySpeed(int pct)
 		// which threw away the very thing the operator was looking at — and
 		// with the dial applying on every step of a drag, restarting would
 		// have made the control unusable rather than merely annoying.
-		if (PlaybackCoordinator::instance(w).setLiveSpeedPct(speedPct_))
-			live = true;
+		PlaybackCoordinator::instance(w).setLiveSpeedPct(speedPct_);
 	}
-	if (live)
-		return;
-	// Nothing on air: the speed is a cue, so show the clip at it.
-	replayCurrent();
+	// AND WHEN NOTHING IS PLAYING, IT ONLY SETS THE SPEED. Choosing 25% before
+	// a replay is choosing how the next one will run, not asking for one now:
+	// starting a clip off a preset key put footage on air (with "In output" on,
+	// on PROGRAM) that nobody had asked to see. The number is armed and the
+	// next Play uses it.
 }
 
 void MultiReplayDock::cueSelected()
@@ -3552,8 +3806,14 @@ void MultiReplayDock::showZoomMenu()
 				     e.spanNs >= total)
 					    ? 1.0
 					    : (double)total / (double)e.spanNs;
-		a->setChecked(std::abs(want - seek_->zoom()) < 0.01);
-		a->setEnabled(e.spanNs <= 0 || total > e.spanNs);
+		const bool usable = e.spanNs <= 0 || total > e.spanNs;
+		a->setEnabled(usable);
+		// Only a usable entry can be the one in force. A span longer than
+		// the session collapses to "the whole timeline", so on a two-minute
+		// project "5 min" computed the same factor as "100%" and came up
+		// greyed out AND ticked — an entry claiming to be the current view
+		// while refusing to be clicked.
+		a->setChecked(usable && std::abs(want - seek_->zoom()) < 0.01);
 		const int64_t span = e.spanNs;
 		connect(a, &QAction::triggered, this, [this, want, span]() {
 			if (span <= 0) {
@@ -4071,14 +4331,51 @@ void MultiReplayDock::poll()
 			for (const auto &[s, e] :
 			     SegmentIndex::instance().recordedSpans())
 				diskSpans_.push_back({s, e});
+			// WHERE THE TAKE IN PROGRESS BEGAN. This is what made the
+			// total wrong, and it got worse the longer the take ran.
+			//
+			// recordedSpans() cannot report the file being written: its
+			// length is not measurable until the muxer has finished with
+			// it, and inventing one is not that function's business. So
+			// the only thing left describing the current take was the
+			// RING — the last ~20 s. Everything between the take's start
+			// and the ring's oldest instant was missing from the total,
+			// so after five minutes of recording the bar declared about
+			// twenty seconds, the graduations were drawn for twenty
+			// seconds, and every position on it meant something other
+			// than what it said.
+			//
+			// That footage is not missing: the ring serves the recent
+			// part and the file on disk serves the older part (that is
+			// what Source::Auto does). So the span of the take is
+			// [its anchor, the live edge] — the anchor being the newest
+			// one on this camera, i.e. the file currently being written.
+			// Read here, on the slow beat, because it takes the segment
+			// index's lock and does not move for the whole take.
+			takeAnchorNs_ = kNoInstant;
+			for (const auto &s : SegmentIndex::instance().segments(cam0))
+				if (s.anchored && (takeAnchorNs_ == kNoInstant ||
+						   s.anchorMasterNs > takeAnchorNs_))
+					takeAnchorNs_ = s.anchorMasterNs;
 		}
-		// The take in progress has no measured length on disk yet, so it
-		// comes from what the tap holds — the only span that grows, and
-		// it merges with the file it belongs to. This one IS cheap
-		// (the ring's own lock, held for a compare).
+		// The take in progress: from where it started to the live edge. The
+		// live edge itself IS cheap to read (the ring's own lock, held for
+		// a compare), so it stays on the fast beat and the bar grows
+		// smoothly.
 		std::vector<TimelineSpan> spans = diskSpans_;
-		const int64_t liveStart = tap.oldestReplayableNs(cam0);
-		if (liveEdgeNs > 0 && liveStart > 0 && liveEdgeNs > liveStart)
+		const int64_t ringOldest = tap.oldestReplayableNs(cam0);
+		int64_t liveStart = ringOldest;
+		// Only reach back to the anchor if it really is behind the ring and
+		// really is this take's: an anchor AFTER the live edge belongs to
+		// nothing we can play, and one from a take that has already been
+		// measured is in diskSpans_ already (where it does no harm — the
+		// map merges touching spans).
+		if (takeAnchorNs_ != kNoInstant && liveEdgeNs > 0 &&
+		    takeAnchorNs_ < liveEdgeNs &&
+		    (liveStart <= 0 || takeAnchorNs_ < liveStart))
+			liveStart = takeAnchorNs_;
+		if (liveEdgeNs > 0 && liveStart != kNoInstant &&
+		    liveEdgeNs > liveStart)
 			spans.push_back({liveStart, liveEdgeNs});
 		timeline_.setSpans(std::move(spans));
 	}
@@ -4391,12 +4688,17 @@ void MultiReplayDock::poll()
 		// simply B's input — and nothing at all until B has played
 		// something, which draws black rather than a stale picture.
 		if (refreshStatus) {
+			// hasPosition(), not positionNs() > 0: instants can be zero
+			// or negative (kNoInstant), and "has this bay ever shown a
+			// frame" is the actual question.
 			obs_source_t *nextB =
-				PlaybackCoordinator::instance(Which::B)
-							.playState()
-							.active ||
-						ReplayChannel::instance(Which::B)
-							.positionNs() > 0
+				channelBEnabled_ &&
+						(PlaybackCoordinator::instance(
+							 Which::B)
+							 .playState()
+							 .active ||
+						 ReplayChannel::instance(Which::B)
+							 .hasPosition())
 					? ReplayChannel::instance(Which::B)
 						  .acquireSource()
 					: nullptr;
@@ -4498,8 +4800,12 @@ void MultiReplayDock::poll()
 	// few times an evening, not thirty times a second. (It early-outs on an
 	// unchanged signature anyway; this keeps the getConfig() lock off the fast
 	// path.)
-	if (refreshStatus)
+	if (refreshStatus) {
 		refreshAngleRows();
+		// ...and whether there are two bays at all. Same beat, same reason:
+		// it changes when Settings is saved, and it early-outs otherwise.
+		applyChannelBVisibility();
+	}
 
 	Data st((refreshStatus && nowNs >= noticeUntilNs_) ? core.statusJson()
 							  : std::string());
@@ -5107,6 +5413,12 @@ std::vector<Which> MultiReplayDock::targetChannels() const
 {
 	// A|B is not "A and also B sometimes": it is one command going to both,
 	// which is the whole reason a two-channel panel is one panel.
+	//
+	// With B switched off in Settings there is one bay and it is A — checked
+	// here rather than trusted to the selector being hidden, because a hotkey
+	// or a Stream Deck reaches this too and neither of them can see a widget.
+	if (!channelBEnabled_)
+		return {Which::A};
 	if (linkedAB_)
 		return {Which::A, Which::B};
 	return {activeChannel_};
@@ -5167,6 +5479,20 @@ void MultiReplayDock::swapChannels()
 		sa.eventId, sa.angle1, sb.eventId, sb.angle1);
 }
 
+void MultiReplayDock::centreComboItems(QComboBox *cb)
+{
+	// Both dimensions, because they fail for different reasons. Horizontally,
+	// item text is drawn by the view's DELEGATE and no stylesheet reaches it —
+	// only the role does. Vertically, AlignVCenter is what stops the text
+	// sitting at the bottom of a row that the stylesheet has made taller than
+	// the glyphs.
+	if (!cb)
+		return;
+	for (int i = 0; i < cb->count(); i++)
+		cb->setItemData(i, (int)(Qt::AlignCenter),
+				Qt::TextAlignmentRole);
+}
+
 QWidget *MultiReplayDock::buildAngleCell(int eventId, int cam0, bool on,
 					 double speed, const std::string &note)
 {
@@ -5216,6 +5542,7 @@ QWidget *MultiReplayDock::buildAngleCell(int eventId, int cam0, bool on,
 	sp->lineEdit()->setAlignment(Qt::AlignCenter);
 	sp->lineEdit()->setCursor(Qt::PointingHandCursor);
 	sp->lineEdit()->installEventFilter(this);
+	centreComboItems(sp);
 	h->addWidget(sp);
 
 	auto *cm = new QComboBox(w);
@@ -5236,6 +5563,7 @@ QWidget *MultiReplayDock::buildAngleCell(int eventId, int cam0, bool on,
 	cm->setCurrentText(QString::fromStdString(note));
 	cm->lineEdit()->setPlaceholderText(kNoNote);
 	cm->lineEdit()->setAlignment(Qt::AlignCenter);
+	centreComboItems(cm);
 	h->addWidget(cm, 1);
 
 	const int a1 = cam0 + 1; // EventStore is 1-based
@@ -5570,6 +5898,32 @@ void MultiReplayDock::openSettings()
 	}
 	outPage->addRow(obs_module_text("Dock.OutputSceneB"), outSceneB);
 
+	// IS THERE A SECOND BAY? The first thing on this page, because everything
+	// below it about B is meaningless when the answer is no — and because with
+	// one bay the panel has no B box, no selector and no swap key at all.
+	auto *useB = new QCheckBox(&dlg);
+	useB->setChecked(cfg.enableChannelB);
+	useB->setToolTip(obs_module_text("Dock.EnableChannelBHint"));
+	outPage->insertRow(0, obs_module_text("Dock.EnableChannelB"), useB);
+
+	// Under A|B both bays play the same event, but Program is ONE scene, so
+	// somebody has to say which bay's scene goes on air. Left to a guess it
+	// would be A forever, and an operator whose B scene is the one with the
+	// graphics on it has no way to say so.
+	auto *abOut = new QComboBox(&dlg);
+	abOut->addItem(obs_module_text("Dock.ABOutputA"), false);
+	abOut->addItem(obs_module_text("Dock.ABOutputB"), true);
+	abOut->setCurrentIndex(cfg.abOutputUsesB ? 1 : 0);
+	abOut->setToolTip(obs_module_text("Dock.ABOutputHint"));
+	outPage->addRow(obs_module_text("Dock.ABOutput"), abOut);
+	// Only worth answering when there are two bays.
+	abOut->setEnabled(cfg.enableChannelB);
+	outSceneB->setEnabled(cfg.enableChannelB);
+	connect(useB, &QCheckBox::toggled, &dlg, [abOut, outSceneB](bool on) {
+		abOut->setEnabled(on);
+		outSceneB->setEnabled(on);
+	});
+
 	auto *autoSwitch = new QCheckBox(&dlg);
 	autoSwitch->setChecked(cfg.autoSwitchScene);
 	outPage->addRow(obs_module_text("Dock.AutoSwitch"), autoSwitch);
@@ -5715,6 +6069,8 @@ void MultiReplayDock::openSettings()
 	cfg.videoEncoderId = enc->currentData().toString().toStdString();
 	cfg.outputSceneName = outScene->currentData().toString().toStdString();
 	cfg.outputSceneNameB = outSceneB->currentData().toString().toStdString();
+	cfg.enableChannelB = useB->isChecked();
+	cfg.abOutputUsesB = abOut->currentData().toBool();
 	cfg.musicSourceName = music->currentData().toString().toStdString();
 	cfg.autoSwitchScene = autoSwitch->isChecked();
 	cfg.fitReplayToCanvas = fitCanvas->isChecked();
@@ -5759,8 +6115,30 @@ void MultiReplayDock::newProjectDialog()
 				     QString::fromStdString(err));
 		return;
 	}
+	clearBothBays();
 	refreshEvents();
 	poll();
+}
+
+void MultiReplayDock::clearBothBays()
+{
+	// A NEW PROJECT IS EMPTY ON BOTH BAYS. A only looked empty by accident —
+	// the big preview refuses to draw the replay input until something has
+	// been captured — while B's box asked the channel whether it had ever
+	// pushed a frame, and the channel still remembered the previous project's
+	// clip. So the operator created a project and B carried on showing footage
+	// that no longer belonged to anything.
+	for (int i = 0; i < kChannels; i++) {
+		PlaybackCoordinator::instance((Which)i).stopEvents();
+		ReplayChannel::instance((Which)i).reset();
+	}
+	playheadNs_ = kNoInstant;
+	prevSequenceActive_ = false;
+	takeAnchorNs_ = kNoInstant;
+	diskSpans_.clear();
+	timeline_.setSpans({});
+	displayDurNs_ = 0;
+	ReplayCore::instance().setFollowLive(true);
 }
 
 void MultiReplayDock::openProjectDialog()
@@ -5793,6 +6171,9 @@ void MultiReplayDock::openProjectDialog()
 				     QString::fromStdString(err));
 		return;
 	}
+	// Both bays first: whatever they were showing belonged to the project being
+	// left, and it must not survive into this one.
+	clearBothBays();
 	// poll() FIRST: it reads the newly loaded anchors and seats the project
 	// origin the table is drawn against. Rebuilding the table before that
 	// rendered the just-loaded marks against an origin of 0 — raw monotonic

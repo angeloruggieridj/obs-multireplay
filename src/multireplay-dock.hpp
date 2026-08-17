@@ -278,6 +278,24 @@ public:
 	explicit MultiReplayDock(QWidget *parent = nullptr);
 	~MultiReplayDock() override;
 
+	// Drop the owned source references the dock publishes for the graphics
+	// thread. Static and reachable from the module's frontend handler, because
+	// OBS clears scene data long before the dock is destroyed and a reference
+	// still held at that moment is reported to the operator as a plugin that
+	// failed to release its resources.
+	static void releasePreviewRefs();
+	// OBS is going away: stop polling AND let go. The timer re-resolves the
+	// references on its own beat, so releasing without stopping it leaves a tick
+	// free to take a fresh one before OBS clears scene data.
+	static void prepareForShutdown();
+	// How many owned source references the dock is holding right now (the two
+	// previews plus the multiview tiles). For the automated gate: after the
+	// "OBS is about to clear scene data" hook has run this must be ZERO, and
+	// nothing else outside the dock can see it. A reference still held there is
+	// what OBS reports to the operator as a plugin that failed to release its
+	// resources — in a dialog, on the way out, where it is least welcome.
+	int heldSourceRefs() const;
+
 	// Put the position bar back over the whole timeline — the zoom menu's
 	// "100%" entry, and the way back from any span. Public because the gate
 	// drives it directly: clicking the key opens a modal menu, which would park
@@ -335,7 +353,11 @@ public:
 		int clipBarY = -1;
 		int seekY = -1;
 		int seekHeight = 0;
-		int seekGraduations = 0;  // labelled marks the bar draws now
+		int seekGraduations = 0;
+		// Is the second bay on screen at all? With Config.enableChannelB
+		// off the B box, the A|B/A/B selector and the swap key are ABSENT,
+		// not disabled, and nothing else outside the dock can see that.
+		bool channelBVisible = false;  // labelled marks the bar draws now
 		bool seekEnabled = false; // false = no timeline to scrub
 	};
 	LayoutProbe layoutProbe() const;
@@ -415,6 +437,22 @@ private:
 	// Show one angle key per CONFIGURED camera, labelled with its name. Called
 	// on the slow beat of poll(); a no-op unless the cameras changed.
 	void refreshAngleRows();
+	// The member half of releasePreviewRefs(), so the destructor need not go
+	// through the static pointer it has already cleared.
+	void dropPreviewRefs();
+	// Bring the panel into line with Config.enableChannelB: with one bay there
+	// is no B box, no A|B/A/B selector, no swap key and no B angle row, and
+	// every command means A. Called at startup and whenever Settings is saved;
+	// a no-op unless the answer changed.
+	void applyChannelBVisibility();
+	bool channelBEnabled_ = false;
+	// -1 = never applied, so the first call always runs.
+	int channelBApplied_ = -1;
+	// Stop both bays and forget what they were showing (a new or newly opened
+	// project is empty on both).
+	void clearBothBays();
+	QWidget *bBox_ = nullptr;            // B's preview box, hidden with B
+	QWidget *angleRowBox_[2] = {};       // the A row and the B row of camera keys
 	// A comment typed on one event, offered on all of them for the rest of the
 	// session. Not persisted — see rememberComment() for why a comment must
 	// not be able to reach setConfig().
@@ -429,6 +467,11 @@ private:
 	// newest mark selected). Distinguishes "the operator picked this event",
 	// which cues it, from "the table was rebuilt", which must not.
 	bool reselecting_ = false;
+	// Where the take being recorded began (the newest anchor on the angle being
+	// drawn), so the position bar can span it. The file itself cannot say how
+	// long it is until the muxer lets go of it, and without this the bar
+	// described only the ring — see the span assembly in poll().
+	int64_t takeAnchorNs_ = kNoInstant;
 
 	// Fixed, so a renamed camera cannot stretch the row and move every other
 	// key out from under the operator's fingers.
@@ -439,6 +482,10 @@ private:
 	// What the rows were last built for; refreshAngleRows() compares against it
 	// rather than rewriting eight labels thirty times a second.
 	QString angleRowSig_;
+
+	// Centre every row of a combo's dropdown, in both directions. Needs code
+	// rather than a stylesheet: item text goes through the view's delegate.
+	static void centreComboItems(QComboBox *cb);
 
 	QWidget *buildAngleCell(int eventId, int cam0, bool on, double speed,
 				const std::string &note);
@@ -539,6 +586,16 @@ private:
 	// the reference controller's ◀ key: play what is selected (or the last event) BACKWARDS, from
 	// its OUT to its IN, through the same queue as ▶.
 	void playSelectedReverse();
+	// Play on every bay the selector points at (both, under A|B). "To output"
+	// can only go to ONE of them — Program is one scene — so it goes to the bay
+	// named in Settings and the other plays without touching Program.
+	//
+	// Always every enabled angle (the play keys' own mode); the direction is
+	// what ▶ and ◀ differ by. PlaybackCoordinator is only forward-declared
+	// here, so its nested AngleMode cannot appear in this signature.
+	bool playOnTargets(const std::vector<int> &ids,
+			   ReplayChannel::Direction direction,
+			   std::string &errorOut);
 	// The position bar's zoom: a menu of SPANS (whole timeline, 1 h, 30/10/5/1
 	// min) rather than a factor, because "show me the last five minutes" is what
 	// an operator wants and the factor that gets there depends on how long the
@@ -624,7 +681,7 @@ private:
 
 	std::array<PreviewTile, kMaxPreviewTiles> tiles_{};
 	std::array<TileCtx, kMaxPreviewTiles> tileCtx_{};
-	std::mutex tileMutex_; // pointer copy + addref only
+	mutable std::mutex tileMutex_; // pointer copy + addref only
 	std::array<obs_source_t *, kMaxPreviewTiles> tileSource_{};
 	QWidget *multiviewBox_ = nullptr;
 	QGridLayout *multiviewGrid_ = nullptr;
@@ -734,7 +791,7 @@ private:
 	// and OBS stops repainting. drawChannelA() now only copies this pointer
 	// and takes a ref (a lock-free atomic increment) — no lookup, no libobs
 	// mutex, no engine lock.
-	std::mutex previewMutex_;               // pointer copy + addref only
+	mutable std::mutex previewMutex_;       // pointer copy + addref only
 	obs_source_t *previewSource_ = nullptr; // owned ref, read by the GFX thread
 	obs_source_t *previewSourceB_ = nullptr; // the same, for channel B
 	// UI-thread-only bookkeeping: what previewSource_ was resolved FOR, so a

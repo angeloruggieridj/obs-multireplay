@@ -1041,6 +1041,11 @@ void ReplayCore::loadConfig()
 		obs_data_get_string(data, "outputSceneName");
 	config_.outputSceneNameB =
 		obs_data_get_string(data, "outputSceneNameB");
+	// Absent in every config written before B became optional, and absent must
+	// mean OFF — not "the operator once had two bays". obs_data_get_bool
+	// returns false for a missing key, which is the answer we want.
+	config_.enableChannelB = obs_data_get_bool(data, "enableChannelB");
+	config_.abOutputUsesB = obs_data_get_bool(data, "abOutputUsesB");
 	config_.replaySourceName =
 		obs_data_get_string(data, "replaySourceName");
 	config_.musicSourceName =
@@ -1131,6 +1136,8 @@ void ReplayCore::saveConfig() const
 			    config_.outputSceneName.c_str());
 	obs_data_set_string(data, "outputSceneNameB",
 			    config_.outputSceneNameB.c_str());
+	obs_data_set_bool(data, "enableChannelB", config_.enableChannelB);
+	obs_data_set_bool(data, "abOutputUsesB", config_.abOutputUsesB);
 	obs_data_set_string(data, "replaySourceName",
 			    config_.replaySourceName.c_str());
 	obs_data_set_string(data, "musicSourceName",
