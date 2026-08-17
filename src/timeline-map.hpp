@@ -154,6 +154,45 @@ public:
 
 	// The same conversion for a range, which is what an event marker is.
 	// False when the range lands nowhere on the bar.
+	// `footageNs` of FOOTAGE starting at `inNs`, cut into the pieces that
+	// really hold it — one per recorded span it reaches into.
+	//
+	// This is what makes a review play THROUGH the seam between two takes.
+	// Stop after five minutes, start again, and the bar draws the two takes
+	// joined; but in master time they are minutes apart, so "ten seconds from
+	// here" asked as ONE range [inNs, inNs + 10 s] asks for the gap as well —
+	// and the gap is not footage. The engine refuses a range it cannot serve
+	// exactly (rightly: that is what stops it inventing a replay), so playback
+	// stopped dead at the junction. Split into per-span pieces, the same ten
+	// seconds become two ranges the engine CAN serve, played one after the other.
+	//
+	// Ten seconds from two seconds before the end of a take therefore returns
+	// {2 s at the end of take 1, 8 s at the start of take 2}. An instant inside
+	// a gap starts at the next span, because that is where the footage is.
+	std::vector<TimelineSpan> spansFrom(int64_t inNs, int64_t footageNs) const
+	{
+		std::vector<TimelineSpan> out;
+		if (footageNs <= 0)
+			return out;
+		int64_t left = footageNs;
+		for (const TimelineSpan &s : spans_) {
+			if (left <= 0)
+				break;
+			if (s.endNs <= inNs)
+				continue; // entirely behind the start
+			const int64_t from = inNs > s.startNs ? inNs : s.startNs;
+			if (from >= s.endNs)
+				continue;
+			const int64_t take =
+				(s.endNs - from) < left ? (s.endNs - from) : left;
+			if (take <= 0)
+				continue;
+			out.push_back({from, from + take});
+			left -= take;
+		}
+		return out;
+	}
+
 	bool rangeFraction(int64_t inNs, int64_t outNs, double &inFrac,
 			   double &outFrac) const
 	{

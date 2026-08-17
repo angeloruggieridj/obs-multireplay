@@ -295,6 +295,58 @@ bool PlaybackCoordinator::playEvents(const std::vector<int> &eventIds,
 	return true;
 }
 
+bool PlaybackCoordinator::playRanges(
+	const std::vector<std::pair<int64_t, int64_t>> &ranges, int angle0,
+	int speedPct, bool toOutput, std::string &errorOut)
+{
+	if (ranges.empty()) {
+		errorOut = "no footage in that range";
+		return false;
+	}
+	std::lock_guard<std::mutex> lock(mutex_);
+	// The previous queue dies here, before a field of the new one is written —
+	// same invariant as playEvents(), and for the same reason: a finish callback
+	// still carrying a live generation could advance a queue the operator has
+	// already replaced.
+	playGen_++;
+
+	const int ang = std::clamp(angle0, 0, kEventAngles - 1);
+	const int pct = std::clamp(
+		speedPct > 0 ? speedPct : defaultSpeedPct_.load(), 5, 400);
+	queue_.clear();
+	queue_.reserve(ranges.size());
+	for (const auto &[in, out] : ranges) {
+		if (out <= in)
+			continue;
+		// eventId 0: there is no event behind a review, and the green band
+		// reads that as "nothing selected" rather than naming a clip that
+		// has nothing to do with what is playing.
+		queue_.push_back(
+			{0, in, out, ang, pct, ReplayChannel::Direction::Forward});
+	}
+	if (queue_.empty()) {
+		errorOut = "no footage in that range";
+		return false;
+	}
+	queuePos_ = 0;
+	toOutput_ = toOutput;
+	active_ = true;
+	obs_log(LOG_INFO,
+		"coordinator: review queued %zu range(s) on angle %d at %d%%",
+		queue_.size(), ang + 1, pct);
+	ReplayCore::instance().setFollowLive(false);
+	if (toOutput_)
+		switchToReplayScene();
+	lastStartError_.clear();
+	startNext();
+	if (!active_) {
+		errorOut = lastStartError_.empty() ? "that instant cannot be played"
+						   : lastStartError_;
+		return false;
+	}
+	return true;
+}
+
 bool PlaybackCoordinator::playLastEvent(int angle0, bool toOutput,
 				       std::string &errorOut)
 {

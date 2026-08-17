@@ -802,6 +802,59 @@ static void test_reverse_ignores_audio_packets()
 	CHECK(reverseOrder(chunks, clip).size() == 10);
 }
 
+// --- a review must play THROUGH the seam between two takes ------------------
+// Recorded five minutes, stopped, talked for a minute, recorded five more: the
+// bar joins them, but in master time they are a minute apart. "Ten seconds of
+// footage from here" therefore cannot be one range — it would include the gap,
+// which is not footage, and the engine refuses (rightly) rather than invent it.
+// So it comes back as the pieces that hold it.
+static void test_review_crosses_a_junction()
+{
+	TimelineMap m;
+	// take 1: 0..5 s, then a 60 s gap, then take 2: 65..80 s
+	m.setSpans({{0, ms(5000)}, {ms(65000), ms(80000)}});
+
+	// Well inside take 1: one piece, exactly as long as asked.
+	auto r = m.spansFrom(ms(1000), ms(2000));
+	CHECK(r.size() == 1);
+	CHECK(r[0].startNs == ms(1000));
+	CHECK(r[0].endNs == ms(3000));
+
+	// TWO seconds before the end of take 1, asking for ten: 2 s at the end of
+	// the first take and 8 s at the START of the second — not 10 s of wall time,
+	// which would land in the middle of the gap and play nothing.
+	r = m.spansFrom(ms(3000), ms(10000));
+	CHECK(r.size() == 2);
+	CHECK(r[0].startNs == ms(3000));
+	CHECK(r[0].endNs == ms(5000));
+	CHECK(r[1].startNs == ms(65000));
+	CHECK(r[1].endNs == ms(73000));
+	// Every piece is footage, and they add up to what was asked for.
+	int64_t total = 0;
+	for (const auto &s : r)
+		total += s.lengthNs();
+	CHECK(total == ms(10000));
+
+	// More than there is: give what there is, and stop.
+	r = m.spansFrom(ms(4000), ms(60000));
+	total = 0;
+	for (const auto &s : r)
+		total += s.lengthNs();
+	CHECK(total == ms(1000) + ms(15000)); // 1 s left of take 1 + all of take 2
+
+	// An instant INSIDE the gap belongs to no take: start where the footage is.
+	r = m.spansFrom(ms(30000), ms(2000));
+	CHECK(r.size() == 1);
+	CHECK(r[0].startNs == ms(65000));
+	CHECK(r[0].endNs == ms(67000));
+
+	// Past the end, nothing asked for, and no map at all: empty, not a piece of
+	// something that does not exist.
+	CHECK(m.spansFrom(ms(99000), ms(2000)).empty());
+	CHECK(m.spansFrom(ms(1000), 0).empty());
+	CHECK(TimelineMap().spansFrom(ms(1000), ms(2000)).empty());
+}
+
 int main()
 {
 	test_rescale();
@@ -841,6 +894,7 @@ int main()
 	test_timeline_merges_file_splits();
 	test_timeline_handles_negative_instants();
 	test_timeline_empty_is_empty();
+	test_review_crosses_a_junction();
 
 	if (g_fail == 0)
 		std::printf("OK: all packet-ring / master-timeline tests passed\n");

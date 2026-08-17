@@ -105,10 +105,18 @@ QLabel#mrClock      { color: #6a6a6a; font-size: 10px; }
 QLabel#mrClock[rec="true"] { color: #e03030; font-weight: 700; }
 
 /* ── generic buttons ───────────────────────────────────── */
+/* ONE HEIGHT for every key in the control rows: 26 px. A row mixing 22, 24, 26
+   and 28 px keys reads as several rows badly aligned — the eye follows the line
+   of the bottom borders, and four lines are four groups where there is one.
+   Widths stay free (they follow the label, which is what tells the keys apart),
+   heights do not.
+   Unified DOWNWARDS, to the middle of the old spread, because every pixel of
+   chrome here is a pixel the splitter takes off the PREVIEW, and the preview is
+   what the operator is actually looking at. */
 #MultiReplayDock QPushButton {
 	background: #1e1e1e; color: #b0b0b0;
 	border: 1px solid #2c2c2c; border-radius: 4px;
-	padding: 3px 9px; font-size: 11px; min-height: 24px;
+	padding: 3px 9px; font-size: 11px; min-height: 26px;
 }
 #MultiReplayDock QPushButton:hover  { background: #282828; border-color: #424242; }
 #MultiReplayDock QPushButton:pressed { background: #141414; }
@@ -118,15 +126,27 @@ QLabel#mrClock[rec="true"] { color: #e03030; font-weight: 700; }
 QPushButton#mrTransport {
 	background: #181818; border: 1px solid #2c2c2c; border-radius: 5px;
 	color: #c8c8c8; font-size: 14px;
-	min-width: 30px; min-height: 28px; padding: 0;
+	min-width: 30px; min-height: 26px; padding: 0;
 }
 QPushButton#mrTransport:hover { background: #222222; border-color: #424242; color: #f0f0f0; }
+
+/* >> lives ON the green band, which is 28 px tall with 2 px of margin, so it
+   cannot ask for the 28 px of height a transport key asks for: a stylesheet
+   min-height LARGER than the widget's own fixed height makes the style draw a
+   taller frame than the widget owns, and the bottom border lands outside it.
+   Hence its own role, with the height it can actually have. */
+QPushButton#mrSkip {
+	background: #0f3d22; border: 1px solid #2b7a45; border-radius: 4px;
+	color: #d6f0e0; font-size: 11px; font-weight: 700;
+	min-width: 30px; min-height: 0px; padding: 0px 4px;
+}
+QPushButton#mrSkip:hover { background: #14512c; border-color: #3fa060; color: #ffffff; }
 
 /* play/pause */
 QPushButton#mrPlay {
 	background: #181818; border: 1px solid #2c2c2c; border-radius: 5px;
 	color: #c8c8c8; font-size: 16px;
-	min-width: 38px; min-height: 28px; padding: 0;
+	min-width: 38px; min-height: 26px; padding: 0;
 }
 QPushButton#mrPlay:hover { background: #222222; border-color: #424242; color: #f0f0f0; }
 QPushButton#mrPlay[playing="true"] { background: #0c2212; border-color: #1c8a38; color: #28b050; }
@@ -136,7 +156,7 @@ QPushButton#mrPlay[playing="true"]:hover { background: #102818; border-color: #2
 QPushButton#mrNow {
 	background: #181818; border: 1px solid #2c2c2c; border-radius: 5px;
 	font-weight: 700; font-size: 10px; letter-spacing: 0.8px;
-	min-height: 28px; min-width: 36px; color: #484848;
+	min-height: 26px; min-width: 36px; color: #484848;
 }
 QPushButton#mrNow[live="true"] { background: #280808; border-color: #c02020; color: #e03030; }
 
@@ -145,7 +165,7 @@ QPushButton#mrLive {
 	background: #181818; color: #6a6a6a;
 	border: 1px solid #2c2c2c; border-radius: 3px;
 	font-weight: 700; font-size: 11px; letter-spacing: 0.6px;
-	min-height: 22px; min-width: 54px; padding: 2px 14px;
+	min-height: 26px; min-width: 54px; padding: 2px 14px;
 }
 QPushButton#mrLive:hover { border-color: #424242; color: #9a9a9a; }
 QPushButton#mrLive:checked {
@@ -231,7 +251,7 @@ QLabel#mrChanStrip {
 /* REC button */
 QPushButton#mrRec {
 	font-weight: 700; font-size: 12px; letter-spacing: 0.6px;
-	border-radius: 4px; min-height: 28px; padding: 3px 14px;
+	border-radius: 4px; min-height: 26px; padding: 3px 14px;
 }
 QPushButton#mrRec[recording="false"] {
 	background: #181010; color: #b03030; border: 1px solid #2c1818;
@@ -259,7 +279,7 @@ QPushButton#mrChanSel:checked {
    beside REC and is hidden entirely while there is nothing to report. */
 QPushButton#mrHealth {
 	font-weight: 700; font-size: 12px; border-radius: 4px;
-	min-height: 28px; padding: 3px 8px;
+	min-height: 26px; padding: 3px 8px;
 }
 QPushButton#mrHealth[level="warn"] {
 	background: #2a2008; color: #e0a020; border: 1px solid #6a5010;
@@ -354,7 +374,7 @@ QFrame#mrZone {
 	border: 1px solid #23262b; border-radius: 4px; background: #101215;
 }
 QLabel#mrZoneTitle {
-	color: #5c6674; font-size: 8px; font-weight: 700; letter-spacing: 1.2px;
+	color: #5c6674; font-size: 8px; font-weight: 700; letter-spacing: 0.4px;
 	padding: 0px; margin: 0px;
 }
 
@@ -616,10 +636,13 @@ QWidget *zoneBox(const QString &title, QWidget *content, QWidget *parent)
 	h->setSpacing(5);
 	auto *cap = new QLabel(title.toUpper(), box);
 	cap->setObjectName(QStringLiteral("mrZoneTitle"));
-	// Wrapped narrow so a two-word caption stacks instead of widening the zone.
-	cap->setWordWrap(true);
-	cap->setMaximumWidth(34);
+	// NO width cap and NO wrapping. Capped at 34 px the captions were simply
+	// cut ("IN ONDA", "TIMELINE" — a label that has to be guessed is worse than
+	// no label), and wrapping cannot help a single word. The caption takes the
+	// width its text needs; the row's stretches give it up.
+	cap->setWordWrap(false);
 	cap->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+	cap->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Preferred);
 	h->addWidget(cap, 0);
 	h->addWidget(content, 1);
 	return box;
@@ -2281,7 +2304,9 @@ QWidget *MultiReplayDock::buildTransport()
 	col->setSpacing(1);
 	auto *tr = new QHBoxLayout();
 	tr->setContentsMargins(0, 0, 0, 0);
-	tr->setSpacing(3);
+	// One spacing for the whole row. Mixed gaps (3 here, 6 there) read as
+	// groupings the keys do not actually have; the zone frames do the grouping.
+	tr->setSpacing(4);
 
 	// ▶ U+25B6
 	playPauseBtn_ = transportBtn(QStringLiteral("▶"), this,
@@ -2363,7 +2388,7 @@ QWidget *MultiReplayDock::buildTransport()
 	// neighbours in this row — and a layout that sizes itself to the others cut
 	// the bottom border off. Stated on the widget so the row cannot allocate
 	// less than the border needs.
-	nowBtn_->setMinimumHeight(30);
+	nowBtn_->setMinimumHeight(28);
 
 	// ⏮ U+23EE / ⏭ U+23ED — one frame back, one frame forward (the reference controller
 	// frame-by-frame). EXACTLY ONE button in this dock may carry each of these
@@ -2403,7 +2428,7 @@ QWidget *MultiReplayDock::buildTransport()
 	// key nobody finds under pressure.
 	tr->addWidget(stepBackBtn);
 	tr->addWidget(stepBtn);
-	tr->addSpacing(6);
+	tr->addSpacing(10); // the only deliberate gap: transport | modes
 	tr->addWidget(loopBtn_);
 	tr->addWidget(musicBtn_);
 	tr->addWidget(toOutputBtn_);
@@ -2768,11 +2793,13 @@ QWidget *MultiReplayDock::buildBottomBar()
 		// next one", so it is about the band and nothing else — putting it
 		// in a row of unrelated keys made the operator hunt for it, and the
 		// band is where his eye already is.
+		// Its own role (mrSkip), not a transport key: a transport key's
+		// stylesheet asks for 28 px of height, this band is 28 px tall in
+		// total, and a style that draws taller than the widget owns puts the
+		// bottom border outside it. 22 px inside 28 with 2+2 of margin.
 		nextClipBtn_ = transportBtn(QStringLiteral(">>"), clipBar_,
-					    obs_module_text("Dock.NextClip"));
-		// 22 px, and the band is 28 (see ClipBar's ctor): capped at 20 the
-		// key was shorter than the stylesheet's own min-height and Qt drew
-		// its bottom border outside the space it had been given.
+					    obs_module_text("Dock.NextClip"),
+					    "mrSkip");
 		nextClipBtn_->setFixedHeight(22);
 		connect(nextClipBtn_, &QPushButton::clicked, this, [this]() {
 			// Logged both ways: "I pressed >> and nothing happened"
@@ -3511,11 +3538,17 @@ void MultiReplayDock::setAngleOn(Which which, int angle1Based)
 	// rows are for.
 	if (which == activeChannel_)
 		ReplayCore::instance().setCurrentAngle(angle1Based - 1);
-	// Re-cue the clip on the chosen angle, on the channel it belongs to:
-	// re-play the selected (or last) completed event from its IN there, at
-	// that angle's resolved speed. So switching angle during a replay shows
-	// the SAME clip from the same in-point on the new camera.
-	replayCurrentOn(which);
+	// AN ANGLE KEY CHANGES THE ANGLE. It does not start a replay.
+	//
+	// While something is on air it re-cues that clip on the chosen camera —
+	// which IS "change the angle being watched", the same clip from the same
+	// in-point on the other lens. But with nothing playing it only moves the
+	// selection: pressing C2 to see what camera 2 is looking at used to put a
+	// replay on air (and with "In output" on, on PROGRAM) that nobody had asked
+	// for. Same rule the speed keys now follow.
+	if (ReplayChannel::instance(which).playing() ||
+	    PlaybackCoordinator::instance(which).queueActive())
+		replayCurrentOn(which);
 }
 
 void MultiReplayDock::stepFrameForward()
@@ -4145,10 +4178,27 @@ void MultiReplayDock::seekToFraction(double frac)
 				     ? timelineStartNs_ +
 					       (int64_t)(frac * (double)displayDurNs_)
 				     : timeline_.instantAt(frac);
-	const int64_t edge = timeline_.empty() ? timelineStartNs_ + displayDurNs_
-					       : timeline_.lastNs();
-	const int64_t outNs = std::min(edge, inNs + kScrubReviewNs);
-	if (outNs <= inNs)
+	// FOOTAGE from here, not wall time from here — and cut at the seams.
+	//
+	// Stop after five minutes and start again: the bar draws the two takes
+	// joined, but in master time they are minutes apart. Asking for one range
+	// [inNs, inNs + 10 s] therefore asks for the gap as well, the gap is not
+	// footage, and the engine refuses a range it cannot serve exactly — so the
+	// review stopped dead where one file ended and the next began. Split into
+	// per-span pieces (TimelineMap::spansFrom) it is two ranges the engine can
+	// serve, and the queue chains them the way it chains the angles of an event.
+	std::vector<std::pair<int64_t, int64_t>> ranges;
+	if (timeline_.empty()) {
+		const int64_t edge = timelineStartNs_ + displayDurNs_;
+		const int64_t outNs = std::min(edge, inNs + kScrubReviewNs);
+		if (outNs > inNs)
+			ranges.push_back({inNs, outNs});
+	} else {
+		for (const TimelineSpan &s :
+		     timeline_.spansFrom(inNs, kScrubReviewNs))
+			ranges.push_back({s.startNs, s.endNs});
+	}
+	if (ranges.empty())
 		return;
 
 	// Scrubbing is "review from here" (see kScrubReviewNs): the engine has no
@@ -4165,8 +4215,12 @@ void MultiReplayDock::seekToFraction(double frac)
 	playheadNs_ = inNs;
 
 	std::string err;
-	if (!chan().play(currentAngle1() - 1, inNs, outNs,
-					    speedPct_, err)) {
+	// Through the QUEUE, not straight at the channel: the queue is what plays
+	// one range after another, so a review that crosses a seam carries on into
+	// the next take instead of ending there. (stopEvents() above already killed
+	// whatever was queued, so this replaces it rather than fighting it.)
+	if (!pc().playRanges(ranges, currentAngle1() - 1, speedPct_,
+			     /*toOutput*/ false, err)) {
 		// Nothing covers that instant on this angle — the ring has evicted
 		// it and no anchored file holds it. Saying so is the point: the
 		// alternative was the preview quietly showing the live camera, which

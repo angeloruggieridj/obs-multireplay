@@ -67,6 +67,18 @@ public:
 				ReplayChannel::Direction::Forward);
 	bool playLastEvent(int angle0, bool toOutput, std::string &errorOut);
 
+	// Play raw master-timeline ranges, in order, on one angle — no event
+	// behind them. This is how a scrub review plays THROUGH the seam between
+	// two takes: the dock splits "ten seconds of footage from here" into the
+	// per-span pieces that actually hold it (TimelineMap::spansFrom) and hands
+	// them over, and the queue chains them exactly as it chains the angles of an
+	// event. One range asked across the seam would include the gap between the
+	// takes, which is not footage and which the engine refuses — so playback
+	// used to stop dead at the junction.
+	bool playRanges(const std::vector<std::pair<int64_t, int64_t>> &ranges,
+			int angle0, int speedPct, bool toOutput,
+			std::string &errorOut);
+
 	// broadcast replayStopEvents.
 	void stopEvents();
 
