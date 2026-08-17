@@ -1133,15 +1133,29 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 		c.playsMark = st.lastRunCompleted &&
 			      c.playedFrames >= expected * 9 / 10;
 		// The playhead the dock draws (and marks against in review) must
-		// end up inside the clip that just played, never back at 0.
+		// end up inside what was PLAYED, never back at 0.
+		//
+		// "What was played" is not the same as "what was marked any more:
+		// with Config.continuePastOutMs set, the last clip of a queue runs
+		// on past the OUT on purpose (and stops early where the footage
+		// stops — marking live, the live edge is usually a few frames past
+		// the OUT, which is why this ran 200 ms over rather than the full
+		// 1.5 s). The bound follows the setting, so the check still catches
+		// the failure it was written for — a playhead back at zero — without
+		// calling a working feature a regression.
+		const int64_t pastOutNs =
+			(int64_t)ReplayCore::instance().getConfig().continuePastOutMs *
+			1000000;
 		c.playheadInsideClip =
-			pos >= ev.tInNs && pos <= ev.tOutNs;
+			pos >= ev.tInNs && pos <= ev.tOutNs + pastOutNs;
 		obs_log(LOG_INFO,
 			"[selftest] dock: play button pushed %d frames, playhead "
-			"at %lld ms (clip %lld..%lld ms)",
+			"at %lld ms (clip %lld..%lld ms, +%lld ms allowed past the "
+			"OUT)",
 			c.playedFrames, (long long)(pos / 1000000),
 			(long long)(ev.tInNs / 1000000),
-			(long long)(ev.tOutNs / 1000000));
+			(long long)(ev.tOutNs / 1000000),
+			(long long)(pastOutNs / 1000000));
 
 		if (src) {
 			obs_source_dec_showing(src);
@@ -2256,8 +2270,25 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 			});
 		};
 
+		// ← FIRST, and not for symmetry: the sequence that just ended put the
+		// playhead back on the LIVE EDGE (poll() does that whenever the live
+		// front is still being fed), and at the live edge there is no next frame
+		// — → refuses, rightly, and the check would be measuring that refusal.
+		// One step back moves the playhead off the edge, so the forward step
+		// below has somewhere to go. It also means both arrows are exercised.
+		sendKey(Qt::Key_Left);
+		for (int i = 0; i < 40; i++) {
+			const auto st = chan.stats();
+			if (st.framesPushed > 0 && st.reverse)
+				break;
+			std::this_thread::sleep_for(std::chrono::milliseconds(50));
+		}
+		for (int i = 0; i < 20 && chan.playing(); i++)
+			std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
 		// → is one frame forward: the same thing the ⏭ key does, so the proof
-		// is a frame really pushed forwards.
+		// is a frame really pushed FORWARDS (play() zeroes the stats, so a
+		// non-reverse push here belongs to this step and not to the one above).
 		sendKey(Qt::Key_Right);
 		int64_t keyFrameNs = 0;
 		for (int i = 0; i < 60; i++) {
@@ -2323,7 +2354,19 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 				       ev.tOutNs != kNoInstant;
 		const int64_t markedNs = haveEvent ? ev.tOutNs - ev.tInNs : 0;
 
-		runOnUi([&]() { playBtn->click(); });
+		// THE COORDINATOR DIRECTLY, not the Play key — and this cost a hung
+		// gate to learn. playSelected() opens a modal QMessageBox when a play
+		// is refused, so a refusal inside runOnUi() parks the UI thread in
+		// exec() and every later step of the gate waits on it: the take carried
+		// on recording for minutes and no report was ever written. What is
+		// under test here is the QUEUE's extension anyway; the key itself is
+		// covered by dock_plays_mark and the double-click check.
+		std::string perr;
+		runOnUi([&]() {
+			PlaybackCoordinator::instance().playEvents(
+				{evId}, 0, false, perr,
+				PlaybackCoordinator::AngleMode::AllEnabled);
+		});
 		int64_t lastClipWallNs = 0;
 		for (int i = 0; i < 60; i++) {
 			const auto ps = pc.playState();
@@ -2342,10 +2385,11 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 					   c.continueExtraMs >= 1000;
 		obs_log(c.continuePastOutExtends ? LOG_INFO : LOG_ERROR,
 			"[selftest] dock: event %d marked %lld ms, queued %lld ms "
-			"(+%lld ms past the OUT)",
+			"(+%lld ms past the OUT)%s%s",
 			evId, (long long)(markedNs / 1000000),
 			(long long)(lastClipWallNs / 1000000),
-			(long long)c.continueExtraMs);
+			(long long)c.continueExtraMs, perr.empty() ? "" : " — ",
+			perr.c_str());
 		pc.stopEvents();
 	}
 
@@ -3148,13 +3192,6 @@ void runSelfTest()
 	ec.clear();
 	std::filesystem::create_directories(folder, ec);
 	cfg.splitMinutes = 20;
-	// CONTINUE PAST THE OUT, on, in the gate's own project. Set HERE, before REC,
-	// and never during the take: setConfig() re-points the SegmentIndex and
-	// re-applies the Branch Output filter settings, which makes BO rebuild its
-	// encoders out from under the tap (the architecture notes's oldest trap) — so the check
-	// that reads it (continue_past_out_extends) reads a config already in force
-	// rather than switching it on mid-run.
-	cfg.continuePastOutMs = 1500;
 	// Where the recordings actually land. NOT cfg.sessionFolder any more:
 	// that is now the PARENT of every project, and Branch Output writes into
 	// sessionFolder/currentProjectName. Watching the parent found no files at
@@ -3168,14 +3205,24 @@ void runSelfTest()
 	// created. Set HERE, before REC: setConfig() re-points the segment index, so
 	// doing it mid-take would disturb the anchoring the run is about to measure.
 	// The operator's own config is restored at the end of the health pass.
+	//
+	// CONTINUE PAST THE OUT rides along here for the same reason, and it has to
+	// ride HERE and nowhere else: the `cfg` copy above is never written back (the
+	// gate arms the filters from it directly), so setting the field on it was a
+	// dead assignment — the run reported "+0 ms past the OUT" and the log had no
+	// line about continuing at all, which is exactly what a config that never
+	// arrived looks like. This is the block that really calls setConfig().
 	{
 		Config abCfg = ReplayCore::instance().getConfig();
-		if (!abCfg.enableChannelB) {
+		const bool needB = !abCfg.enableChannelB;
+		const bool needPastOut = abCfg.continuePastOutMs != 1500;
+		if (needB || needPastOut) {
 			abCfg.enableChannelB = true;
+			abCfg.continuePastOutMs = 1500;
 			runOnUi([&]() { ReplayCore::instance().setConfig(abCfg); });
 			obs_log(LOG_INFO,
-				"[selftest] channel B enabled for this run "
-				"(the default is off)");
+				"[selftest] channel B enabled for this run (the "
+				"default is off) and continue-past-out set to 1500 ms");
 		}
 	}
 
