@@ -5040,12 +5040,17 @@ void MultiReplayDock::refreshListNames()
 
 	for (int i = 1; i <= kEventLists && i <= listTabs_->count(); i++) {
 		const std::string nm = store.listName(i);
-		// the reference controller labels the tabs "Events 1"; a named list replaces the
-		// number with the name, which is what the name is for.
+		// "1 PARTITA" — the NUMBER STAYS. A named list used to replace the
+		// number with the name, and that threw away the one label that is
+		// stable: the hotkeys, the log lines and the operator's own "go to
+		// three" all mean the number, so a tab that only says PARTITA is a
+		// tab he has to count along the row to identify. The name is what it
+		// is FOR; the number is how it is addressed.
 		listTabs_->setTabText(i - 1,
-				      nm.empty()
-					      ? QString::number(i)
-					      : QString::fromStdString(nm));
+				      nm.empty() ? QString::number(i)
+						 : QString("%1 %2").arg(i).arg(
+							   QString::fromStdString(
+								   nm)));
 		listTabs_->setTabToolTip(
 			i - 1, nm.empty()
 				       ? QString("%1 %2")
