@@ -362,7 +362,22 @@ bool ExportManager::runReel(const std::vector<ReelClip> &clips,
 	// second, usually much less. The alternative is re-encoding the reel,
 	// which is the honest fix and a much bigger one; until then this is
 	// stated rather than hidden.
-	int64_t offsetTb = 0; // where the next clip begins, in vTb units
+	// WHERE THE NEXT CLIP BEGINS, IN NANOSECONDS — not in the video stream's
+	// units, which is what broke the file.
+	//
+	// The old arithmetic took the first VIDEO packet's pts, rescaled it into the
+	// VIDEO output timebase, and used that as the baseline for the whole clip —
+	// then subtracted that same number from audio packets which had been
+	// rescaled into the AUDIO timebase. MP4 gives the two streams different
+	// timescales (video ~15360, audio 48000), so every audio timestamp came out
+	// of a subtraction between two different units: wrong by a factor of three,
+	// no longer monotonic, and the muxer either refused the packet ("write
+	// failed" in the log) or wrote a file whose audio cannot be decoded. The
+	// running offset, also in video units, was added on top of the same mistake.
+	//
+	// Nanoseconds are neutral: rebase and accumulate here, and convert into each
+	// stream's own units once, at the point of writing.
+	int64_t offsetNs = 0;
 	int64_t written = 0;
 	for (const auto &c : clips) {
 		AVFormatContext *in = nullptr;
@@ -410,8 +425,9 @@ bool ExportManager::runReel(const std::vector<ReelClip> &clips,
 			return fail("out of memory");
 		}
 		const double stretch = c.speed > 0 ? 1.0 / c.speed : 1.0;
-		int64_t base = AV_NOPTS_VALUE; // first pts written for this clip
-		int64_t lastEnd = 0;           // end of this clip, in vTb units
+		// Both in NANOSECONDS, so video and audio can share them.
+		int64_t baseNs = AV_NOPTS_VALUE; // first video pts of this clip
+		int64_t lastEndNs = 0;           // how long this clip turned out
 		while (av_read_frame(in, pkt) >= 0) {
 			const bool isVideo = pkt->stream_index == vIdx;
 			const bool isAudio = aOut && clipAudio &&
@@ -428,35 +444,39 @@ bool ExportManager::runReel(const std::vector<ReelClip> &clips,
 				break;
 			}
 			AVStream *ost = isVideo ? vOut : aOut;
-			if (base == AV_NOPTS_VALUE && isVideo)
-				base = av_rescale_q(pkt->pts, ist->time_base,
-						    ost->time_base);
-			if (base == AV_NOPTS_VALUE) {
+			if (baseNs == AV_NOPTS_VALUE && isVideo)
+				baseNs = ptsNs;
+			if (baseNs == AV_NOPTS_VALUE) {
 				// Audio before the first video packet has no
 				// place to hang: the clip has not started yet.
 				av_packet_unref(pkt);
 				continue;
 			}
-			int64_t pts = av_rescale_q(pkt->pts, ist->time_base,
-						   ost->time_base) -
-				      base;
-			int64_t dts = av_rescale_q(pkt->dts, ist->time_base,
-						   ost->time_base) -
-				      base;
-			int64_t dur = av_rescale_q(pkt->duration, ist->time_base,
-						   ost->time_base);
+			// All of this in ns, for BOTH streams, and only then into
+			// the stream's own units. Mixing the two is what corrupted
+			// the audio track (see offsetNs above).
+			int64_t relPtsNs = ptsNs - baseNs;
+			int64_t relDtsNs =
+				av_rescale_q(pkt->dts, ist->time_base, nsTb) - baseNs;
+			int64_t durNs =
+				av_rescale_q(pkt->duration, ist->time_base, nsTb);
 			if (stretch != 1.0) {
-				pts = (int64_t)std::llround((double)pts * stretch);
-				dts = (int64_t)std::llround((double)dts * stretch);
-				dur = (int64_t)std::llround((double)dur * stretch);
+				relPtsNs = (int64_t)std::llround((double)relPtsNs *
+								 stretch);
+				relDtsNs = (int64_t)std::llround((double)relDtsNs *
+								 stretch);
+				durNs = (int64_t)std::llround((double)durNs * stretch);
 			}
-			pkt->pts = pts + offsetTb;
-			pkt->dts = dts + offsetTb;
-			pkt->duration = dur;
+			pkt->pts = av_rescale_q(offsetNs + relPtsNs, nsTb,
+						ost->time_base);
+			pkt->dts = av_rescale_q(offsetNs + relDtsNs, nsTb,
+						ost->time_base);
+			pkt->duration = av_rescale_q(durNs, nsTb, ost->time_base);
 			pkt->stream_index = ost->index;
 			pkt->pos = -1;
 			if (isVideo)
-				lastEnd = std::max(lastEnd, pts + std::max(dur, 1LL));
+				lastEndNs = std::max(lastEndNs,
+						     relPtsNs + std::max(durNs, 1LL));
 			if (av_interleaved_write_frame(out, pkt) < 0) {
 				av_packet_free(&pkt);
 				avformat_close_input(&in);
@@ -466,7 +486,7 @@ bool ExportManager::runReel(const std::vector<ReelClip> &clips,
 		}
 		av_packet_free(&pkt);
 		avformat_close_input(&in);
-		offsetTb += lastEnd;
+		offsetNs += lastEndNs;
 	}
 
 	// --- the music, over the whole thing ---------------------------------
@@ -475,7 +495,7 @@ bool ExportManager::runReel(const std::vector<ReelClip> &clips,
 	// audio, which is what a highlights reel does anyway. Trimmed to the
 	// reel; if the track is shorter, the reel simply ends silent.
 	if (music && musicIdx >= 0 && aOut) {
-		const int64_t reelNs = av_rescale_q(offsetTb, vTb, nsTb);
+		const int64_t reelNs = offsetNs;
 		AVPacket *pkt = av_packet_alloc();
 		while (pkt && av_read_frame(music, pkt) >= 0) {
 			if (pkt->stream_index != musicIdx) {
@@ -509,8 +529,7 @@ bool ExportManager::runReel(const std::vector<ReelClip> &clips,
 	avformat_free_context(out);
 	obs_log(LOG_INFO,
 		"[reel] %zu clip(s), %lld packet(s), %lld ms, audio: %s",
-		clips.size(), (long long)written,
-		(long long)(av_rescale_q(offsetTb, vTb, nsTb) / 1000000),
+		clips.size(), (long long)written, (long long)(offsetNs / 1000000),
 		music ? "music" : (clipAudio ? "from the clips" : "none"));
 	return true;
 }

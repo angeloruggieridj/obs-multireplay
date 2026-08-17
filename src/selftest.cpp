@@ -14,6 +14,13 @@ See selftest.hpp. This is the scripted form of the M0 gate.
 #include "branch-output-control.hpp"
 #include "event-store.hpp"
 #include "export.hpp"
+
+// The gate READS BACK the reel it exported: "a file appeared" is not the claim
+// worth checking (see the reel check), so it demuxes the result.
+extern "C" {
+#include <libavformat/avformat.h>
+#include <libavutil/mathematics.h>
+}
 #include "health.hpp"
 #include "multireplay-dock.hpp"
 #include "packet-tap.hpp"
@@ -3696,6 +3703,10 @@ void runSelfTest()
 	// event, which is the cheapest way to say "more than one clip went in"
 	// without decoding it here.
 	bool reelWritten = false;
+	// ...and it OPENS and plays back. See the read-back below: a reel with the
+	// right size and unusable audio passed the old check.
+	bool reelPlayable = false;
+	std::string reelPath;
 	int64_t reelBytes = 0;
 	{
 		// TWO events of its own, inside the window the playback checks
@@ -3745,6 +3756,7 @@ void runSelfTest()
 						e.path(), fec);
 					if (!fec && sz > 200 * 1024) {
 						reelBytes = (int64_t)sz;
+						reelPath = e.path().string();
 						reelWritten = true;
 						break;
 					}
@@ -3753,6 +3765,71 @@ void runSelfTest()
 		} else if (!ids.empty()) {
 			obs_log(LOG_ERROR, "[selftest] reel refused: %s",
 				rerr.c_str());
+		}
+		// ...and now OPEN IT. "A file appeared and it is big" was the whole
+		// claim, and it was not enough: the reel's audio timestamps were
+		// rebased in the VIDEO stream's timebase and offset in it too, so
+		// every audio packet came out of a subtraction between two different
+		// units. The file was the right size, this check was green, and the
+		// operator got a damaged reel. So the packets are read back and the
+		// two properties a container must have are asserted: every stream's
+		// DTS increases, and the video track is as long as the clips that
+		// went into it. Neither can be true of a broken file.
+		if (reelWritten && !reelPath.empty()) {
+			AVFormatContext *in = nullptr;
+			if (avformat_open_input(&in, reelPath.c_str(), nullptr,
+						nullptr) < 0 ||
+			    avformat_find_stream_info(in, nullptr) < 0) {
+				obs_log(LOG_ERROR, "[selftest] reel will not open: %s",
+					reelPath.c_str());
+				if (in)
+					avformat_close_input(&in);
+			} else {
+				std::vector<int64_t> lastDts(in->nb_streams,
+							     INT64_MIN);
+				bool monotonic = true;
+				int64_t vEndUs = 0;
+				int vIdx = -1;
+				for (unsigned i = 0; i < in->nb_streams; i++)
+					if (in->streams[i]->codecpar->codec_type ==
+						    AVMEDIA_TYPE_VIDEO &&
+					    vIdx < 0)
+						vIdx = (int)i;
+				AVPacket *pkt = av_packet_alloc();
+				int64_t pkts = 0;
+				while (pkt && av_read_frame(in, pkt) >= 0) {
+					const int si = pkt->stream_index;
+					if (pkt->dts != AV_NOPTS_VALUE) {
+						if (pkt->dts < lastDts[si])
+							monotonic = false;
+						lastDts[si] = pkt->dts;
+					}
+					if (si == vIdx && pkt->pts != AV_NOPTS_VALUE)
+						vEndUs = av_rescale_q(
+							pkt->pts,
+							in->streams[si]->time_base,
+							AVRational{1, 1000000});
+					pkts++;
+					av_packet_unref(pkt);
+				}
+				if (pkt)
+					av_packet_free(&pkt);
+				const int nStreams = (int)in->nb_streams;
+				avformat_close_input(&in);
+				// The two events this check marks are 2.0 s and 1.5 s
+				// of footage: ~3.5 s, and each clip may open up to a
+				// GOP early (stated in runReel). A file a fraction of
+				// that long is a file that lost a clip.
+				reelPlayable = monotonic && pkts > 0 &&
+					       nStreams > 0 && vEndUs > 2'500'000;
+				obs_log(reelPlayable ? LOG_INFO : LOG_ERROR,
+					"[selftest] reel opens: %d stream(s), %lld "
+					"packet(s), video ends at %lld ms, DTS "
+					"monotonic: %s",
+					nStreams, (long long)pkts,
+					(long long)(vEndUs / 1000),
+					monotonic ? "yes" : "NO");
+			}
 		}
 		obs_log(reelWritten ? LOG_INFO : LOG_ERROR,
 			"[selftest] highlights reel from %zu event(s): %s (%lld KB)",
@@ -3995,7 +4072,8 @@ void runSelfTest()
 			  dockChecks.secondsHotkeyMovesPoint &&
 			  anchorsPersisted && projectOriginOk &&
 			  eventTimecodeSane && filtersIdleOutsideRec &&
-			  diskTimelineOk && reelWritten && healthChecks.ran &&
+			  diskTimelineOk && reelWritten && reelPlayable &&
+			  healthChecks.ran &&
 			  healthChecks.recRefusesImpossibleTake &&
 			  healthChecks.preflightClearsTheRig &&
 			  healthChecks.monitorSamplesTheTake &&
@@ -4203,6 +4281,9 @@ void runSelfTest()
 	obs_data_set_int(root, "channel_b_frames", dockChecks.channelBFrames);
 	obs_data_set_double(root, "seekbar_zoom_reached", dockChecks.zoomReached);
 	obs_data_set_bool(checks, "reel_exports_one_file", reelWritten);
+	// ...and the file it wrote actually opens, with monotonic timestamps and the
+	// length the clips add up to.
+	obs_data_set_bool(checks, "reel_plays_back", reelPlayable);
 	obs_data_set_int(root, "reel_bytes", reelBytes);
 	obs_data_set_bool(checks, "preflight_refuses_impossible_take",
 			  healthChecks.recRefusesImpossibleTake);

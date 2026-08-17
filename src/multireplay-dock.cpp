@@ -5569,10 +5569,15 @@ QWidget *MultiReplayDock::buildAngleCell(int eventId, int cam0, bool on,
 	auto *sp = new QComboBox(w);
 	sp->setObjectName("mrAngleSpeed");
 	sp->setToolTip(obs_module_text("Dock.AngleSpeedHint"));
-	// "--" first: it is the common case (the slider decides) and it must be
-	// one click away from any override.
-	sp->addItem(QStringLiteral("--"), -1);
-	for (int pct : {25, 33, 50, 75, 100, 200})
+	// "100%", not "--", for the default. It is the same value either way (no
+	// override; the slider decides) but "--" made the operator work out what
+	// the panel was going to do, and the answer to "how fast will this angle
+	// play" should be a number he can read. Still first in the list: it is the
+	// common case and must be one click from any override.
+	sp->addItem(QStringLiteral("100%"), -1);
+	// 100 is NOT repeated in the presets: the entry above already reads 100%,
+	// and two identical labels in one list is a choice nobody can make.
+	for (int pct : {25, 33, 50, 75, 200})
 		sp->addItem(QString("%1%").arg(pct), pct);
 	const int pct = speed >= 0 ? (int)std::lround(speed * 100.0) : -1;
 	int idx = sp->findData(pct);
