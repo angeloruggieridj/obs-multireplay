@@ -38,7 +38,7 @@
   },
   "name": "obs-multireplay",
   "displayName": "OBS MultiReplay",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "author": "obs-multireplay contributors",
   "website": "https://github.com/angeloruggieridj/obs-multireplay",
   "email": "angeloruggieridj@gmail.com"
