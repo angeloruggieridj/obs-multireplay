@@ -1058,6 +1058,12 @@ void ReplayCore::loadConfig()
 		obs_data_get_string(data, "replaySourceName");
 	config_.musicSourceName =
 		obs_data_get_string(data, "musicSourceName");
+	config_.musicFilePath = obs_data_get_string(data, "musicFilePath");
+	config_.transitionInName = obs_data_get_string(data, "transitionInName");
+	config_.transitionOutName = obs_data_get_string(data, "transitionOutName");
+	if (obs_data_has_user_value(data, "transitionMs"))
+		config_.transitionMs = (int)obs_data_get_int(data, "transitionMs");
+	config_.transitionMs = std::clamp(config_.transitionMs, 0, 20000);
 	if (obs_data_has_user_value(data, "autoSwitchScene"))
 		config_.autoSwitchScene =
 			obs_data_get_bool(data, "autoSwitchScene");
@@ -1073,6 +1079,11 @@ void ReplayCore::loadConfig()
 	if (obs_data_has_user_value(data, "sortEventsByTime"))
 		config_.sortEventsByTime =
 			obs_data_get_bool(data, "sortEventsByTime");
+	if (obs_data_has_user_value(data, "continuePastOutMs"))
+		config_.continuePastOutMs =
+			(int)obs_data_get_int(data, "continuePastOutMs");
+	// Clamped here rather than trusted: this value lengthens what goes on air.
+	config_.continuePastOutMs = std::clamp(config_.continuePastOutMs, 0, 60000);
 	if (obs_data_has_user_value(data, "eventIdDigits"))
 		config_.eventIdDigits =
 			(int)obs_data_get_int(data, "eventIdDigits");
@@ -1152,11 +1163,18 @@ void ReplayCore::saveConfig() const
 			    config_.replaySourceName.c_str());
 	obs_data_set_string(data, "musicSourceName",
 			    config_.musicSourceName.c_str());
+	obs_data_set_string(data, "musicFilePath", config_.musicFilePath.c_str());
+	obs_data_set_string(data, "transitionInName",
+			    config_.transitionInName.c_str());
+	obs_data_set_string(data, "transitionOutName",
+			    config_.transitionOutName.c_str());
+	obs_data_set_int(data, "transitionMs", config_.transitionMs);
 	obs_data_set_bool(data, "autoSwitchScene", config_.autoSwitchScene);
 	obs_data_set_bool(data, "fitReplayToCanvas", config_.fitReplayToCanvas);
 	obs_data_set_int(data, "preRollMs", config_.preRollMs);
 	obs_data_set_int(data, "postRollMs", config_.postRollMs);
 	obs_data_set_bool(data, "sortEventsByTime", config_.sortEventsByTime);
+	obs_data_set_int(data, "continuePastOutMs", config_.continuePastOutMs);
 	obs_data_set_int(data, "eventIdDigits", config_.eventIdDigits);
 	obs_data_set_bool(data, "showMultiview", config_.showMultiview);
 	obs_data_set_int(data, "eventListCount", config_.eventListCount);

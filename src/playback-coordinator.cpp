@@ -14,6 +14,12 @@ SPDX-License-Identifier: GPL-2.0-or-later
 #include <obs-module.h>
 #include <obs-frontend-api.h>
 
+// The delayed restore of the operator's own transition needs a timer that fires
+// on the GUI thread, and this plugin already links Qt (ENABLE_QT is not
+// optional — see CMakePresets). obs_queue_task has no "later" of its own.
+#include <QCoreApplication>
+#include <QTimer>
+
 #include <algorithm>
 #include <cmath>
 #include <mutex>
@@ -26,7 +32,95 @@ namespace {
 struct SceneSwitchCtx {
 	std::string sceneName;
 	std::string *saveCurrentInto; // optional: record the previous scene
+	// THE EVENT TRANSITION (the reference controller): which OBS transition takes the replay to
+	// air, and for how long. Empty = do not touch what the operator has set,
+	// which is the default and is exactly how this plugin behaved before.
+	std::string transitionName;
+	int transitionMs = 0;
 };
+
+// Put OBS's transition back the way the operator had it, after ours has had
+// time to run. It is a DELAYED restore and that is the whole difficulty: the
+// transition is started by the scene switch and runs on for its duration, so
+// restoring the selection immediately would take the operator's setting back
+// while our own transition is still on screen. Nothing here touches the running
+// transition — only which one OBS will reach for next.
+struct TransitionRestoreCtx {
+	std::string name;
+	int durationMs = 0;
+};
+
+void restoreTransitionTask(void *param)
+{
+	auto *ctx = static_cast<TransitionRestoreCtx *>(param);
+	if (!ctx->name.empty()) {
+		struct obs_frontend_source_list list = {};
+		obs_frontend_get_transitions(&list);
+		for (size_t i = 0; i < list.sources.num; i++) {
+			const char *nm = obs_source_get_name(list.sources.array[i]);
+			if (nm && ctx->name == nm) {
+				obs_frontend_set_current_transition(
+					list.sources.array[i]);
+				break;
+			}
+		}
+		obs_frontend_source_list_free(&list);
+	}
+	if (ctx->durationMs > 0)
+		obs_frontend_set_transition_duration(ctx->durationMs);
+	delete ctx;
+}
+
+// Select `name` as OBS's current transition and set its duration, remembering
+// what was there so it can be handed back. Returns false when the transition
+// does not exist (a renamed or deleted one), and then NOTHING has been changed —
+// a replay must not go to air through a transition nobody chose.
+bool useTransition(const std::string &name, int durationMs)
+{
+	if (name.empty())
+		return false;
+	struct obs_frontend_source_list list = {};
+	obs_frontend_get_transitions(&list);
+	obs_source_t *found = nullptr;
+	for (size_t i = 0; i < list.sources.num; i++) {
+		const char *nm = obs_source_get_name(list.sources.array[i]);
+		if (nm && name == nm) {
+			found = list.sources.array[i];
+			break;
+		}
+	}
+	if (!found) {
+		obs_frontend_source_list_free(&list);
+		obs_log(LOG_WARNING,
+			"coordinator: transition '%s' no longer exists — using "
+			"whatever OBS has",
+			name.c_str());
+		return false;
+	}
+
+	// Remember first, change second, and hand the restore to a task that runs
+	// after the transition has played out.
+	auto *restore = new TransitionRestoreCtx();
+	if (obs_source_t *cur = obs_frontend_get_current_transition()) {
+		const char *nm = obs_source_get_name(cur);
+		restore->name = nm ? nm : "";
+		obs_source_release(cur);
+	}
+	restore->durationMs = obs_frontend_get_transition_duration();
+
+	obs_frontend_set_current_transition(found);
+	if (durationMs > 0)
+		obs_frontend_set_transition_duration(durationMs);
+	obs_frontend_source_list_free(&list);
+
+	// The margin is not decoration: the switch has not been made yet when this
+	// returns, so the restore has to outlast the transition AND the scene change
+	// that starts it.
+	QTimer::singleShot(durationMs + 400, qApp, [restore]() {
+		restoreTransitionTask(restore);
+	});
+	return true;
+}
 
 // obs_queue_task(OBS_TASK_UI, …, wait=true) hands straight to OBS Studio's
 // handler, which is a Qt::BlockingQueuedConnection onto the GUI thread — from
@@ -61,6 +155,11 @@ void switchSceneTask(void *param)
 			obs_source_release(current);
 		}
 	}
+
+	// Chosen BEFORE the switch, because the switch is what starts it. Nothing
+	// happens when the setting is empty or names a transition that is gone, and
+	// then program moves exactly as OBS was already set to move it.
+	useTransition(ctx->transitionName, ctx->transitionMs);
 
 	obs_source_t *scene =
 		obs_get_source_by_name(ctx->sceneName.c_str());
@@ -126,14 +225,28 @@ bool PlaybackCoordinator::playEvents(const std::vector<int> &eventIds,
 	// every future lock order in this plugin our problem. Nothing here needs
 	// the queue.
 	bool playableAngle[kEventAngles] = {};
+	// Where the footage ENDS on each angle, for "continue past the OUT": the
+	// live edge while a take is running, the end of the last file otherwise.
+	// Both are instants and neither may be tested against 0 — except the ring's
+	// own edge, which only ever holds this session and whose 0 really does mean
+	// empty (see kNoInstant in session-clock.hpp).
+	int64_t footageEndNs[kEventAngles];
+	for (int a = 0; a < kEventAngles; a++)
+		footageEndNs[a] = kNoInstant;
+	int64_t continuePastOutNs = 0;
 	{
 		const Config cfg = ReplayCore::instance().getConfig();
-		for (int a = 0; a < kEventAngles && a < kMaxCameras; a++)
+		continuePastOutNs = (int64_t)cfg.continuePastOutMs * 1'000'000;
+		for (int a = 0; a < kEventAngles && a < kMaxCameras; a++) {
+			const int64_t live = PacketTap::instance().newestNs(a);
 			playableAngle[a] =
-				!cfg.cameras[a].sourceName.empty() ||
-				PacketTap::instance().newestNs(a) > 0 ||
+				!cfg.cameras[a].sourceName.empty() || live > 0 ||
 				SegmentIndex::instance().oldestNs(a) !=
 					kNoInstant;
+			footageEndNs[a] =
+				std::max(live > 0 ? live : kNoInstant,
+					 SegmentIndex::instance().newestNs(a));
+		}
 	}
 	const auto playable = [&playableAngle](int a) {
 		return a >= 0 && a < kEventAngles && playableAngle[a];
@@ -242,6 +355,32 @@ bool PlaybackCoordinator::playEvents(const std::vector<int> &eventIds,
 		else
 			errorOut = "no playable (completed) events selected";
 		return false;
+	}
+
+	// CONTINUE PAST THE OUT (Config.continuePastOutMs, off by default). The LAST
+	// clip only: the ones before it have to end where they end, or the sequence
+	// never reaches the next angle. Forwards only — a reverse clip runs from its
+	// OUT to its IN, so there is nothing past its OUT to carry on into, and the
+	// footage-end of the angle is behind it, not ahead.
+	//
+	// The extension is what the LAST clip is asked for first; startNext() falls
+	// back to the plain OUT if the engine will not serve it (see QueueItem).
+	if (continuePastOutNs > 0 &&
+	    direction == ReplayChannel::Direction::Forward) {
+		QueueItem &last = items.back();
+		const int64_t end = footageEndNs[last.angle];
+		const int64_t want = last.tOutNs + continuePastOutNs;
+		// Stop at the footage too: asking past the live edge is a range the
+		// ring refuses outright, and that refusal would cost the whole clip.
+		const int64_t to = (end != kNoInstant && end < want) ? end : want;
+		if (to > last.tOutNs) {
+			last.continueToNs = to;
+			obs_log(LOG_INFO,
+				"coordinator: continuing %.1f s past the OUT of "
+				"event %d angle %d",
+				(double)(to - last.tOutNs) / 1e9, last.eventId,
+				last.angle + 1);
+		}
 	}
 
 	queue_ = std::move(items);
@@ -388,7 +527,11 @@ PlaybackCoordinator::PlayState PlaybackCoordinator::playState() const
 		s.queuedAngles.push_back(q.angle + 1); // 0-based → 1-based
 	s.queuedWallNs.reserve(queue_.size());
 	for (const QueueItem &q : queue_) {
-		const int64_t len = q.tOutNs > q.tInNs ? q.tOutNs - q.tInNs : 0;
+		// The EFFECTIVE out: with "continue past the OUT" on, the last clip
+		// of the queue runs longer than the event says, and a band drawn from
+		// the event's own OUT would fill up and then keep playing.
+		const int64_t out = q.effectiveOutNs();
+		const int64_t len = out > q.tInNs ? out - q.tInNs : 0;
 		const int pct = q.speedPct > 0 ? q.speedPct : 100;
 		// Wall time, not footage time: at 50% four seconds of footage is
 		// eight seconds of watching, and the band counts down what the
@@ -462,7 +605,7 @@ void PlaybackCoordinator::startNext()
 	// an unplayable item is skipped inline instead of putting the wrong
 	// footage on air.
 	while (queuePos_ < queue_.size()) {
-		const QueueItem &item = queue_[queuePos_];
+		QueueItem &item = queue_[queuePos_];
 		const uint64_t gen = ++playGen_;
 		// Installed before play() so the worker picks up the callback that
 		// belongs to THIS clip.
@@ -474,10 +617,33 @@ void PlaybackCoordinator::startNext()
 		ReplayChannel::PlayRequest req;
 		req.camIndex = item.angle;
 		req.inNs = item.tInNs;
-		req.outNs = item.tOutNs;
+		req.outNs = item.effectiveOutNs();
 		req.speedPct = item.speedPct;
 		req.direction = item.direction;
-		if (channel().play(req, err)) {
+		// "Continue past the OUT" asks for more footage than the event has,
+		// and more footage is exactly what the engine may not be able to serve
+		// in one piece: the continuation can run past the end of the file that
+		// holds the IN, or past the live edge. A range is served exactly or not
+		// at all, so a refusal here would cost the operator the whole replay
+		// over an extra second and a half he asked for as a nicety. Ask, then
+		// settle for the event as it was marked — and SAY SO, because a replay
+		// that quietly stops honouring a setting teaches the operator that the
+		// setting does nothing.
+		bool ok = channel().play(req, err);
+		if (!ok && item.continueToNs != kNoInstant) {
+			obs_log(LOG_INFO,
+				"coordinator: cannot continue past the OUT of event "
+				"%d angle %d (%s) — playing to the OUT instead",
+				item.eventId, item.angle + 1, err.c_str());
+			// Cleared, not just ignored: playState() reads it to tell the
+			// green band how long this clip runs for, and a band counting
+			// down an extension that was refused would be counting down
+			// something nobody is going to see.
+			item.continueToNs = kNoInstant;
+			req.outNs = item.tOutNs;
+			ok = channel().play(req, err);
+		}
+		if (ok) {
 			obs_log(LOG_INFO,
 				"coordinator: playing event %d angle %d (%d%%%s) "
 				"[%zu/%zu]",
@@ -576,7 +742,10 @@ void PlaybackCoordinator::switchToReplayScene()
 			channelLetter(which_), channel().sourceName());
 		return;
 	}
-	auto *ctx = new SceneSwitchCtx{scene, &previousSceneName_};
+	// the reference controller's event transition: how the replay ARRIVES. Empty = leave OBS's own
+	// transition alone, which is the default.
+	auto *ctx = new SceneSwitchCtx{scene, &previousSceneName_,
+				       cfg.transitionInName, cfg.transitionMs};
 	runOnUi(switchSceneTask, ctx, true);
 }
 
@@ -585,7 +754,11 @@ void PlaybackCoordinator::restorePreviousScene()
 	// mutex_ held by caller
 	if (previousSceneName_.empty())
 		return;
-	auto *ctx = new SceneSwitchCtx{previousSceneName_, nullptr};
+	// ...and how program COMES BACK, which is a different moment and gets its
+	// own choice: a dip to the replay and a cut back out is a normal way to work.
+	const Config cfg = ReplayCore::instance().getConfig();
+	auto *ctx = new SceneSwitchCtx{previousSceneName_, nullptr,
+				       cfg.transitionOutName, cfg.transitionMs};
 	runOnUi(switchSceneTask, ctx, false);
 	previousSceneName_.clear();
 }

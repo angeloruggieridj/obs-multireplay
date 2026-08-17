@@ -10,6 +10,7 @@ See replay-channel.hpp.
 
 #include "replay-channel.hpp"
 
+#include "audio-stretch.hpp" // slow motion with sound, at the right pitch
 #include "packet-tap.hpp"
 #include "plugin-support.h"
 #include "replay-decoder.hpp"
@@ -722,48 +723,156 @@ void ReplayChannel::playbackLoop()
 		return;
 	}
 
-	// Audio only rides along at normal speed, forwards. the reference controller ships
-	// slow-motion audio as an option that is off by default, and pushing AAC
-	// frames at a stretched cadence without time-stretching them would just
-	// sound broken — so at anything other than 1x, and backwards at any
-	// speed, the clip plays silent. Reversed audio would need the samples
-	// themselves turned round, buffer by buffer, and there is no resampler on
-	// this path.
-	const bool wantAudio = speed == 1.0 && !cfg.audioCodec.empty();
+	// SLOW MOTION WITH SOUND — the thing that used to be missing.
+	//
+	// Audio rode along at 1x only, because slow motion here is wider spacing
+	// between frames and the same trick does not work on samples: hand OBS the
+	// same AAC buffers on a stretched cadence and it plays low and full of holes.
+	// So a replay at 50% was silent, which is the loudest thing a replay can be.
+	// AudioStretch (see audio-stretch.hpp) is the missing piece: WSOLA, which
+	// lengthens the sound without touching its pitch.
+	//
+	// Two limits stay, and both are stated rather than hidden:
+	//   - PLANAR FLOAT only. That is what AAC decodes to and what Branch
+	//     Output's encoders produce; anything else plays silent, as before.
+	//   - BACKWARDS is still silent. Reversing sound means reversing the
+	//     samples, and the reverse path shows GOP-sized slices newest-first —
+	//     the audio of a slice has to be turned round and laid against that
+	//     schedule. The plan says not to promise it before its cost on an iGPU
+	//     has been measured, and it has not been.
+	const bool wantAudio = !cfg.audioCodec.empty();
 	ReplayAudioDecoder adec;
 	if (wantAudio && !adec.open(cfg, err))
 		obs_log(LOG_WARNING, "[channel] audio unavailable: %s", err.c_str());
 
 	// Audio is still scheduled off a fixed start, because an audio buffer is
-	// handed to OBS whole and cannot be re-spaced half way through: audio only
-	// rides along at 1x and unpaused anyway (see wantAudio).
+	// handed to OBS whole and cannot be re-spaced half way through — so a PAUSE
+	// still walks the sound off the picture, which is why pausing remains a 1x
+	// affair in practice.
 	const uint64_t startWall = os_gettime_ns();
 	uint64_t pushed = 0, preroll = 0, audioPushed = 0;
 	int64_t firstNs = 0, lastNs = 0;
 
+	// The stretcher, and what it needs in order to hand OBS anything: it produces
+	// planar float in ITS blocks, not the decoder's, so the samples land in
+	// scratch of ours. Configured on the FIRST buffer, because only a buffer says
+	// what the rate, the channel count and the format really are.
+	AudioStretch stretch;
+	bool stretchReady = false;
+	bool stretchRefused = false;
+	uint32_t stretchRate = 0; // the rate it was configured for, for the flush
+	int64_t audioStartNs = 0;
+	uint64_t stretchedOut = 0; // output frames handed over: the timestamp clock
+	std::vector<std::vector<float>> stretchBuf;
+	std::vector<float *> stretchPtr;
+	static constexpr uint32_t kStretchChunk = 1024;
+
+	const auto emitPlanar = [&](uint32_t frames, uint32_t rate,
+				    uint32_t channels, uint64_t ts) {
+		const speaker_layout layout = speakersFor(channels);
+		if (layout == SPEAKERS_UNKNOWN || frames == 0)
+			return;
+		struct obs_source_audio a = {};
+		a.frames = frames;
+		a.samples_per_sec = rate;
+		a.speakers = layout;
+		a.format = AUDIO_FORMAT_FLOAT_PLANAR;
+		a.timestamp = ts;
+		for (uint32_t i = 0; i < channels && i < MAX_AV_PLANES; i++)
+			a.data[i] = (const uint8_t *)stretchBuf[i].data();
+		obs_source_output_audio(source, &a);
+		audioPushed++;
+	};
+
+	// Everything the stretcher has ready. The timestamp counts OUTPUT frames from
+	// where this clip's audio began: n input frames become n/speed output frames,
+	// which is the same factor the video pacing applies to the same span — so the
+	// two stay together without an audio clock of our own (hand-rolling one is
+	// what caused the dropouts in the first engine).
+	const auto drainStretch = [&](uint32_t rate, uint32_t channels) {
+		for (;;) {
+			const uint32_t got =
+				stretch.take(stretchPtr.data(), kStretchChunk);
+			if (got == 0)
+				return;
+			const uint64_t ts =
+				startWall +
+				(uint64_t)((double)(audioStartNs - presentIn) /
+					   speed) +
+				(uint64_t)((double)stretchedOut * 1'000'000'000.0 /
+					   (double)rate);
+			emitPlanar(got, rate, channels, ts);
+			stretchedOut += got;
+		}
+	};
+
 	const auto emitAudio = [&](const ReplayAudioDecoder::Samples &s) {
 		if (s.masterNs < presentIn || s.channels == 0)
 			return;
-		const audio_format afmt = obsAudioFormatFor(s.format);
-		const speaker_layout layout = speakersFor(s.channels);
-		if (afmt == AUDIO_FORMAT_UNKNOWN || layout == SPEAKERS_UNKNOWN)
+
+		// 1x: the decoder's own buffers, untouched, exactly as before. The
+		// ordinary case must not pay for machinery it does not need.
+		if (speed == 1.0) {
+			const audio_format afmt = obsAudioFormatFor(s.format);
+			const speaker_layout layout = speakersFor(s.channels);
+			if (afmt == AUDIO_FORMAT_UNKNOWN ||
+			    layout == SPEAKERS_UNKNOWN)
+				return;
+
+			struct obs_source_audio a = {};
+			a.frames = s.frames;
+			a.samples_per_sec = s.sampleRate;
+			a.speakers = layout;
+			a.format = afmt;
+			// Same clock transform as the video, so OBS can sync the
+			// two itself.
+			a.timestamp =
+				startWall +
+				(uint64_t)((double)(s.masterNs - presentIn) / speed);
+			for (int i = 0; i < 8 && i < MAX_AV_PLANES; i++)
+				a.data[i] = s.data[i];
+
+			obs_source_output_audio(source, &a);
+			audioPushed++;
 			return;
+		}
 
-		struct obs_source_audio a = {};
-		a.frames = s.frames;
-		a.samples_per_sec = s.sampleRate;
-		a.speakers = layout;
-		a.format = afmt;
-		// Same clock transform as the video, so OBS can sync the two
-		// itself rather than us hand-rolling an audio clock - which is
-		// what caused the dropouts in the first engine.
-		a.timestamp = startWall +
-			      (uint64_t)((double)(s.masterNs - presentIn) / speed);
-		for (int i = 0; i < 8 && i < MAX_AV_PLANES; i++)
-			a.data[i] = s.data[i];
+		if (stretchRefused)
+			return;
+		if (s.format != SampleFormat::F32Planar) {
+			// Said once, with the reason: silence and no explanation is
+			// what sends somebody looking through the mixer.
+			stretchRefused = true;
+			obs_log(LOG_WARNING,
+				"[channel] slow-motion audio needs planar float "
+				"samples; this stream is not, so the clip plays "
+				"silent");
+			return;
+		}
+		if (!stretchReady) {
+			if (!stretch.configure(s.sampleRate, s.channels, speed)) {
+				stretchRefused = true;
+				obs_log(LOG_WARNING,
+					"[channel] cannot time-stretch %u ch at %u Hz "
+					"to %.0f%% — the clip plays silent",
+					s.channels, s.sampleRate, speed * 100.0);
+				return;
+			}
+			stretchReady = true;
+			stretchRate = s.sampleRate;
+			audioStartNs = s.masterNs;
+			stretchBuf.assign(s.channels,
+					  std::vector<float>(kStretchChunk, 0.0f));
+			stretchPtr.resize(s.channels);
+			for (uint32_t c = 0; c < s.channels; c++)
+				stretchPtr[c] = stretchBuf[c].data();
+		}
 
-		obs_source_output_audio(source, &a);
-		audioPushed++;
+		const float *planes[8] = {};
+		for (uint32_t c = 0; c < s.channels && c < 8; c++)
+			planes[c] = (const float *)s.data[c];
+		stretch.push(planes, s.frames);
+		drainStretch(s.sampleRate, s.channels);
 	};
 
 	const auto pumpAudio = [&](const LivePacket &p) {
@@ -851,6 +960,13 @@ void ReplayChannel::playbackLoop()
 			while (adec.receive(s))
 				emitAudio(s);
 		}
+	}
+	// The stretcher holds back a block of sound by design (it needs something to
+	// match against). Without this the clip would lose its last 40 ms every time
+	// — at 25% that is 160 ms of a replay, and it would sound like a fault.
+	if (stretchReady) {
+		stretch.flush();
+		drainStretch(stretchRate, stretch.channels());
 	}
 
 	{

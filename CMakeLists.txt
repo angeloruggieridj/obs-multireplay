@@ -76,6 +76,8 @@ target_sources(
     src/replay-channel.hpp
     # v1.3: which packets to decode, in which order, to play a range backwards
     src/reverse-plan.hpp
+    # slow motion WITH SOUND: a time stretch that leaves the pitch alone
+    src/audio-stretch.hpp
     src/segment-anchor.hpp
     # monotonic <-> wall clock: what makes a project survive an OBS restart
     src/session-clock.hpp

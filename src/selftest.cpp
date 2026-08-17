@@ -233,6 +233,15 @@ struct DockChecks {
 	// something played.
 	bool stepBackMovesPlayhead = false;
 	bool reverseButtonPlaysBackwards = false;
+	// ONE layer of input: a real key event into the dock has to do what the key
+	// of the same name does. Both ways this breaks are invisible to a direct call
+	// of the handler — the table eating ↑/↓ and Enter for its own navigation, and
+	// a focused button in a QButtonGroup taking the arrows for focus travel.
+	bool keyboardLayerWorks = false;
+	// Config.continuePastOutMs: the LAST clip of a queue runs past the event's
+	// OUT. Read off queuedWallNs, which is what the green band counts down.
+	bool continuePastOutExtends = false;
+	int64_t continueExtraMs = 0;
 	// The transport fixes. All four used to be answered by "stop and play it
 	// again from the in-point", which is not what any of them mean — so each
 	// check is about WHERE the playhead is afterwards, not about whether
@@ -2228,6 +2237,118 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 		chan.stop();
 	}
 
+	// --- THE KEYBOARD IS THE SAME LAYER AS THE KEYS -----------------------
+	// A real QKeyEvent into the dock, not a call to the handler: what has to be
+	// true is that the panel ROUTES the key, and the two ways that fails are both
+	// invisible to a direct call — the table swallowing it for its own navigation,
+	// and a focused button in a QButtonGroup taking the arrows for focus travel.
+	{
+		auto &chan = ReplayChannel::instance();
+		auto &pc = PlaybackCoordinator::instance();
+		pc.stopEvents();
+		chan.stop();
+		std::this_thread::sleep_for(std::chrono::milliseconds(150));
+
+		const auto sendKey = [&](int key) {
+			runOnUi([&]() {
+				QKeyEvent press(QEvent::KeyPress, key, Qt::NoModifier);
+				QCoreApplication::sendEvent(dock, &press);
+			});
+		};
+
+		// → is one frame forward: the same thing the ⏭ key does, so the proof
+		// is a frame really pushed forwards.
+		sendKey(Qt::Key_Right);
+		int64_t keyFrameNs = 0;
+		for (int i = 0; i < 60; i++) {
+			const auto st = chan.stats();
+			if (st.framesPushed > 0 && !st.reverse) {
+				keyFrameNs = st.lastFrameNs;
+				break;
+			}
+			std::this_thread::sleep_for(std::chrono::milliseconds(50));
+		}
+		for (int i = 0; i < 20 && chan.playing(); i++)
+			std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+		// ↓ or ↑ walks the event list. Only meaningful with two rows, and by
+		// this point in the run there is more than one mark.
+		int rows = 0, rowBefore = -1, rowAfter = -1;
+		runOnUi([&]() {
+			QTableWidget *t = dock->findChild<QTableWidget *>();
+			if (!t)
+				return;
+			rows = t->rowCount();
+			const auto sel = t->selectionModel()->selectedRows();
+			rowBefore = sel.empty() ? -1 : sel.first().row();
+		});
+		if (rows >= 2) {
+			// Down from the top, up from anywhere else, so the check does
+			// not depend on which row the auto-selection left behind.
+			sendKey(rowBefore <= 0 ? Qt::Key_Down : Qt::Key_Up);
+			std::this_thread::sleep_for(std::chrono::milliseconds(200));
+			runOnUi([&]() {
+				QTableWidget *t = dock->findChild<QTableWidget *>();
+				if (!t)
+					return;
+				const auto sel = t->selectionModel()->selectedRows();
+				rowAfter = sel.empty() ? -1 : sel.first().row();
+			});
+		}
+		const bool selectionMoved =
+			rows < 2 || (rowAfter >= 0 && rowAfter != rowBefore);
+		c.keyboardLayerWorks = keyFrameNs != 0 && selectionMoved;
+		obs_log(c.keyboardLayerWorks ? LOG_INFO : LOG_ERROR,
+			"[selftest] dock: → stepped to %lld ms, ↑/↓ moved row %d → %d "
+			"of %d",
+			(long long)(keyFrameNs / 1000000), rowBefore, rowAfter, rows);
+		pc.stopEvents();
+		chan.stop();
+	}
+
+	// --- CONTINUING PAST THE OUT lengthens the last clip -------------------
+	// The gate's own project is configured with Config.continuePastOutMs set (see
+	// the test config it writes before REC), so what is checked here is the QUEUE:
+	// the last item must run longer than the event was marked. Measured off
+	// queuedWallNs, which is what the green band counts down — a queue that
+	// quietly kept the event's own OUT would leave the band and the picture
+	// disagreeing about when the replay ends.
+	{
+		auto &pc = PlaybackCoordinator::instance();
+		pc.stopEvents();
+		std::this_thread::sleep_for(std::chrono::milliseconds(150));
+
+		ReplayEvent ev;
+		const bool haveEvent = EventStore::instance().get(evId, ev) &&
+				       ev.tOutNs != kNoInstant;
+		const int64_t markedNs = haveEvent ? ev.tOutNs - ev.tInNs : 0;
+
+		runOnUi([&]() { playBtn->click(); });
+		int64_t lastClipWallNs = 0;
+		for (int i = 0; i < 60; i++) {
+			const auto ps = pc.playState();
+			if (ps.active && !ps.queuedWallNs.empty()) {
+				lastClipWallNs = ps.queuedWallNs.back();
+				break;
+			}
+			std::this_thread::sleep_for(std::chrono::milliseconds(50));
+		}
+		// A full second of the 1.5 s asked for, not all of it: the extension
+		// stops where the footage stops, and at the instant of the play the live
+		// edge may be closer than that. Anything past the OUT is the property;
+		// a second of it means the setting is really being applied.
+		c.continueExtraMs = (lastClipWallNs - markedNs) / 1000000;
+		c.continuePastOutExtends = haveEvent && lastClipWallNs > 0 &&
+					   c.continueExtraMs >= 1000;
+		obs_log(c.continuePastOutExtends ? LOG_INFO : LOG_ERROR,
+			"[selftest] dock: event %d marked %lld ms, queued %lld ms "
+			"(+%lld ms past the OUT)",
+			evId, (long long)(markedNs / 1000000),
+			(long long)(lastClipWallNs / 1000000),
+			(long long)c.continueExtraMs);
+		pc.stopEvents();
+	}
+
 	// --- double-clicking a row puts that event on air ---------------------
 	// the reference controller's fastest path from "that one" to "on air". Emitted on a column that
 	// is NOT the speed cell, which is the one exception (double-click edits it).
@@ -3027,6 +3148,13 @@ void runSelfTest()
 	ec.clear();
 	std::filesystem::create_directories(folder, ec);
 	cfg.splitMinutes = 20;
+	// CONTINUE PAST THE OUT, on, in the gate's own project. Set HERE, before REC,
+	// and never during the take: setConfig() re-points the SegmentIndex and
+	// re-applies the Branch Output filter settings, which makes BO rebuild its
+	// encoders out from under the tap (the architecture notes's oldest trap) — so the check
+	// that reads it (continue_past_out_extends) reads a config already in force
+	// rather than switching it on mid-run.
+	cfg.continuePastOutMs = 1500;
 	// Where the recordings actually land. NOT cfg.sessionFolder any more:
 	// that is now the PARENT of every project, and Branch Output writes into
 	// sessionFolder/currentProjectName. Watching the parent found no files at
@@ -4028,6 +4156,8 @@ void runSelfTest()
 			  reverseCacheWithinBudget &&
 			  dockChecks.stepBackMovesPlayhead &&
 			  dockChecks.reverseButtonPlaysBackwards &&
+			  dockChecks.keyboardLayerWorks &&
+			  dockChecks.continuePastOutExtends &&
 			  dockChecks.pauseHoldsAndResumes &&
 			  dockChecks.speedChangeKeepsPosition &&
 			  dockChecks.selectionCuesEvent &&
@@ -4198,6 +4328,17 @@ void runSelfTest()
 			  dockChecks.stepBackMovesPlayhead);
 	obs_data_set_bool(checks, "dock_reverse_button_plays_backwards",
 			  dockChecks.reverseButtonPlaysBackwards);
+	// ONE layer of input: a real key event into the dock steps a frame and walks
+	// the list. Sent as an event on purpose — the table and the focused buttons
+	// are what a direct call to the handler cannot see.
+	obs_data_set_bool(checks, "dock_keyboard_layer_works",
+			  dockChecks.keyboardLayerWorks);
+	// Continuing past the OUT lengthens the LAST clip of the queue, by what the
+	// green band is counting down.
+	obs_data_set_bool(checks, "continue_past_out_extends",
+			  dockChecks.continuePastOutExtends);
+	obs_data_set_int(root, "continue_past_out_extra_ms",
+			 dockChecks.continueExtraMs);
 	// The transport, after the fixes: pause holds the frame and play carries on
 	// FROM it, a speed change re-spaces the clip instead of restarting it,
 	// picking a row loads that event, the angle keys are the configured cameras

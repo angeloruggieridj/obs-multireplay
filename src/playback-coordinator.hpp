@@ -183,6 +183,24 @@ private:
 		// change what direction the next one runs in.
 		ReplayChannel::Direction direction =
 			ReplayChannel::Direction::Forward;
+		// Config.continuePastOutMs: keep playing to HERE instead of stopping
+		// at tOutNs. kNoInstant = stop at the OUT, which is the default and
+		// what every clip but the last one of a queue does. LAST field, so the
+		// six-member aggregate initialisers below keep working.
+		//
+		// The OUT itself is left alone on purpose: startNext() asks for the
+		// extended range and, if the engine refuses it (a range is served
+		// exactly or not at all, and a continuation can run off the end of the
+		// file that holds the IN), falls back to the plain OUT. The engine is
+		// the authority on what is servable; a copy of its rules about file
+		// boundaries, kept here, would be a second copy to keep true.
+		int64_t continueToNs = kNoInstant;
+		// Where this clip really stops — what the green band has to measure,
+		// and what startNext() asks for first.
+		int64_t effectiveOutNs() const
+		{
+			return continueToNs > tOutNs ? continueToNs : tOutNs;
+		}
 	};
 
 	mutable std::mutex mutex_;

@@ -1484,6 +1484,19 @@ MultiReplayDock::MultiReplayDock(QWidget *parent) : QWidget(parent)
 	root->addWidget(mkSep());
 	root->addWidget(buildBottomBar());
 
+	// THE KEYS HAVE TO WORK WHEREVER THE FOCUS IS, and in this panel the focus
+	// is nearly always on a button the operator has just pressed. A QPushButton
+	// that belongs to a QButtonGroup — every angle key, every speed chip — takes
+	// the arrows for focus navigation instead of ignoring them, so ←/→ would walk
+	// the highlight along the camera row rather than step a frame. Filtering the
+	// buttons keeps focus (and its ring) working while the keys stay uniform.
+	//
+	// The panel itself takes focus too, so clicking an empty patch of it does not
+	// leave the keyboard pointing at whatever was focused before.
+	setFocusPolicy(Qt::StrongFocus);
+	for (QAbstractButton *b : findChildren<QAbstractButton *>())
+		b->installEventFilter(this);
+
 	pollTimer_ = new QTimer(this);
 	pollTimer_->setInterval(33); // ~30 fps — smooth seekbar + responsive transport
 	connect(pollTimer_, &QTimer::timeout, this, &MultiReplayDock::poll);
@@ -2426,6 +2439,21 @@ QWidget *MultiReplayDock::buildTransport()
 	connect(stepBtn, &QPushButton::clicked, this,
 		[this]() { stepFrameForward(); });
 
+	// HELD DOWN, not tapped. Finding the right frame means passing it and coming
+	// back, and that is work done with a key held while watching the picture —
+	// so these two repeat. Nothing else in this row does: a repeating Play or a
+	// repeating REC is an accident waiting for a heavy hand.
+	//
+	// The interval is 150 ms and not Qt's default 100: a step BACK decodes a
+	// whole GOP (that is what makes reverse possible at all), which is ~100 ms on
+	// an iGPU, and asking for the next one before the last has been served just
+	// queues work the machine is already behind on.
+	for (QPushButton *b : {stepBackBtn, stepBtn}) {
+		b->setAutoRepeat(true);
+		b->setAutoRepeatDelay(400);
+		b->setAutoRepeatInterval(150);
+	}
+
 	loopBtn_ = toggleBtn(obs_module_text("Dock.Loop"), this,
 			     obs_module_text("Dock.Loop"));
 	connect(loopBtn_, &QPushButton::toggled, this,
@@ -2678,10 +2706,25 @@ QWidget *MultiReplayDock::buildBottomBar()
 				menu->addAction(obs_module_text("Dock.Settings"));
 			auto *actRename =
 				menu->addAction(obs_module_text("Dock.RenameList"));
+			// TAGS: the words this operator marks with. They are the
+			// same list the per-angle comment cell offers, and they are
+			// worth carrying between machines — a club's vocabulary
+			// ("Gol", "Fallo", "Rigore") is written once, not once per
+			// laptop. One line per tag, which is a format anybody can
+			// edit without this plugin.
+			auto *tags = menu->addMenu(obs_module_text("Dock.Tags"));
+			auto *actTagsImport =
+				tags->addAction(obs_module_text("Dock.TagsImport"));
+			auto *actTagsExport =
+				tags->addAction(obs_module_text("Dock.TagsExport"));
 			menu->addSeparator();
 			auto *actChapters = menu->addAction(
 				obs_module_text("Dock.YouTubeChapters"));
 			gear->setMenu(menu);
+			connect(actTagsImport, &QAction::triggered, this,
+				[this]() { importTags(); });
+			connect(actTagsExport, &QAction::triggered, this,
+				[this]() { exportTags(); });
 			connect(actRename, &QAction::triggered, this,
 				&MultiReplayDock::renameListDialog);
 			connect(actNew, &QAction::triggered, this,
@@ -3081,6 +3124,10 @@ QWidget *MultiReplayDock::buildEvents()
 	events_->setFrameShape(QFrame::NoFrame);
 	events_->setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
 	events_->setContextMenuPolicy(Qt::CustomContextMenu);
+	// The transport keys have to work from HERE, which is where the operator's
+	// focus lives for most of a match. The table would otherwise swallow Enter
+	// (open an editor) and ←/→ (walk across columns) — see eventFilter.
+	events_->installEventFilter(this);
 	rebuildEventColumns();
 	connect(events_, &QTableWidget::itemChanged, this,
 		&MultiReplayDock::onEventItemChanged);
@@ -3752,6 +3799,140 @@ void MultiReplayDock::applyReplaySpeed(int pct)
 	// starting a clip off a preset key put footage on air (with "In output" on,
 	// on PROGRAM) that nobody had asked to see. The number is armed and the
 	// next Play uses it.
+}
+
+// ---------------------------------------------------------------------------
+// The keyboard. ONE layer of input: every key calls the button of the same name.
+// ---------------------------------------------------------------------------
+
+bool MultiReplayDock::focusIsTextEntry()
+{
+	QWidget *fw = QApplication::focusWidget();
+	if (!fw)
+		return false;
+	// An editable combo's field is a QLineEdit child, so this one cast covers
+	// the per-angle comment cells as well as the search box — the same question
+	// refreshEvents() asks before it rebuilds the table under an editor.
+	return qobject_cast<QLineEdit *>(fw) ||
+	       qobject_cast<QPlainTextEdit *>(fw) ||
+	       qobject_cast<QAbstractSpinBox *>(fw);
+}
+
+bool MultiReplayDock::handleTransportKey(QKeyEvent *event)
+{
+	if (!event)
+		return false;
+	// Modified keys belong to OBS and to the operator's own shortcuts. Shift is
+	// ours, and only as a MAGNITUDE: Shift+arrow is the same movement in a
+	// bigger unit, never a different command.
+	const Qt::KeyboardModifiers mods = event->modifiers();
+	if (mods & (Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier))
+		return false;
+	// Typing wins, always. These are single-key commands sitting two pixels
+	// from a search box and a column of comment cells.
+	if (focusIsTextEntry())
+		return false;
+
+	const bool shift = mods.testFlag(Qt::ShiftModifier);
+	switch (event->key()) {
+	case Qt::Key_Left:
+		if (shift)
+			scrubBySeconds(-1.0);
+		else
+			stepFrameBackward();
+		return true;
+	case Qt::Key_Right:
+		if (shift)
+			scrubBySeconds(+1.0);
+		else
+			stepFrameForward();
+		return true;
+	case Qt::Key_Up:
+		stepEventSelection(-1);
+		return true;
+	case Qt::Key_Down:
+		stepEventSelection(+1);
+		return true;
+	// Both faces of each key: the one on the main row and the one on the
+	// numeric pad, which is where a hand on a controller actually is.
+	case Qt::Key_Plus:
+	case Qt::Key_Equal:
+		nudgeSpeed(+kSpeedKeyStepPct);
+		return true;
+	case Qt::Key_Minus:
+	case Qt::Key_Underscore:
+		nudgeSpeed(-kSpeedKeyStepPct);
+		return true;
+	case Qt::Key_Return:
+	case Qt::Key_Enter:
+		playSelected();
+		return true;
+	default:
+		return false;
+	}
+}
+
+void MultiReplayDock::keyPressEvent(QKeyEvent *event)
+{
+	// Reached when the focused child ignored the key (a button, a label, the
+	// panel itself). The table does NOT ignore arrows or Enter, so it is
+	// filtered separately — see eventFilter.
+	if (handleTransportKey(event)) {
+		event->accept();
+		return;
+	}
+	QWidget::keyPressEvent(event);
+}
+
+void MultiReplayDock::stepEventSelection(int delta)
+{
+	if (!events_ || events_->rowCount() == 0)
+		return;
+	const auto sel = events_->selectionModel()->selectedRows();
+	const int rows = events_->rowCount();
+	// With nothing selected, ↓ takes the first row and ↑ the last: the key says
+	// which end of the list the operator is coming from.
+	const int cur = sel.empty() ? (delta > 0 ? -1 : rows) : sel.first().row();
+	const int next = std::clamp(cur + delta, 0, rows - 1);
+	if (next == cur)
+		return; // at the end of the list: refuse rather than wrap
+	// This is the OPERATOR selecting, so it cues the event — which is the whole
+	// point of walking the list with the keys (see cueSelected, and the
+	// reselecting_ guard that keeps our own re-selection from cueing).
+	events_->selectRow(next);
+	if (QTableWidgetItem *it = events_->item(next, kColId))
+		events_->scrollToItem(it);
+}
+
+void MultiReplayDock::scrubBySeconds(double seconds)
+{
+	// Along the FOOTAGE axis, not wall time: the bar is drawn over the recorded
+	// spans joined end to end, so "one second earlier" has to mean one second of
+	// material — a session with a pause in it would otherwise send the playhead
+	// into a gap that no footage covers.
+	if (timeline_.empty() || playheadNs_ == kNoInstant) {
+		showNotice(obs_module_text("Dock.NothingToStep"));
+		return;
+	}
+	const int64_t total = timeline_.totalNs();
+	if (total <= 0)
+		return;
+	int64_t at = timeline_.footageBefore(playheadNs_) +
+		     (int64_t)std::llround(seconds * 1e9);
+	at = std::clamp(at, (int64_t)0, total);
+	// Through seekToFraction, so a keyboard scrub is the same gesture as a
+	// dragged one: it reviews from there, consumes the sequence transition and
+	// says so when that instant holds no footage.
+	seekToFraction((double)at / (double)total);
+}
+
+void MultiReplayDock::nudgeSpeed(int deltaPct)
+{
+	// The dial's own range, and applyReplaySpeed does the rest: it re-speeds the
+	// clip on air without restarting it, and merely arms the number when nothing
+	// is playing. poll() moves the slider to match, so the widget cannot end up
+	// disagreeing with the speed.
+	applyReplaySpeed(std::clamp(speedPct_ + deltaPct, 5, 200));
 }
 
 void MultiReplayDock::cueSelected()
@@ -5622,15 +5803,17 @@ QWidget *MultiReplayDock::buildAngleCell(int eventId, int cam0, bool on,
 	auto *sp = new QComboBox(w);
 	sp->setObjectName("mrAngleSpeed");
 	sp->setToolTip(obs_module_text("Dock.AngleSpeedHint"));
-	// "100%", not "--", for the default. It is the same value either way (no
-	// override; the slider decides) but "--" made the operator work out what
-	// the panel was going to do, and the answer to "how fast will this angle
-	// play" should be a number he can read. Still first in the list: it is the
-	// common case and must be one click from any override.
-	sp->addItem(QStringLiteral("100%"), -1);
-	// 100 is NOT repeated in the presets: the entry above already reads 100%,
-	// and two identical labels in one list is a choice nobody can make.
-	for (int pct : {25, 33, 50, 75, 200})
+	// "--", NOT "100%", for the default (Angelo, 2026-08-17). The value means
+	// "no override; the slider decides", and printing it as a number lies
+	// whenever the slider is not at 100: with the slider on 25 the cell read
+	// 100% while the clip played at a quarter speed. A number the operator can
+	// read is worth having, but not a number that can be wrong — "--" sends him
+	// to the slider, which is where the answer actually is. Still first in the
+	// list: it is the common case and must be one click from any override.
+	sp->addItem(QStringLiteral("--"), -1);
+	// 100 IS one of the presets, and has to be: "--" is not a speed, so without
+	// it there is no way to pin an angle to 1x while the slider sits at 25.
+	for (int pct : {25, 33, 50, 75, 100, 200})
 		sp->addItem(QString("%1%").arg(pct), pct);
 	const int pct = speed >= 0 ? (int)std::lround(speed * 100.0) : -1;
 	int idx = sp->findData(pct);
@@ -5731,6 +5914,26 @@ void MultiReplayDock::onEventItemChanged(QTableWidgetItem *item)
 
 bool MultiReplayDock::eventFilter(QObject *watched, QEvent *event)
 {
+	// THE TABLE EATS THE KEYS THAT MATTER. A QTableWidget with focus takes
+	// Enter to open an editor and ←/→ to walk across columns, and the table is
+	// where the operator's focus is for most of a match — so without this the
+	// transport keys existed everywhere except the one place he was.
+	//
+	// ↑/↓ are deliberately LEFT to the table: moving down a row is moving to the
+	// next event, which is exactly what the key is for, and taking it over would
+	// also leave the table's current cell behind the selection.
+	if (event->type() == QEvent::KeyPress &&
+	    (watched == events_ || qobject_cast<QAbstractButton *>(watched))) {
+		auto *ke = static_cast<QKeyEvent *>(event);
+		// Space is left alone: on a focused button it is the click, and taking
+		// it away would break the one keyboard gesture Qt gives for free.
+		const bool tableUp = watched == events_ &&
+				     (ke->key() == Qt::Key_Up ||
+				      ke->key() == Qt::Key_Down);
+		if (ke->key() != Qt::Key_Space && !tableUp &&
+		    handleTransportKey(ke))
+			return true;
+	}
 	// Clicking a multiview tile (its picture or its caption) selects that
 	// angle — the same thing the numbered angle button does, reached from the
 	// picture the operator is already looking at. The replay tile is not an
@@ -5857,8 +6060,46 @@ void MultiReplayDock::openSettings()
 	connect(nav, &QListWidget::currentRowChanged, pages,
 		&QStackedWidget::setCurrentIndex);
 
-	// ── Recording ─────────────────────────────────────────────────────
-	QFormLayout *recPage = addPage("Dock.SetRecording", "Dock.SetRecordingBlurb");
+	// ── Session ───────────────────────────────────────────────────────
+	// Was "Recording", and it holds the same fields plus the two numbers an
+	// operator opens this dialog to check before kick-off: how much disk is left
+	// and how long that is in recording time. They belong on the page that names
+	// the folder they are about — reading them off the status line means waiting
+	// for the status line to be showing them.
+	QFormLayout *recPage = addPage("Dock.SetSession", "Dock.SetSessionBlurb");
+
+	// Taken ONCE, here, from the same statusJson() the status line reads.
+	// std::filesystem::space() on a NAS is a network round trip and that is why
+	// poll() only asks four times a second — a dialog that opens a few times an
+	// evening may ask, and must not grow a second copy of the syscall.
+	{
+		QString space = obs_module_text("Dock.SessionSpaceUnknown");
+		Data st(core.statusJson());
+		if (st) {
+			const int64_t freeBytes =
+				obs_data_get_int(st, "diskFreeBytes");
+			const int64_t mins =
+				obs_data_get_int(st, "estimatedMinutesRemaining");
+			if (freeBytes > 0) {
+				const double gib =
+					(double)freeBytes / (1024.0 * 1024 * 1024);
+				space = QString::number(gib, 'f', 1) +
+					QStringLiteral(" GiB");
+				// The number that means something: gigabytes are the
+				// disk's unit, minutes are the operator's.
+				if (mins >= 0)
+					space += QString(" • %1")
+							 .arg(QString::asprintf(
+								 "%02lld:%02lld",
+								 (long long)(mins / 60),
+								 (long long)(mins % 60)));
+			}
+		}
+		auto *lbl = new QLabel(space, &dlg);
+		lbl->setObjectName("mrSettingsValue");
+		lbl->setToolTip(obs_module_text("Dock.SessionSpaceHint"));
+		recPage->addRow(obs_module_text("Dock.SessionSpace"), lbl);
+	}
 
 	auto *folderRow = new QHBoxLayout();
 	auto *folderEdit =
@@ -5931,21 +6172,42 @@ void MultiReplayDock::openSettings()
 		return c;
 	};
 
+	// A GRID, 4 rows × 2 columns, the way the reference controller lays its inputs out — not eight
+	// stacked rows. Eight rows put the eighth camera below the fold on a laptop,
+	// and a rig is read as a rig: "the left column is 1-4, the right is 5-8" is
+	// something the eye learns once. Each cell is the pair that describes one
+	// camera: which OBS source it is, and what the operator calls it (the name
+	// that ends up on his angle keys and in the table headers).
 	std::vector<QComboBox *> camCombos;
 	std::vector<QLineEdit *> camNameEdits;
-	for (int i = 0; i < kMaxCameras; i++) {
-		auto *row = new QHBoxLayout();
-		auto *c = makeSourceCombo(cfg.cameras[i].sourceName);
-		auto *nameEdit = new QLineEdit(
-			QString::fromStdString(cfg.cameras[i].displayName), &dlg);
-		nameEdit->setPlaceholderText(
-			QString(obs_module_text("Dock.CameraName")).arg(i + 1));
-		nameEdit->setFixedWidth(130);
-		row->addWidget(c, 1);
-		row->addWidget(nameEdit);
-		camCombos.push_back(c);
-		camNameEdits.push_back(nameEdit);
-		camPage->addRow(QString("Cam %1").arg(i + 1), row);
+	{
+		auto *grid = new QGridLayout();
+		grid->setHorizontalSpacing(14);
+		grid->setVerticalSpacing(4);
+		for (int i = 0; i < kMaxCameras; i++) {
+			auto *c = makeSourceCombo(cfg.cameras[i].sourceName);
+			c->setMinimumWidth(120);
+			auto *nameEdit = new QLineEdit(
+				QString::fromStdString(cfg.cameras[i].displayName),
+				&dlg);
+			nameEdit->setPlaceholderText(
+				QString(obs_module_text("Dock.CameraName"))
+					.arg(i + 1));
+			nameEdit->setFixedWidth(96);
+			camCombos.push_back(c);
+			camNameEdits.push_back(nameEdit);
+
+			auto *cell = new QHBoxLayout();
+			cell->setContentsMargins(0, 0, 0, 0);
+			cell->addWidget(new QLabel(QString("%1").arg(i + 1), &dlg));
+			cell->addWidget(c, 1);
+			cell->addWidget(nameEdit);
+			// Down the columns, not across the rows: cameras 1-4 on the
+			// left, 5-8 on the right, so the numbers read in order in the
+			// direction the eye goes.
+			grid->addLayout(cell, i % 4, i / 4);
+		}
+		camPage->addRow(grid);
 	}
 
 	// ── Replay / playout ──────────────────────────────────────────────
@@ -6048,8 +6310,93 @@ void MultiReplayDock::openSettings()
 	fitCanvas->setToolTip(obs_module_text("Dock.FitCanvasHint"));
 	outPage->addRow(obs_module_text("Dock.FitCanvas"), fitCanvas);
 
+	// ── the event transition (the reference controller) ───────────────────────────────────
+	// TWO choices and one duration, because going to the replay and coming back
+	// are two moments. A stinger needs no special case: OBS transitions are
+	// listed by name, and a stinger the operator built is one of the names.
+	auto makeTransitionCombo = [&](const std::string &cur) {
+		auto *c = new QComboBox(&dlg);
+		// "(as OBS)" first: leaving the operator's own transition alone is the
+		// default, and it is what this plugin did before there was a setting.
+		c->addItem(obs_module_text("Dock.TransitionAsObs"), "");
+		struct obs_frontend_source_list list = {};
+		obs_frontend_get_transitions(&list);
+		for (size_t i = 0; i < list.sources.num; i++) {
+			const char *nm =
+				obs_source_get_name(list.sources.array[i]);
+			if (nm && *nm)
+				c->addItem(QString::fromUtf8(nm),
+					   QString::fromUtf8(nm));
+		}
+		obs_frontend_source_list_free(&list);
+		// A transition configured earlier may have been renamed or removed;
+		// keep it in the list rather than silently resetting the setting (the
+		// coordinator says so in the log and falls back to OBS's own).
+		const QString want = QString::fromStdString(cur);
+		int idx = c->findData(want);
+		if (idx < 0 && !want.isEmpty()) {
+			c->addItem(want, want);
+			idx = c->count() - 1;
+		}
+		if (idx >= 0)
+			c->setCurrentIndex(idx);
+		return c;
+	};
+	auto *transIn = makeTransitionCombo(cfg.transitionInName);
+	transIn->setToolTip(obs_module_text("Dock.TransitionInHint"));
+	outPage->addRow(obs_module_text("Dock.TransitionIn"), transIn);
+
+	auto *transOut = makeTransitionCombo(cfg.transitionOutName);
+	transOut->setToolTip(obs_module_text("Dock.TransitionOutHint"));
+	outPage->addRow(obs_module_text("Dock.TransitionOut"), transOut);
+
+	auto *transMs = new QSpinBox(&dlg);
+	transMs->setRange(0, 20000);
+	transMs->setSingleStep(50);
+	transMs->setSuffix(" ms");
+	transMs->setValue(cfg.transitionMs);
+	transMs->setToolTip(obs_module_text("Dock.TransitionMsHint"));
+	outPage->addRow(obs_module_text("Dock.TransitionMs"), transMs);
+
+	// SAID OUT LOUD, not discovered later: these transitions are how the replay
+	// goes ON AIR. The exported highlights reel does NOT use them, and cannot
+	// without re-encoding every clip — it is a stream copy, which is why the
+	// export is instant and lossless. A cut between clips in the file is the
+	// price of that, and the operator gets to know it here rather than after
+	// exporting twenty minutes of football.
+	{
+		auto *note = new QLabel(obs_module_text("Dock.TransitionReelNote"),
+					&dlg);
+		note->setObjectName("mrSettingsBlurb");
+		note->setWordWrap(true);
+		outPage->addRow(QString(), note);
+	}
+
 	auto *music = makeSourceCombo(cfg.musicSourceName);
+	music->setToolTip(obs_module_text("Dock.MusicSourceHint"));
 	outPage->addRow(obs_module_text("Dock.MusicSource"), music);
+
+	// ...and the FILE, which is a different job for the same word: the source is
+	// what gets unmuted live, this is what the exported reel reads. A path always
+	// has a file behind it, and a music source that is not a media source (a
+	// browser, an audio device) has none to give.
+	auto *musicRow = new QHBoxLayout();
+	auto *musicFile =
+		new QLineEdit(QString::fromStdString(cfg.musicFilePath), &dlg);
+	musicFile->setPlaceholderText(obs_module_text("Dock.MusicFilePlaceholder"));
+	musicFile->setToolTip(obs_module_text("Dock.MusicFileHint"));
+	auto *musicBrowse = new QPushButton("...", &dlg);
+	musicBrowse->setFixedWidth(34);
+	musicRow->addWidget(musicFile, 1);
+	musicRow->addWidget(musicBrowse);
+	connect(musicBrowse, &QPushButton::clicked, &dlg, [&dlg, musicFile]() {
+		const QString f = QFileDialog::getOpenFileName(
+			&dlg, obs_module_text("Dock.MusicFile"), musicFile->text(),
+			obs_module_text("Dock.MusicFileFilter"));
+		if (!f.isEmpty())
+			musicFile->setText(f);
+	});
+	outPage->addRow(obs_module_text("Dock.MusicFile"), musicRow);
 
 	// ── Events ────────────────────────────────────────────────────────
 	QFormLayout *evPage = addPage("Dock.SetEvents", "Dock.SetEventsBlurb");
@@ -6075,6 +6422,21 @@ void MultiReplayDock::openSettings()
 	postRoll->setValue(cfg.postRollMs / 1000.0);
 	postRoll->setToolTip(obs_module_text("Dock.PostRollHint"));
 	evPage->addRow(obs_module_text("Dock.PostRoll"), postRoll);
+
+	// Keep playing past the OUT. A LENGTH, not a switch: "carry on to the end
+	// of the recording" during a match means carrying on to NOW, and a goal
+	// marked five minutes ago would replay five minutes of football to catch
+	// up. 0 = off, and off reads as a word rather than as "0.0 s" — the same
+	// specialValueText trick as the split length above.
+	auto *pastOut = new QDoubleSpinBox(&dlg);
+	pastOut->setRange(0.0, 60.0);
+	pastOut->setSingleStep(0.5);
+	pastOut->setDecimals(1);
+	pastOut->setSuffix(" s");
+	pastOut->setSpecialValueText(obs_module_text("Dock.ContinuePastOutOff"));
+	pastOut->setValue(cfg.continuePastOutMs / 1000.0);
+	pastOut->setToolTip(obs_module_text("Dock.ContinuePastOutHint"));
+	evPage->addRow(obs_module_text("Dock.ContinuePastOut"), pastOut);
 
 	auto *sortByTime = new QCheckBox(&dlg);
 	sortByTime->setChecked(cfg.sortEventsByTime);
@@ -6183,6 +6545,7 @@ void MultiReplayDock::openSettings()
 	cfg.preRollMs = (int)std::lround(preRoll->value() * 1000.0);
 	cfg.postRollMs = (int)std::lround(postRoll->value() * 1000.0);
 	cfg.sortEventsByTime = sortByTime->isChecked();
+	cfg.continuePastOutMs = (int)std::lround(pastOut->value() * 1000.0);
 	cfg.doubleClickPlays = dblPlay->isChecked();
 	cfg.toOutputOnPlay = toOut->isChecked();
 	cfg.eventIdDigits = idDigits->value();
@@ -6200,6 +6563,10 @@ void MultiReplayDock::openSettings()
 	cfg.enableChannelB = useB->isChecked();
 	cfg.abOutputUsesB = abOut->currentData().toBool();
 	cfg.musicSourceName = music->currentData().toString().toStdString();
+	cfg.musicFilePath = musicFile->text().trimmed().toStdString();
+	cfg.transitionInName = transIn->currentData().toString().toStdString();
+	cfg.transitionOutName = transOut->currentData().toString().toStdString();
+	cfg.transitionMs = transMs->value();
 	cfg.autoSwitchScene = autoSwitch->isChecked();
 	cfg.fitReplayToCanvas = fitCanvas->isChecked();
 	cfg.showMultiview = multiview->isChecked();
@@ -6220,6 +6587,86 @@ void MultiReplayDock::openSettings()
 	ReplayChannel::instance().applyCanvasFit(cfg.fitReplayToCanvas);
 	refreshAngles();
 	refreshEvents();
+}
+
+void MultiReplayDock::importTags()
+{
+	// Refused during a take, and the message says why rather than leaving the
+	// menu item dead: this writes the config, and setConfig() re-points the
+	// SegmentIndex and re-creates the Branch Output filters.
+	if (ReplayCore::instance().isRecording()) {
+		QMessageBox::warning(this, "obs-multireplay",
+				     obs_module_text("Dock.StopRecFirst"));
+		return;
+	}
+	const QString path = QFileDialog::getOpenFileName(
+		this, obs_module_text("Dock.TagsImport"), QString(),
+		obs_module_text("Dock.TagsFileFilter"));
+	if (path.isEmpty())
+		return;
+	QFile f(path);
+	if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) {
+		QMessageBox::warning(this, "obs-multireplay",
+				     obs_module_text("Dock.TagsReadFailed"));
+		return;
+	}
+	// One tag per line, blank lines dropped, order kept: the order IS the order
+	// of the drop-down, so the tags an operator reaches for during a match stay
+	// where he put them.
+	std::vector<std::string> tags;
+	while (!f.atEnd()) {
+		const QString line = QString::fromUtf8(f.readLine()).trimmed();
+		if (!line.isEmpty())
+			tags.push_back(line.toStdString());
+	}
+	f.close();
+	if (tags.empty()) {
+		showNotice(obs_module_text("Dock.TagsEmptyFile"));
+		return;
+	}
+
+	auto &core = ReplayCore::instance();
+	Config cfg = core.getConfig();
+	// REPLACES rather than merges. A tag list is a vocabulary, and merging two
+	// of them leaves the operator with a drop-down he did not write and cannot
+	// tell apart; exporting first is one menu item away.
+	cfg.commentPresets = std::move(tags);
+	core.setConfig(cfg);
+	refreshEvents();
+	showNotice(QString(obs_module_text("Dock.TagsImported"))
+			   .arg((int)cfg.commentPresets.size()));
+	obs_log(LOG_INFO, "[dock] imported %d tag(s) from %s",
+		(int)cfg.commentPresets.size(), path.toUtf8().constData());
+}
+
+void MultiReplayDock::exportTags()
+{
+	const Config cfg = ReplayCore::instance().getConfig();
+	if (cfg.commentPresets.empty()) {
+		showNotice(obs_module_text("Dock.TagsNoneToExport"));
+		return;
+	}
+	QString path = QFileDialog::getSaveFileName(
+		this, obs_module_text("Dock.TagsExport"),
+		QStringLiteral("tags.txt"),
+		obs_module_text("Dock.TagsFileFilter"));
+	if (path.isEmpty())
+		return;
+	QFile f(path);
+	if (!f.open(QIODevice::WriteOnly | QIODevice::Text | QIODevice::Truncate)) {
+		QMessageBox::warning(this, "obs-multireplay",
+				     obs_module_text("Dock.TagsWriteFailed"));
+		return;
+	}
+	for (const auto &t : cfg.commentPresets) {
+		f.write(QString::fromStdString(t).toUtf8());
+		f.write("\n");
+	}
+	f.close();
+	showNotice(QString(obs_module_text("Dock.TagsExported"))
+			   .arg((int)cfg.commentPresets.size()));
+	obs_log(LOG_INFO, "[dock] exported %d tag(s) to %s",
+		(int)cfg.commentPresets.size(), path.toUtf8().constData());
 }
 
 void MultiReplayDock::newProjectDialog()

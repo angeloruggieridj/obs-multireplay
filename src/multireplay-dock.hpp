@@ -46,6 +46,7 @@ class PlaybackCoordinator;
 #include <vector>
 
 class QEvent;
+class QKeyEvent;
 class QPushButton;
 class QToolButton;
 class QSlider;
@@ -544,6 +545,17 @@ private:
 	// Called from poll() when the watchdog below expires.
 	void cancelDeadRecording();
 	void openSettings();        // configuration dialog
+	// TAGS — the operator's own marking vocabulary (Config.commentPresets, the
+	// list every per-angle comment cell offers). One tag per line in a plain
+	// TXT file, so a club's words are written once and carried to every machine
+	// instead of being retyped into each one.
+	//
+	// The import REFUSES while recording, and that is not caution for its own
+	// sake: it writes the config, and setConfig() re-points the SegmentIndex and
+	// re-creates the Branch Output filters. Nothing that touches the recording
+	// path may happen mid-take because somebody opened a menu.
+	void importTags();
+	void exportTags();
 	void newProjectDialog();    // New Project... menu action
 	void openProjectDialog();   // Open Project... menu action
 	void copyYouTubeChapters(); // copy chapter timestamps to clipboard
@@ -632,6 +644,39 @@ private:
 
 	// --- event filter: double-click on note labels ---
 	bool eventFilter(QObject *watched, QEvent *event) override;
+
+	// --- THE KEYBOARD: one layer, not a second set of commands -------------
+	// Arrows on the timeline, ↑/↓ between events, +/− on the speed, Enter to
+	// play. Every one of them CALLS the button of the same name, so there is
+	// one implementation of "one frame forward" and one gate check covering
+	// both ways of asking for it.
+	//
+	// Two things it must not do, and both were paid for in this dock already:
+	//   - steal keys from text. The search box and the per-angle comment cells
+	//     are two pixels from these controls, and an operator typing "Fallo"
+	//     must not send the panel backwards a frame (focusIsTextEntry).
+	//   - lose to the table. A QTableWidget with focus eats ↑/↓ and Enter for
+	//     its own navigation, so the table is filtered (see eventFilter) —
+	//     ↑/↓ it may keep (moving down a row IS moving to the next event),
+	//     Enter and the arrows it may not.
+	void keyPressEvent(QKeyEvent *event) override;
+	// True when the key was ours. Shared by keyPressEvent and the table's
+	// filter, so the two cannot answer differently.
+	bool handleTransportKey(QKeyEvent *event);
+	// Is the focus in something that takes typing? Same question
+	// refreshEvents() asks before rebuilding the table under an editor.
+	static bool focusIsTextEntry();
+	// Move the selection `delta` rows in the event table (↑/↓). A selection
+	// the OPERATOR makes cues the event, which is the point of the keys.
+	void stepEventSelection(int delta);
+	// Move the playhead by a plain number of seconds along the FOOTAGE axis
+	// (Shift+←/→): a frame at a time is the wrong unit for "a bit earlier".
+	void scrubBySeconds(double seconds);
+	// +/− on the speed. Percentage points, not the preset ladder: the ladder
+	// already has its own five hotkeys, and this is the fine adjustment you
+	// make while watching the picture.
+	void nudgeSpeed(int deltaPct);
+	static constexpr int kSpeedKeyStepPct = 5;
 
 	// --- preview render callback (runs on the OBS graphics thread) ---
 	static void drawChannelA(void *data, uint32_t cx, uint32_t cy);

@@ -86,6 +86,31 @@ struct Config {
 	// config.json round-trips unchanged.
 	std::string replaySourceName;
 	std::string musicSourceName; // OBS audio source unmuted during playback
+	// ...OR a file, for the exported reel. The two are not alternatives for the
+	// same job, and pretending they were is why this needed saying:
+	//   - LIVE, music is an OBS source the coordinator unmutes while a queue
+	//     plays. A path on disk cannot be unmuted; only a source can.
+	//   - IN THE REEL, music is a file the muxer reads. Until now that file was
+	//     dug out of the media source's own settings (export.cpp::musicFileFor),
+	//     which works right up to the moment the operator's music is not a media
+	//     source — a browser source, a capture, an audio device.
+	// So: this path, when set, is what the reel uses. Empty = keep asking the
+	// music source for its local file, exactly as before.
+	std::string musicFilePath;
+	// THE EVENT TRANSITION (the reference controller): how the replay gets on air, and how program
+	// comes back. Names of OBS transitions (obs_frontend_get_transitions), so a
+	// stinger the operator built is simply one of the choices — it needs no case
+	// of its own here. "" = leave OBS's own current transition alone, which is
+	// the default and behaves exactly as this plugin always has.
+	//
+	// TWO of them because they are two moments: a dip to the replay and a cut
+	// back is a normal way to work, and one setting cannot say it.
+	std::string transitionInName;
+	std::string transitionOutName;
+	// Milliseconds, applied to both. OBS keeps ONE duration for the current
+	// transition, so this is set alongside the transition and the operator's own
+	// value is put back afterwards.
+	int transitionMs = 300;
 	bool autoSwitchScene = true; // play-to-output switches the OBS scene;
 				     // false = only feed the Replay source
 	// Make the replay fill the canvas, aspect preserved, wherever the
@@ -104,6 +129,19 @@ struct Config {
 	// than in the order the marks were taken. They differ as soon as a −20s
 	// preset is used after a −5s one.
 	bool sortEventsByTime = false;
+	// KEEP PLAYING PAST THE OUT, for this many milliseconds. 0 = off, and off
+	// is the default: an event ends where the operator said it ends.
+	//
+	// It is a length and not a switch on purpose. "Carry on to the end of the
+	// recording" is what the request sounds like, but during a match the end of
+	// the recording is NOW — a goal marked five minutes ago would replay five
+	// minutes of football to catch up. What the operator wants is the couple of
+	// seconds after his OUT (the celebration his OUT cut off), so the setting is
+	// how many, and 0 says he wants none.
+	//
+	// Only the LAST clip of a queue is extended: the ones before it have to end
+	// where they end, or the sequence never reaches the next angle.
+	int continuePastOutMs = 0;
 	// How many of the 20 event lists the dock SHOWS (1..20, default 20). The
 	// storage is always 20 — hiding a list never deletes what is in it — but
 	// twenty tabs on a dock-width strip leave each name a few pixels, and a

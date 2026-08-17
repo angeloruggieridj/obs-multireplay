@@ -267,7 +267,9 @@ private:
 	// detachAll() blocked, so STOP blocked; and STOP runs on the UI thread,
 	// so OBS froze with a take still recording. Now the hang costs one
 	// detached thread and nothing else.
-	struct Channel; // defined below
+	// (No forward declaration of Channel here: it is defined above, and clang
+	// makes re-declaring a class member an ERROR under -Werror. That was the
+	// macOS half of a red CI this project had learned to blame on the Qt CDN.)
 	struct Doomed {
 		Channel *channel = nullptr;
 		int camIndex = 0;

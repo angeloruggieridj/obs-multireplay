@@ -207,13 +207,45 @@ bool ExportManager::exportSequence(const std::vector<int> &eventIds,
 	fs::create_directories(folder, ec);
 	std::string musicPath;
 	if (withMusic) {
-		musicPath = musicFileFor(
-			ReplayCore::instance().getConfig().musicSourceName);
+		// A PATH FIRST, if the operator gave one. Digging the file out of a
+		// media source's settings was the only way in, and it fails the moment
+		// his music is not a media source — a browser source, an audio device,
+		// a capture. A path always has a file behind it, which is what a muxer
+		// needs.
+		const Config cfg = ReplayCore::instance().getConfig();
+		if (!cfg.musicFilePath.empty()) {
+			if (fs::exists(cfg.musicFilePath))
+				musicPath = cfg.musicFilePath;
+			else
+				obs_log(LOG_WARNING,
+					"[reel] the configured music file does not "
+					"exist: %s",
+					cfg.musicFilePath.c_str());
+		}
+		if (musicPath.empty())
+			musicPath = musicFileFor(cfg.musicSourceName);
 		if (musicPath.empty())
 			obs_log(LOG_WARNING,
-				"[reel] music was asked for, but the configured "
-				"music source is not a media source with a local "
-				"file — the reel will carry the clips' own audio");
+				"[reel] music was asked for, but no music file is set "
+				"and the configured music source is not a media source "
+				"with a local file — the reel will carry the clips' own "
+				"audio");
+	}
+
+	// THE EVENT TRANSITIONS DO NOT APPLY HERE, and it is said in the log as well
+	// as in Settings. Mixing one clip into the next means decoding both and
+	// encoding the result; this path stream-copies packets, which is why a reel
+	// is written in seconds and loses nothing. Butted clips are the price, and an
+	// operator who has set a 300 ms dissolve for going on air deserves to find
+	// that out from a log line rather than from the file.
+	{
+		const Config cfg = ReplayCore::instance().getConfig();
+		if (!cfg.transitionInName.empty() || !cfg.transitionOutName.empty())
+			obs_log(LOG_INFO,
+				"[reel] the event transition is for going on air: this "
+				"file is a stream copy, so its %zu clips are butted "
+				"together",
+				clips.size());
 	}
 
 	// A name that says what it holds: how many clips, and whether it has
@@ -475,8 +507,15 @@ bool ExportManager::runReel(const std::vector<ReelClip> &clips,
 			pkt->stream_index = ost->index;
 			pkt->pos = -1;
 			if (isVideo)
-				lastEndNs = std::max(lastEndNs,
-						     relPtsNs + std::max(durNs, 1LL));
+				// (int64_t)1, NOT 1LL: on Linux and macOS int64_t is
+				// `long`, so std::max(int64_t, long long) has no
+				// matching overload and the build fails there while
+				// MSVC — where the two are the same type — is perfectly
+				// happy. This one line is why the CI has been red on two
+				// of the three platforms.
+				lastEndNs = std::max(
+					lastEndNs,
+					relPtsNs + std::max(durNs, (int64_t)1));
 			if (av_interleaved_write_frame(out, pkt) < 0) {
 				av_packet_free(&pkt);
 				avformat_close_input(&in);

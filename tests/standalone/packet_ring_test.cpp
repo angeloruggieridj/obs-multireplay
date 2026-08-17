@@ -14,6 +14,7 @@ subtly wrong on air. So the properties pinned here are:
   - a range that cannot be served exactly must be refused, never clamped.
 */
 
+#include "audio-stretch.hpp"
 #include "master-timeline.hpp"
 #include "packet-ring.hpp"
 #include "reverse-plan.hpp"
@@ -855,6 +856,154 @@ static void test_review_crosses_a_junction()
 	CHECK(TimelineMap().spansFrom(ms(1000), ms(2000)).empty());
 }
 
+// ---------------------------------------------------------------------------
+// AudioStretch — slow motion with sound, at the right pitch.
+//
+// Three properties, and each of them is a way the feature can be wrong while
+// looking right: the wrong LENGTH drifts the sound out from under the picture, a
+// changed PITCH is the bug the whole algorithm exists to avoid, and touching the
+// 1x path would colour the case that is on air most of the time.
+// ---------------------------------------------------------------------------
+
+// A sine at `hz`, planar, `channels` identical channels.
+static std::vector<std::vector<float>> makeTone(uint32_t rate, uint32_t channels,
+					       double hz, uint32_t frames)
+{
+	std::vector<std::vector<float>> pcm(channels,
+					    std::vector<float>(frames, 0.0f));
+	for (uint32_t i = 0; i < frames; i++) {
+		const float v = (float)std::sin(2.0 * 3.14159265358979 * hz *
+						(double)i / (double)rate);
+		for (uint32_t c = 0; c < channels; c++)
+			pcm[c][i] = v;
+	}
+	return pcm;
+}
+
+// Rising-edge zero crossings per second: the cheapest honest pitch meter for a
+// tone, and it needs no FFT in a test that must build everywhere.
+static double dominantHz(const std::vector<float> &x, uint32_t rate)
+{
+	if (x.size() < 2)
+		return 0.0;
+	int crossings = 0;
+	for (size_t i = 1; i < x.size(); i++)
+		if (x[i - 1] <= 0.0f && x[i] > 0.0f)
+			crossings++;
+	return (double)crossings * (double)rate / (double)x.size();
+}
+
+// Run `pcm` through a configured stretcher and collect everything it produces.
+static std::vector<std::vector<float>>
+stretchAll(AudioStretch &st, const std::vector<std::vector<float>> &pcm,
+	   uint32_t chunk)
+{
+	const uint32_t channels = (uint32_t)pcm.size();
+	const uint32_t frames = (uint32_t)pcm[0].size();
+	std::vector<std::vector<float>> out(channels);
+	std::vector<std::vector<float>> scratch(channels,
+						std::vector<float>(1 << 15, 0.0f));
+	std::vector<float *> scratchPtr(channels);
+	for (uint32_t c = 0; c < channels; c++)
+		scratchPtr[c] = scratch[c].data();
+
+	const auto drain = [&]() {
+		for (;;) {
+			const uint32_t got =
+				st.take(scratchPtr.data(), (uint32_t)(1 << 15));
+			if (got == 0)
+				return;
+			for (uint32_t c = 0; c < channels; c++)
+				out[c].insert(out[c].end(), scratch[c].begin(),
+					      scratch[c].begin() + got);
+		}
+	};
+
+	std::vector<const float *> inPtr(channels);
+	for (uint32_t at = 0; at < frames; at += chunk) {
+		const uint32_t n = std::min(chunk, frames - at);
+		for (uint32_t c = 0; c < channels; c++)
+			inPtr[c] = pcm[c].data() + at;
+		st.push(inPtr.data(), n);
+		drain();
+	}
+	st.flush();
+	drain();
+	return out;
+}
+
+static void test_stretch_length_follows_the_speed()
+{
+	const uint32_t rate = 48000;
+	const auto pcm = makeTone(rate, 2, 440.0, rate); // one second
+
+	// Half speed is twice as long, double speed is half as long. The tolerance
+	// is one block (40 ms): the block is the unit this algorithm works in, and
+	// anything looser would let a real drift through.
+	for (double speed : {0.25, 0.5, 0.75, 2.0}) {
+		AudioStretch st;
+		CHECK(st.configure(rate, 2, speed));
+		const auto out = stretchAll(st, pcm, 1024);
+		CHECK(out.size() == 2);
+		const double want = (double)rate / speed;
+		const double got = (double)out[0].size();
+		if (std::fabs(got - want) >= 0.04 * (double)rate)
+			std::printf("  speed %.2f: want %.0f got %.0f\n", speed,
+				    want, got);
+		CHECK(std::fabs(got - want) < 0.04 * (double)rate);
+		// Both channels, always the same length: a stereo pair that drifts
+		// apart is worse than silence.
+		CHECK(out[0].size() == out[1].size());
+	}
+}
+
+static void test_stretch_keeps_the_pitch()
+{
+	const uint32_t rate = 48000;
+	const double hz = 440.0;
+	const auto pcm = makeTone(rate, 1, hz, rate * 2);
+
+	// THE POINT OF THE WHOLE FILE. Resampling would give 220 Hz at half speed;
+	// a listener hears that instantly, which is why the replay was mute instead.
+	for (double speed : {0.5, 2.0}) {
+		AudioStretch st;
+		CHECK(st.configure(rate, 1, speed));
+		const auto out = stretchAll(st, pcm, 4096);
+		CHECK(!out[0].empty());
+		const double got = dominantHz(out[0], rate);
+		CHECK(std::fabs(got - hz) < 20.0);
+	}
+}
+
+static void test_stretch_leaves_1x_alone()
+{
+	const uint32_t rate = 48000;
+	const auto pcm = makeTone(rate, 2, 1000.0, 4096);
+
+	AudioStretch st;
+	CHECK(st.configure(rate, 2, 1.0));
+	CHECK(st.passthrough());
+	const auto out = stretchAll(st, pcm, 512);
+	CHECK(out[0].size() == pcm[0].size());
+	// Sample for sample, not "close enough": at 1x nothing may be laid down,
+	// faded or searched for.
+	bool identical = true;
+	for (size_t i = 0; i < pcm[0].size(); i++)
+		if (out[0][i] != pcm[0][i] || out[1][i] != pcm[1][i])
+			identical = false;
+	CHECK(identical);
+
+	// ...and what it refuses: no channels, an impossible rate, a speed outside
+	// what the engine itself will play. A caller that gets false plays the clip
+	// silent, which is the honest answer and the old behaviour.
+	AudioStretch bad;
+	CHECK(!bad.configure(rate, 0, 0.5));
+	CHECK(!bad.configure(100, 2, 0.5));
+	CHECK(!bad.configure(rate, 2, 0.001));
+	CHECK(!bad.configure(rate, 2, 9.0));
+	CHECK(!bad.configured());
+}
+
 int main()
 {
 	test_rescale();
@@ -895,6 +1044,10 @@ int main()
 	test_timeline_handles_negative_instants();
 	test_timeline_empty_is_empty();
 	test_review_crosses_a_junction();
+
+	test_stretch_length_follows_the_speed();
+	test_stretch_keeps_the_pitch();
+	test_stretch_leaves_1x_alone();
 
 	if (g_fail == 0)
 		std::printf("OK: all packet-ring / master-timeline tests passed\n");
