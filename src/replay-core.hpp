@@ -69,6 +69,15 @@ struct Config {
 	// decode and a second input in his scene collection, and neither should
 	// arrive merely because the plugin was installed.
 	bool enableChannelB = false;
+	// Double-clicking a row puts that event on air (the reference controller's fastest path from
+	// "that one" to Program). On by default — it is why the gesture exists —
+	// but it is also two pixels from the cells an operator edits, so he gets to
+	// switch it off.
+	bool doubleClickPlays = true;
+	// Does playing an event take Program? On by default, and it is the SAME
+	// state as the "To output" key on the panel: two switches for one behaviour
+	// is a switch that gets left in the wrong place.
+	bool toOutputOnPlay = true;
 	// With A|B linked, only ONE scene can be in Program, so "to output" has to
 	// be told which bay's scene it means. false = A's, true = B's.
 	bool abOutputUsesB = false;

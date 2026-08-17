@@ -452,6 +452,11 @@ private:
 	// project is empty on both).
 	void clearBothBays();
 	QWidget *bBox_ = nullptr;            // B's preview box, hidden with B
+	// the reference controller's Monitors key and what it takes away: the whole monitoring block
+	// (both decks, the camera previews) and the green strip that belongs under it.
+	QPushButton *monitorsBtn_ = nullptr;
+	QWidget *monitorsRow_ = nullptr;
+	QWidget *monitorsStrip_ = nullptr;
 	QWidget *angleRowBox_[2] = {};       // the A row and the B row of camera keys
 	// A comment typed on one event, offered on all of them for the rest of the
 	// session. Not persisted — see rememberComment() for why a comment must

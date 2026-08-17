@@ -1609,6 +1609,27 @@ QWidget *MultiReplayDock::buildToolbar()
 	connect(liveBtn_, &QPushButton::toggled, this,
 		[](bool on) { EventStore::instance().setLiveMode(on); });
 	h->addWidget(liveBtn_);
+
+	// the reference controller's Monitors key, in the reference controller's place: right of Live. It takes the whole
+	// monitoring block away — the two replay decks, the camera previews AND the
+	// green strip under them — because that block is what costs GPU, and an
+	// operator working from the list on a thin machine should be able to put it
+	// down. One key for the whole block: hiding the pictures and leaving the
+	// strip floating under nothing would read as a bug.
+	monitorsBtn_ = new QPushButton(obs_module_text("Dock.Monitors"), box);
+	monitorsBtn_->setObjectName("mrLive");
+	monitorsBtn_->setCheckable(true);
+	monitorsBtn_->setChecked(true);
+	monitorsBtn_->setCursor(Qt::PointingHandCursor);
+	monitorsBtn_->setToolTip(obs_module_text("Dock.MonitorsHint"));
+	connect(monitorsBtn_, &QPushButton::toggled, this, [this](bool on) {
+		if (monitorsRow_)
+			monitorsRow_->setVisible(on);
+		if (monitorsStrip_)
+			monitorsStrip_->setVisible(on);
+		obs_log(LOG_INFO, "[dock] monitors %s", on ? "shown" : "hidden");
+	});
+	h->addWidget(monitorsBtn_);
 	h->addStretch(1);
 	v->addWidget(topRow);
 
@@ -1724,6 +1745,7 @@ QWidget *MultiReplayDock::buildPreview()
 	rh->addWidget(aBox, 3);
 	rh->addWidget(bBox, 3);
 	rh->addWidget(buildMultiview(), 2);
+	monitorsRow_ = row; // the Monitors key hides this whole block
 	v->addWidget(row, 1);
 
 	// The green strip the reference controller puts directly under the A output: which list, which
@@ -1743,6 +1765,7 @@ QWidget *MultiReplayDock::buildPreview()
 	chanStrip_->setTextFormat(Qt::PlainText);
 	sh->addWidget(chanBadge_);
 	sh->addWidget(chanStrip_, 1);
+	monitorsStrip_ = strip; // goes away with the monitors it belongs to
 	v->addWidget(strip);
 
 	return box;
@@ -2416,6 +2439,16 @@ QWidget *MultiReplayDock::buildTransport()
 
 	toOutputBtn_ = toggleBtn(obs_module_text("Dock.ToOutput"), this,
 				 obs_module_text("Dock.ToOutput"));
+	// ONE state, two places to see it: the key starts where Settings says, and
+	// every play path reads the key (see playOnTargets). A setting and a button
+	// that each hold their own copy of "does this take Program" is a button left
+	// in the wrong position.
+	toOutputBtn_->setChecked(ReplayCore::instance().getConfig().toOutputOnPlay);
+	// The key is NOT written back to the config. setConfig() re-points the
+	// segment index and re-creates the Branch Output filters, so a key the
+	// operator presses mid-match must not reach it — the same rule that keeps a
+	// typed comment out of the config. Settings seeds the key at start-up; from
+	// then on the key is the live state and Settings is where the default lives.
 
 	tr->addWidget(playPauseBtn_);
 	tr->addWidget(revBtn);
@@ -3061,6 +3094,11 @@ QWidget *MultiReplayDock::buildEvents()
 		[this](int row, int column) {
 			if (column >= kColFirstCam)
 				return;
+			// Switchable, and ON by default: it is the fastest path
+			// from "that one" to Program, and it is also two pixels
+			// from the cells an operator edits all match long.
+			if (!ReplayCore::instance().getConfig().doubleClickPlays)
+				return;
 			QTableWidgetItem *it = events_->item(row, kColId);
 			if (!it)
 				return;
@@ -3068,9 +3106,19 @@ QWidget *MultiReplayDock::buildEvents()
 			if (id <= 0)
 				return;
 			std::string err;
-			if (!pc().playEvents(
-				    {id}, currentAngle1() - 1, /*toOutput*/ true,
-				    err))
+			// The SAME to-output state as the panel key — not the
+			// hard-coded true this used to pass. Two ways of putting
+			// one event on air that disagree about taking Program is
+			// the surprise nobody wants mid-match.
+			//
+			// Deliberately NOT playOnTargets(): a double-click is one
+			// gesture on one row and it drives the channel the keys
+			// drive, not both bays. Fanning it out made it a different
+			// action from the one the operator made.
+			if (!pc().playEvents({id}, currentAngle1() - 1,
+					     toOutputBtn_ &&
+						     toOutputBtn_->isChecked(),
+					     err))
 				showNotice(QString::fromStdString(err));
 		});
 	// Choosing a row LOADS it, on whichever channel the A|B selector points
@@ -6028,6 +6076,20 @@ void MultiReplayDock::openSettings()
 	sortByTime->setToolTip(obs_module_text("Dock.SortByTimeHint"));
 	evPage->addRow(obs_module_text("Dock.SortByTime"), sortByTime);
 
+	// Two gestures the operator may not want, both ON by default because both
+	// are why they exist. Double-click is the fastest way onto Program and sits
+	// two pixels from the cells he edits; "to output" is what makes a replay a
+	// broadcast rather than a preview.
+	auto *dblPlay = new QCheckBox(&dlg);
+	dblPlay->setChecked(cfg.doubleClickPlays);
+	dblPlay->setToolTip(obs_module_text("Dock.DoubleClickPlaysHint"));
+	evPage->addRow(obs_module_text("Dock.DoubleClickPlays"), dblPlay);
+
+	auto *toOut = new QCheckBox(&dlg);
+	toOut->setChecked(cfg.toOutputOnPlay);
+	toOut->setToolTip(obs_module_text("Dock.ToOutputOnPlayHint"));
+	evPage->addRow(obs_module_text("Dock.ToOutputOnPlay"), toOut);
+
 	auto *idDigits = new QSpinBox(&dlg);
 	idDigits->setRange(1, 8);
 	idDigits->setValue(cfg.eventIdDigits);
@@ -6116,6 +6178,8 @@ void MultiReplayDock::openSettings()
 	cfg.preRollMs = (int)std::lround(preRoll->value() * 1000.0);
 	cfg.postRollMs = (int)std::lround(postRoll->value() * 1000.0);
 	cfg.sortEventsByTime = sortByTime->isChecked();
+	cfg.doubleClickPlays = dblPlay->isChecked();
+	cfg.toOutputOnPlay = toOut->isChecked();
 	cfg.eventIdDigits = idDigits->value();
 	cfg.eventListCount = listCount->value();
 	cfg.commentPresets.clear();
