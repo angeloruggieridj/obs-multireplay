@@ -18,12 +18,45 @@
 
 </div>
 
+> [!WARNING]
+> **This is a beta. Do not put it in a critical gallery.**
+> The software is still unstable and its behaviour can change between builds:
+> it is not recommended for live productions, broadcasts or any job where a
+> failure cannot be absorbed. Try it on a rehearsal, a test run, or a rig you
+> can afford to restart.
+>
+> **Want to help test it?** Download it, use it, and when something goes wrong
+> [open an issue](https://github.com/angeloruggieridj/obs-multireplay/issues/new)
+> describing what you did and what happened — and **attach the OBS log of that
+> run**. The log is what makes a report actionable; without it almost nothing
+> can be diagnosed. Find it in **Help ▸ Log Files ▸ Show Log Files**, or at
+> `%APPDATA%\obs-studio\logs` (Windows),
+> `~/Library/Application Support/obs-studio/logs` (macOS),
+> `~/.config/obs-studio/logs` (Linux).
+
+> [!WARNING]
+> **Questa è una beta. Non metterla in una regia critica.**
+> Il software è ancora instabile e il suo comportamento può cambiare da una
+> build all'altra: è sconsigliato in produzioni dal vivo, dirette o qualunque
+> lavoro in cui non ti puoi permettere un guasto. Provalo su una prova
+> generale, su una registrazione di prova o su un impianto che puoi
+> permetterti di riavviare.
+>
+> **Vuoi fare da beta tester?** Scaricalo, usalo e quando qualcosa va storto
+> [apri una issue](https://github.com/angeloruggieridj/obs-multireplay/issues/new)
+> raccontando cosa hai fatto e cosa è successo — e **allega il log di OBS di
+> quell'esecuzione**. È il log a rendere una segnalazione utilizzabile: senza,
+> non si diagnostica quasi niente. Lo trovi in **Aiuto ▸ File di log ▸ Mostra i
+> file di log**, oppure in `%APPDATA%\obs-studio\logs` (Windows),
+> `~/Library/Application Support/obs-studio/logs` (macOS),
+> `~/.config/obs-studio/logs` (Linux).
+
 ---
 
 ## English
 
 Press a key while the action happens, and play it back a second later — from any
-camera, at any speed, forwards or backwards, **while the match is still being
+camera, at any speed, forwards or backwards, **while the event is still being
 recorded**.
 
 Every angle is recorded at the same time on one shared timeline, so a single
@@ -75,11 +108,11 @@ recording, and keeps the last minutes of them in a bounded ring in RAM.
   which loses the angles and the notes.
 * **20 event lists**, renameable, with search across ids, tags and angles.
 * **One cell per angle, holding all three answers**: does this camera play, at
-  what speed, and what is it. No dialog anywhere — during a match, an edit that
+  what speed, and what is it. No dialog anywhere — live, an edit that
   costs a dialog is an edit that does not get made.
 * **Your own tag vocabulary.** A word typed on one event is offered on every
-  other one for the rest of the session, and the club's list ("Goal", "Foul",
-  "Save") imports and exports as plain text, one per line.
+  other one for the rest of the session, and your production's own list — whatever
+  you call the moments — imports and exports as plain text, one per line.
 * **A running order you control.** A highlights reel does not go out in the
   order the marks were taken; the order is saved with the project.
 
@@ -129,21 +162,23 @@ recording, and keeps the last minutes of them in a bounded ring in RAM.
 * **A keyboard layer on the dock**: arrows step a frame (a second with Shift),
   up/down walk the event list, `+`/`−` change speed, Enter plays. Typing always
   wins — the search box and the tag cells are two pixels away from these
-  commands, and writing "Foul" must not send the panel back a frame.
+  commands, and typing a tag must not send the panel back a frame.
 
 ### Requirements
 
 | | |
 |---|---|
 | OBS Studio | **32 or newer** |
-| Branch Output | [OPENSPHERE-Inc/branch-output](https://github.com/OPENSPHERE-Inc/branch-output) — this is the recording layer, and MultiReplay does nothing without it |
+| Branch Output | **[Download](https://github.com/OPENSPHERE-Inc/branch-output/releases)** · [repository](https://github.com/OPENSPHERE-Inc/branch-output) — this is the recording layer, and MultiReplay does nothing without it |
 | Platforms | Windows (primary) · macOS · Linux (X11/XWayland; native Wayland is not supported) |
 
 ### Installation
 
-1. Install **Branch Output** first, and set its `Interlock` to `Always ON`.
-   Without that it will not start recording, and MultiReplay will tell you so
-   rather than let you mark events over footage that does not exist.
+1. Install **Branch Output** first — download it from its official repository,
+   [github.com/OPENSPHERE-Inc/branch-output/releases](https://github.com/OPENSPHERE-Inc/branch-output/releases)
+   — and set its `Interlock` to `Always ON`. Without that it will not start
+   recording, and MultiReplay will tell you so rather than let you mark events
+   over footage that does not exist.
 2. Download the package for your platform from the
    [releases page](https://github.com/angeloruggieridj/obs-multireplay/releases)
    and install it.
@@ -168,6 +203,22 @@ The dependency versions are pinned in `buildspec.json` and **must match the OBS
 version** you build against; if they do not, the module fails to load with a
 bare "module not found" and nothing else.
 
+### Reporting a problem
+
+Beta testers are what this stage is for.
+[Open an issue](https://github.com/angeloruggieridj/obs-multireplay/issues/new)
+with:
+
+1. **What you were doing** when it went wrong, and what you expected instead.
+2. **The OBS log of that run** — attach the file, do not paste an excerpt. The
+   plugin logs everything it decides and why, and the line that explains a
+   failure is rarely the one next to it. **Help ▸ Log Files ▸ Show Log Files**.
+3. **How many cameras**, at what resolution and bitrate, and which encoder.
+4. Your **OBS version**, your **Branch Output version** and your OS.
+
+If OBS froze or crashed, say whether a recording was running at the time: it
+narrows the search enormously.
+
 ### Licence
 
 GPL-2.0-or-later. See [LICENSE](LICENSE).
@@ -182,7 +233,7 @@ hand already goes; it contains none of their code, assets or branding.
 ## Italiano
 
 Premi un tasto mentre l'azione succede e un secondo dopo la rivedi: da qualsiasi
-camera, a qualsiasi velocità, avanti o indietro, **mentre la partita è ancora in
+camera, a qualsiasi velocità, avanti o indietro, **mentre l'evento è ancora in
 registrazione**.
 
 Tutti gli angoli vengono registrati insieme su un'unica timeline, quindi una
@@ -199,9 +250,9 @@ ne tiene gli ultimi minuti in un buffer circolare in RAM.
 | | |
 |---|---|
 | **Nessuna seconda codifica** | Il computer codifica ogni camera una volta sola, per la registrazione. Il replay non aggiunge encoder e non scrive niente di suo. |
-| **~140 ms per raggiungere il live** | Misurati su iGPU Intel a 1080p30. Inseguire un file in scrittura costa circa un secondo, perché è ogni quanto il muxer scarica un frammento. |
+| **~140 ms dall'azione all'immagine** | Misurati su iGPU Intel a 1080p30. Inseguire un file mentre viene scritto costa circa un secondo, perché è quello l'intervallo con cui il muxer scarica un frammento su disco. |
 | **Nessuno scarto fra gli angoli** | Ogni pacchetto porta lo stesso orologio di sistema: l'allineamento fra le camere si legge, non si stima. Passare da un angolo all'altro della stessa azione cade sullo stesso fotogramma. |
-| **O esatto, o rifiutato** | Un intervallo che il motore non può servire al fotogramma viene rifiutato, mai arrotondato a "quasi". È l'arrotondamento che manda in onda un replay sbagliato ma credibile. |
+| **O esatto, o rifiutato** | Un intervallo che il motore non può restituire esatto al fotogramma viene rifiutato, mai arrotondato a "quasi". È l'arrotondamento che manda in onda un replay sbagliato ma credibile. |
 
 ### Cosa sa fare
 
@@ -210,17 +261,20 @@ ne tiene gli ultimi minuti in un buffer circolare in RAM.
 * **Fino a 8 angoli camera insieme.** Ognuno ha la sua serie di file, ma tutti
   condividono una sola master timeline: è questo che rende una singola
   marcatura valida su tutte le camere contemporaneamente.
-* **Un controllo pre-volo che rifiuta le take impossibili.** Prima del REC
-  verifica lo spazio libero *espresso in minuti di girato al tuo bitrate*,
-  misura davvero la banda in scrittura del disco e la confronta con quella che
-  la take richiede, calcola se il buffer di replay entra in RAM e conferma che
-  le camere ci siano. Se qualcosa non può funzionare lo dice e non parte; se è
-  solo al limite degrada in modo visibile e ti dice di quanto.
-* **Monitoraggio durante la take.** Flusso di pacchetti per angolo, frame persi,
-  occupazione del buffer, disco. Una camera morta viene segnalata per nome nel
-  giro di un paio di secondi. Si limita a segnalare, e non è una mancanza: una
-  regia che si toglie dall'aria da sola perché il disco ha rallentato ha
-  trasformato un problema recuperabile in un problema di trasmissione.
+* **Un controllo prima del REC che rifiuta le registrazioni impossibili.**
+  Verifica lo spazio libero *espresso in minuti di girato al tuo bitrate*,
+  misura sul serio quanto scrive il disco e lo confronta con quello che la
+  registrazione gli chiederà, calcola se il buffer di replay entra nella RAM
+  disponibile e controlla che le camere ci siano davvero. Se qualcosa non può
+  funzionare lo dice e non parte; se è solo al limite riduce quello che deve
+  ridurre e ti dice di quanto.
+* **Controllo continuo mentre registri.** Pacchetti in arrivo da ogni angolo,
+  fotogrammi persi, quanto è pieno il buffer, il disco. Una camera che smette
+  di dare segnale viene segnalata per nome in un paio di secondi. Si limita a
+  segnalare, ed è una scelta precisa: se una regola potesse fermare la
+  registrazione o cambiare inquadratura per conto suo, un disco che rallenta
+  per due secondi diventerebbe un buco in diretta. Il controllo dice cosa non
+  va; a decidere resta chi sta al banco.
 
 #### Marcatura
 
@@ -235,12 +289,12 @@ ne tiene gli ultimi minuti in un buffer circolare in RAM.
   rifarla, perdendo angoli e commenti.
 * **20 liste di eventi**, rinominabili, con ricerca su id, tag e angoli.
 * **Una cella per angolo, con dentro tutte e tre le risposte**: se questa camera
-  va riprodotta, a che velocità e con che commento. Nessuna finestra di dialogo:
-  durante una partita, una modifica che costa un dialog è una modifica che non
-  viene fatta.
+  va riprodotta, a che velocità e con che commento. Nessuna finestra di dialogo,
+  da nessuna parte: dal vivo, una modifica che costa una finestra è una modifica
+  che non viene fatta.
 * **I tuoi tag.** Una parola scritta su un evento viene proposta su tutti gli
-  altri per il resto della sessione, e il vocabolario della società ("Gol",
-  "Fallo", "Parata") si importa e si esporta come testo semplice, uno per riga.
+  altri per il resto della sessione, e il vocabolario che usi tu — comunque
+  chiami i momenti — si importa e si esporta come testo semplice, uno per riga.
 * **La scaletta la decidi tu.** Una raccolta di highlights non esce nell'ordine
   in cui hai preso le marcature; l'ordine viene salvato insieme al progetto.
 
@@ -248,9 +302,9 @@ ne tiene gli ultimi minuti in un buffer circolare in RAM.
 
 * **Due canali di replay, A e B** (il B è opzionale e di default è spento).
   Ognuno è un normale input di OBS che metti nelle tue scene, quindi
-  transizioni, mixer audio e uscite funzionano esattamente come già fanno. Puoi
-  tenere un canale in onda mentre prepari l'altro.
-* **Velocità dal 5 al 200%, applicata mentre trascini lo slider.** Qui lo slow
+  transizioni, mixer audio e uscite funzionano esattamente come hanno sempre
+  fatto. Puoi tenere un canale in onda mentre prepari l'altro.
+* **Velocità dal 5 al 200%, applicata mentre trascini il cursore.** Qui lo slow
   motion è solo una spaziatura più larga fra i fotogrammi: non si ricodifica
   niente e la clip non riparte da capo, così la velocità la scegli guardando
   l'immagine invece di indovinarla. **L'audio viene rallentato mantenendo la
@@ -293,25 +347,27 @@ ne tiene gli ultimi minuti in un buffer circolare in RAM.
 * **Una scorciatoia per ogni comando**, registrata dentro OBS: compaiono nelle
   Scorciatoie di OBS e uno Stream Deck le raggiunge attraverso l'integrazione
   nativa di OBS, senza altri plugin di mezzo.
-* **Un livello tastiera sulla dock**: le frecce spostano di un fotogramma (di un
+* **La tastiera comanda la dock**: le frecce spostano di un fotogramma (di un
   secondo con Shift), su e giù scorrono la lista, `+` e `−` cambiano velocità,
-  Invio riproduce. Se stai scrivendo vince la scrittura: la casella di ricerca e
-  le celle dei tag sono a due pixel da questi comandi, e scrivere "Fallo" non
-  deve mandare il pannello indietro di un fotogramma.
+  Invio riproduce. Mentre stai scrivendo, però, ha la precedenza la scrittura:
+  la casella di ricerca e le celle dei tag sono a due pixel da questi comandi, e
+  digitare un tag non deve mandare il pannello indietro di un fotogramma.
 
 ### Requisiti
 
 | | |
 |---|---|
 | OBS Studio | **32 o successivo** |
-| Branch Output | [OPENSPHERE-Inc/branch-output](https://github.com/OPENSPHERE-Inc/branch-output) — è lo strato che registra, e senza di lui MultiReplay non fa niente |
+| Branch Output | **[Download](https://github.com/OPENSPHERE-Inc/branch-output/releases)** · [repository](https://github.com/OPENSPHERE-Inc/branch-output) — è lo strato che registra, e senza di lui MultiReplay non fa niente |
 | Piattaforme | Windows (principale) · macOS · Linux (X11/XWayland; Wayland nativo non è supportato) |
 
 ### Installazione
 
-1. Installa prima **Branch Output** e imposta il suo `Interlock` su
-   `Always ON`. Senza, non avvia la registrazione — e MultiReplay te lo dice,
-   invece di lasciarti marcare eventi su girato che non esiste.
+1. Installa prima **Branch Output** — scaricalo dalla sua repository ufficiale,
+   [github.com/OPENSPHERE-Inc/branch-output/releases](https://github.com/OPENSPHERE-Inc/branch-output/releases)
+   — e imposta il suo `Interlock` su `Always ON`. Senza, non avvia la
+   registrazione: e MultiReplay te lo dice, invece di lasciarti marcare eventi
+   su girato che non esiste.
 2. Scarica il pacchetto per la tua piattaforma dalla
    [pagina delle release](https://github.com/angeloruggieridj/obs-multireplay/releases)
    e installalo.
@@ -335,6 +391,24 @@ cmake --build --preset windows-x64 --config RelWithDebInfo
 Le versioni delle dipendenze sono fissate in `buildspec.json` e **devono
 corrispondere alla versione di OBS** con cui compili; se non corrispondono il
 modulo non si carica e l'unico messaggio che ottieni è "module not found".
+
+### Segnalare un problema
+
+I beta tester sono esattamente il senso di questa fase.
+[Apri una issue](https://github.com/angeloruggieridj/obs-multireplay/issues/new)
+con:
+
+1. **Cosa stavi facendo** quando è andato storto, e cosa ti aspettavi invece.
+2. **Il log di OBS di quell'esecuzione** — allega il file, non incollarne un
+   pezzo. Il plugin scrive nel log ogni decisione che prende e il perché, e la
+   riga che spiega un guasto quasi mai è quella lì accanto.
+   **Aiuto ▸ File di log ▸ Mostra i file di log**.
+3. **Quante camere**, a che risoluzione e bitrate, e con che encoder.
+4. La tua **versione di OBS**, quella di **Branch Output** e il sistema
+   operativo.
+
+Se OBS si è bloccato o è andato in crash, scrivi se in quel momento era in
+corso una registrazione: restringe moltissimo il campo.
 
 ### Licenza
 
