@@ -74,6 +74,8 @@ target_sources(
     src/replay-decoder.hpp
     src/replay-channel.cpp
     src/replay-channel.hpp
+    # v1.3: which packets to decode, in which order, to play a range backwards
+    src/reverse-plan.hpp
     src/segment-anchor.hpp
     # monotonic <-> wall clock: what makes a project survive an OBS restart
     src/session-clock.hpp
@@ -124,8 +126,9 @@ if(ENABLE_TESTS)
   target_compile_features(obs-multireplay-eventstore-tests PRIVATE cxx_std_20)
   add_test(NAME event_store COMMAND obs-multireplay-eventstore-tests)
 
-  # Live packet ring + master timeline. These carry the correctness of the
-  # rewrite (cross-angle marker equality, refuse-never-clamp), and they are
+  # Live packet ring + master timeline + the reverse schedule. These carry the
+  # correctness of the rewrite (cross-angle marker equality, refuse-never-clamp,
+  # and "backwards loses no frame and no more RAM than budgeted"), and they are
   # written free of OBS/FFmpeg types precisely so they can be tested here.
   add_executable(
     obs-multireplay-packet-tests

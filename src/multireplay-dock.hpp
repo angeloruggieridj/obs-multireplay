@@ -482,6 +482,14 @@ private:
 	// it. The engine plays ranges, so a step is a very short range — there is
 	// no playhead in it to move (see the definition).
 	void stepFrameForward();
+	// ...and backwards, which is NOT the mirror image of it. Playing a short
+	// range forwards from one frame back would come to rest on the frame the
+	// operator is already looking at, so the step back is a REVERSE run of two
+	// pictures: the current one, then the one before it (see the definition).
+	void stepFrameBackward();
+	// the reference controller's ◀ key: play what is selected (or the last event) BACKWARDS, from
+	// its OUT to its IN, through the same queue as ▶.
+	void playSelectedReverse();
 	// Apply a replay speed (5..200): becomes the default for events without a
 	// per-angle override, and re-cues the current clip from its in-point at
 	// the new speed (broadcast-style).

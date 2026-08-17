@@ -20,6 +20,11 @@ Playback runs on its own thread: pull the packets for the range out of the ring,
 decode, discard the pre-roll before the marked frame, and push frames out paced
 by the requested speed. Slow motion is simply a wider spacing between frames —
 no re-encoding, no reopening, no seeking.
+
+Reverse (v1.3) is the one thing that is NOT just a different spacing, because
+nothing here decodes backwards: a GOP is decoded forward into a bounded picture
+cache and then handed to OBS newest-first. See reverse-plan.hpp for the schedule
+and playReverse() for the two threads that run it.
 */
 
 #pragma once
@@ -38,6 +43,8 @@ no re-encoding, no reopening, no seeking.
 #include "packet-types.hpp"
 
 namespace multireplay {
+
+class ReplayDecoder; // playReverse() borrows the caller's, see the .cpp
 
 // the reference controller has two replay channels and so do we. They are two INSTANCES of this
 // class, not two classes and not one class with a second set of fields: a
@@ -96,9 +103,36 @@ public:
 	// compared, which is how we know they agree.
 	enum class Source { Auto, Ring, Segments };
 
-	// Play [inNs, outNs] of `camIndex` at `speedPct` (5..100; 100 = 1x).
-	// Replaces anything already playing. Returns false if the range cannot
-	// be served exactly — both sources refuse rather than clamp.
+	// Which way the pictures come out. Forward is a paced walk through the
+	// decoder's output; Reverse decodes each GOP forward and shows it
+	// newest-first out of a bounded cache (reverse-plan.hpp).
+	enum class Direction { Forward, Reverse };
+
+	// Everything one clip needs. A struct rather than a ninth positional
+	// argument: `play(cam, in, out, 50, err, Source::Auto, Direction::Reverse,
+	// 2)` is a line nobody can read back, and reverse added two knobs that
+	// only matter together.
+	struct PlayRequest {
+		int camIndex = 0;
+		int64_t inNs = 0;
+		int64_t outNs = 0;
+		int speedPct = 100; // 5..400, 100 = 1x
+		Source source = Source::Auto;
+		Direction direction = Direction::Forward;
+		// Reverse only: stop after this many pictures (0 = the whole
+		// range). This is what makes a one-frame step back a STEP and
+		// not a short backwards clip — the cache is filled a GOP at a
+		// time either way, but only two pictures are ever shown.
+		int maxFrames = 0;
+	};
+
+	// Play the request. Replaces anything already playing. Returns false if
+	// the range cannot be served exactly — both sources refuse rather than
+	// clamp.
+	bool play(const PlayRequest &req, std::string &errorOut);
+
+	// Play [inNs, outNs] of `camIndex` at `speedPct` (5..400; 100 = 1x),
+	// forwards. Kept because most call sites mean exactly this.
 	bool play(int camIndex, int64_t inNs, int64_t outNs, int speedPct,
 		  std::string &errorOut, Source source = Source::Auto);
 	void stop();
@@ -114,13 +148,36 @@ public:
 		int64_t firstFrameNs = 0;
 		int64_t lastFrameNs = 0;
 		bool lastRunCompleted = false;
+		// Which way the last run went. firstFrameNs > lastFrameNs is the
+		// same fact, but only for a run of more than one picture — a
+		// one-frame step back is indistinguishable from a step forward by
+		// its instants alone.
+		bool reverse = false;
+		// High-water mark of the reverse picture cache, so "did it stay
+		// inside its budget" is a measurement and not a belief. 0 for a
+		// forward run, which caches nothing.
+		size_t cacheBytesPeak = 0;
+		// Pictures the reverse plan intended to show, against
+		// framesPushed. A schedule that quietly loses a slice of a range
+		// is the failure mode of this design, and nothing outside could
+		// see it.
+		int framesPlanned = 0;
 	};
 	PlaybackStats stats() const;
 
-	// Master-timeline instant of the last frame handed to OBS, 0 if nothing
-	// has played yet. This is the playhead the dock draws — there is no
-	// free-running position any more, only the clip that is playing.
+	// Master-timeline instant of the last frame handed to OBS. This is the
+	// playhead the dock draws — there is no free-running position any more,
+	// only the clip that is playing. Ask hasPosition() whether it means
+	// anything: an instant of 0 is a legitimate one and instants BEFORE the
+	// machine's last boot are negative (session-clock.hpp, kNoInstant).
 	int64_t positionNs() const { return stats().lastFrameNs; }
+	bool hasPosition() const { return stats().framesPushed > 0; }
+
+	// The reverse picture cache's ceiling, per channel. One GOP of 1080p at
+	// keyint_sec = 1 is ~155 MB (reverse-plan.hpp) and the two threads of
+	// playReverse() hold at most one cache each, so half of this is what one
+	// decode pass may keep.
+	static constexpr size_t kReverseCacheBudgetBytes = 160u * 1024u * 1024u;
 
 	// Called once when a clip reaches its natural end, from the playback
 	// thread, with no lock held. It does NOT fire when playback was replaced
@@ -139,6 +196,16 @@ private:
 	ReplayChannel &operator=(const ReplayChannel &) = delete;
 
 	void playbackLoop();
+	// The reverse half of playbackLoop. Runs a second thread that decodes
+	// the plan's passes into picture caches while this one paces the cache it
+	// already has — without it every GOP boundary is a freeze the length of a
+	// GOP decode (~100 ms on an iGPU), once a second, on air.
+	//
+	// Returns true if the run reached its own end (or its maxFrames), false
+	// if it was aborted or could not decode.
+	bool playReverse(obs_source_t *source, ReplayDecoder &dec,
+			 const std::vector<LivePacket> &clip, double speed,
+			 int64_t presentInNs, int64_t presentOutNs, int maxFrames);
 	void joinWorker();
 	void fitSceneItems(); // applyCanvasFit's body; no lock held
 
@@ -153,6 +220,8 @@ private:
 	int64_t presentInNs_ = 0;
 	int64_t presentOutNs_ = 0;
 	int speedPct_ = 100;
+	Direction direction_ = Direction::Forward;
+	int maxFrames_ = 0;
 	// Snapshotted by the worker when it starts, so a clip always fires the
 	// callback that was installed for IT, never a later one.
 	std::function<void()> onFinished_;

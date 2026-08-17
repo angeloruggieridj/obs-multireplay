@@ -1932,7 +1932,7 @@ QWidget *MultiReplayDock::buildAngleRow(Which which)
 }
 
 // ---------------------------------------------------------------------------
-// Transport — the reference controller's centre group: ⏸ ◀ ↺ [Play Events ▾] NOW ⏭ Loop ♫
+// Transport — the reference controller's centre group: ⏸ ◀ ↺ [Play Events ▾] NOW ⏮ ⏭ Loop ♫
 // ---------------------------------------------------------------------------
 
 QWidget *MultiReplayDock::buildTransport()
@@ -1951,13 +1951,14 @@ QWidget *MultiReplayDock::buildTransport()
 	playPauseBtn_ = transportBtn(QStringLiteral("▶"), this,
 				     obs_module_text("Dock.PlayPause"), "mrPlay");
 
-	// the reference controller has a reverse-play key right here. This engine decodes forward
-	// only, so the key keeps its place and is DISABLED with a tooltip that
-	// says so: an operator hunting for it finds it greyed out in one glance
-	// instead of concluding the panel is missing controls.
+	// ◀ U+25C0 — the reference controller's reverse-play key, and it works now (v1.3). Nothing
+	// decodes backwards, so this is a GOP cache shown newest-first; see
+	// reverse-plan.hpp. EXACTLY ONE button in this dock may carry this glyph:
+	// the gate finds reverse play by it.
 	auto *revBtn = transportBtn(QStringLiteral("◀"), this,
-				    obs_module_text("Dock.ReverseUnavailable"));
-	revBtn->setEnabled(false);
+				    obs_module_text("Dock.PlayReverse"));
+	connect(revBtn, &QPushButton::clicked, this,
+		[this]() { playSelectedReverse(); });
 
 	// ↺ the reference controller "instantly play last event".
 	auto *lastBtn = transportBtn(QStringLiteral("↺"), this,
@@ -2023,10 +2024,14 @@ QWidget *MultiReplayDock::buildTransport()
 	nowBtn_->setToolTip(obs_module_text("Dock.JumpToNow"));
 	nowBtn_->setMinimumWidth(38);
 
-	// ⏭ U+23ED — one frame forward (the reference controller frame-by-frame). Forward only: the
-	// engine decodes forward, and a backward step is not a v1 feature.
-	// EXACTLY ONE button in this dock may carry this glyph: the gate finds the
-	// frame step by it.
+	// ⏮ U+23EE / ⏭ U+23ED — one frame back, one frame forward (the reference controller
+	// frame-by-frame). EXACTLY ONE button in this dock may carry each of these
+	// glyphs: the gate finds the two steps by them.
+	auto *stepBackBtn = transportBtn(QStringLiteral("⏮"), this,
+					 obs_module_text("Dock.StepBack"));
+	connect(stepBackBtn, &QPushButton::clicked, this,
+		[this]() { stepFrameBackward(); });
+
 	auto *stepBtn = transportBtn(QStringLiteral("⏭"), this,
 				     obs_module_text("Dock.StepFwd"));
 	connect(stepBtn, &QPushButton::clicked, this,
@@ -2052,6 +2057,10 @@ QWidget *MultiReplayDock::buildTransport()
 	tr->addWidget(playSel);
 	tr->addWidget(more);
 	tr->addWidget(nowBtn_);
+	// The two frame keys sit side by side, in the order the timeline runs:
+	// the reference controller pairs them, and a step back two inches from the step forward is a
+	// key nobody finds under pressure.
+	tr->addWidget(stepBackBtn);
 	tr->addWidget(stepBtn);
 	tr->addSpacing(6);
 	tr->addWidget(loopBtn_);
@@ -2914,6 +2923,13 @@ void MultiReplayDock::registerDockHotkeys()
 		 [](MultiReplayDock *d) { d->playSelected(); }},
 		{"ReplayStepForward", "Hotkey.StepForward",
 		 [](MultiReplayDock *d) { d->stepFrameForward(); }},
+		// Both frame keys, because finding the right frame means going
+		// past it and coming back — and that is held-key work on a
+		// Stream Deck, watching the picture rather than the panel.
+		{"ReplayStepBackward", "Hotkey.StepBackward",
+		 [](MultiReplayDock *d) { d->stepFrameBackward(); }},
+		{"ReplayPlayReverse", "Hotkey.PlayReverse",
+		 [](MultiReplayDock *d) { d->playSelectedReverse(); }},
 		{"ReplayMarkCancel", "Hotkey.MarkCancel",
 		 [](MultiReplayDock *d) {
 			 EventStore::instance().markCancel();
@@ -3123,6 +3139,93 @@ void MultiReplayDock::stepFrameForward()
 				   .arg(QString::fromStdString(err)));
 }
 
+void MultiReplayDock::stepFrameBackward()
+{
+	// the reference controller frame-by-frame BACKWARDS, and it is not the forward step with the
+	// sign flipped.
+	//
+	// A step is a range, because the engine plays ranges. Forwards, the range
+	// [playhead + 1f, playhead + 3f] comes to rest on a frame past the bar, so
+	// the picture moves on. Played FORWARDS, the range [playhead - 1f,
+	// playhead + 1f] comes to rest on the frame at the playhead — the one
+	// already on screen. The step would look broken while doing exactly what
+	// it was told.
+	//
+	// So the step back is a REVERSE run: pictures come out newest-first, so
+	// the run comes to rest on the OLDEST one it shows, and capping it at two
+	// pictures makes that "one frame back" and nothing more. The window is
+	// three frames wide because frame instants are not multiples of a frame
+	// time — an encoder's own timestamps drift — and a window exactly one
+	// frame wide can hold only the frame we are already looking at.
+	auto &core = ReplayCore::instance();
+	if (playheadNs_ == kNoInstant || timelineStartNs_ == kNoInstant ||
+	    displayDurNs_ <= 0) {
+		showNotice(obs_module_text("Dock.NothingToStep"));
+		return;
+	}
+
+	struct obs_video_info ovi = {};
+	int64_t frameNs = 33333333; // 30 fps, if OBS will not say
+	if (obs_get_video_info(&ovi) && ovi.fps_num > 0 && ovi.fps_den > 0)
+		frameNs = (int64_t)((1000000000LL * (int64_t)ovi.fps_den) /
+				    (int64_t)ovi.fps_num);
+
+	const int64_t outNs = playheadNs_;
+	const int64_t inNs = outNs - 3 * frameNs;
+	if (inNs < timelineStartNs_) {
+		// The beginning of the footage: there is no earlier frame, and
+		// clamping would silently show the first one again.
+		showNotice(obs_module_text("Dock.AtTimelineStart"));
+		return;
+	}
+
+	// Same discipline as the forward step: kill the queue first so its finish
+	// callback cannot cut in, and consume the transition so poll() does not
+	// read the stop as "the sequence ended, go back to live".
+	pc().stopEvents();
+	prevSequenceActive_ = false;
+	core.setFollowLive(false);
+	// An estimate, corrected by poll() from the frame the engine actually
+	// pushes: the exact instant of "one frame back" belongs to the encoder's
+	// timestamps, not to our arithmetic.
+	playheadNs_ = outNs - frameNs;
+
+	ReplayChannel::PlayRequest req;
+	req.camIndex = currentAngle1() - 1;
+	req.inNs = inNs;
+	req.outNs = outNs;
+	req.speedPct = 100;
+	req.direction = ReplayChannel::Direction::Reverse;
+	req.maxFrames = 2; // the frame on screen, then the one before it
+	std::string err;
+	if (!chan().play(req, err))
+		showNotice(QString("%1 — %2")
+				   .arg(obs_module_text("Dock.NoFootageHere"))
+				   .arg(QString::fromStdString(err)));
+}
+
+void MultiReplayDock::playSelectedReverse()
+{
+	// the reference controller's ◀. The same queue, the same angles, the same "to output" — only
+	// each clip runs from its OUT back to its IN. Going through the coordinator
+	// rather than straight to the channel is what keeps that true: a reverse
+	// that talked to the engine directly would be a second playback path, and
+	// the first thing it would lose is the scene switch.
+	std::vector<int> ids = selectedEventIds();
+	if (ids.empty())
+		ids = {EventStore::instance().lastEventId()};
+	if (ids.empty() || ids.front() <= 0) {
+		showNotice(obs_module_text("Dock.NothingSelected"));
+		return;
+	}
+	std::string err;
+	if (!pc().playEvents(ids, currentAngle1() - 1,
+			     toOutputBtn_ && toOutputBtn_->isChecked(), err,
+			     PlaybackCoordinator::AngleMode::AllEnabled,
+			     ReplayChannel::Direction::Reverse))
+		showNotice(QString::fromStdString(err));
+}
+
 void MultiReplayDock::applyReplaySpeed(int pct)
 {
 	// Default speed for every angle without an override — the coordinator
@@ -3267,10 +3370,18 @@ void MultiReplayDock::updateChannelStrip()
 			      .arg(ps.queuePos, 2, 10, QLatin1Char('0'))
 			      .arg(ps.queued, 2, 10, QLatin1Char('0'))
 			      .arg(obs_module_text("Dock.Clips"));
+	// Playing BACKWARDS: everything that counts down to the end of the clip has
+	// to count down to the other end of it. A clip running in reverse finishes
+	// at its IN, so "remaining" measured to the OUT would grow while the
+	// picture ran out.
+	const bool reverseOnAir = ps.active && ps.reverse;
 	if (haveEv && ev.tOutNs != kNoInstant) {
 		// Remaining WALL time, so it counts down at the rate the operator
 		// is watching: at 50% a 4 s clip has 8 s left, not 4.
-		const int64_t remNs = ev.tOutNs > clipPos ? ev.tOutNs - clipPos : 0;
+		const int64_t remNs =
+			reverseOnAir
+				? (clipPos > ev.tInNs ? clipPos - ev.tInNs : 0)
+				: (ev.tOutNs > clipPos ? ev.tOutNs - clipPos : 0);
 		const int pct = speedPct_ > 0 ? speedPct_ : 100;
 		l1 += QString("   REM %1").arg(shortTc(remNs * 100 / pct));
 	}
@@ -3319,17 +3430,30 @@ void MultiReplayDock::updateChannelStrip()
 		if (haveEv && ev.tOutNs != kNoInstant &&
 		    ev.tOutNs > ev.tInNs) {
 			const int64_t dur = ev.tOutNs - ev.tInNs;
+			// Backwards the fill DRAINS, which needs no special case:
+			// the fill is the playhead's place inside the clip, and in
+			// reverse that place walks back towards the IN. An emptying
+			// band is what "this replay is running out" looks like from
+			// across a gallery, in either direction.
 			frac = (double)(clipPos - ev.tInNs) / (double)dur;
 			const int64_t remNs =
-				ev.tOutNs > clipPos ? ev.tOutNs - clipPos : 0;
+				reverseOnAir
+					? (clipPos > ev.tInNs ? clipPos - ev.tInNs
+							      : 0)
+					: (ev.tOutNs > clipPos ? ev.tOutNs - clipPos
+							       : 0);
 			// Remaining in WALL time: at 50% a 4 s clip has 8 s left,
 			// and 8 s is how long the operator will be looking at it.
-			text = QString("%1   A%2   %3   %4%")
+			// The ◀ is not decoration: backwards at 50% and forwards at
+			// 50% are the same three numbers and not the same picture.
+			text = QString("%1   A%2   %3   %4%5%")
 				       .arg(evId, idDigits, 10, QLatin1Char('0'))
 				       .arg(onAir ? ps.angle1 : currentAngle1())
 				       .arg(shortTc(remNs * 100 / (barPct > 0
 									   ? barPct
 									   : 100)))
+				       .arg(reverseOnAir ? QStringLiteral("◀ ")
+							 : QString())
 				       .arg(barPct);
 			if (onAir && ps.queued > 1)
 				text += QString("   %1/%2")
@@ -3673,8 +3797,13 @@ void MultiReplayDock::poll()
 	// last frame it pushed forever after, so a finished clip left the bar
 	// wherever it stopped. While a clip plays it IS that frame; otherwise it is
 	// where the operator parked the timeline (scrub, NOW, end of sequence).
+	// hasPosition(), not `posNs > 0`: an instant of 0 is a legitimate one and
+	// footage recorded before the machine's last boot maps onto NEGATIVE
+	// instants (session-clock.hpp, kNoInstant) — the ordinary state of a
+	// reopened project. Asking "is it positive?" pinned the bar to the live
+	// edge for exactly the footage a step back is for.
 	const int64_t posNs = chan.positionNs();
-	if (playing && posNs > 0)
+	if (playing && chan.hasPosition())
 		playheadNs_ = posNs;
 	else if (followLive && liveEdgeNs > 0 && !sequenceOnAir)
 		playheadNs_ = liveEdgeNs;

@@ -13,12 +13,17 @@ See replay-channel.hpp.
 #include "packet-tap.hpp"
 #include "plugin-support.h"
 #include "replay-decoder.hpp"
+#include "reverse-plan.hpp"
 #include "segment-reader.hpp"
 
 #include <media-io/video-io.h>
 #include <util/platform.h>
 
+#include <algorithm>
 #include <chrono>
+#include <condition_variable>
+#include <cstring>
+#include <deque>
 
 namespace multireplay {
 
@@ -161,6 +166,119 @@ video_format obsFormatFor(FrameFormat f)
 	default:
 		return VIDEO_FORMAT_NONE;
 	}
+}
+
+// Rows in plane `i`, which is the one thing a plane pointer does not carry and
+// the one thing a COPY of a picture needs: linesize is the width of a row, and
+// only the layout says how many of them there are. Getting this wrong reads past
+// the frame (crash) or copies half a chroma plane (green picture).
+uint32_t planeRows(FrameFormat f, int i, uint32_t height)
+{
+	const uint32_t half = (height + 1) / 2;
+	switch (f) {
+	case FrameFormat::I420:
+		return i == 0 ? height : (i <= 2 ? half : 0);
+	case FrameFormat::NV12:
+		return i == 0 ? height : (i == 1 ? half : 0);
+	case FrameFormat::I422:
+	case FrameFormat::I444:
+		return i <= 2 ? height : 0;
+	default:
+		return 0;
+	}
+}
+
+// A decoded picture we OWN. ReplayDecoder hands out pointers into its own frame,
+// valid only until the next receive(), and reverse playback exists precisely to
+// hold pictures past that — so reverse is the only path that copies.
+struct CachedFrame {
+	int64_t masterNs = 0;
+	uint32_t width = 0;
+	uint32_t height = 0;
+	FrameFormat format = FrameFormat::Unknown;
+	bool fullRange = false;
+	std::vector<uint8_t> plane[4];
+	int linesize[4] = {0, 0, 0, 0};
+
+	// One allocation per plane per picture, which for a 1-second GOP is
+	// thirty of them once a second — not per frame. Sized from the layout,
+	// because a plane pointer says nothing about how much of it is ours.
+	void adopt(const ReplayDecoder::Frame &f)
+	{
+		masterNs = f.masterNs;
+		width = f.width;
+		height = f.height;
+		format = f.format;
+		fullRange = f.fullRange;
+		for (int i = 0; i < 4; i++) {
+			const uint32_t rows = planeRows(f.format, i, f.height);
+			const size_t stride =
+				f.linesize[i] > 0 ? (size_t)f.linesize[i] : 0;
+			linesize[i] = f.linesize[i];
+			if (!rows || !stride || !f.data[i]) {
+				plane[i].clear();
+				linesize[i] = 0;
+				continue;
+			}
+			plane[i].resize(stride * rows);
+			memcpy(plane[i].data(), f.data[i], stride * rows);
+		}
+	}
+
+	size_t bytes() const
+	{
+		size_t n = 0;
+		for (int i = 0; i < 4; i++)
+			n += plane[i].size();
+		return n;
+	}
+};
+
+// Hand one picture to OBS at `dueNs` on the wall clock. Shared by both
+// directions: everything about the OBS-facing frame is identical, only the
+// arithmetic that produced `dueNs` differs.
+void outputFrame(obs_source_t *source, uint32_t width, uint32_t height,
+		 FrameFormat format, bool fullRange,
+		 const uint8_t *const data[4], const int linesize[4],
+		 uint64_t dueNs)
+{
+	const video_format fmt = obsFormatFor(format);
+	if (fmt == VIDEO_FORMAT_NONE)
+		return;
+
+	struct obs_source_frame2 out = {};
+	out.width = width;
+	out.height = height;
+	out.timestamp = dueNs;
+	out.format = fmt;
+	out.range = fullRange ? VIDEO_RANGE_FULL : VIDEO_RANGE_PARTIAL;
+	for (int i = 0; i < 4 && i < MAX_AV_PLANES; i++) {
+		out.data[i] = const_cast<uint8_t *>(data[i]);
+		out.linesize[i] = (uint32_t)linesize[i];
+	}
+	video_format_get_parameters_for_format(height >= 720 ? VIDEO_CS_709
+							     : VIDEO_CS_601,
+					       out.range, fmt, out.color_matrix,
+					       out.color_range_min,
+					       out.color_range_max);
+
+	obs_source_output_video2(source, &out);
+}
+
+// Sleep until `dueNs`, or return false at once if the run has been aborted.
+// Split into short naps so a Stop is honoured inside a frame time instead of
+// after it: at 5% one frame is two thirds of a second of sleeping.
+bool waitUntil(uint64_t dueNs, const std::atomic<bool> &abort)
+{
+	while (!abort.load()) {
+		const uint64_t now = os_gettime_ns();
+		if (now >= dueNs)
+			return true;
+		const uint64_t left = dueNs - now;
+		std::this_thread::sleep_for(std::chrono::nanoseconds(
+			left > 10'000'000ULL ? 10'000'000ULL : left));
+	}
+	return false;
 }
 
 } // namespace
@@ -324,6 +442,21 @@ void ReplayChannel::joinWorker()
 bool ReplayChannel::play(int camIndex, int64_t inNs, int64_t outNs, int speedPct,
 			 std::string &errorOut, Source source)
 {
+	PlayRequest req;
+	req.camIndex = camIndex;
+	req.inNs = inNs;
+	req.outNs = outNs;
+	req.speedPct = speedPct;
+	req.source = source;
+	return play(req, errorOut);
+}
+
+bool ReplayChannel::play(const PlayRequest &req, std::string &errorOut)
+{
+	const int camIndex = req.camIndex;
+	const int64_t inNs = req.inNs;
+	const int64_t outNs = req.outNs;
+
 	if (outNs <= inNs) {
 		errorOut = "the range is empty";
 		return false;
@@ -334,7 +467,7 @@ bool ReplayChannel::play(int camIndex, int64_t inNs, int64_t outNs, int speedPct
 	int64_t presentIn = 0, presentOut = 0;
 	bool got = false;
 
-	if (source != Source::Segments) {
+	if (req.source != Source::Segments) {
 		got = PacketTap::instance().resolveRange(camIndex, inNs, outNs,
 							 clip, presentIn,
 							 presentOut);
@@ -343,7 +476,7 @@ bool ReplayChannel::play(int camIndex, int64_t inNs, int64_t outNs, int speedPct
 		else
 			errorOut = "that range is not held in full in the ring";
 	}
-	if (!got && source != Source::Ring) {
+	if (!got && req.source != Source::Ring) {
 		// Older than the RAM window: the same clip, read out of the
 		// files Branch Output already wrote.
 		got = segment_reader::readRange(camIndex, inNs, outNs, clip, cfg,
@@ -369,11 +502,16 @@ bool ReplayChannel::play(int camIndex, int64_t inNs, int64_t outNs, int speedPct
 		config_ = cfg;
 		presentInNs_ = presentIn;
 		presentOutNs_ = presentOut;
-		speedPct_ = speedPct < 5 ? 5 : (speedPct > 400 ? 400 : speedPct);
+		speedPct_ = req.speedPct < 5 ? 5
+					     : (req.speedPct > 400 ? 400
+								   : req.speedPct);
+		direction_ = req.direction;
+		maxFrames_ = req.maxFrames < 0 ? 0 : req.maxFrames;
 	}
 	{
 		std::lock_guard<std::mutex> lock(statsMutex_);
 		stats_ = PlaybackStats{};
+		stats_.reverse = req.direction == Direction::Reverse;
 	}
 
 	// Re-applied on every clip because the picture size changes WITH the
@@ -398,8 +536,10 @@ void ReplayChannel::playbackLoop()
 {
 	std::vector<LivePacket> clip;
 	StreamConfig cfg;
-	int64_t presentIn = 0;
+	int64_t presentIn = 0, presentOut = 0;
 	double speed = 1.0;
+	Direction direction = Direction::Forward;
+	int maxFrames = 0;
 	obs_source_t *source = nullptr;
 	std::function<void()> onFinished;
 
@@ -408,7 +548,10 @@ void ReplayChannel::playbackLoop()
 		clip = clip_;
 		cfg = config_;
 		presentIn = presentInNs_;
+		presentOut = presentOutNs_;
 		speed = speedPct_ / 100.0;
+		direction = direction_;
+		maxFrames = maxFrames_;
 		source = source_ ? obs_source_get_ref(source_) : nullptr;
 		// Taken at START, not at the end: a later play() may already have
 		// installed the next clip's callback by the time we get there.
@@ -432,11 +575,34 @@ void ReplayChannel::playbackLoop()
 		return;
 	}
 
-	// Audio only rides along at normal speed. the reference controller ships slow-motion audio as
-	// an option that is off by default, and pushing AAC frames at a stretched
-	// cadence without time-stretching them would just sound broken - so at
-	// anything other than 1x the clip plays silent until a time-stretcher
-	// lands (v1.x, alongside reverse).
+	// --- backwards: a different schedule, not a different decode ----------
+	// Everything above is shared (the source, the decoder, the failure path);
+	// everything below is the forward pacing, which reverse replaces wholesale.
+	if (direction == Direction::Reverse) {
+		const bool completed = playReverse(source, dec, clip, speed,
+						   presentIn, presentOut,
+						   maxFrames);
+		obs_source_release(source);
+		playing_.store(false);
+		// Reported unless we were ABORTED. "Reached its end" is not the
+		// condition: a run that could not show a single picture is a clip
+		// that is over, and a queue waiting on it would otherwise sit
+		// there forever (the same reason the decoder-open failure above
+		// reports). An abort is the caller's own doing and stays silent —
+		// abort_ is still set while this thread is unwinding, and
+		// joinWorker() only clears it after the join.
+		if ((completed || !abort_.load()) && onFinished)
+			onFinished();
+		return;
+	}
+
+	// Audio only rides along at normal speed, forwards. the reference controller ships
+	// slow-motion audio as an option that is off by default, and pushing AAC
+	// frames at a stretched cadence without time-stretching them would just
+	// sound broken — so at anything other than 1x, and backwards at any
+	// speed, the clip plays silent. Reversed audio would need the samples
+	// themselves turned round, buffer by buffer, and there is no resampler on
+	// this path.
 	const bool wantAudio = speed == 1.0 && !cfg.audioCodec.empty();
 	ReplayAudioDecoder adec;
 	if (wantAudio && !adec.open(cfg, err))
@@ -496,28 +662,11 @@ void ReplayChannel::playbackLoop()
 		// nothing more than stretching this offset.
 		const uint64_t due =
 			startWall + (uint64_t)((double)(f.masterNs - presentIn) / speed);
-		const uint64_t now = os_gettime_ns();
-		if (due > now) {
-			const uint64_t waitNs = due - now;
-			std::this_thread::sleep_for(std::chrono::nanoseconds(waitNs));
-		}
+		if (!waitUntil(due, abort_))
+			return;
 
-		struct obs_source_frame2 out = {};
-		out.width = f.width;
-		out.height = f.height;
-		out.timestamp = due;
-		out.format = fmt;
-		out.range = f.fullRange ? VIDEO_RANGE_FULL : VIDEO_RANGE_PARTIAL;
-		for (int i = 0; i < 4 && i < MAX_AV_PLANES; i++) {
-			out.data[i] = const_cast<uint8_t *>(f.data[i]);
-			out.linesize[i] = (uint32_t)f.linesize[i];
-		}
-		video_format_get_parameters_for_format(
-			f.height >= 720 ? VIDEO_CS_709 : VIDEO_CS_601, out.range,
-			fmt, out.color_matrix, out.color_range_min,
-			out.color_range_max);
-
-		obs_source_output_video2(source, &out);
+		outputFrame(source, f.width, f.height, f.format, f.fullRange,
+			    f.data, f.linesize, due);
 
 		if (pushed == 0)
 			firstNs = f.masterNs;
@@ -585,10 +734,334 @@ void ReplayChannel::playbackLoop()
 	obs_source_release(source);
 	playing_.store(false);
 
-	// Only a clip that reached its own end reports back: an aborted run was
-	// replaced or stopped by the caller, who already knows.
-	if (completed && onFinished)
+	// Everything except an ABORTED run reports back: an aborted clip was
+	// replaced or stopped by the caller, who already knows. A clip that broke
+	// half way through a decode did NOT reach its end and is still over, and
+	// staying silent there left the queue waiting on it forever — the same
+	// hole the decoder-open failure above was already fixed for.
+	if ((completed || !abort_.load()) && onFinished)
 		onFinished();
+}
+
+// ---------------------------------------------------------------------------
+// Reverse
+// ---------------------------------------------------------------------------
+//
+// Two threads, and the reason is a measurement, not a preference. The pictures
+// of one GOP can only be shown once the whole GOP has been decoded, so a single
+// thread alternates "decode ~30 frames" with "show ~30 frames": on an iGPU that
+// decode is ~100 ms, once per GOP, i.e. once per second of footage — a visible
+// freeze on air, every second, and worse the slower the review. So the decode
+// runs ahead on a thread of its own while this one paces the cache it already
+// has. Depth one: two caches in flight, each half the channel's budget.
+bool ReplayChannel::playReverse(obs_source_t *source, ReplayDecoder &dec,
+				const std::vector<LivePacket> &clip, double speed,
+				int64_t presentInNs, int64_t presentOutNs,
+				int maxFrames)
+{
+	// One decode pass' worth of pictures, ready to show.
+	struct ReadyChunk {
+		std::vector<CachedFrame> frames; // ascending by instant
+	};
+
+	// The size of a picture, measured. The plan divides the cache budget by
+	// it, so a guess here is a guess about how many decode passes the run
+	// costs: assuming the widest layout (I444) would halve the slice for the
+	// NV12 streams Branch Output's encoders actually produce and double the
+	// decoding for nothing. One keyframe is enough to learn it.
+	size_t frameBytes = 0;
+	{
+		ReplayDecoder::Frame probe;
+		std::string perr;
+		int fed = 0;
+		for (const LivePacket &p : clip) {
+			if (p.kind != PacketKind::Video)
+				continue;
+			if (!dec.send(p, perr) || ++fed > 16)
+				break;
+			if (dec.receive(probe)) {
+				for (int i = 0; i < 4; i++) {
+					const uint32_t rows = planeRows(
+						probe.format, i, probe.height);
+					if (rows && probe.linesize[i] > 0)
+						frameBytes += (size_t)probe.linesize[i] *
+							      rows;
+				}
+				break;
+			}
+		}
+		// Whatever the probe left behind is reference state for a GOP we
+		// are not going to show first.
+		dec.flush();
+	}
+	if (frameBytes == 0) {
+		// Nothing decoded: fall back to the widest layout so the budget
+		// still holds, rather than dividing by zero and planning to hold
+		// the whole clip.
+		const uint32_t w = dec.width() ? dec.width() : 1920;
+		const uint32_t h = dec.height() ? dec.height() : 1080;
+		frameBytes = (size_t)w * h * 3;
+	}
+
+	reverse_plan::Budget budget;
+	budget.frameBytes = frameBytes;
+	// HALF the channel's budget per pass: the producer is filling one cache
+	// while the consumer still holds the previous one.
+	budget.maxBytes = kReverseCacheBudgetBytes / 2;
+	const auto passes = reverse_plan::plan(clip, presentInNs, presentOutNs,
+					       budget);
+	// What this run INTENDS to show, which for a frame step is the cap and not
+	// the plan: the plan works in whole GOPs, so a step back plans thirty
+	// pictures and shows two. Reporting the plan there would make every step
+	// look like a run that lost twenty-eight frames — and "pushed == planned"
+	// is the property that catches a schedule losing a slice, so it has to hold
+	// for both kinds of run or it is worth nothing.
+	const int planned = maxFrames > 0
+				    ? std::min(maxFrames,
+					       reverse_plan::plannedFrames(passes))
+				    : reverse_plan::plannedFrames(passes);
+	obs_log(LOG_INFO,
+		"[channel] reverse: %zu decode pass(es), %d picture(s) to show, "
+		"%zu KiB each, %d per pass%s",
+		passes.size(), planned, frameBytes / 1024,
+		reverse_plan::framesPerChunk(budget),
+		maxFrames > 0 ? " (frame step)" : "");
+	{
+		std::lock_guard<std::mutex> lock(statsMutex_);
+		stats_.framesPlanned = planned;
+	}
+	if (passes.empty()) {
+		obs_log(LOG_WARNING,
+			"[channel] reverse: nothing to show in that range");
+		return false;
+	}
+
+	// --- the hand-off ------------------------------------------------------
+	// Both waits below are TIMED, and that is not belt-and-braces: abort_ is
+	// set by another thread (joinWorker) and cannot notify a condition
+	// variable that lives on this stack. An untimed wait on it is a thread
+	// asleep forever, and since joinWorker() then join()s this one — from the
+	// UI thread, through stop() — that sleep would be a frozen OBS. Polling it
+	// every 20 ms costs nothing and cannot hang.
+	constexpr auto kPoll = std::chrono::milliseconds(20);
+	std::mutex qm;
+	std::condition_variable qcv;
+	std::deque<ReadyChunk> ready;
+	bool decodeFailed = false;
+	bool producerDone = false;
+	// Set by the consumer when it has shown everything it was going to show
+	// (maxFrames), so the producer stops decoding passes nobody will see.
+	std::atomic<bool> stopDecoding{false};
+	size_t cachePeak = 0; // guarded by qm
+
+	std::thread producer([&]() {
+		// Whatever happens below — a decode error, an abort, the last
+		// pass — the consumer must be told, or it waits for a pass that
+		// will never come.
+		struct Announce {
+			std::mutex &m;
+			std::condition_variable &cv;
+			bool &flag;
+			~Announce()
+			{
+				std::lock_guard<std::mutex> lock(m);
+				flag = true;
+				cv.notify_all();
+			}
+		} announce{qm, qcv, producerDone};
+
+		ReplayDecoder::Frame frame;
+		std::string derr;
+		for (const reverse_plan::Chunk &pass : passes) {
+			if (abort_.load() || stopDecoding.load())
+				break;
+
+			// Each pass starts from a keyframe, so the decoder must
+			// forget the previous GOP: without the flush the first
+			// pictures of this one are predicted against references
+			// that belong to a different part of the timeline.
+			dec.flush();
+
+			ReadyChunk chunk;
+			chunk.frames.reserve((size_t)pass.frames);
+			const auto keep = [&](const ReplayDecoder::Frame &f) {
+				if (f.masterNs < pass.keepFromNs ||
+				    f.masterNs > pass.keepToNs)
+					return; // decoded only to build state
+				chunk.frames.emplace_back();
+				chunk.frames.back().adopt(f);
+			};
+
+			bool failed = false;
+			for (size_t i = pass.decodeStart;
+			     i < pass.decodeEnd && i < clip.size(); i++) {
+				if (abort_.load() || stopDecoding.load())
+					return; // nobody is waiting for this pass
+				if (!dec.send(clip[i], derr)) {
+					obs_log(LOG_ERROR, "[channel] reverse: %s",
+						derr.c_str());
+					failed = true;
+					break;
+				}
+				while (dec.receive(frame))
+					keep(frame);
+			}
+			if (!failed && dec.drain(derr)) {
+				while (dec.receive(frame))
+					keep(frame);
+			}
+			if (failed) {
+				std::lock_guard<std::mutex> lock(qm);
+				decodeFailed = true;
+				return; // ~Announce notifies
+			}
+
+			// Presentation order. The decoder emits in it already;
+			// sorting makes that an invariant of this code rather
+			// than an assumption about FFmpeg's output.
+			std::sort(chunk.frames.begin(), chunk.frames.end(),
+				  [](const CachedFrame &a, const CachedFrame &b) {
+					  return a.masterNs < b.masterNs;
+				  });
+
+			size_t bytes = 0;
+			for (const CachedFrame &f : chunk.frames)
+				bytes += f.bytes();
+
+			// Depth one: hold at most one finished pass while the
+			// consumer shows the previous one. This is the whole
+			// memory bound, and the pass is KEPT until there is room
+			// for it — a timed wait that gave up would drop a slice
+			// of the range and call the run complete.
+			for (bool handed = false; !handed;) {
+				std::unique_lock<std::mutex> lock(qm);
+				if (abort_.load() || stopDecoding.load())
+					return;
+				if (!ready.empty()) {
+					qcv.wait_for(lock, kPoll, [&]() {
+						return ready.empty() ||
+						       abort_.load() ||
+						       stopDecoding.load();
+					});
+					continue;
+				}
+				cachePeak = std::max(cachePeak, bytes);
+				ready.push_back(std::move(chunk));
+				qcv.notify_all();
+				handed = true;
+			}
+		}
+	});
+
+	// --- pacing, newest picture first --------------------------------------
+	uint64_t startWall = 0;
+	uint64_t pushed = 0;
+	int64_t firstNs = 0, lastNs = 0;
+	bool completed = true;
+	bool done = false;
+
+	while (!done) {
+		ReadyChunk chunk;
+		{
+			std::unique_lock<std::mutex> lock(qm);
+			while (ready.empty() && !producerDone && !abort_.load())
+				qcv.wait_for(lock, kPoll);
+			if (abort_.load()) {
+				completed = false;
+				break;
+			}
+			if (ready.empty()) {
+				// The producer is finished. Whether the run is
+				// too depends on WHY it finished.
+				if (decodeFailed)
+					completed = false;
+				break;
+			}
+			chunk = std::move(ready.front());
+			ready.pop_front();
+			qcv.notify_all(); // the producer may fill the slot again
+		}
+
+		for (size_t i = chunk.frames.size(); i-- > 0;) {
+			if (abort_.load()) {
+				completed = false;
+				done = true;
+				break;
+			}
+			const CachedFrame &f = chunk.frames[i];
+
+			// The clock starts on the FIRST picture actually shown,
+			// not when the run began: the first decode pass costs
+			// real time, and starting the clock before it would make
+			// every frame of the first GOP already late.
+			if (pushed == 0) {
+				startWall = os_gettime_ns();
+				firstNs = f.masterNs;
+			}
+			// Backwards, the offset grows as the instant falls.
+			const uint64_t due =
+				startWall +
+				(uint64_t)((double)(firstNs - f.masterNs) / speed);
+			if (!waitUntil(due, abort_)) {
+				completed = false;
+				done = true;
+				break;
+			}
+
+			const uint8_t *data[4] = {
+				f.plane[0].empty() ? nullptr : f.plane[0].data(),
+				f.plane[1].empty() ? nullptr : f.plane[1].data(),
+				f.plane[2].empty() ? nullptr : f.plane[2].data(),
+				f.plane[3].empty() ? nullptr : f.plane[3].data()};
+			outputFrame(source, f.width, f.height, f.format,
+				    f.fullRange, data, f.linesize, due);
+
+			lastNs = f.masterNs;
+			pushed++;
+			{
+				std::lock_guard<std::mutex> lock(statsMutex_);
+				stats_.framesPushed = pushed;
+				stats_.firstFrameNs = firstNs;
+				stats_.lastFrameNs = lastNs;
+			}
+
+			// A step back is a reverse run of exactly two pictures:
+			// the one on screen and the one before it. Stopping here
+			// rather than planning a two-frame range is what keeps
+			// the step exact — the plan works in whole GOPs.
+			if (maxFrames > 0 && pushed >= (uint64_t)maxFrames) {
+				done = true;
+				break;
+			}
+		}
+	}
+
+	stopDecoding.store(true);
+	qcv.notify_all();
+	if (producer.joinable())
+		producer.join();
+
+	size_t peak = 0;
+	{
+		std::lock_guard<std::mutex> lock(qm);
+		peak = cachePeak;
+	}
+	{
+		std::lock_guard<std::mutex> lock(statsMutex_);
+		stats_.framesPushed = pushed;
+		stats_.firstFrameNs = firstNs;
+		stats_.lastFrameNs = lastNs;
+		stats_.lastRunCompleted = completed;
+		stats_.cacheBytesPeak = peak;
+	}
+	obs_log(LOG_INFO,
+		"[channel] reverse: showed %llu picture(s) of %d, %lld ms → %lld ms, "
+		"cache peak %zu KiB%s",
+		(unsigned long long)pushed, planned,
+		(long long)(firstNs / 1000000), (long long)(lastNs / 1000000),
+		peak / 1024,
+		completed ? "" : (abort_.load() ? ", aborted" : ", incomplete"));
+	return completed;
 }
 
 ReplayChannel::PlaybackStats ReplayChannel::stats() const

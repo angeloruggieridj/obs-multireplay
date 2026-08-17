@@ -110,7 +110,8 @@ void PlaybackCoordinator::onClipFinished(uint64_t gen)
 
 bool PlaybackCoordinator::playEvents(const std::vector<int> &eventIds,
 				     int angle0, bool toOutput,
-				     std::string &errorOut, AngleMode mode)
+				     std::string &errorOut, AngleMode mode,
+				     ReplayChannel::Direction direction)
 {
 	// Which angles could go on air at all: a camera wired to that slot, live
 	// packets held for it, or footage anchored on it. The enabled flags outlive
@@ -174,8 +175,8 @@ bool PlaybackCoordinator::playEvents(const std::vector<int> &eventIds,
 		int pct = defPct;
 		if (ev.angles[a].speed >= 0)
 			pct = (int)std::lround(ev.angles[a].speed * 100.0);
-		items.push_back(
-			{ev.id, ev.tInNs, ev.tOutNs, a, std::clamp(pct, 5, 400)});
+		items.push_back({ev.id, ev.tInNs, ev.tOutNs, a,
+				 std::clamp(pct, 5, 400), direction});
 	};
 
 	// Set when Single mode had to refuse the angle it was asked for, so the
@@ -261,10 +262,13 @@ bool PlaybackCoordinator::playEvents(const std::vector<int> &eventIds,
 		}
 		obs_log(LOG_INFO,
 			"coordinator: queued %zu clip(s) from %zu event(s), "
-			"mode=%s, angles=[%s]",
+			"mode=%s, angles=[%s], direction=%s",
 			queue_.size(), eventIds.size(),
 			mode == AngleMode::AllEnabled ? "all-enabled" : "single",
-			angles.c_str());
+			angles.c_str(),
+			direction == ReplayChannel::Direction::Reverse
+				? "reverse"
+				: "forward");
 	}
 	// Reviewing, not watching the live edge: the preview must show the replay
 	// source from here on.
@@ -335,6 +339,8 @@ PlaybackCoordinator::PlayState PlaybackCoordinator::playState() const
 		s.angle1 = queue_[queuePos_].angle + 1; // 0-based → 1-based
 		s.queuePos = (int)queuePos_ + 1;
 		s.speedPct = queue_[queuePos_].speedPct;
+		s.reverse = queue_[queuePos_].direction ==
+			    ReplayChannel::Direction::Reverse;
 	}
 	return s;
 }
@@ -376,13 +382,20 @@ void PlaybackCoordinator::startNext()
 				       (void *)(uintptr_t)gen, false);
 		});
 		std::string err;
-		if (channel().play(item.angle, item.tInNs,
-						   item.tOutNs, item.speedPct,
-						   err)) {
+		ReplayChannel::PlayRequest req;
+		req.camIndex = item.angle;
+		req.inNs = item.tInNs;
+		req.outNs = item.tOutNs;
+		req.speedPct = item.speedPct;
+		req.direction = item.direction;
+		if (channel().play(req, err)) {
 			obs_log(LOG_INFO,
-				"coordinator: playing event %d angle %d (%d%%) "
+				"coordinator: playing event %d angle %d (%d%%%s) "
 				"[%zu/%zu]",
 				item.eventId, item.angle + 1, item.speedPct,
+				item.direction == ReplayChannel::Direction::Reverse
+					? ", reverse"
+					: "",
 				queuePos_ + 1, queue_.size());
 			return;
 		}

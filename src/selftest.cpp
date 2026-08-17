@@ -218,6 +218,14 @@ struct DockChecks {
 	bool idPadded = false;
 	bool doubleClickPlays = false;
 	bool frameStepAdvances = false;
+	// v1.3: the two backwards keys, on the real widgets. A step back is the
+	// one transport gesture that can look like it worked while doing nothing —
+	// played forwards from one frame back it would come to rest on the frame
+	// already on screen — so what is checked is that the picture the engine
+	// pushed is EARLIER than the one before the press, not merely that
+	// something played.
+	bool stepBackMovesPlayhead = false;
+	bool reverseButtonPlaysBackwards = false;
 	// M5: the preview is no longer one picture. There is a tile per camera
 	// plus one for the replay, and each is an obs_display of its own — so the
 	// two things that can go wrong are "the tiles were never built" and "a
@@ -651,9 +659,11 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 
 	MultiReplayDock *dock = nullptr;
 	QTimer *pollTimer = nullptr;
-	QPushButton *markBtn = nullptr; // the "-5s" preset
-	QPushButton *playBtn = nullptr; // "play selected"
-	QPushButton *stepBtn = nullptr; // "one frame forward"
+	QPushButton *markBtn = nullptr;     // the "-5s" preset
+	QPushButton *playBtn = nullptr;     // "play selected"
+	QPushButton *stepBtn = nullptr;     // "one frame forward"
+	QPushButton *stepBackBtn = nullptr; // "one frame back"
+	QPushButton *revBtn = nullptr;      // "play backwards"
 
 	runOnUi([&]() {
 		auto *main = static_cast<QMainWindow *>(
@@ -678,9 +688,14 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 		const QString mark5 = QStringLiteral("-5s");
 		const QString playSel = QString::fromUtf8(
 			obs_module_text("Dock.PlaySelected"));
-		// The frame step carries a glyph, not a translated word, so it is
-		// matched on the glyph the dock builds it with.
+		// The transport keys carry glyphs, not translated words, so they
+		// are matched on the glyph the dock builds them with. Exactly one
+		// button may carry each of these — that constraint is written down
+		// in the architecture notes and in buildTransport(), and this is what enforces
+		// it.
 		const QString step = QStringLiteral("⏭");
+		const QString stepBack = QStringLiteral("⏮");
+		const QString reverse = QStringLiteral("◀");
 		for (QPushButton *b : dock->findChildren<QPushButton *>()) {
 			if (b->text() == mark5)
 				markBtn = b;
@@ -688,16 +703,23 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 				playBtn = b;
 			else if (b->text() == step)
 				stepBtn = b;
+			else if (b->text() == stepBack)
+				stepBackBtn = b;
+			else if (b->text() == reverse)
+				revBtn = b;
 		}
 	});
 
-	c.found = dock && pollTimer && markBtn && playBtn && stepBtn;
+	c.found = dock && pollTimer && markBtn && playBtn && stepBtn &&
+		  stepBackBtn && revBtn && revBtn->isEnabled();
 	if (!c.found) {
 		obs_log(LOG_ERROR,
 			"[selftest] dock not usable (dock=%p timer=%p mark=%p "
-			"play=%p step=%p)",
+			"play=%p step=%p stepBack=%p reverse=%p%s)",
 			(void *)dock, (void *)pollTimer, (void *)markBtn,
-			(void *)playBtn, (void *)stepBtn);
+			(void *)playBtn, (void *)stepBtn, (void *)stepBackBtn,
+			(void *)revBtn,
+			(revBtn && !revBtn->isEnabled()) ? " DISABLED" : "");
 		return c;
 	}
 
@@ -1815,6 +1837,86 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 			"%lld ms (+%lld ms)",
 			(long long)(first / 1000000), (long long)(second / 1000000),
 			(long long)((second - first) / 1000000));
+
+		// --- ...and one frame BACK really moves the picture back (v1.3) ---
+		// Measured against the frame the forward steps left on screen, which
+		// is what makes this a step and not just "something played": the
+		// obvious implementation — play a short range forwards starting one
+		// frame earlier — comes to rest on the frame ALREADY on screen and
+		// would pass any check that only asked whether a clip ran.
+		if (c.frameStepAdvances) {
+			runOnUi([&]() { stepBackBtn->click(); });
+			int64_t back = second;
+			for (int i = 0; i < 60; i++) {
+				const auto st = chan.stats();
+				if (st.framesPushed > 0 && st.reverse &&
+				    st.lastFrameNs < second) {
+					back = st.lastFrameNs;
+					break;
+				}
+				std::this_thread::sleep_for(
+					std::chrono::milliseconds(50));
+			}
+			for (int i = 0; i < 20 && chan.playing(); i++)
+				std::this_thread::sleep_for(
+					std::chrono::milliseconds(50));
+			const auto st = chan.stats();
+			// Exactly two pictures: the one on screen and the one
+			// before it. More would mean the step became a short
+			// reverse CLIP, which is a different (and jarring) gesture.
+			c.stepBackMovesPlayhead = back < second && st.reverse &&
+						  st.framesPushed >= 1 &&
+						  st.framesPushed <= 2;
+			obs_log(c.stepBackMovesPlayhead ? LOG_INFO : LOG_ERROR,
+				"[selftest] dock: one frame back went %lld ms → "
+				"%lld ms (-%lld ms) in %llu picture(s), reverse=%s",
+				(long long)(second / 1000000),
+				(long long)(back / 1000000),
+				(long long)((second - back) / 1000000),
+				(unsigned long long)st.framesPushed,
+				st.reverse ? "yes" : "NO");
+		}
+		chan.stop();
+	}
+
+	// --- the ◀ key plays the event backwards, through the queue ------------
+	// Not straight to the engine: the point of routing reverse through the
+	// coordinator is that it keeps the queue, the "to output" scene switch and
+	// the finish callback, so what is checked is that the QUEUE reports a
+	// reverse clip on air and that the instants really descend.
+	{
+		auto &chan = ReplayChannel::instance();
+		auto &pc = PlaybackCoordinator::instance();
+		pc.stopEvents();
+		std::this_thread::sleep_for(std::chrono::milliseconds(150));
+		runOnUi([&]() { revBtn->click(); });
+
+		bool sawReverse = false;
+		int64_t highest = 0, lowest = 0;
+		int samples = 0;
+		for (int i = 0; i < 80; i++) {
+			const auto ps = pc.playState();
+			const auto st = chan.stats();
+			if (ps.active && ps.reverse)
+				sawReverse = true;
+			if (st.framesPushed > 0 && st.reverse) {
+				if (samples == 0)
+					highest = st.firstFrameNs;
+				lowest = st.lastFrameNs;
+				samples++;
+			}
+			if (sawReverse && samples > 0 && highest > lowest)
+				break;
+			std::this_thread::sleep_for(std::chrono::milliseconds(50));
+		}
+		c.reverseButtonPlaysBackwards = sawReverse && samples > 0 &&
+						highest > lowest;
+		obs_log(c.reverseButtonPlaysBackwards ? LOG_INFO : LOG_ERROR,
+			"[selftest] dock: ◀ played %lld ms → %lld ms, queue says "
+			"reverse=%s",
+			(long long)(highest / 1000000),
+			(long long)(lowest / 1000000), sawReverse ? "yes" : "NO");
+		pc.stopEvents();
 		chan.stop();
 	}
 
@@ -3013,6 +3115,12 @@ void runSelfTest()
 	bool slowMotionPaced = false;
 	bool filePlaysFromDisk = false;
 	bool fileMatchesRing = false;
+	// v1.3: backwards. Nothing decodes backwards, so this is a bounded GOP
+	// cache shown newest-first — and both halves of that sentence are checks.
+	bool reversePlaysBackwards = false;
+	bool reverseCacheWithinBudget = false;
+	int reverseFrames = 0;
+	int reversePeakMiB = 0;
 	int fileFrames = 0;
 	int playedFrames = 0;
 	int audioBuffers = 0;
@@ -3164,6 +3272,59 @@ void runSelfTest()
 			} else {
 				obs_log(LOG_ERROR,
 					"[selftest] file playback failed: %s",
+					perr.c_str());
+			}
+
+			// Pass 4 (v1.3) — the same two seconds, BACKWARDS.
+			//
+			// Three things are asserted at once, and none of them is
+			// visible from outside the engine. That the pictures come
+			// out newest-first (first > last, over more than one
+			// picture, so it cannot be a one-frame coincidence). That
+			// the schedule loses nothing: what the plan said it would
+			// show is what OBS was handed, which is THE failure mode of
+			// a GOP-cached reverse — a run that skips a slice still
+			// plays, still runs backwards, and simply drops a third of
+			// a second. And that the picture cache stayed inside its
+			// budget, because "it works on a 32 GB desktop" is not the
+			// claim.
+			const int64_t revInNs = clipOutNs - 2'000'000'000LL;
+			ReplayChannel::PlayRequest rev;
+			rev.camIndex = firstCam;
+			rev.inNs = revInNs;
+			rev.outNs = clipOutNs;
+			rev.speedPct = 100;
+			rev.direction = ReplayChannel::Direction::Reverse;
+			if (chan.play(rev, perr)) {
+				while (chan.playing())
+					std::this_thread::sleep_for(
+						std::chrono::milliseconds(50));
+				const auto st = chan.stats();
+				reverseFrames = (int)st.framesPushed;
+				reversePeakMiB =
+					(int)(st.cacheBytesPeak / (1024 * 1024));
+				reversePlaysBackwards =
+					st.lastRunCompleted && st.reverse &&
+					reverseFrames > 1 &&
+					st.firstFrameNs > st.lastFrameNs &&
+					st.framesPlanned > 1 &&
+					reverseFrames == st.framesPlanned;
+				reverseCacheWithinBudget =
+					st.cacheBytesPeak > 0 &&
+					st.cacheBytesPeak <=
+						ReplayChannel::kReverseCacheBudgetBytes;
+				obs_log(reversePlaysBackwards ? LOG_INFO : LOG_ERROR,
+					"[selftest] reverse: %d picture(s) of %d "
+					"planned, %lld ms → %lld ms, cache peak "
+					"%d MiB (budget %d MiB)",
+					reverseFrames, st.framesPlanned,
+					(long long)(st.firstFrameNs / 1000000),
+					(long long)(st.lastFrameNs / 1000000),
+					reversePeakMiB,
+					(int)(ReplayChannel::kReverseCacheBudgetBytes /
+					      (1024 * 1024)));
+			} else {
+				obs_log(LOG_ERROR, "[selftest] reverse failed: %s",
 					perr.c_str());
 			}
 
@@ -3468,7 +3629,11 @@ void runSelfTest()
 			  ringLast5s && passRingCrossAngle && decodeOk &&
 			  startsOnMarkedFrame && playsIntoObs && audioPlays &&
 			  slowMotionPaced && segmentsOk && filePlaysFromDisk &&
-			  fileMatchesRing && dockChecks.found &&
+			  fileMatchesRing && reversePlaysBackwards &&
+			  reverseCacheWithinBudget &&
+			  dockChecks.stepBackMovesPlayhead &&
+			  dockChecks.reverseButtonPlaysBackwards &&
+			  dockChecks.found &&
 			  dockChecks.pollRuns && dockChecks.pollResponsive &&
 			  dockChecks.pollQuiet && dockChecks.markOnTimeline &&
 			  dockChecks.playsMark && dockChecks.playheadInsideClip &&
@@ -3560,6 +3725,15 @@ void runSelfTest()
 	obs_data_set_bool(checks, "plays_from_disk", filePlaysFromDisk);
 	obs_data_set_bool(checks, "disk_matches_ring", fileMatchesRing);
 	obs_data_set_int(root, "disk_played_frames", fileFrames);
+	// v1.3: backwards. The pictures descend and the plan loses none of them...
+	obs_data_set_bool(checks, "reverse_plays_backwards", reversePlaysBackwards);
+	// ...and the picture cache stayed inside the budget it was sized for. A
+	// reverse that works by holding the whole clip works on the machine it was
+	// written on and nowhere else.
+	obs_data_set_bool(checks, "reverse_cache_within_budget",
+			  reverseCacheWithinBudget);
+	obs_data_set_int(root, "reverse_played_frames", reverseFrames);
+	obs_data_set_int(root, "reverse_cache_peak_mib", reversePeakMiB);
 	// The dock: found and clicked, not just compiled (see runDockChecks).
 	obs_data_set_bool(checks, "dock_registered", dockChecks.found);
 	obs_data_set_bool(checks, "dock_poll_runs", dockChecks.pollRuns);
@@ -3613,6 +3787,14 @@ void runSelfTest()
 			  dockChecks.doubleClickPlays);
 	obs_data_set_bool(checks, "dock_frame_step_advances",
 			  dockChecks.frameStepAdvances);
+	// v1.3: and the two backwards keys, clicked for real. The step back is
+	// measured against the frame the forward steps left on screen — the naive
+	// implementation lands on that very frame, and would pass a check that only
+	// asked whether a clip ran.
+	obs_data_set_bool(checks, "dock_step_back_moves_playhead",
+			  dockChecks.stepBackMovesPlayhead);
+	obs_data_set_bool(checks, "dock_reverse_button_plays_backwards",
+			  dockChecks.reverseButtonPlaysBackwards);
 	// M5: a preview per angle plus the replay, each with a live display, and
 	// none of them stranded on a dead native window.
 	obs_data_set_bool(checks, "dock_multiview_built",

@@ -16,13 +16,16 @@ subtly wrong on air. So the properties pinned here are:
 
 #include "master-timeline.hpp"
 #include "packet-ring.hpp"
+#include "reverse-plan.hpp"
 #include "segment-anchor.hpp"
 #include "session-clock.hpp"
 #include "timeline-map.hpp"
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <limits>
+#include <vector>
 
 using namespace multireplay;
 
@@ -612,6 +615,193 @@ static void test_timeline_empty_is_empty()
 	CHECK(m.spanCount() == 0);
 }
 
+// --- reverse: the schedule that plays a range backwards ---------------------
+//
+// Reverse is the one feature whose correctness is arithmetic and whose failure
+// mode is invisible: a schedule that loses the middle slice of a range still
+// plays, still runs backwards, and simply skips a third of a second. So what is
+// pinned here is coverage (every wanted frame is shown exactly once), order
+// (strictly descending across GOP boundaries), and the memory bound (no pass
+// larger than the cache, whatever the GOP).
+
+// 3 GOPs of 10 frames at 100 ms, keyframes at 0 / 1000 / 2000 ms.
+static std::vector<LivePacket> reverseClip()
+{
+	std::vector<LivePacket> clip;
+	for (int i = 0; i < 30; i++)
+		clip.push_back(vpkt(ms(i * 100), i % 10 == 0));
+	return clip;
+}
+
+// Every instant the plan will show, in the order it will show them.
+static std::vector<int64_t>
+reverseOrder(const std::vector<reverse_plan::Chunk> &chunks,
+	     const std::vector<LivePacket> &clip)
+{
+	std::vector<int64_t> shown;
+	for (const auto &c : chunks) {
+		// What one decode pass keeps: the frames of its GOP inside the
+		// keep window, shown newest-first.
+		std::vector<int64_t> kept;
+		for (size_t i = c.decodeStart; i < c.decodeEnd && i < clip.size();
+		     i++) {
+			const LivePacket &p = clip[i];
+			if (p.kind != PacketKind::Video)
+				continue;
+			if (p.masterNs >= c.keepFromNs && p.masterNs <= c.keepToNs)
+				kept.push_back(p.masterNs);
+		}
+		std::sort(kept.begin(), kept.end());
+		for (size_t i = kept.size(); i-- > 0;)
+			shown.push_back(kept[i]);
+	}
+	return shown;
+}
+
+static void test_reverse_shows_every_frame_once_descending()
+{
+	const auto clip = reverseClip();
+	reverse_plan::Budget b;
+	b.frameBytes = 1000;
+	b.maxBytes = 1'000'000; // room for the whole GOP: one pass each
+	const auto chunks = reverse_plan::plan(clip, 0, ms(2900), b);
+
+	CHECK(chunks.size() == 3); // one pass per GOP
+	CHECK(reverse_plan::plannedFrames(chunks) == 30);
+
+	const auto shown = reverseOrder(chunks, clip);
+	CHECK(shown.size() == 30);
+	// Strictly descending, start to finish - which is also what proves the
+	// GOPs themselves are walked from the last to the first. A plan that got
+	// the GOP order wrong would still be descending WITHIN each pass.
+	bool descending = true;
+	for (size_t i = 1; i < shown.size(); i++)
+		if (shown[i] >= shown[i - 1])
+			descending = false;
+	CHECK(descending);
+	CHECK(shown.front() == ms(2900));
+	CHECK(shown.back() == 0);
+}
+
+static void test_reverse_respects_the_requested_range()
+{
+	const auto clip = reverseClip();
+	reverse_plan::Budget b;
+	b.frameBytes = 1000;
+	b.maxBytes = 1'000'000;
+	// Straddles two GOPs, and starts and ends in the middle of them.
+	const auto chunks = reverse_plan::plan(clip, ms(850), ms(1250), b);
+
+	const auto shown = reverseOrder(chunks, clip);
+	// 850..1250 with a frame every 100 ms is 900, 1000, 1100, 1200: the
+	// endpoints are inclusive but they are not frames, and nothing outside
+	// the range is shown to round the count up.
+	CHECK(shown.size() == 4);
+	CHECK(shown.front() == ms(1200));
+	CHECK(shown.back() == ms(900));
+	// The frames before the IN are still DECODED (they are the reference
+	// state of that GOP), so the pass must start at the keyframe and not at
+	// the IN - the difference between a correct first picture and a smear.
+	CHECK(chunks.back().decodeStart == 0);
+	CHECK(chunks.back().keepFromNs == ms(900));
+}
+
+static void test_reverse_splits_a_gop_too_big_for_the_cache()
+{
+	const auto clip = reverseClip();
+	reverse_plan::Budget b;
+	b.frameBytes = 1000;
+	b.maxBytes = 4000; // four pictures per pass
+	CHECK(reverse_plan::framesPerChunk(b) == 4);
+
+	const auto chunks = reverse_plan::plan(clip, 0, ms(2900), b);
+	// 10 frames per GOP in slices of 4 = 4+4+2, three passes per GOP.
+	CHECK(chunks.size() == 9);
+	for (const auto &c : chunks)
+		CHECK(c.frames <= 4);
+	// Re-decoded, not truncated: nothing is lost, it just costs more passes.
+	CHECK(reverse_plan::plannedFrames(chunks) == 30);
+
+	const auto shown = reverseOrder(chunks, clip);
+	CHECK(shown.size() == 30);
+	bool descending = true;
+	for (size_t i = 1; i < shown.size(); i++)
+		if (shown[i] >= shown[i - 1])
+			descending = false;
+	CHECK(descending);
+	// Every pass of a split GOP starts from that GOP's keyframe, because a
+	// slice in the middle still needs the frames before it decoded.
+	CHECK(chunks[0].decodeStart == 20);
+	CHECK(chunks[1].decodeStart == 20);
+	CHECK(chunks[2].decodeStart == 20);
+}
+
+static void test_reverse_budget_edges()
+{
+	// A cache too small for even one picture still shows one at a time:
+	// degraded, not refused.
+	reverse_plan::Budget tiny;
+	tiny.frameBytes = 3'110'400; // 1080p NV12
+	tiny.maxBytes = 1000;
+	CHECK(reverse_plan::framesPerChunk(tiny) == 1);
+
+	// No budget at all = unbounded, which is what the pure planner means by
+	// zero. The channel always passes one.
+	reverse_plan::Budget none;
+	CHECK(reverse_plan::framesPerChunk(none) == 0);
+
+	// The real numbers: half of the channel's 160 MiB budget, 1080p NV12 =
+	// 3.1 MB a picture, so a 1-second GOP at 30 fps fits in one pass. This is
+	// the case the whole design is sized for, and it must not silently become
+	// two passes.
+	reverse_plan::Budget real;
+	real.frameBytes = 3'110'400;
+	real.maxBytes = 80u * 1024u * 1024u;
+	CHECK(reverse_plan::framesPerChunk(real) >= 25);
+
+	// Nothing in the range, and a backwards range: an empty plan, not a
+	// crash and not a plan that shows something.
+	const auto clip = reverseClip();
+	reverse_plan::Budget b;
+	b.frameBytes = 1000;
+	b.maxBytes = 1'000'000;
+	CHECK(reverse_plan::plan(clip, ms(9000), ms(9500), b).empty());
+	CHECK(reverse_plan::plan(clip, ms(500), ms(100), b).empty());
+	CHECK(reverse_plan::plan({}, 0, ms(100), b).empty());
+
+	// A span with no keyframe at all has no reverse: there is nothing to
+	// decode from, and inventing a start would show predicted frames against
+	// references that were never decoded.
+	std::vector<LivePacket> noKey;
+	for (int i = 0; i < 5; i++)
+		noKey.push_back(vpkt(ms(i * 100), false));
+	CHECK(reverse_plan::plan(noKey, 0, ms(400), b).empty());
+}
+
+static void test_reverse_ignores_audio_packets()
+{
+	// Audio interleaves with video in the ring, and the picture cache must
+	// not count it: an audio packet inside the keep window is not a frame,
+	// and a pass sized as though it were would hold fewer pictures than the
+	// budget allows.
+	std::vector<LivePacket> clip;
+	for (int i = 0; i < 10; i++) {
+		clip.push_back(vpkt(ms(i * 100), i == 0));
+		clip.push_back(apkt(ms(i * 100) + ms(10)));
+	}
+	reverse_plan::Budget b;
+	b.frameBytes = 1000;
+	b.maxBytes = 1'000'000;
+	const auto chunks = reverse_plan::plan(clip, 0, ms(900), b);
+	CHECK(chunks.size() == 1);
+	CHECK(chunks[0].frames == 10);
+	// The pass spans the whole GOP including its audio, which the decoder
+	// ignores - trimming it would be an optimisation with a demuxing bug
+	// waiting inside it.
+	CHECK(chunks[0].decodeEnd == clip.size());
+	CHECK(reverseOrder(chunks, clip).size() == 10);
+}
+
 int main()
 {
 	test_rescale();
@@ -639,6 +829,12 @@ int main()
 	test_session_clock_across_sessions();
 	test_session_clock_identity_when_unseated();
 	test_session_clock_does_not_overflow();
+
+	test_reverse_shows_every_frame_once_descending();
+	test_reverse_respects_the_requested_range();
+	test_reverse_splits_a_gop_too_big_for_the_cache();
+	test_reverse_budget_edges();
+	test_reverse_ignores_audio_packets();
 
 	test_timeline_joins_two_takes();
 	test_timeline_gap_has_no_position_of_its_own();

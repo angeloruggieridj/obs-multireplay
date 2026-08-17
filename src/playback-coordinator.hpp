@@ -53,9 +53,18 @@ public:
 	// per-angle override if set, else the default (slider) speed. `angle0`
 	// (0-based) selects the angle in Single mode, and is the fallback in
 	// AllEnabled mode for an event with no angle enabled at all.
+	//
+	// `direction` is the reference controller's reverse key: the SAME queue, the same angles in
+	// the same order, each clip played from its OUT back to its IN. It lives
+	// here and not only in the dock so that reverse gets the queue, the
+	// "to output" scene switch and the finish callback for free — a reverse
+	// that bypassed all three would be a second playback path to keep
+	// correct.
 	bool playEvents(const std::vector<int> &eventIds, int angle0,
 			bool toOutput, std::string &errorOut,
-			AngleMode mode = AngleMode::AllEnabled);
+			AngleMode mode = AngleMode::AllEnabled,
+			ReplayChannel::Direction direction =
+				ReplayChannel::Direction::Forward);
 	bool playLastEvent(int angle0, bool toOutput, std::string &errorOut);
 
 	// broadcast replayStopEvents.
@@ -93,6 +102,10 @@ public:
 		// [2,2] both queue two clips. Nothing outside could see the
 		// queue's shape, so no test could ever fail on a wrong one.
 		std::vector<int> queuedAngles;
+		// Playing backwards. The dock puts it on the green band, because
+		// a clip running backwards at 50% and one running forwards at
+		// 50% are the same numbers and not the same picture.
+		bool reverse = false;
 	};
 	PlayState playState() const;
 
@@ -134,6 +147,11 @@ private:
 		int64_t tOutNs;
 		int angle;    // 0-based
 		int speedPct; // 5..400, 100 = 1x
+		// Per ITEM, not per queue: it is the clip that is played
+		// backwards, and skipToNext() moving between items must not
+		// change what direction the next one runs in.
+		ReplayChannel::Direction direction =
+			ReplayChannel::Direction::Forward;
 	};
 
 	mutable std::mutex mutex_;
