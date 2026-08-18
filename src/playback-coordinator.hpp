@@ -239,6 +239,13 @@ private:
 	};
 
 	mutable std::mutex mutex_;
+	// The last answer playState() managed to compute, and a mutex of its own
+	// that is NEVER held across anything slow. mutex_ above is held across
+	// startNext(), which decodes a clip; a caller that finds it busy takes this
+	// one instead and gets an answer a tick old rather than waiting half a
+	// second. See playState().
+	mutable std::mutex snapMutex_;
+	mutable PlayState snapshot_;
 	std::vector<QueueItem> queue_;
 	size_t queuePos_ = 0;
 	bool active_ = false;

@@ -523,9 +523,28 @@ bool PlaybackCoordinator::queueActive() const
 	return active_;
 }
 
+// WHAT IS ON AIR — asked by the dock's poll thirty times a second, and it must
+// never be able to park the UI thread.
+//
+// It used to take mutex_ outright, and mutex_ is held across startNext(), which
+// calls ReplayChannel::play(): that joins the previous playback thread and
+// materialises and decodes the packets for the clip. Measured by the dock's own
+// phase accounting, that is a poll() tick of up to 1049 ms with 539 ms of it
+// spent right here — a second in which Qt processes no paint events, which is
+// the black, frozen panel by a second route.
+//
+// So the lock is only TRIED. When it is held, the last answer is returned
+// instead: it is a few milliseconds old and it describes the clip that is still
+// on screen, because the thing making us wait is the NEXT one being prepared.
+// A slightly stale readout of the green band costs nothing; a frozen interface
+// during a match costs the match.
 PlaybackCoordinator::PlayState PlaybackCoordinator::playState() const
 {
-	std::lock_guard<std::mutex> lock(mutex_);
+	std::unique_lock<std::mutex> lock(mutex_, std::try_to_lock);
+	if (!lock.owns_lock()) {
+		std::lock_guard<std::mutex> snap(snapMutex_);
+		return snapshot_;
+	}
 	PlayState s;
 	s.active = active_;
 	s.queued = (int)queue_.size();
@@ -552,6 +571,13 @@ PlaybackCoordinator::PlayState PlaybackCoordinator::playState() const
 		s.speedPct = queue_[queuePos_].speedPct;
 		s.reverse = queue_[queuePos_].direction ==
 			    ReplayChannel::Direction::Reverse;
+	}
+	// Kept for the next caller that finds the lock busy. Refreshed on every
+	// successful read — the dock's own 30 Hz poll — so it is never more than a
+	// tick behind, and nothing else has to remember to publish it.
+	{
+		std::lock_guard<std::mutex> snap(snapMutex_);
+		snapshot_ = s;
 	}
 	return s;
 }

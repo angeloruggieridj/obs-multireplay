@@ -146,6 +146,18 @@ $collectionFiles = @(Get-ChildItem -Path $scenesDir -Filter '*.json' -ErrorActio
                      Where-Object { $_.BaseName -ne $testCollection } |
                      Sort-Object LastWriteTime -Descending)
 
+# WHICH COLLECTION THE OPERATOR IS ACTUALLY ON, decided here and forced back at
+# the end. Not copied from global.ini, and this is the correction to a fault
+# this script caused: OBS rewrites global.ini on exit with the collection IT was
+# on, which is the gate's. One run that ended without the restore left the file
+# naming MRSelfTest; the gate had already deleted it, so OBS fell back to some
+# other collection at the next launch — one whose C1 has no file in it — wrote
+# THAT into global.ini, and every run afterwards backed the wrong name up and
+# put it faithfully back. Restoring a file the program under test rewrites is
+# not restoring anything; the name has to be decided and re-asserted.
+$operatorCollection = if ($collectionFiles.Count -gt 0) { $collectionFiles[0].BaseName } else { '' }
+if ($operatorCollection) { Step "Operator collection is '$operatorCollection' — it will be restored at the end" }
+
 $wantedSources = @()
 if ($Sources) { $wantedSources = $Sources.Split(',') | ForEach-Object { $_.Trim() } }
 
@@ -199,6 +211,36 @@ foreach ($want in $wantedSources) {
     # Without its filters: a Branch Output filter carried over would arm a
     # recording nobody asked for, writing to a path this run does not own.
     $found.PSObject.Properties.Remove('filters')
+    # ...and without the operator's hotkey bindings, which belong to his
+    # collection and not to a throwaway one.
+    $found.PSObject.Properties.Remove('hotkeys')
+
+    # A MEDIA SOURCE IS NORMALISED, NOT JUST COPIED. Copying an OBS source
+    # object verbatim carries whatever the operator's collection happens to
+    # hold, and what it holds is not always complete: C2 came across with
+    # local_file set and NO is_local_file, which leaves the flag to a default
+    # rather than to a statement. A gate that plays the wrong thing — or
+    # nothing — because of an implied default is a gate reporting on something
+    # other than the plugin. If it names a file, it says so explicitly.
+    if ($found.id -eq 'ffmpeg_source' -and $found.settings) {
+        $path = $found.settings.local_file
+        if ($path) {
+            if (-not (Test-Path $path)) {
+                Fail "source '$want' points at a file that is not there: $path"
+                Restore-OperatorEnvironment
+                exit 2
+            }
+            $found.settings | Add-Member -NotePropertyName is_local_file -NotePropertyValue $true -Force
+            # Looping, because the gate records for longer than these clips run
+            # and an angle that reaches its end stops producing packets — which
+            # this gate would report, correctly, as a dead angle.
+            $found.settings | Add-Member -NotePropertyName looping -NotePropertyValue $true -Force
+        } else {
+            Fail "source '$want' is a media source with no file in it — nothing to record"
+            Restore-OperatorEnvironment
+            exit 2
+        }
+    }
     $collection.sources += $found
     $copied += "$want (from $foundIn)"
     # bounds_type 2 (SCALE_INNER) over the full canvas, centred: C1 and C2 are
@@ -262,6 +304,17 @@ for ($i = 0; $i -lt 8; $i++) {
     videoBitrateKbps   = 4000
     audioBitrateKbps   = 320
     videoEncoderId     = ''
+    # The two things the run could not do without these, both reported from a
+    # watched run: the big preview stayed black because follow-live mirrors
+    # cameras[angle].sourceName and the slots were empty, and "to output" never
+    # took the Program because outputSceneName was blank — with no scene named,
+    # the coordinator deliberately does not touch it. These name the scenes the
+    # collection above carries, one per bay.
+    outputSceneName    = 'MRReplay A'
+    outputSceneNameB   = 'MRReplay B'
+    enableChannelB     = $true
+    toOutputOnPlay     = $true
+    doubleClickPlays   = $true
     replaySourceName   = ''
     musicSourceName    = ''
     eventIdDigits      = 4
@@ -282,6 +335,15 @@ function Restore-OperatorEnvironment {
     if (Test-Path $iniBackup) {
         Copy-Item $iniBackup $globalIni -Force -ErrorAction SilentlyContinue
         Remove-Item $iniBackup -Force -ErrorAction SilentlyContinue
+    }
+    # The collection name is ASSERTED, not restored: the backup was taken from a
+    # file OBS rewrites on exit, so it can already carry the gate's own name or a
+    # stale one. See the note where $operatorCollection is decided.
+    if ($operatorCollection -and (Test-Path $globalIni)) {
+        (Get-Content $globalIni) `
+            -replace '^SceneCollection=.*$', "SceneCollection=$operatorCollection" `
+            -replace '^SceneCollectionFile=.*$', "SceneCollectionFile=$operatorCollection" |
+            Set-Content $globalIni -Encoding UTF8
     }
 }
 trap { Restore-OperatorEnvironment; break }

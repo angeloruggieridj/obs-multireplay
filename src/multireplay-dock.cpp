@@ -5039,6 +5039,9 @@ void MultiReplayDock::poll()
 		// dock went unresponsive for exactly as long as the measurement
 		// took (the gate caught it: a >> press that never got serviced).
 		if (refreshStatus || diskSpans_.empty()) {
+			// Prime suspect for a poll() of most of a second: the
+			// watcher holds this lock WHILE IT DEMUXES a file.
+			Phase _ph(this, "diskSpans");
 			diskSpans_.clear();
 			for (const auto &[s, e] :
 			     SegmentIndex::instance().recordedSpans())
@@ -5128,6 +5131,7 @@ void MultiReplayDock::poll()
 	    (tableOriginNs_ == kNoInstant ||
 	     std::abs(eventOriginNs_ - tableOriginNs_) > 1'000'000'000LL)) {
 		tableOriginNs_ = eventOriginNs_;
+		Phase _ph(this, "refreshEvents/origin");
 		refreshEvents();
 	}
 
@@ -5366,6 +5370,11 @@ void MultiReplayDock::poll()
 		// picture, a different angle, or the 4 Hz revalidation that catches a
 		// source renamed, deleted or replaced by a scene-collection change.
 		if (live != previewLive_ || cam0 != previewCam0_ || refreshStatus) {
+			// Fourth suspect: a name lookup takes libobs' global source
+			// mutex, and the coordinator holds it across a scene switch —
+			// which is exactly what was happening in the window where a
+			// tick was measured at 964 ms.
+			Phase _ph(this, "previewSource");
 			obs_source_t *next = nullptr;
 			if (live) {
 				const std::string name =
@@ -5523,8 +5532,14 @@ void MultiReplayDock::poll()
 		applyChannelBVisibility();
 	}
 
+	// The other prime suspect: statusJson() calls std::filesystem::space() on
+	// the session folder, and on a network share that is a round trip.
+	std::unique_ptr<Phase> _statusPh;
+	if (refreshStatus && nowNs >= noticeUntilNs_)
+		_statusPh = std::make_unique<Phase>(this, "statusJson");
 	Data st((refreshStatus && nowNs >= noticeUntilNs_) ? core.statusJson()
 							  : std::string());
+	_statusPh.reset();
 	if (st) {
 		QString ver = obs_data_get_string(st, "version");
 		int64_t mins = obs_data_get_int(st, "estimatedMinutesRemaining");
@@ -5562,7 +5577,10 @@ void MultiReplayDock::poll()
 	}
 
 	// The green channel strip and the text printed on the position bar.
-	updateChannelStrip();
+	{
+		Phase _ph(this, "channelStrip");
+		updateChannelStrip();
+	}
 
 	// --- project label ---
 	// Same rate as the status line: it only changes when the operator opens
@@ -5585,6 +5603,9 @@ void MultiReplayDock::poll()
 	uint64_t ev = EventStore::instance().version();
 	if (ev != lastEventVersion_) {
 		lastEventVersion_ = ev;
+		// Third suspect, and this one is our own arithmetic: the table is
+		// rebuilt with real widgets in every camera cell.
+		Phase _ph(this, "refreshEvents/version");
 		refreshAngles();
 		refreshEvents(); // rebuilds markerNs_ (raw ns pairs)
 	} else if (eventsDirty_ || commentsDirty_) {
@@ -5660,6 +5681,17 @@ void MultiReplayDock::poll()
 // ...plus the repaint census, as a RATE. A run where the panel is idle and the
 // bars are still asking for tens of repaints a second means the guards have a
 // hole in them and this document's diagnosis was incomplete.
+// The worst single phase of the window, kept by cost. Not a sum per phase: what
+// has to come off this thread is the thing that blocked ONCE for most of a
+// second, and an average over ten seconds of 33 ms ticks buries it completely.
+void MultiReplayDock::notePhase(const char *name, int64_t ns)
+{
+	if (ns > uiWorstPhase_.ns) {
+		uiWorstPhase_.ns = ns;
+		uiWorstPhase_.name = name;
+	}
+}
+
 void MultiReplayDock::accountUiTick(uint64_t tickStartNs, uint64_t tickEndNs)
 {
 	constexpr int64_t kExpectedTickNs = 33'000'000;
@@ -5717,13 +5749,15 @@ void MultiReplayDock::accountUiTick(uint64_t tickStartNs, uint64_t tickEndNs)
 
 	obs_log(LOG_INFO,
 		"[ui] %.1f tick/s | late avg %lld ms max %lld ms | poll avg %.1f ms "
-		"max %lld ms | repaints/s seek %.1f (served %.1f, suppressed %.1f) "
-		"clip %.1f (served %.1f)",
+		"max %lld ms (worst phase: %s %lld ms) | repaints/s seek %.1f "
+		"(served %.1f, suppressed %.1f) clip %.1f (served %.1f)",
 		(double)uiTicks_ / secs,
 		(long long)(uiTicks_ ? uiLateSumNs_ / uiTicks_ / 1'000'000 : 0),
 		(long long)(uiLateMaxNs_ / 1'000'000),
 		uiTicks_ ? (double)uiCostSumNs_ / (double)uiTicks_ / 1e6 : 0.0,
-		(long long)(uiCostMaxNs_ / 1'000'000), (double)seekReq / secs,
+		(long long)(uiCostMaxNs_ / 1'000'000),
+		uiWorstPhase_.name[0] ? uiWorstPhase_.name : "-",
+		(long long)(uiWorstPhase_.ns / 1'000'000), (double)seekReq / secs,
 		(double)seekSrv / secs, (double)seekSup / secs,
 		(double)clipReq / secs, (double)clipSrv / secs);
 
@@ -5733,6 +5767,7 @@ void MultiReplayDock::accountUiTick(uint64_t tickStartNs, uint64_t tickEndNs)
 	uiLateMaxNs_ = 0;
 	uiCostSumNs_ = 0;
 	uiCostMaxNs_ = 0;
+	uiWorstPhase_ = PhaseCost{};
 	uiSeekReqAtWindow_ = g_seekCensus.requested;
 	uiSeekSupAtWindow_ = g_seekCensus.suppressed;
 	uiSeekServedAtWindow_ = g_seekCensus.served;

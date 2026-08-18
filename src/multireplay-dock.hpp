@@ -18,6 +18,7 @@ start.
 #pragma once
 
 #include <obs.h>
+#include <util/platform.h>
 
 // kNoInstant: the dock stores master-timeline instants, and "there is none" is
 // not zero. See the note there before comparing one against 0.
@@ -1077,6 +1078,34 @@ private:
 	int64_t uiCostSumNs_ = 0;
 	int64_t uiCostMaxNs_ = 0;
 	uint64_t uiLastStallLogNs_ = 0;
+	// WHERE a slow tick went. The total alone names nothing: a poll() of 964 ms
+	// was measured and the only honest thing that could be said about it was
+	// that it happened. Each phase reports its own cost here and the [ui] line
+	// prints the worst single occurrence of the window WITH ITS NAME, because
+	// the fix differs entirely by culprit — the segment index lock is held
+	// while a file is demuxed, statfs on a NAS is a network round trip, and
+	// rebuilding the event table is our own arithmetic.
+	struct PhaseCost {
+		const char *name = "";
+		int64_t ns = 0;
+	};
+	PhaseCost uiWorstPhase_;
+	void notePhase(const char *name, int64_t ns);
+	// RAII stopwatch for one phase of poll(). Scoped so an early return cannot
+	// lose the measurement.
+	class Phase {
+	public:
+		Phase(MultiReplayDock *d, const char *n)
+			: d_(d), n_(n), t0_(os_gettime_ns())
+		{
+		}
+		~Phase() { d_->notePhase(n_, (int64_t)(os_gettime_ns() - t0_)); }
+
+	private:
+		MultiReplayDock *d_;
+		const char *n_;
+		uint64_t t0_;
+	};
 	// Census readings at the start of the window, so the report can print a
 	// RATE rather than a total that only ever grows.
 	uint64_t uiSeekReqAtWindow_ = 0;
