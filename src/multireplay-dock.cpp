@@ -384,6 +384,15 @@ R"QSS(
 #MultiReplayDock QComboBox QLineEdit {
 	background: transparent; border: 0; padding: 0; min-height: 0;
 }
+/* "--" in an angle cell: no per-angle speed, the slider decides. Grey, because
+   it is an absence and not a choice. It lives here rather than in a
+   setStyleSheet() on the combo itself: a style sheet set on one widget makes Qt
+   build a separate style context for it and re-polish its subtree, and that was
+   a measurable part of a table rebuild that took over a tenth of a second. */
+#MultiReplayDock QComboBox[mrNoOverride="true"],
+#MultiReplayDock QComboBox[mrNoOverride="true"] QLineEdit {
+	color: #707070;
+}
 #MultiReplayDock QComboBox QAbstractItemView {
 	background: #181818; color: #c0c0c0; border: 1px solid #2c2c2c;
 	selection-background-color: #1a2e52; selection-color: #d0d8f0; outline: 0;
@@ -5937,6 +5946,19 @@ void MultiReplayDock::refreshEvents()
 		return;
 	}
 	const Qt::Alignment mid = Qt::AlignVCenter | Qt::AlignHCenter;
+	// ONCE for the whole table, not once per cell. getConfig() copies the
+	// entire Config under the core mutex; doing it per event per camera is
+	// what made this function the longest thing in poll(). See buildAngleCell.
+	const std::vector<std::string> commentPresets =
+		ReplayCore::instance().getConfig().commentPresets;
+	// Where a slow rebuild goes. This function is the longest thing the dock's
+	// poll does, and knowing THAT is not enough to fix it: hoisting a
+	// whole-Config copy out of the per-cell path — the obvious culprit from
+	// reading the code — moved the number not at all. So it is split the same
+	// way poll() was, and for the same reason.
+	const uint64_t rebuildStartNs = os_gettime_ns();
+	int64_t cellBuildNs = 0, cellInsertNs = 0;
+	int cellCount = 0;
 	std::vector<std::pair<int64_t, int64_t>> rawMarkers;
 	// ...and which event each of them belongs to, so its edge can be taken
 	// hold of on the bar (SeekBar::markerDragged).
@@ -6128,10 +6150,16 @@ void MultiReplayDock::refreshEvents()
 		for (size_t ci = 0; ci < camCols_.size(); ci++) {
 			const int cam = camCols_[ci];
 			const int col = kColFirstCam + (int)ci * kColsPerCam;
-			events_->setCellWidget(
-				row, col, buildAngleCell(r.id, cam, r.camOn[cam],
-							 r.camSpeeds[cam],
-							 r.camNotes[cam]));
+			const uint64_t t0 = os_gettime_ns();
+			QWidget *cell = buildAngleCell(r.id, cam, r.camOn[cam],
+						       r.camSpeeds[cam],
+						       r.camNotes[cam],
+						       commentPresets);
+			const uint64_t t1 = os_gettime_ns();
+			events_->setCellWidget(row, col, cell);
+			cellBuildNs += (int64_t)(t1 - t0);
+			cellInsertNs += (int64_t)(os_gettime_ns() - t1);
+			cellCount++;
 			// The cell still carries an item underneath: the gate and
 			// the selection model both address rows through items, and
 			// a cell that is only a widget is a hole in that.
@@ -6142,6 +6170,24 @@ void MultiReplayDock::refreshEvents()
 		}
 	}
 	refreshing_ = false;
+	// Only when it actually hurt, and at most once every few seconds: a
+	// rebuild is a normal thing that happens on every mark.
+	const int64_t rebuildNs = (int64_t)(os_gettime_ns() - rebuildStartNs);
+	if (rebuildNs > 50'000'000LL &&
+	    (lastRebuildLogNs_ == 0 ||
+	     (int64_t)(os_gettime_ns() - lastRebuildLogNs_) > 5'000'000'000LL)) {
+		lastRebuildLogNs_ = os_gettime_ns();
+		obs_log(LOG_INFO,
+			"[ui] event table rebuilt in %lld ms: %d row(s), %d angle "
+			"cell(s) — building them %lld ms, inserting them %lld ms, "
+			"the rest %lld ms",
+			(long long)(rebuildNs / 1'000'000),
+			events_->rowCount(), cellCount,
+			(long long)(cellBuildNs / 1'000'000),
+			(long long)(cellInsertNs / 1'000'000),
+			(long long)((rebuildNs - cellBuildNs - cellInsertNs) /
+				    1'000'000));
+	}
 	markerNs_ = std::move(rawMarkers);
 	markerIds_ = std::move(rawMarkerIds);
 	// Fraction conversion happens in poll() each tick via displayDurNs_.
@@ -6362,8 +6408,20 @@ void MultiReplayDock::centreComboItems(QComboBox *cb)
 				Qt::TextAlignmentRole);
 }
 
+// `presets` is passed IN, and that is the whole of a 175 ms fix.
+//
+// This used to call ReplayCore::getConfig() for its comment list — once per
+// cell, so once per event per camera. getConfig() copies the entire Config
+// (eight camera slots, every string, the preset vector) and takes the core
+// mutex to do it, and the core mutex is held by startRecording and setConfig.
+// On a real 22-minute session the dock's own phase accounting put
+// refreshEvents at 120-175 ms, every time, as the longest thing poll() did;
+// with eight cameras and a match's worth of marks it is that multiplied by
+// forty. The list is the same for every cell on the panel, so it is read once
+// and handed down.
 QWidget *MultiReplayDock::buildAngleCell(int eventId, int cam0, bool on,
-					 double speed, const std::string &note)
+					 double speed, const std::string &note,
+					 const std::vector<std::string> &presets)
 {
 	// [☑] [speed ▾] [comment ▾] — one widget, one angle, three answers.
 	// Widgets rather than a delegate on purpose: the check has to toggle on
@@ -6371,7 +6429,13 @@ QWidget *MultiReplayDock::buildAngleCell(int eventId, int cam0, bool on,
 	// With a delegate each of those is a click to select, then a click to
 	// edit, and in a live gallery that second click is the one that does not
 	// happen.
-	auto *w = new QWidget(events_);
+	// PARENTLESS until setCellWidget takes it. The dock carries 376 lines of
+	// style sheet, and Qt resolves that sheet for a widget the moment it is
+	// given a parent inside it — so building the five widgets of this cell
+	// under `events_` polished each of them separately against the whole
+	// sheet. Measured, one row of two cells: 62-123 ms. Built detached, the
+	// subtree is polished ONCE, when the table adopts it.
+	auto *w = new QWidget;
 	auto *h = new QHBoxLayout(w);
 	h->setContentsMargins(4, 0, 4, 0);
 	h->setSpacing(4);
@@ -6407,7 +6471,12 @@ QWidget *MultiReplayDock::buildAngleCell(int eventId, int cam0, bool on,
 	// The override used to be amber, which read as a warning about a setting
 	// that is simply a choice — and on a row of eight cameras the amber was the
 	// loudest thing in the table.
-	sp->setStyleSheet(pct > 0 ? "" : "color:#707070;");
+	// A PROPERTY, not a per-widget style sheet. setStyleSheet on a single
+	// widget makes Qt build a style context of its own for it and re-polish
+	// its subtree; done once per angle cell it is a measurable part of a
+	// rebuild that was taking over a tenth of a second. The rule that reads
+	// this lives with the rest of them in kDockStyle.
+	sp->setProperty("mrNoOverride", pct <= 0);
 	// Centred, like every other cell in this table. A non-editable QComboBox
 	// draws its label left-aligned and no stylesheet moves it, so the display is
 	// a read-only line edit — and because a read-only line edit would otherwise
@@ -6427,7 +6496,7 @@ QWidget *MultiReplayDock::buildAngleCell(int eventId, int cam0, bool on,
 	cm->setInsertPolicy(QComboBox::NoInsert);
 	cm->setToolTip(obs_module_text("Dock.CamNoteHint"));
 	cm->addItem(QString()); // "no comment" is the first choice, not a gap
-	for (const auto &p : ReplayCore::instance().getConfig().commentPresets)
+	for (const auto &p : presets)
 		cm->addItem(QString::fromStdString(p));
 	// ...and everything the operator has typed during this session, on any
 	// event. A comment invented at the first goal is exactly the comment wanted

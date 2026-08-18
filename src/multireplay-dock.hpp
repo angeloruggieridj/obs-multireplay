@@ -624,8 +624,13 @@ private:
 	// rather than a stylesheet: item text goes through the view's delegate.
 	static void centreComboItems(QComboBox *cb);
 
+	// `presets` is the operator's comment vocabulary, read ONCE by the caller
+	// and handed down. Reading it here meant a whole-Config copy under the
+	// core mutex per cell — per event, per camera — and that was the longest
+	// thing the dock's poll did on a real session. See buildAngleCell.
 	QWidget *buildAngleCell(int eventId, int cam0, bool on, double speed,
-				const std::string &note);
+				const std::string &note,
+				const std::vector<std::string> &presets);
 
 	// --- trimming an event already marked --------------------------------
 	// A live mark is late by definition: the operator saw the action first.
@@ -1078,6 +1083,8 @@ private:
 	int64_t uiCostSumNs_ = 0;
 	int64_t uiCostMaxNs_ = 0;
 	uint64_t uiLastStallLogNs_ = 0;
+	// Throttle for the event-table rebuild breakdown (see refreshEvents).
+	uint64_t lastRebuildLogNs_ = 0;
 	// WHERE a slow tick went. The total alone names nothing: a poll() of 964 ms
 	// was measured and the only honest thing that could be said about it was
 	// that it happened. Each phase reports its own cost here and the [ui] line
