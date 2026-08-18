@@ -40,6 +40,16 @@ target_compile_features(${CMAKE_PROJECT_NAME} PRIVATE cxx_std_20)
 find_package(Threads REQUIRED)
 target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE Threads::Threads)
 
+# libcurl, for the updater. obs-deps ships it on Windows and macOS and OBS
+# itself already loads it at runtime, so nothing extra is deployed; on Linux it
+# is the system package (libcurl4-openssl-dev in CI).
+#
+# NOT Qt Network, and the reason is in the logs of the machine this was written
+# on: "No functional TLS backend was found", eleven times, at every OBS start.
+# An HTTPS request through Qt would fail on exactly the rig we have.
+find_package(CURL REQUIRED)
+target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE CURL::libcurl)
+
 # FFmpeg for the playback engine (decode of recorded segments).
 # Finder copied from obs-studio (cmake/finders); obs-deps prebuilt provide
 # FFmpeg on Windows/macOS, system packages on Linux (libavformat-dev etc.).
@@ -74,6 +84,12 @@ target_sources(
     src/replay-decoder.hpp
     src/replay-channel.cpp
     src/replay-channel.hpp
+    # Checking for, fetching and staging a newer build. The comparison it turns
+    # on is pure and unit tested (version-compare.hpp): whether 1.0.0 beats
+    # 1.0.0-beta2 cannot be tested by running the plugin.
+    src/updater.cpp
+    src/updater.hpp
+    src/version-compare.hpp
     # v1.3: which packets to decode, in which order, to play a range backwards
     src/reverse-plan.hpp
     # slow motion WITH SOUND: a time stretch that leaves the pitch alone
@@ -150,4 +166,16 @@ if(ENABLE_TESTS)
   target_include_directories(obs-multireplay-health-tests PRIVATE src)
   target_compile_features(obs-multireplay-health-tests PRIVATE cxx_std_20)
   add_test(NAME health_rules COMMAND obs-multireplay-health-tests)
+
+  # Version comparison, for the updater. The only part of it that cannot be
+  # tested by running the plugin — testing it for real would mean publishing
+  # releases — so it is pure and it is tested here. "1.0.0 is newer than
+  # 1.0.0-beta2" and "beta10 is newer than beta2" are the two an updater gets
+  # wrong in front of an operator.
+  add_executable(
+    obs-multireplay-version-tests tests/standalone/version_compare_test.cpp
+  )
+  target_include_directories(obs-multireplay-version-tests PRIVATE src)
+  target_compile_features(obs-multireplay-version-tests PRIVATE cxx_std_20)
+  add_test(NAME version_compare COMMAND obs-multireplay-version-tests)
 endif()

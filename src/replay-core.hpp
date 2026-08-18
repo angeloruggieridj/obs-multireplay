@@ -52,6 +52,12 @@ struct CameraConfig {
 struct Config {
 	std::string sessionFolder;
 	std::string currentProjectName; // "" = write directly to sessionFolder
+	// Which releases the updater offers: "stable" or "beta". GLOBAL, like the
+	// two above and for the same reason — which build is installed is a fact
+	// about the machine, not about the match being recorded. Default stable:
+	// nobody is opted into pre-releases by a config file that does not
+	// mention them.
+	std::string updateChannel = "stable";
 	int port = kDefaultPort;
 	int splitMinutes = kDefaultSplitMinutes;
 	int videoBitrateKbps = kDefaultVideoBitrateKbps;

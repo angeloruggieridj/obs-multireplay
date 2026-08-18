@@ -29,6 +29,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #include "playback-coordinator.hpp"
 #include "replay-channel.hpp"
 #include "selftest.hpp"
+#include "updater.hpp"
 
 namespace {
 constexpr const char *kDockId = "obs-multireplay-dock";
@@ -201,5 +202,9 @@ void obs_module_unload(void)
 		multireplay::ReplayChannel::instance((multireplay::Which)i)
 			.unload();
 	multireplay::ReplayCore::instance().unload();
+	// A check or a download still in flight is a thread still joinable, and a
+	// joinable thread at static destruction is std::terminate — OBS vanishing
+	// on the way out rather than closing. Bounded by one HTTP timeout.
+	multireplay::Updater::instance().shutdown();
 	obs_log(LOG_INFO, "plugin unloaded");
 }

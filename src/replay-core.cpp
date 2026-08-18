@@ -1126,6 +1126,12 @@ void ReplayCore::loadConfigFile(const char *path, bool projectScoped)
 		config_.sessionFolder = keepFolder;
 		config_.currentProjectName = keepProject;
 	}
+	// GLOBAL, like the two above and for the same reason: which build is
+	// installed is a fact about the machine, not about the match. A project's
+	// settings.json carries the field too — one serialiser writes both files —
+	// and it is ignored when the file is a project's.
+	if (!projectScoped && obs_data_has_user_value(data, "updateChannel"))
+		config_.updateChannel = obs_data_get_string(data, "updateChannel");
 	if (obs_data_has_user_value(data, "port"))
 		config_.port = (int)obs_data_get_int(data, "port");
 	if (obs_data_has_user_value(data, "splitMinutes"))
@@ -1309,6 +1315,8 @@ void ReplayCore::saveConfigFile(const char *path) const
 			    config_.sessionFolder.c_str());
 	obs_data_set_string(data, "currentProjectName",
 			    config_.currentProjectName.c_str());
+	obs_data_set_string(data, "updateChannel",
+			    config_.updateChannel.c_str());
 	obs_data_set_int(data, "port", config_.port);
 	obs_data_set_int(data, "splitMinutes", config_.splitMinutes);
 	obs_data_set_int(data, "videoBitrateKbps", config_.videoBitrateKbps);

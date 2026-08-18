@@ -7,6 +7,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
 #include "multireplay-dock.hpp"
 #include "qt-display.hpp"
 #include "replay-core.hpp"
+#include "updater.hpp"
 #include "event-store.hpp"
 #include "health.hpp"
 #include "packet-tap.hpp"
@@ -7441,6 +7442,149 @@ void MultiReplayDock::openSettings()
 	}
 	advPage->addRow(obs_module_text("Dock.Encoder"), enc);
 
+	// ── Updates ───────────────────────────────────────────────────────
+	// Deliberately the LAST page, and deliberately a page rather than a
+	// button somewhere: an operator comes here on purpose, between matches,
+	// which is the only time updating a recording tool is a sensible idea.
+	QFormLayout *updPage = addPage("Dock.SetUpdates", "Dock.SetUpdatesBlurb");
+
+	auto *verLbl = new QLabel(QString::fromStdString(Updater::currentVersion()),
+				  &dlg);
+	updPage->addRow(obs_module_text("Dock.UpdateInstalled"), verLbl);
+
+	auto *chan = new QComboBox(&dlg);
+	chan->addItem(obs_module_text("Dock.ChannelStable"), "stable");
+	chan->addItem(obs_module_text("Dock.ChannelBeta"), "beta");
+	{
+		const int idx = chan->findData(
+			QString::fromStdString(cfg.updateChannel));
+		chan->setCurrentIndex(idx >= 0 ? idx : 0);
+	}
+	updPage->addRow(obs_module_text("Dock.UpdateChannel"), chan);
+
+	// THE WARNING IS PART OF THE CONTROL, not a footnote elsewhere. It only
+	// appears when beta is chosen, because a caution shown permanently is a
+	// caution nobody reads on the day it applies.
+	auto *betaWarn = new QLabel(obs_module_text("Dock.BetaWarning"), &dlg);
+	betaWarn->setObjectName("mrSettingsBlurb");
+	betaWarn->setWordWrap(true);
+	betaWarn->setVisible(cfg.updateChannel == "beta");
+	updPage->addRow(QString(), betaWarn);
+	connect(chan, &QComboBox::currentIndexChanged, betaWarn,
+		[chan, betaWarn](int) {
+			betaWarn->setVisible(chan->currentData().toString() ==
+					     "beta");
+		});
+
+	auto *updStatus = new QLabel(&dlg);
+	updStatus->setWordWrap(true);
+	auto *notes = new QPlainTextEdit(&dlg);
+	notes->setReadOnly(true);
+	notes->setMinimumHeight(140);
+	notes->setPlaceholderText(obs_module_text("Dock.UpdateNoNotes"));
+	auto *checkBtn = new QPushButton(obs_module_text("Dock.UpdateCheck"), &dlg);
+	auto *getBtn = new QPushButton(obs_module_text("Dock.UpdateDownload"), &dlg);
+	auto *installBtn =
+		new QPushButton(obs_module_text("Dock.UpdateInstall"), &dlg);
+	getBtn->setEnabled(false);
+	installBtn->setEnabled(false);
+
+	auto *btnRow = new QWidget(&dlg);
+	auto *btnLay = new QHBoxLayout(btnRow);
+	btnLay->setContentsMargins(0, 0, 0, 0);
+	btnLay->addWidget(checkBtn);
+	btnLay->addWidget(getBtn);
+	btnLay->addWidget(installBtn);
+	btnLay->addStretch(1);
+	updPage->addRow(QString(), btnRow);
+	updPage->addRow(obs_module_text("Dock.UpdateStatus"), updStatus);
+	updPage->addRow(obs_module_text("Dock.UpdateChangelog"), notes);
+
+	// The dialog polls the updater rather than the updater calling back into
+	// the dialog: the worker lives on its own thread and the dialog can be
+	// closed at any moment, and a callback into a dead widget is the kind of
+	// crash that only happens in front of someone.
+	auto *updTimer = new QTimer(&dlg);
+	updTimer->setInterval(250);
+	connect(updTimer, &QTimer::timeout, &dlg, [=]() {
+		const Updater::Status st = Updater::instance().status();
+		QString text;
+		switch (st.phase) {
+		case Updater::Phase::Idle:
+			text = obs_module_text("Dock.UpdateIdle");
+			break;
+		case Updater::Phase::Checking:
+			text = obs_module_text("Dock.UpdateChecking");
+			break;
+		case Updater::Phase::UpToDate:
+			text = obs_module_text("Dock.UpdateUpToDate");
+			break;
+		case Updater::Phase::Available:
+			text = QString(obs_module_text("Dock.UpdateAvailable"))
+				       .arg(QString::fromStdString(
+					       st.release.version));
+			break;
+		case Updater::Phase::Downloading:
+			text = QString(obs_module_text("Dock.UpdateDownloading"))
+				       .arg(st.percent);
+			break;
+		case Updater::Phase::Staged:
+			text = QString(obs_module_text("Dock.UpdateStaged"))
+				       .arg(QString::fromStdString(
+					       st.release.version));
+			break;
+		case Updater::Phase::Failed:
+			text = QString(obs_module_text("Dock.UpdateFailed"))
+				       .arg(QString::fromStdString(st.message));
+			break;
+		}
+		if (updStatus->text() != text)
+			updStatus->setText(text);
+		const QString body = QString::fromStdString(st.release.notes);
+		if (notes->toPlainText() != body)
+			notes->setPlainText(body);
+		checkBtn->setEnabled(st.phase != Updater::Phase::Checking &&
+				     st.phase != Updater::Phase::Downloading);
+		getBtn->setEnabled(st.phase == Updater::Phase::Available);
+		installBtn->setEnabled(st.phase == Updater::Phase::Staged);
+	});
+	updTimer->start();
+
+	connect(checkBtn, &QPushButton::clicked, &dlg, [chan]() {
+		Updater::instance().checkAsync(updateChannelFromString(
+			chan->currentData().toString().toStdString()));
+	});
+	connect(getBtn, &QPushButton::clicked, &dlg,
+		[]() { Updater::instance().downloadAsync(); });
+	connect(installBtn, &QPushButton::clicked, &dlg, [this, &dlg]() {
+		// SAID OUT LOUD BEFORE IT HAPPENS. This arms something that
+		// replaces the plugin the moment OBS closes, and an operator who
+		// did not expect that would find a different build running at the
+		// next match.
+		if (QMessageBox::question(
+			    &dlg, "obs-multireplay",
+			    obs_module_text("Dock.UpdateInstallConfirm")) !=
+		    QMessageBox::Yes)
+			return;
+		std::string err;
+		if (Updater::instance().installStaged(err)) {
+			QMessageBox::information(
+				&dlg, "obs-multireplay",
+				obs_module_text("Dock.UpdateInstallArmed"));
+			return;
+		}
+		// Nothing to apologise for on the platforms that have no helper:
+		// the archive is downloaded and where it is, is the answer.
+		const Updater::Status st = Updater::instance().status();
+		QMessageBox::information(
+			&dlg, "obs-multireplay",
+			err.empty()
+				? QString(obs_module_text("Dock.UpdateManual"))
+					  .arg(QString::fromStdString(
+						  st.stagedPath))
+				: QString::fromStdString(err));
+	});
+
 	nav->setCurrentRow(0);
 
 	auto *buttons = new QDialogButtonBox(
@@ -7472,6 +7616,7 @@ void MultiReplayDock::openSettings()
 			cfg.commentPresets.push_back(t.toStdString());
 	}
 	cfg.videoEncoderId = enc->currentData().toString().toStdString();
+	cfg.updateChannel = chan->currentData().toString().toStdString();
 	cfg.outputSceneName = outScene->currentData().toString().toStdString();
 	cfg.outputSceneNameB = outSceneB->currentData().toString().toStdString();
 	cfg.enableChannelB = useB->isChecked();

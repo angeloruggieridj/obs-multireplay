@@ -66,6 +66,11 @@ if (( ! (${skips[(Ie)all]} + ${skips[(Ie)deps]}) )) {
     )
   }
 
+  # libcurl for the updater: it asks GitHub which releases exist and fetches
+  # one. Windows and macOS get it from obs-deps; on Linux it is the system
+  # package, and without it configure fails on find_package(CURL).
+  _qt_packages+=(libcurl4-openssl-dev${suffix})
+
   sudo apt-get install ${apt_args} ${_qt_packages}
   log_group
 }
