@@ -184,6 +184,22 @@ struct DockChecks {
 	bool pollRuns = false;
 	bool pollQuiet = false;
 	bool pollResponsive = false;
+	// How hard the panel is leaning on Qt. The two bars used to ask for a
+	// full-width repaint on EVERY tick of the 30 Hz poll, whether or not
+	// anything had moved, and every one of those makes Qt re-compose and
+	// flush the backing store of the OBS main window — the same top-level
+	// that carries our native flip-model swap-chain children. On a live rig
+	// that combination took every Qt-painted pixel in the OBS window black
+	// while the previews kept drawing, and the operator got it back only by
+	// clicking until a repaint landed.
+	//
+	// So this is the check that stands between that bug and its return, and
+	// it is MEASURED rather than argued from the source: a guard that stops
+	// being true is invisible in a reading of the code.
+	bool repaintRateSane = false;
+	double seekRepaintsPerSec = 0.0;
+	double clipRepaintsPerSec = 0.0;
+	double seekSuppressedPerSec = 0.0;
 	bool markOnTimeline = false;
 	bool playsMark = false;
 	bool playheadInsideClip = false;
@@ -769,27 +785,59 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 	base_get_log_handler(&g_prevLogHandler, &g_prevLogParam);
 	base_set_log_handler(countingLogHandler, nullptr);
 	g_countLogErrors.store(true);
-	runOnUi([&]() {
-		lastTickNs = (int64_t)os_gettime_ns();
-		conn = QObject::connect(pollTimer, &QTimer::timeout, dock,
-					[&]() {
-						const int64_t now =
-							(int64_t)os_gettime_ns();
-						const int64_t gap =
-							now - lastTickNs;
-						lastTickNs = now;
-						if (gap > worstGapNs.load())
-							worstGapNs.store(gap);
-						ticks++;
-					});
-	});
-	std::this_thread::sleep_for(std::chrono::milliseconds(2000));
-	runOnUi([&]() { QObject::disconnect(conn); });
+	// Census readings taken across the SAME window as the tick count, so the
+	// repaint rate below is per second of the window actually measured and not
+	// of an idealised one.
+	uint64_t seekReq0 = 0, seekSup0 = 0, clipReq0 = 0;
+
+	// UP TO THREE WINDOWS, stopping at the first good one, and the reason is a
+	// false failure this check produced on a run where nothing was wrong.
+	//
+	// What it is FOR is a poll timer that never started or is wedged behind
+	// something blocking. What it cannot tell apart from that, on one sample,
+	// is the gate's OWN busiest two seconds: this window used to land right
+	// after the reverse check, which decodes a GOP three times over on an iGPU,
+	// and it counted 15 ticks where the dock's own accounting (see the [ui]
+	// lines in the log) reported 20-21 per second either side of it. A wedged
+	// timer stays wedged for all three windows; a busy moment does not survive
+	// one. Loosening the threshold instead would have thrown away the one
+	// failure the check exists to catch.
+	for (int attempt = 1; attempt <= 3; attempt++) {
+		ticks.store(0);
+		worstGapNs.store(0);
+		g_ourLogErrors.store(0);
+		seekReq0 = g_seekCensus.requested;
+		seekSup0 = g_seekCensus.suppressed;
+		clipReq0 = g_clipCensus.requested;
+		runOnUi([&]() {
+			lastTickNs = (int64_t)os_gettime_ns();
+			conn = QObject::connect(pollTimer, &QTimer::timeout, dock,
+						[&]() {
+							const int64_t now =
+								(int64_t)os_gettime_ns();
+							const int64_t gap =
+								now - lastTickNs;
+							lastTickNs = now;
+							if (gap > worstGapNs.load())
+								worstGapNs.store(gap);
+							ticks++;
+						});
+		});
+		std::this_thread::sleep_for(std::chrono::milliseconds(2000));
+		runOnUi([&]() { QObject::disconnect(conn); });
+
+		c.ticks = ticks.load();
+		c.worstGapMs = worstGapNs.load() / 1000000;
+		if (c.ticks >= 25 && c.worstGapMs <= 250)
+			break;
+		obs_log(LOG_INFO,
+			"[selftest] dock: poll window %d/3 saw %d ticks, worst gap "
+			"%lld ms — re-sampling (a wedged timer stays wedged)",
+			attempt, c.ticks, (long long)c.worstGapMs);
+	}
 	g_countLogErrors.store(false);
 	base_set_log_handler(g_prevLogHandler, g_prevLogParam);
 
-	c.ticks = ticks.load();
-	c.worstGapMs = worstGapNs.load() / 1000000;
 	c.logErrors = g_ourLogErrors.load();
 	// A 33 ms timer would fire ~60 times in 2 s in the arithmetic; it does not,
 	// and never did. Measured on this machine across every run of the gate:
@@ -813,6 +861,39 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 		"[selftest] dock: %d poll ticks in 2 s, worst gap %lld ms, "
 		"%d plugin errors logged",
 		c.ticks, (long long)c.worstGapMs, c.logErrors);
+
+	// --- the repaint rate -------------------------------------------------
+	// TWO conditions, and the second is the one that actually catches the bug.
+	//
+	// The ceiling (45/s per bar) only rules out an absurd rate: a repaint per
+	// bar per poll tick is ~30/s and legitimate while a clip is running, since
+	// the timecode printed on the track changes every tick. Deferred repaints
+	// are held for at most one frame, so nothing beyond that is expected.
+	//
+	// `suppressed > 0` is the real detector. The failure this stands in front
+	// of was two setters that repainted UNCONDITIONALLY: called on every tick
+	// of a 30 Hz poll with values identical to the tick before, and repainting
+	// the full-width bar anyway, forever, including with the panel completely
+	// idle. In that code `suppressed` is zero BY CONSTRUCTION — there was no
+	// comparison to fail. So a run where nothing is ever suppressed is a run
+	// where the guards are gone, whatever the rate happens to look like.
+	//
+	// It is also why a low rate alone must not pass: a stopped poll produces a
+	// low rate too, and a check that goes green when the panel is dead is not
+	// a check.
+	const double secs = 2.0;
+	c.seekRepaintsPerSec = (double)(g_seekCensus.requested - seekReq0) / secs;
+	c.seekSuppressedPerSec =
+		(double)(g_seekCensus.suppressed - seekSup0) / secs;
+	c.clipRepaintsPerSec = (double)(g_clipCensus.requested - clipReq0) / secs;
+	c.repaintRateSane = c.seekRepaintsPerSec <= 45.0 &&
+			    c.clipRepaintsPerSec <= 45.0 &&
+			    c.seekSuppressedPerSec > 0.0;
+	obs_log(LOG_INFO,
+		"[selftest] dock repaints/s: seek %.1f (suppressed %.1f), clip %.1f "
+		"— ceiling 45.0, and suppressed must be > 0",
+		c.seekRepaintsPerSec, c.seekSuppressedPerSec,
+		c.clipRepaintsPerSec);
 
 	// --- the preview area: one tile per angle, plus the replay ------------
 	// Structure first, because it holds whether the dock is on screen or
@@ -4214,6 +4295,7 @@ void runSelfTest()
 			  dockChecks.releasesSourcesOnCleanup &&
 			  dockChecks.found &&
 			  dockChecks.pollRuns && dockChecks.pollResponsive &&
+				  dockChecks.repaintRateSane &&
 			  dockChecks.pollQuiet && dockChecks.markOnTimeline &&
 			  dockChecks.playsMark && dockChecks.playheadInsideClip &&
 			  dockChecks.multiAngleQueue &&
@@ -4317,6 +4399,16 @@ void runSelfTest()
 	// The dock: found and clicked, not just compiled (see runDockChecks).
 	obs_data_set_bool(checks, "dock_registered", dockChecks.found);
 	obs_data_set_bool(checks, "dock_poll_runs", dockChecks.pollRuns);
+	obs_data_set_bool(checks, "dock_repaint_rate_sane",
+			  dockChecks.repaintRateSane);
+	// The numbers beside the verdict, because "sane" is a threshold and the
+	// next person to look at this will want to know how much room was left.
+	obs_data_set_double(checks, "dock_seek_repaints_per_sec",
+			    dockChecks.seekRepaintsPerSec);
+	obs_data_set_double(checks, "dock_seek_suppressed_per_sec",
+			    dockChecks.seekSuppressedPerSec);
+	obs_data_set_double(checks, "dock_clip_repaints_per_sec",
+			    dockChecks.clipRepaintsPerSec);
 	obs_data_set_bool(checks, "dock_poll_responsive",
 			  dockChecks.pollResponsive);
 	obs_data_set_bool(checks, "dock_poll_no_errors", dockChecks.pollQuiet);
@@ -4608,6 +4700,35 @@ void maybeRunSelfTest()
 	if (g_started.exchange(true))
 		return; // FINISHED_LOADING can fire more than once
 
+	// FINISHED_LOADING IS NOT "OBS HAS FINISHED LOADING". It is raised from
+	// inside OBSBasic::OBSInit, which then carries on building docks — and one
+	// of those, the YouTube panel, spins a NESTED Qt event loop
+	// (InitBrowserPanelSafeBlock → ExecThreadedWithoutBlocking). Every UI task
+	// this gate posts is delivered inside that loop, so the project setup below
+	// reconfigures Branch Output filters while OBSBasic is still half-built,
+	// and Branch Output's own status dock — which rebuilds its table from
+	// queued filter add/remove signals, holding raw source pointers across the
+	// queue — dereferences a source we have already let go:
+	//
+	//   obs.dll!obs_source_get_name
+	//   osi-branch-output.dll!OutputTableRow::OutputTableRow
+	//   osi-branch-output.dll!BranchOutputStatusDock::addRow
+	//
+	// Three OBS processes died that way in a row on the day the YouTube panel
+	// was slow to answer (the log shows "No functional TLS backend was found"
+	// before each). The defect is Branch Output's, and it is not ours to fix,
+	// but a gate that cannot survive its own start-up is a gate that cannot
+	// tell anyone anything. Waiting a beat costs the run two seconds and puts
+	// the setup after the nested loop has drained.
+	//
+	// The wait happens on the GATE's thread, never here: this function is
+	// called from the frontend event handler, i.e. on the UI thread, and
+	// sleeping on the UI thread to avoid a UI-thread race would be a fine
+	// piece of comedy.
+	const auto settle = []() {
+		std::this_thread::sleep_for(std::chrono::seconds(2));
+	};
+
 	// The soak pass (M4) is its own OBS process too, and it is the long one:
 	// it records for as many minutes as it is given, in a project of its own,
 	// which it deletes afterwards. Opt-in only.
@@ -4621,7 +4742,10 @@ void maybeRunSelfTest()
 			       "obs-multireplay-selftest-soak.json")
 				      .string();
 		}
-		std::thread([minutes, out]() { runSoakPass(minutes, out); }).detach();
+		std::thread([minutes, out, settle]() {
+			settle();
+			runSoakPass(minutes, out);
+		}).detach();
 		return;
 	}
 
@@ -4636,11 +4760,17 @@ void maybeRunSelfTest()
 			       "obs-multireplay-selftest-reopen.json")
 				      .string();
 		}
-		std::thread([out]() { runReopenPass(out); }).detach();
+		std::thread([out, settle]() {
+			settle();
+			runReopenPass(out);
+		}).detach();
 		return;
 	}
 
-	std::thread(runSelfTest).detach();
+	std::thread([settle]() {
+		settle();
+		runSelfTest();
+	}).detach();
 }
 
 } // namespace multireplay

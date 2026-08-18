@@ -251,6 +251,11 @@ void HealthMonitor::takeStarted(const std::array<bool, kMaxCameras> &armed,
 		rssBaselineBytes_ = rss > 0 ? (int64_t)rss : -1;
 		lastLagged_ = obs_get_lagged_frames();
 		lastTotal_ = obs_get_total_frames();
+		// A take starts with no history: the previous take's lag is not
+		// this one's, and carrying it over would let a badge appear
+		// before this take had drawn five seconds of frames.
+		lagWindow_.clear();
+		laggedWindowsOverBlock_ = 0;
 		lastDiskCheckNs_ = 0;
 		diskFreeBytes_ = -1;
 		sessionFolder_ = sessionFolder;
@@ -305,6 +310,11 @@ void HealthMonitor::sampleOnce()
 	std::string folder;
 	int64_t lastDiskCheck = 0, diskFree = -1;
 	uint32_t prevLagged = 0, prevTotal = 0;
+	// Copied out and written back like prevLagged/lastLagged_ above it: at most
+	// kLaggedWindowSamples pairs, so copying it is cheaper than reasoning about
+	// who else might touch it.
+	std::deque<std::pair<uint32_t, uint32_t>> lagWindow;
+	int lagOverRun = 0;
 	const int64_t now = (int64_t)os_gettime_ns();
 	{
 		std::lock_guard<std::mutex> lock(mutex_);
@@ -317,6 +327,8 @@ void HealthMonitor::sampleOnce()
 		diskFree = diskFreeBytes_;
 		prevLagged = lastLagged_;
 		prevTotal = lastTotal_;
+		lagWindow = lagWindow_;
+		lagOverRun = laggedWindowsOverBlock_;
 		in.takeElapsedMs = (now - takeStartNs_) / 1'000'000LL;
 		in.targetRingSpanNs = targetRingSpanNs_;
 		in.requiredBytesPerSec = requiredBytesPerSec_;
@@ -352,8 +364,26 @@ void HealthMonitor::sampleOnce()
 
 	const uint32_t lagged = obs_get_lagged_frames();
 	const uint32_t total = obs_get_total_frames();
-	in.laggedFrames = lagged - prevLagged;
-	in.totalFrames = total - prevTotal;
+	// This second's delta joins the sliding window; the rules are handed the
+	// SUM of the window, never a single second. See kLaggedWarnPct.
+	lagWindow.push_back({lagged - prevLagged, total - prevTotal});
+	while ((int)lagWindow.size() > health::kLaggedWindowSamples)
+		lagWindow.pop_front();
+	uint32_t winLagged = 0, winTotal = 0;
+	for (const auto &[l, t] : lagWindow) {
+		winLagged += l;
+		winTotal += t;
+	}
+	in.laggedFrames = winLagged;
+	in.totalFrames = winTotal;
+	// How long it has been like this. Counted here because the rules keep
+	// nothing, and reset the moment the window comes back under: "sustained"
+	// has to mean sustained, not "was bad once a minute ago".
+	const double winPct = winTotal > 0 ? 100.0 * (double)winLagged /
+						     (double)winTotal
+					   : 0.0;
+	lagOverRun = winPct >= health::kLaggedBlockPct ? lagOverRun + 1 : 0;
+	in.laggedWindowsOverBlock = lagOverRun;
 
 	bool diskChecked = false;
 	if (lastDiskCheck == 0 || now - lastDiskCheck >= kDiskCheckIntervalNs) {
@@ -378,6 +408,8 @@ void HealthMonitor::sampleOnce()
 			return; // STOP won the race: these findings are history
 		lastLagged_ = lagged;
 		lastTotal_ = total;
+		lagWindow_ = std::move(lagWindow);
+		laggedWindowsOverBlock_ = lagOverRun;
 		if (diskChecked) {
 			lastDiskCheckNs_ = now;
 			diskFreeBytes_ = diskFree;

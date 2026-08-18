@@ -32,6 +32,7 @@ namespace multireplay {
 class PlaybackCoordinator;
 }
 
+#include <QRect>
 #include <QString>
 #include <QWidget>
 #include <array>
@@ -67,6 +68,50 @@ class QGroupBox;
 namespace multireplay {
 
 class OBSQTDisplay;
+
+// ---------------------------------------------------------------------------
+// RepaintCensus — how often a bar ASKS Qt to redraw it, and how often Qt
+// actually does.
+//
+// This is not instrumentation for its own sake, it is the counter for a bug
+// that took the whole OBS window black on a live rig. The dock's poll runs at
+// 30 Hz, and two of the position bar's setters used to call update()
+// unconditionally: the bar was therefore fully repainted thirty times a second
+// forever — idle, not recording, playhead not moving, nothing on screen
+// different from the tick before. Every one of those repaints makes Qt
+// re-compose and flush the shared backing store of the OBS MAIN WINDOW, which
+// is the same top-level that carries our native flip-model swap-chain children.
+// That is exactly the GDI-over-flip-model combination qt-display.cpp warns
+// about, and when it breaks it does not break the preview: it breaks the flush,
+// so every pixel Qt painted in the OBS window goes black while the swap-chain
+// previews keep drawing. The operator gets it back by clicking around until a
+// repaint lands.
+//
+// So "how many repaints per second is this panel asking for" is a number that
+// has to stay near zero when nothing is happening, and it has to be readable
+// from the OBS log alone — the machine this happens on is a rig in a gallery,
+// not one we can attach a debugger to.
+// ---------------------------------------------------------------------------
+struct RepaintCensus {
+	std::atomic<uint64_t> requested{0};  // handed to Qt
+	std::atomic<uint64_t> suppressed{0}; // asked for; nothing had changed
+	std::atomic<uint64_t> coalesced{0};  // folded into a later repaint
+	std::atomic<uint64_t> served{0};     // paintEvent bodies actually run
+
+	void reset()
+	{
+		requested = 0;
+		suppressed = 0;
+		coalesced = 0;
+		served = 0;
+	}
+};
+
+// One per bar rather than one shared counter: if the panel still goes black
+// after the guards, the first question is WHICH bar is still asking, and a
+// single total cannot answer it.
+extern RepaintCensus g_seekCensus;
+extern RepaintCensus g_clipCensus;
 
 // ---------------------------------------------------------------------------
 // SeekBar — the graduated position bar over the recorded project timeline.
@@ -121,11 +166,18 @@ public:
 	int graduations() const;
 	// Event markers drawn on the timeline as amber rectangles.
 	// Each pair is (inFrac, outFrac) in [0,1].
-	void setEventMarkers(std::vector<std::pair<double, double>> markers);
+	//
+	// BY REFERENCE, not by value, and the reason is the repaint census above:
+	// the host hands these over on every 30 Hz tick, so the setter's first job
+	// is to notice that they are the same as last tick and do nothing at all.
+	// A by-value parameter would have moved the caller's buffer away before
+	// that comparison could be made, which is why the caller had to build two
+	// fresh vectors thirty times a second to begin with.
+	void setEventMarkers(const std::vector<std::pair<double, double>> &markers);
 	// Which event each marker belongs to, in the same order. Without it a
 	// marker is a rectangle nobody can edit; with it, grabbing its edge
 	// moves that event's point (see the markerDragged signal).
-	void setEventMarkerIds(std::vector<int> ids);
+	void setEventMarkerIds(const std::vector<int> &ids);
 	// The pixel of a fraction of the whole timeline. Public because the
 	// painter, the mouse handlers and the automated gate all have to agree
 	// on where a marker edge IS, and three copies of that arithmetic would
@@ -175,6 +227,9 @@ signals:
 
 protected:
 	void paintEvent(QPaintEvent *) override;
+	// Only to forget the pixel the playhead was last drawn at: it is what
+	// setProgress compares against, and it means nothing at a new width.
+	void resizeEvent(QResizeEvent *) override;
 	void mousePressEvent(QMouseEvent *) override;
 	void mouseMoveEvent(QMouseEvent *) override;
 	void mouseReleaseEvent(QMouseEvent *) override;
@@ -184,6 +239,37 @@ protected:
 	void wheelEvent(QWheelEvent *) override;
 
 private:
+	// --- repaint routing -------------------------------------------------
+	// Nothing in this class calls QWidget::update() directly any more. It
+	// goes through one of these two, and which one is a statement about what
+	// changed:
+	//
+	//   repaintNow(rect)   the playhead moved. Small, immediate, 30 Hz: the
+	//                      dirty band is the few pixels between where the
+	//                      hairline was and where it is, so the flush Qt
+	//                      makes of the OBS window's backing store is a few
+	//                      pixels wide instead of the whole bar.
+	//   repaintSoon(rect)  everything else — the graduations, the markers,
+	//                      the timecode printed on the track. All of these
+	//                      change CONTINUOUSLY while recording, because the
+	//                      timeline they are drawn against is growing, and
+	//                      all of them change by a THIRD OF A PIXEL per tick.
+	//                      Redrawing them thirty times a second buys nothing
+	//                      an operator can see and costs a full-width flush
+	//                      every 33 ms, so they are coalesced to
+	//                      kCoalesceMs and the accumulated rect is repainted
+	//                      once. A gesture in progress (a drag) goes through
+	//                      repaintNow: that one has to track the hand.
+	void repaintNow(const QRect &r);
+	void repaintSoon(const QRect &r);
+	// The whole widget, as a rect. Used where a change really does alter
+	// everything (a new timeline length re-graduates the ruler).
+	QRect allOfIt() const { return QRect(0, 0, width(), height()); }
+	// The track band only — above the ruler. The fill, the markers, the
+	// playhead and the overlay text live in here; the graduations and their
+	// labels, which are the expensive part of a repaint, do not.
+	QRect trackBand() const;
+
 	double fracAt(int x) const;
 	// Time between two LABELLED graduations at the current width, 0 when
 	// there is nothing to graduate. One function, so what paintEvent draws
@@ -221,6 +307,21 @@ private:
 		return viewSpan_ > 0 ? (frac - viewStart_) / viewSpan_ : frac;
 	}
 	double fromView(double v) const { return viewStart_ + v * viewSpan_; }
+
+	// --- coalescing state ------------------------------------------------
+	// The rect a deferred repaint has accumulated, and the timer that flushes
+	// it. Null rect = nothing pending. The timer is single-shot and restarted
+	// only when the rect goes from empty to non-empty, so a burst of changes
+	// inside one window costs one repaint, not one per change.
+	QRect pendingRect_;
+	QTimer *coalesceTimer_ = nullptr;
+	// Last position we asked Qt to draw the playhead at, in widget pixels.
+	// The comparison that decides whether a new position is worth a repaint
+	// is made HERE, in pixels, and not on the fraction: while recording the
+	// timeline grows every tick, so the fraction is never twice the same and
+	// comparing fractions would suppress exactly nothing.
+	int lastDrawnPlayheadX_ = INT_MIN;
+	void flushPending();
 };
 
 // ---------------------------------------------------------------------------
@@ -270,6 +371,16 @@ private:
 	QString text_;
 	bool onAir_ = false;
 	std::vector<double> joins_;
+
+	// Same coalescing as the SeekBar, and for the same reason: while a clip
+	// runs, the remaining time printed here is in hundredths, so the text
+	// differs on every 30 Hz tick and the guard in setState lets every one of
+	// them through. The band is small, but a repaint of it is still a flush of
+	// the OBS window's backing store. Ten a second is smooth on a bar that
+	// takes seconds to fill and is a third of the flushes.
+	QTimer *coalesceTimer_ = nullptr;
+	bool pending_ = false;
+	void repaintSoon();
 };
 
 class MultiReplayDock : public QWidget {
@@ -942,6 +1053,38 @@ private:
 	std::vector<std::pair<int64_t, int64_t>> markerNs_;
 	// The event behind each marker, same order — what makes an edge draggable.
 	std::vector<int> markerIds_;
+
+	// Scratch buffers the marker fractions are built into on every tick. They
+	// are MEMBERS so the building costs no allocation: poll() used to
+	// construct two fresh vectors thirty times a second and hand them to a
+	// setter that had no way of telling they were identical to the last two.
+	std::vector<std::pair<double, double>> markerFracScratch_;
+	std::vector<int> markerIdScratch_;
+
+	// --- UI thread health ------------------------------------------------
+	// The panel going black is a symptom of the Qt side not being serviced,
+	// so the question that has to be answerable from a log alone is "was the
+	// UI thread being serviced?". These measure it: how late the 33 ms tick
+	// actually fires (the timer is the same event loop that delivers paint
+	// events, so a tick that arrives 800 ms late IS a window that was not
+	// repainted for 800 ms) and how long poll() itself takes, which is the
+	// part of that we own.
+	uint64_t lastTickNs_ = 0;
+	uint64_t uiWindowStartNs_ = 0;
+	uint32_t uiTicks_ = 0;
+	int64_t uiLateSumNs_ = 0;
+	int64_t uiLateMaxNs_ = 0;
+	int64_t uiCostSumNs_ = 0;
+	int64_t uiCostMaxNs_ = 0;
+	uint64_t uiLastStallLogNs_ = 0;
+	// Census readings at the start of the window, so the report can print a
+	// RATE rather than a total that only ever grows.
+	uint64_t uiSeekReqAtWindow_ = 0;
+	uint64_t uiSeekSupAtWindow_ = 0;
+	uint64_t uiSeekServedAtWindow_ = 0;
+	uint64_t uiClipReqAtWindow_ = 0;
+	uint64_t uiClipServedAtWindow_ = 0;
+	void accountUiTick(uint64_t tickStartNs, uint64_t tickEndNs);
 };
 
 } // namespace multireplay

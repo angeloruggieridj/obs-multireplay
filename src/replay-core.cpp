@@ -897,8 +897,45 @@ void ReplayCore::reapplyFilterSettings()
 	// and the scene collection still carries three of our filters while REC
 	// arms two: the rig declares more angles than it records, which is the one
 	// thing an operator cannot be asked to notice mid-match.
-	branch_output::pruneFilters(cfg);
+	const int pruned = branch_output::pruneFilters(cfg);
 
+	// ...AND THEN LET THE FRONTEND BREATHE BEFORE PUTTING THE NEW ONES ON.
+	//
+	// Branch Output has a status dock that keeps a row per filter, and it
+	// builds those rows from QUEUED signal handlers holding raw source
+	// pointers. Removing filters and adding others in the same turn of the
+	// event loop leaves it building a row for a source we have already let go:
+	//
+	//   obs.dll!signal_handler_connect_ref        (locking a null handler)
+	//   osi-branch-output.dll!FilterCell::FilterCell
+	//   osi-branch-output.dll!OutputTableRow::OutputTableRow
+	//   osi-branch-output.dll!BranchOutputStatusDock::addFilter
+	//
+	// That is four OBS processes killed on this machine, every one of them
+	// while switching a project's cameras — the ordinary thing to do before a
+	// match. The defect is Branch Output's and we cannot patch it, but we do
+	// choose when to hand it work: posting the additions as a SEPARATE UI task
+	// lets its queue drain the removals first. Nothing waits on this — arming
+	// is a separate operator action and startRecording re-reads the filters.
+	if (pruned > 0) {
+		auto *pending = new Config(cfg);
+		obs_queue_task(
+			OBS_TASK_UI,
+			[](void *param) {
+				std::unique_ptr<Config> c(
+					static_cast<Config *>(param));
+				ReplayCore::addFiltersForConfig(*c);
+			},
+			pending, false);
+		return;
+	}
+	addFiltersForConfig(cfg);
+}
+
+// The "add" half of reapplyFilterSettings, split out so it can be posted to a
+// later turn of the UI loop (see the note above on Branch Output's status dock).
+void ReplayCore::addFiltersForConfig(const Config &cfg)
+{
 	for (int i = 0; i < kMaxCameras; i++) {
 		if (cfg.cameras[i].sourceName.empty())
 			continue;

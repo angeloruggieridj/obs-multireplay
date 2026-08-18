@@ -22,7 +22,9 @@ The properties pinned here:
 
 #include <cstdint>
 #include <cstdio>
+#include <string>
 #include <type_traits>
+#include <vector>
 
 using namespace multireplay::health;
 
@@ -38,6 +40,18 @@ static int g_fail = 0;
 	} while (0)
 
 static constexpr int64_t kGB = 1024LL * 1024 * 1024;
+
+// The numbers a finding carries. `id` is what the gate asserts on and what the
+// locale key is built from; `detail` is what the operator reads, and for the
+// overload rule it is the only place the difference between "a burst" and "this
+// machine has been behind for ten seconds" is written down.
+static std::string detailOf(const std::vector<Finding> &findings, const char *id)
+{
+	for (const auto &f : findings)
+		if (f.id == id)
+			return f.detail;
+	return std::string();
+}
 
 // A rig that should sail through: Branch Output there, folder writable, two
 // cameras present, ~25 Mbit/s of demand, a fast disk, 8 GB free RAM.
@@ -349,7 +363,22 @@ static void test_timeline_and_frame_drops()
 	CHECK(hasFinding(runtime(in), "obs_dropping_frames"));
 	in.laggedFrames = 30; // 10%
 	CHECK(hasFinding(runtime(in), "obs_overloaded"));
-	CHECK(worstOf(runtime(in)) == Level::Blocker);
+	// A WARNING, not a blocker, and this assertion is the point. A blocker
+	// means "this take cannot run"; OBS shedding render frames means the
+	// machine is working hard, which is what a replay rig does. Nothing in
+	// these rules acts, so a blocker here bought nothing but a red badge over
+	// a take that was recording perfectly.
+	CHECK(worstOf(runtime(in)) == Level::Warning);
+
+	// The counts handed in are the SUM OF THE WINDOW, and the wording has to
+	// tell a burst apart from a machine that has been behind for ten seconds.
+	// Same ratio, different thing to do about it.
+	in.laggedWindowsOverBlock = 1;
+	CHECK(detailOf(runtime(in), "obs_overloaded").find("sustained") ==
+	      std::string::npos);
+	in.laggedWindowsOverBlock = kLaggedSustainedWindows;
+	CHECK(detailOf(runtime(in), "obs_overloaded").find("sustained") !=
+	      std::string::npos);
 }
 
 static void test_ring_short_only_once_the_window_has_passed()

@@ -86,8 +86,30 @@ inline constexpr int64_t kAngleDeadMs = 5000;
 inline constexpr int64_t kAttachGraceMs = 10000;
 // OBS dropping frames is OBS's problem, but a replay rig is often what pushed
 // it over, so it is reported here too.
+//
+// READ THIS BEFORE CHANGING THE NUMBERS. These are judged over a SLIDING
+// WINDOW (health.cpp keeps the last kLaggedWindowSamples one-second samples and
+// sums them), and the window is the point of the whole rule. Judged over a
+// single second at 30 fps the ratio is quantised to 3.3% — one lagged frame is
+// 3.3%, two are 6.7% — so no reading can ever land near a threshold: it is
+// either zero or well past it. On a real session that produced a badge flipping
+// blocker→clear THIRTY-TWO TIMES IN TWO MINUTES on a run whose true figure was
+// 0.86%, and a badge that flickers is a badge nobody looks at on the day it
+// means something. Five seconds of frames is 150 of them, i.e. 0.7% per frame,
+// which is a scale a threshold can actually sit on.
+//
+// And it is a WARNING, not a blocker. A blocker means "this take cannot run";
+// OBS shedding a few render frames means the machine is working hard, which is
+// what a replay rig does. The escalation that matters is duration, not severity:
+// sustained is what the operator needs told.
 inline constexpr double kLaggedWarnPct = 1.0;
 inline constexpr double kLaggedBlockPct = 5.0;
+// How many one-second runtime samples the lag ratio is judged over.
+inline constexpr int kLaggedWindowSamples = 5;
+// ...and how many consecutive windows have to stay over kLaggedBlockPct before
+// it is called sustained. Two windows = the machine has been behind for ten
+// seconds, which no single burst can fake.
+inline constexpr int kLaggedSustainedWindows = 2;
 // Resident memory above ring + this much is a leak, not a buffer.
 inline constexpr int64_t kMemorySlackBytes = 768LL * 1024 * 1024;
 // A ring holding much less than it was budgeted for is being trimmed by the
@@ -327,9 +349,19 @@ struct RuntimeInput {
 	int64_t diskFreeBytes = -1;
 	int64_t requiredBytesPerSec = 0;
 
-	// Deltas over the sampling window, not lifetime totals.
+	// Frames OBS lagged and frames it drew, summed over the caller's SLIDING
+	// WINDOW (kLaggedWindowSamples seconds), not over the last second and not
+	// over the take. See the note on kLaggedWarnPct for why the window has to
+	// be wider than one second: at 30 fps a one-second ratio can only take the
+	// values 0%, 3.3%, 6.7%… and a threshold on a scale like that is a switch,
+	// not a measurement.
 	uint32_t laggedFrames = 0;
 	uint32_t totalFrames = 0;
+	// How many consecutive windows have now been over kLaggedBlockPct,
+	// counting this one. The caller keeps the count because these rules keep
+	// nothing; 0 or 1 = a burst, kLaggedSustainedWindows or more = the machine
+	// has genuinely been behind for that long and the wording says so.
+	int laggedWindowsOverBlock = 0;
 
 	int64_t rssBytes = -1;         // -1 = not measured
 	int64_t rssBaselineBytes = -1; // resident size before the take
@@ -404,12 +436,24 @@ inline std::vector<Finding> runtime(const RuntimeInput &in)
 	if (in.totalFrames > 0) {
 		const double pct = 100.0 * (double)in.laggedFrames /
 				   (double)in.totalFrames;
-		if (pct >= kLaggedBlockPct)
-			add(Level::Blocker, "obs_overloaded",
-			    detail::fmt("%.1f%%", pct));
-		else if (pct >= kLaggedWarnPct)
+		if (pct >= kLaggedBlockPct) {
+			// Warning, not blocker: nothing here can stop a take, and
+			// a rig that sheds a few render frames is a rig under
+			// load, not a rig that must not run. What is worth saying
+			// is how LONG it has been like this — the detail carries
+			// the ratio, the window it was measured over, and, once it
+			// has held, that it is sustained rather than a burst.
+			const bool sustained = in.laggedWindowsOverBlock >=
+					       kLaggedSustainedWindows;
+			add(Level::Warning, "obs_overloaded",
+			    detail::fmt("%.1f%% over %ds%s", pct,
+					kLaggedWindowSamples,
+					sustained ? ", sustained" : ""));
+		} else if (pct >= kLaggedWarnPct) {
 			add(Level::Warning, "obs_dropping_frames",
-			    detail::fmt("%.1f%%", pct));
+			    detail::fmt("%.1f%% over %ds", pct,
+					kLaggedWindowSamples));
+		}
 	}
 
 	if (in.diskFreeBytes >= 0 && in.requiredBytesPerSec > 0) {

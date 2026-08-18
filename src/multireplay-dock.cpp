@@ -855,6 +855,33 @@ QString tickLabel(int64_t ns)
 
 } // namespace
 
+// The two repaint censuses (see RepaintCensus in the header).
+RepaintCensus g_seekCensus;
+RepaintCensus g_clipCensus;
+
+namespace {
+
+// How long a deferred repaint may wait before it is flushed. ONE FRAME.
+//
+// This was 100 ms for one build, on the reasoning that the graduations and the
+// markers shift by a third of a pixel per tick while recording and that nobody
+// could see the difference between redrawing them at 30 Hz and at 10 Hz. That
+// reasoning was wrong in the only way that counts: the panel was watched, and
+// the position bar and the green band's fill were reported as less smooth than
+// before. Smoothness of the thing an operator stares at while a replay runs IS
+// behaviour, not overhead, and this file does not get to trade it away.
+//
+// At 16 ms the delay is under a frame at 60 Hz, so nothing is visibly deferred.
+// What it still buys is the only thing it was ever needed for: several changes
+// arriving inside the SAME poll tick — the overlay timecode, the markers, a pan
+// under the playhead — become one repaint instead of three. The storm this
+// whole mechanism exists to stop was never the repaints that follow a real
+// change; it was the thirty a second that followed no change at all, and those
+// are stopped by the comparisons in the setters, not here.
+constexpr int kCoalesceMs = 16;
+
+} // namespace
+
 SeekBar::SeekBar(QWidget *parent) : QWidget(parent)
 {
 	// Track + ruler + the 1 px of margin each side. The bar used to be 28 px
@@ -864,6 +891,62 @@ SeekBar::SeekBar(QWidget *parent) : QWidget(parent)
 	setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
 	setCursor(Qt::PointingHandCursor);
 	setMouseTracking(false);
+
+	coalesceTimer_ = new QTimer(this);
+	coalesceTimer_->setSingleShot(true);
+	coalesceTimer_->setInterval(kCoalesceMs);
+	connect(coalesceTimer_, &QTimer::timeout, this, [this] { flushPending(); });
+}
+
+QRect SeekBar::trackBand() const
+{
+	// The track plus the 1 px above it and the top row of the ruler, which
+	// the playhead and the marker edges bleed into.
+	return QRect(0, 0, width(), kSeekTrackH + 2);
+}
+
+void SeekBar::repaintNow(const QRect &r)
+{
+	if (r.isEmpty())
+		return;
+	// Anything already deferred is folded in and flushed with it: two
+	// repaints of overlapping rectangles in the same millisecond are one
+	// repaint, and leaving the deferred one behind would draw a bar that is
+	// half new and half old.
+	QRect u = r;
+	if (!pendingRect_.isNull()) {
+		u = u.united(pendingRect_);
+		pendingRect_ = QRect();
+		coalesceTimer_->stop();
+	}
+	g_seekCensus.requested++;
+	update(u);
+}
+
+void SeekBar::repaintSoon(const QRect &r)
+{
+	if (r.isEmpty())
+		return;
+	if (pendingRect_.isNull()) {
+		pendingRect_ = r;
+		coalesceTimer_->start(); // restarts at kCoalesceMs
+	} else {
+		// Already waiting: widen the rect and let the timer that is
+		// already running deliver it. Restarting it here would let a
+		// change arriving every 33 ms postpone the repaint forever.
+		pendingRect_ = pendingRect_.united(r);
+		g_seekCensus.coalesced++;
+	}
+}
+
+void SeekBar::flushPending()
+{
+	if (pendingRect_.isNull())
+		return;
+	const QRect r = pendingRect_;
+	pendingRect_ = QRect();
+	g_seekCensus.requested++;
+	update(r);
 }
 
 int SeekBar::trackWidth() const
@@ -927,29 +1010,87 @@ void SeekBar::setTimeline(int64_t durationNs, const QString &emptyHint)
 			emit scrubStateChanged(false);
 		}
 	}
-	update();
+	repaintSoon(allOfIt());
 }
 
+// THE PLAYHEAD. This is the one thing on the bar that has to answer at 30 Hz,
+// and it is also the one that used to cost a full-width repaint to move by a
+// pixel — because the setter simply called update() and had nothing to compare
+// against. Two things fixed that, and both matter:
+//
+//  - the comparison is made in PIXELS, not in fractions. While recording, the
+//    timeline grows every tick, so positionFrac is never twice the same number
+//    and a comparison on it would suppress precisely nothing while the bar sat
+//    still. What the operator sees is the pixel.
+//  - the dirty rect is the band the hairline moved ACROSS, not the widget. At
+//    30 Hz that is a handful of pixels, so what Qt re-composes and flushes out
+//    of the OBS main window's backing store is a handful of pixels.
 void SeekBar::setProgress(double positionFrac, double seekableFrac)
 {
-	positionFrac_ = std::clamp(positionFrac, 0.0, 1.0);
-	seekableFrac_ = std::clamp(seekableFrac, 0.0, 1.0);
-	if (!dragging_)
-		update();
+	const double p = std::clamp(positionFrac, 0.0, 1.0);
+	const double s = std::clamp(seekableFrac, 0.0, 1.0);
+	if (dragging_) {
+		// The bar is following the hand, not the engine: mouseMoveEvent
+		// owns the repaint while a gesture is in progress.
+		positionFrac_ = p;
+		seekableFrac_ = s;
+		return;
+	}
+
+	const int oldX = lastDrawnPlayheadX_;
+	const bool seekableMoved = std::abs(s - seekableFrac_) > 0.0005;
+	positionFrac_ = p;
+	seekableFrac_ = s;
+	const int newX = xForFraction(p);
+
+	if (newX == oldX && !seekableMoved) {
+		g_seekCensus.suppressed++;
+		return;
+	}
+	lastDrawnPlayheadX_ = newX;
+
+	if (seekableMoved) {
+		// The dark "you cannot go here" region changed: that is the whole
+		// track, and it is not a per-tick event.
+		repaintSoon(trackBand());
+		return;
+	}
+
+	// The hairline is 2 px (3 while dragging) and the fill edge sits under
+	// it; 4 px of slack each side covers both plus rounding. Full HEIGHT
+	// because the playhead runs down through the ruler as well.
+	const int lo = std::min(oldX == INT_MIN ? newX : oldX, newX) - 4;
+	const int hi = std::max(oldX == INT_MIN ? newX : oldX, newX) + 4;
+	repaintNow(QRect(lo, 0, hi - lo, height()));
 }
 
-void SeekBar::setEventMarkers(std::vector<std::pair<double, double>> markers)
+void SeekBar::setEventMarkers(const std::vector<std::pair<double, double>> &markers)
 {
-	markers_ = std::move(markers);
-	update();
+	// Handed over on EVERY tick of a 30 Hz poll. Outside a take the answer is
+	// always "the same as last time", which is the state the panel spends most
+	// of a session in and the state it was repainting itself to death in.
+	if (markers == markers_) {
+		g_seekCensus.suppressed++;
+		return;
+	}
+	markers_ = markers;
+	// Markers can appear anywhere on the bar, so this one really is the whole
+	// widget. Deferred only far enough to join the other changes arriving in
+	// the same tick (see kCoalesceMs) — not far enough to be seen.
+	repaintSoon(allOfIt());
 }
 
 void SeekBar::setOverlayText(const QString &text)
 {
-	if (overlay_ == text)
+	if (overlay_ == text) {
+		g_seekCensus.suppressed++;
 		return;
+	}
 	overlay_ = text;
-	update();
+	// Hundredths of a second: this changes on nearly every tick while a clip
+	// runs. It is drawn centred ON THE TRACK, so the ruler and its labels —
+	// the expensive half of a repaint — are not involved.
+	repaintSoon(trackBand());
 }
 
 double SeekBar::fracAt(int x) const
@@ -975,7 +1116,10 @@ void SeekBar::setZoom(double zoom, double centreFrac)
 	viewStart_ = std::clamp(centreFrac - viewSpan_ / 2.0, 0.0,
 				1.0 - viewSpan_);
 	emit zoomChanged(zoom_);
-	update();
+	// The window changed: every graduation, every label and every marker
+	// moves. Whole widget, and immediate — this one is a gesture, and a
+	// zoom that lands a tenth of a second late feels broken.
+	repaintNow(allOfIt());
 }
 
 void SeekBar::ensureVisible(double frac)
@@ -994,7 +1138,10 @@ void SeekBar::ensureVisible(double frac)
 	if (std::abs(start - viewStart_) < 1e-9)
 		return;
 	viewStart_ = start;
-	update();
+	// Panning under a moving playhead: the whole widget changes, but this is
+	// driven by poll() at 30 Hz, so it is deferred like everything else on
+	// that beat. The playhead itself keeps its own immediate path.
+	repaintSoon(allOfIt());
 }
 
 void SeekBar::wheelEvent(QWheelEvent *e)
@@ -1022,12 +1169,26 @@ void SeekBar::wheelEvent(QWheelEvent *e)
 	zoom_ = next;
 	viewSpan_ = span;
 	emit zoomChanged(zoom_);
-	update();
+	repaintNow(allOfIt()); // a gesture: it has to land under the hand
 	e->accept();
+}
+
+void SeekBar::resizeEvent(QResizeEvent *e)
+{
+	QWidget::resizeEvent(e);
+	// The pixel the playhead was last drawn at is the thing setProgress
+	// compares against, and it means nothing once the bar is a different
+	// width. Left stale, it would suppress the first real move after every
+	// resize — a bar that comes back from a dock drag with a frozen playhead.
+	lastDrawnPlayheadX_ = INT_MIN;
+	pendingRect_ = QRect(); // Qt repaints the whole widget after a resize
+	if (coalesceTimer_)
+		coalesceTimer_->stop();
 }
 
 void SeekBar::paintEvent(QPaintEvent *)
 {
+	g_seekCensus.served++;
 	QPainter p(this);
 	// Antialiasing OFF: everything here is axis-aligned, and a 1 px
 	// graduation drawn with AA is a 2 px grey smudge — which is how a scale
@@ -1268,9 +1429,15 @@ int SeekBar::xForFraction(double frac) const
 	return m + (int)std::lround(w * std::clamp(toView(frac), 0.0, 1.0));
 }
 
-void SeekBar::setEventMarkerIds(std::vector<int> ids)
+void SeekBar::setEventMarkerIds(const std::vector<int> &ids)
 {
-	markerIds_ = std::move(ids);
+	// No repaint of its own — ids are not drawn, they are what makes an edge
+	// draggable. The comparison is still worth making: this is handed over on
+	// every tick, and reassigning a vector thirty times a second is an
+	// allocation thirty times a second for a list that changes when the
+	// operator marks something.
+	if (ids != markerIds_)
+		markerIds_ = ids;
 }
 
 bool SeekBar::findMarkerEdge(int x, int &marker, bool &inPoint) const
@@ -1324,7 +1491,7 @@ void SeekBar::mousePressEvent(QMouseEvent *e)
 		dragging_ = true;
 		dragFrac_ = fracAt(e->pos().x());
 		emit scrubStateChanged(true);
-		update();
+		repaintNow(allOfIt());
 		return;
 	}
 	dragMarker_ = -1;
@@ -1333,7 +1500,7 @@ void SeekBar::mousePressEvent(QMouseEvent *e)
 	dragFrac_ = std::min(fracAt(e->pos().x()), seekableFrac_);
 	emit scrubStateChanged(true);
 	emit scrubMoved(dragFrac_);
-	update();
+	repaintNow(allOfIt());
 }
 
 void SeekBar::mouseMoveEvent(QMouseEvent *e)
@@ -1357,11 +1524,11 @@ void SeekBar::mouseMoveEvent(QMouseEvent *e)
 			mk.first = std::min(dragFrac_, mk.second);
 		else
 			mk.second = std::max(dragFrac_, mk.first);
-		update();
+		repaintNow(allOfIt());
 		return;
 	}
 	emit scrubMoved(dragFrac_);
-	update();
+	repaintNow(allOfIt());
 }
 
 void SeekBar::mouseReleaseEvent(QMouseEvent *e)
@@ -1381,13 +1548,13 @@ void SeekBar::mouseReleaseEvent(QMouseEvent *e)
 		emit scrubStateChanged(false);
 		if (id > 0)
 			emit markerDragged(id, dragMarkerIn_, dragFrac_);
-		update();
+		repaintNow(allOfIt());
 		return;
 	}
 	positionFrac_ = dragFrac_;
 	emit seekRequested(dragFrac_);
 	emit scrubStateChanged(false);
-	update();
+	repaintNow(allOfIt());
 }
 
 // ---------------------------------------------------------------------------
@@ -1403,6 +1570,27 @@ ClipBar::ClipBar(QWidget *parent) : QWidget(parent)
 	// Deliberately NOT a pointing-hand cursor and deliberately not clickable:
 	// the bar directly under it IS clickable, and a bar that looks draggable
 	// but is not is worse than one that looks inert.
+
+	coalesceTimer_ = new QTimer(this);
+	coalesceTimer_->setSingleShot(true);
+	coalesceTimer_->setInterval(kCoalesceMs);
+	connect(coalesceTimer_, &QTimer::timeout, this, [this] {
+		if (!pending_)
+			return;
+		pending_ = false;
+		g_clipCensus.requested++;
+		update();
+	});
+}
+
+void ClipBar::repaintSoon()
+{
+	if (pending_) {
+		g_clipCensus.coalesced++;
+		return;
+	}
+	pending_ = true;
+	coalesceTimer_->start();
 }
 
 void ClipBar::setState(double progressFrac, const QString &text, bool onAir,
@@ -1410,17 +1598,24 @@ void ClipBar::setState(double progressFrac, const QString &text, bool onAir,
 {
 	const double p = std::clamp(progressFrac, 0.0, 1.0);
 	if (std::abs(p - progress_) < 0.0005 && text == text_ &&
-	    onAir == onAir_ && clipJoins == joins_)
+	    onAir == onAir_ && clipJoins == joins_) {
+		g_clipCensus.suppressed++;
 		return; // 30 times a second, most ticks change nothing
+	}
 	progress_ = p;
 	text_ = text;
 	onAir_ = onAir;
 	joins_ = clipJoins;
-	update();
+	// Something really did change: the fill moved or the text did. It is
+	// deferred by at most one frame, purely so that a tick which changes both
+	// costs one repaint rather than two — the fill an operator watches cross
+	// this band must not lose a single step of it.
+	repaintSoon();
 }
 
 void ClipBar::paintEvent(QPaintEvent *)
 {
+	g_clipCensus.served++;
 	QPainter p(this);
 	const int m = 2;
 	const int h = height() - 2;
@@ -2974,6 +3169,21 @@ QWidget *MultiReplayDock::buildBottomBar()
 		clockLbl_->setFont(QFont(monoFamily()));
 		statusLbl_ = new QLabel(clockBox);
 		statusLbl_->setObjectName("mrMuted");
+		// FIXED WIDTH, both of them, and it is not cosmetic. These two
+		// change four times a second and their text changes LENGTH with it
+		// ("02:15:00 rimanenti" → "v1.0.0 • Idle"). This box sits in a
+		// QHBoxLayout inside a FlowLayout band, so a width change re-flows
+		// the band, which changes the band's heightForWidth, which makes
+		// the panel redistribute height — and the widgets that give it up
+		// are the previews above, whose resize re-allocates a D3D swap
+		// chain on the graphics thread. A label that cannot change width
+		// cannot start that chain.
+		const int kClockW =
+			clockLbl_->fontMetrics().horizontalAdvance(
+				QStringLiteral("0000-00-00 00:00:00")) +
+			8;
+		clockLbl_->setFixedWidth(kClockW);
+		statusLbl_->setFixedWidth(kClockW);
 		cv->addWidget(clockLbl_);
 		cv->addWidget(statusLbl_);
 		rh->addWidget(clockBox);
@@ -4720,6 +4930,9 @@ void MultiReplayDock::cancelDeadRecording()
 
 void MultiReplayDock::poll()
 {
+	// Taken FIRST and handed to accountUiTick last, so what is measured is the
+	// whole tick and the gap since the previous one. See accountUiTick.
+	const uint64_t tickStartNs = (uint64_t)os_gettime_ns();
 	auto &core = ReplayCore::instance();
 	auto &chan = this->chan();
 	auto &tap = PacketTap::instance();
@@ -5120,6 +5333,10 @@ void MultiReplayDock::poll()
 			// modal, whose nested event loop keeps this timer ticking.
 			armWatchDeadlineNs_ = 0;
 			cancelDeadRecording();
+			// Still account for the tick: this branch opens a modal,
+			// which is precisely a tick that took a very long time,
+			// and losing it would hide the one sample worth having.
+			accountUiTick(tickStartNs, (uint64_t)os_gettime_ns());
 			return;
 		}
 	}
@@ -5381,10 +5598,19 @@ void MultiReplayDock::poll()
 	// Recompute seekbar marker fractions every tick: the window slides (the
 	// live edge grows, the ring drops its oldest), so markers move even when
 	// the events themselves do not change.
+	//
+	// Built into MEMBER scratch buffers, not into two fresh vectors: this ran
+	// thirty times a second and allocated twice on every one of them, then
+	// handed the result to a setter that took it BY VALUE and repainted
+	// unconditionally — so a panel with nothing happening in it was asking Qt
+	// to redraw the full-width bar 30 times a second, forever. The setters
+	// compare now, which is only possible because the buffers survive the
+	// call.
 	if (seek_ && displayDurNs_ > 0) {
-		std::vector<std::pair<double, double>> mf;
-		std::vector<int> ids;
-		mf.reserve(markerNs_.size());
+		markerFracScratch_.clear();
+		markerIdScratch_.clear();
+		markerFracScratch_.reserve(markerNs_.size());
+		markerIdScratch_.reserve(markerNs_.size());
 		for (size_t i = 0; i < markerNs_.size(); i++) {
 			// Through the same map the bar is drawn with, so a mark
 			// sits over its own footage however many takes there
@@ -5393,21 +5619,125 @@ void MultiReplayDock::poll()
 			const auto &[inNs, outNs] = markerNs_[i];
 			double inf = 0.0, outf = 0.0;
 			if (timeline_.rangeFraction(inNs, outNs, inf, outf)) {
-				mf.push_back({inf, outf});
+				markerFracScratch_.push_back({inf, outf});
 				// The two lists are read in lockstep by the
 				// bar, so a marker that is not drawn must not
 				// leave its id behind either.
-				ids.push_back(i < markerIds_.size()
-						      ? markerIds_[i]
-						      : 0);
+				markerIdScratch_.push_back(
+					i < markerIds_.size() ? markerIds_[i]
+							      : 0);
 			}
 		}
-		seek_->setEventMarkers(std::move(mf));
-		seek_->setEventMarkerIds(std::move(ids));
+		seek_->setEventMarkers(markerFracScratch_);
+		seek_->setEventMarkerIds(markerIdScratch_);
 	} else if (seek_) {
-		seek_->setEventMarkers({});
-		seek_->setEventMarkerIds({});
+		markerFracScratch_.clear();
+		markerIdScratch_.clear();
+		seek_->setEventMarkers(markerFracScratch_);
+		seek_->setEventMarkerIds(markerIdScratch_);
 	}
+
+	// Last thing in the tick, so it measures the whole of it.
+	accountUiTick(tickStartNs, (uint64_t)os_gettime_ns());
+}
+
+// How the panel is being SERVICED, written to the OBS log.
+//
+// The black-window failure this exists for is not a failure of the plugin's own
+// logic: everything keeps running, the previews keep drawing, the recording
+// keeps recording. What stops is Qt being able to put pixels on the OBS window.
+// Two numbers say whether that was happening, and neither of them can be
+// recovered after the fact from anything else in the log:
+//
+//   late   how long after its due time the 33 ms tick actually fired. The poll
+//          timer is delivered by the same event loop as paint events, so a tick
+//          that arrives 900 ms late IS a window that went 900 ms without a
+//          repaint. This is the direct measurement of the symptom.
+//   cost   how long poll() itself took. That is the part of `late` we own; if
+//          cost is small and late is large, the UI thread was being held by
+//          something outside this plugin.
+//
+// ...plus the repaint census, as a RATE. A run where the panel is idle and the
+// bars are still asking for tens of repaints a second means the guards have a
+// hole in them and this document's diagnosis was incomplete.
+void MultiReplayDock::accountUiTick(uint64_t tickStartNs, uint64_t tickEndNs)
+{
+	constexpr int64_t kExpectedTickNs = 33'000'000;
+	// A tick this late is not jitter, it is a stall: at 30 Hz it means eight
+	// frames the panel could not have been redrawn in. Logged as it happens
+	// (throttled), because the aggregate below would average it away.
+	constexpr int64_t kStallNs = 250'000'000;
+	constexpr int64_t kStallLogEveryNs = 5'000'000'000;
+	constexpr int64_t kReportEveryNs = 10'000'000'000;
+
+	if (lastTickNs_ == 0) {
+		lastTickNs_ = tickStartNs;
+		uiWindowStartNs_ = tickStartNs;
+		uiSeekReqAtWindow_ = g_seekCensus.requested;
+		uiSeekSupAtWindow_ = g_seekCensus.suppressed;
+		uiSeekServedAtWindow_ = g_seekCensus.served;
+		uiClipReqAtWindow_ = g_clipCensus.requested;
+		uiClipServedAtWindow_ = g_clipCensus.served;
+		return;
+	}
+
+	const int64_t late =
+		(int64_t)(tickStartNs - lastTickNs_) - kExpectedTickNs;
+	lastTickNs_ = tickStartNs;
+	const int64_t cost = (int64_t)(tickEndNs - tickStartNs);
+
+	uiTicks_++;
+	if (late > 0) {
+		uiLateSumNs_ += late;
+		uiLateMaxNs_ = std::max(uiLateMaxNs_, late);
+	}
+	uiCostSumNs_ += cost;
+	uiCostMaxNs_ = std::max(uiCostMaxNs_, cost);
+
+	if (late >= kStallNs &&
+	    (uiLastStallLogNs_ == 0 ||
+	     (int64_t)(tickStartNs - uiLastStallLogNs_) >= kStallLogEveryNs)) {
+		uiLastStallLogNs_ = tickStartNs;
+		obs_log(LOG_WARNING,
+			"[ui] UI thread stalled %lld ms — the panel could not be "
+			"repainted for that long (poll itself took %lld ms)",
+			(long long)(late / 1'000'000),
+			(long long)(cost / 1'000'000));
+	}
+
+	if ((int64_t)(tickStartNs - uiWindowStartNs_) < kReportEveryNs)
+		return;
+
+	const double secs = (double)(tickStartNs - uiWindowStartNs_) / 1e9;
+	const uint64_t seekReq = g_seekCensus.requested - uiSeekReqAtWindow_;
+	const uint64_t seekSup = g_seekCensus.suppressed - uiSeekSupAtWindow_;
+	const uint64_t seekSrv = g_seekCensus.served - uiSeekServedAtWindow_;
+	const uint64_t clipReq = g_clipCensus.requested - uiClipReqAtWindow_;
+	const uint64_t clipSrv = g_clipCensus.served - uiClipServedAtWindow_;
+
+	obs_log(LOG_INFO,
+		"[ui] %.1f tick/s | late avg %lld ms max %lld ms | poll avg %.1f ms "
+		"max %lld ms | repaints/s seek %.1f (served %.1f, suppressed %.1f) "
+		"clip %.1f (served %.1f)",
+		(double)uiTicks_ / secs,
+		(long long)(uiTicks_ ? uiLateSumNs_ / uiTicks_ / 1'000'000 : 0),
+		(long long)(uiLateMaxNs_ / 1'000'000),
+		uiTicks_ ? (double)uiCostSumNs_ / (double)uiTicks_ / 1e6 : 0.0,
+		(long long)(uiCostMaxNs_ / 1'000'000), (double)seekReq / secs,
+		(double)seekSrv / secs, (double)seekSup / secs,
+		(double)clipReq / secs, (double)clipSrv / secs);
+
+	uiWindowStartNs_ = tickStartNs;
+	uiTicks_ = 0;
+	uiLateSumNs_ = 0;
+	uiLateMaxNs_ = 0;
+	uiCostSumNs_ = 0;
+	uiCostMaxNs_ = 0;
+	uiSeekReqAtWindow_ = g_seekCensus.requested;
+	uiSeekSupAtWindow_ = g_seekCensus.suppressed;
+	uiSeekServedAtWindow_ = g_seekCensus.served;
+	uiClipReqAtWindow_ = g_clipCensus.requested;
+	uiClipServedAtWindow_ = g_clipCensus.served;
 }
 
 void MultiReplayDock::refreshListNames()

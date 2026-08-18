@@ -294,6 +294,12 @@ private:
 	// Update Branch Output filter path on every configured camera source.
 	// Must be called WITHOUT mutex_ held (ensureFilter reads recordingFolder).
 	void reapplyFilterSettings();
+	// The "add" half of it, static so it can be posted to a later turn of the
+	// UI loop without keeping the instance alive across the hop. Splitting the
+	// two halves is not tidiness: removing and adding Branch Output filters in
+	// the same turn crashes ITS status dock, which builds table rows from
+	// queued signals holding raw source pointers. See reapplyFilterSettings.
+	static void addFiltersForConfig(const Config &cfg);
 
 	void registerReplayHotkeys(); // full broadcast-style hotkey set
 

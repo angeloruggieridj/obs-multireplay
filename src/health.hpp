@@ -60,7 +60,9 @@ takeStarted() instead of asked for every second.
 #include <array>
 #include <atomic>
 #include <cstdint>
+#include <deque>
 #include <mutex>
+#include <utility>
 #include <string>
 #include <thread>
 #include <vector>
@@ -145,6 +147,15 @@ private:
 
 	uint32_t lastLagged_ = 0;
 	uint32_t lastTotal_ = 0;
+	// The last kLaggedWindowSamples one-second deltas, oldest first, and the
+	// count of consecutive windows that have been over the blocking ratio.
+	// The rules keep nothing (that is what makes them testable), so the
+	// window has to be kept here. See the note on kLaggedWarnPct for why one
+	// second is not a window: at 30 fps its ratio is quantised to 3.3% and
+	// the badge it drove flipped thirty-two times in two minutes on a run
+	// whose real figure was 0.86%.
+	std::deque<std::pair<uint32_t, uint32_t>> lagWindow_; // (lagged, total)
+	int laggedWindowsOverBlock_ = 0;
 	int64_t lastDiskCheckNs_ = 0;
 	int64_t diskFreeBytes_ = -1;
 	// Cached at takeStarted: asking ReplayCore for it every second would put
