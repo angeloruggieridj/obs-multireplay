@@ -3521,7 +3521,13 @@ QWidget *MultiReplayDock::buildEvents()
 	events_->setEditTriggers(QAbstractItemView::DoubleClicked |
 				 QAbstractItemView::EditKeyPressed);
 	events_->verticalHeader()->setVisible(false);
-	events_->verticalHeader()->setDefaultSectionSize(22);
+	// 30, and the number is arithmetic rather than taste: an angle cell holds
+	// combo boxes, and the dock's style sheet gives every QComboBox a
+	// min-height of 20 with 3px of padding above and below and a 1px border —
+	// 28 px before anything is drawn in it. At the 22 it used to be, every row
+	// clipped its own contents, which is what "the text looks cut" was.
+	// Whoever changes the input rule in kDockStyle has to change this with it.
+	events_->verticalHeader()->setDefaultSectionSize(30);
 	events_->setAlternatingRowColors(true);
 	events_->setShowGrid(false);
 	events_->setWordWrap(false);
@@ -3583,7 +3589,7 @@ QWidget *MultiReplayDock::buildEvents()
 	// mark was taken during a match, which is the opposite of what an operator
 	// watching the game wants.
 	connect(events_, &QTableWidget::itemSelectionChanged, this, [this]() {
-		if (refreshing_ || reselecting_)
+		if (refreshing_ || itemsProgrammatic_ || reselecting_)
 			return;
 		cueSelected();
 	});
@@ -3676,8 +3682,8 @@ void MultiReplayDock::rebuildEventColumns()
 	camCols_ = cams;
 	camHeaderHot_ = -1; // the highlight belongs to sections that just died
 
-	const bool wasRefreshing = refreshing_;
-	refreshing_ = true; // setHorizontalHeaderItem must not read back as an edit
+	const bool wasProgrammatic = itemsProgrammatic_;
+	itemsProgrammatic_ = true; // setHorizontalHeaderItem must not read back as an edit
 	events_->setRowCount(0);
 	events_->setColumnCount(kColFirstCam +
 			        (int)cams.size() * kColsPerCam);
@@ -3713,7 +3719,7 @@ void MultiReplayDock::rebuildEventColumns()
 			hh->setSectionResizeMode(c, QHeaderView::Stretch);
 		hh->setMinimumSectionSize(34);
 	}
-	refreshing_ = wasRefreshing;
+	itemsProgrammatic_ = wasProgrammatic;
 	updateCamHeaderHighlight();
 }
 
@@ -3727,8 +3733,8 @@ void MultiReplayDock::updateCamHeaderHighlight()
 			hot = kColFirstCam + (int)i * kColsPerCam;
 	if (hot == camHeaderHot_)
 		return;
-	const bool wasRefreshing = refreshing_;
-	refreshing_ = true;
+	const bool wasProgrammatic = itemsProgrammatic_;
+	itemsProgrammatic_ = true;
 	for (size_t i = 0; i < camCols_.size(); i++) {
 		const int col = kColFirstCam + (int)i * kColsPerCam;
 		QTableWidgetItem *h = events_->horizontalHeaderItem(col);
@@ -3741,7 +3747,7 @@ void MultiReplayDock::updateCamHeaderHighlight()
 		// glyph as he switched angles.
 		h->setText(h->data(Qt::UserRole).toString());
 	}
-	refreshing_ = wasRefreshing;
+	itemsProgrammatic_ = wasProgrammatic;
 	camHeaderHot_ = hot;
 }
 
@@ -5296,8 +5302,8 @@ void MultiReplayDock::poll()
 	// which is the one thing that must never be ambiguous during a match.
 	{
 		const auto &ps = playSt;
-		const bool wasRefreshing = refreshing_;
-		refreshing_ = true; // colouring is not an operator edit
+		const bool wasProgrammatic = itemsProgrammatic_;
+		itemsProgrammatic_ = true; // colouring is not an operator edit
 		for (int row = 0; row < events_->rowCount(); row++) {
 			QTableWidgetItem *idItem = events_->item(row, kColId);
 			if (!idItem)
@@ -5311,7 +5317,7 @@ void MultiReplayDock::poll()
 						 : QBrush());
 			}
 		}
-		refreshing_ = wasRefreshing;
+		itemsProgrammatic_ = wasProgrammatic;
 	}
 	// the reference controller paints the header of the camera being watched green.
 	updateCamHeaderHighlight();
@@ -6282,6 +6288,15 @@ void MultiReplayDock::refreshEvents()
 			QTableWidgetItem *it = events_->item(r, kColId);
 			if (it && it->data(Qt::UserRole).toInt() == target) {
 				events_->selectRow(r);
+				// ...AND BRING IT INTO VIEW. Selecting a row off
+				// the bottom of a scrolled list leaves the panel
+				// showing the first marks of the match while the
+				// one just taken is somewhere below the edge —
+				// so the operator marks a goal and the table
+				// does not move. Qt does not scroll for a
+				// programmatic selection; it has to be asked.
+				events_->scrollToItem(
+					it, QAbstractItemView::EnsureVisible);
 				break;
 			}
 		}
@@ -7560,11 +7575,21 @@ void MultiReplayDock::newProjectDialog()
 				     obs_module_text("Dock.StopRecFirst"));
 		return;
 	}
+	// PRE-FILLED WITH THE MOMENT IT IS BEING CREATED. A project needs a name
+	// before it can exist, and on a match day the honest one is when it was
+	// recorded — typed by hand it is one more thing to do while the teams are
+	// warming up, and left to the operator's imagination it produces "Test",
+	// "Test2", "Provola". Sortable by name because the format is
+	// year-month-day, which is the order they will be looked for in. It is a
+	// starting point, not a rule: the field is selected so a real name simply
+	// replaces it.
 	bool ok;
+	const QString suggested =
+		QDateTime::currentDateTime().toString("yyyyMMdd_HHmm");
 	QString title = QInputDialog::getText(
 		this, obs_module_text("Dock.NewProject"),
 		obs_module_text("Dock.ProjectNameLabel"), QLineEdit::Normal,
-		"", &ok);
+		suggested, &ok);
 	if (!ok || title.trimmed().isEmpty())
 		return;
 	std::string err;

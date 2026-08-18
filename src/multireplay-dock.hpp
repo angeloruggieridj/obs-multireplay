@@ -952,7 +952,27 @@ private:
 	QTableWidget *events_ = nullptr;
 	// (No inspector panel: the per-angle enable box, speed and comment are all
 	// in the table now, on the row and in the column they belong to.)
-	bool refreshing_ = false; // guards itemChanged during table rebuilds
+	// TWO FLAGS, AND KEEPING THEM APART IS A BUG FIX, NOT TIDINESS.
+	//
+	// refreshing_ means "the event table is being rebuilt, so anything a cell
+	// widget emits is an echo of that and not an operator's edit". Only
+	// refreshEvents sets it, and only the angle-cell handlers read it.
+	//
+	// itemsProgrammatic_ means "I am writing table ITEMS myself" — the camera
+	// headers, the green watched-angle header, the red id of the row on air.
+	// Those run on the 30 Hz poll.
+	//
+	// They used to be the same flag, and that silently threw away the
+	// operator's edits. A QComboBox popup runs a NESTED EVENT LOOP, so the
+	// dock's 33 ms poll fires while the list is open — and if the pick landed
+	// while poll() was inside the on-air colouring, the cell's handler saw
+	// "refreshing" and returned without writing. Intermittent by construction,
+	// and it looked exactly like what was reported: the speed and the comment
+	// appear in the cell and are gone from the store, which a search then
+	// redraws from. events.json had speed:-1.0 and note:"" on every angle of
+	// every event of a match that had been annotated.
+	bool refreshing_ = false;        // table rebuild in progress
+	bool itemsProgrammatic_ = false; // we are writing items, not the operator
 	uint64_t lastEventVersion_ = UINT64_MAX; // UINT64_MAX → refresh on first poll
 	// Largest event id seen: when a newer one appears (a fresh mark), the table
 	// auto-selects it so "Riproduci selezionati" is one click; otherwise the

@@ -160,6 +160,39 @@ if (Test-Path $modulesJson) {
 # is moved aside for the duration and put back, and global.ini's record of which
 # collection is current is restored too: without that his next manual launch
 # would open a collection this script had already deleted.
+# DEFINED UP HERE, before anything can fail. It used to sit below the setup it
+# undoes, and PowerShell resolves a function name at the point of CALL in script
+# scope — so the first refusal in the source check exited with
+# "Restore-OperatorEnvironment is not recognized" and left the operator pointed
+# at the gate's collection. A cleanup that is not defined yet is not a cleanup.
+function Restore-OperatorEnvironment {
+    # Other people's plugins go back on: they were switched off for the run, not
+    # judged.
+    if (Test-Path $modulesBackup) {
+        Copy-Item $modulesBackup $modulesJson -Force -ErrorAction SilentlyContinue
+        Remove-Item $modulesBackup -Force -ErrorAction SilentlyContinue
+    }
+    if (Test-Path $testCollectionFile) { Remove-Item $testCollectionFile -Force -ErrorAction SilentlyContinue }
+    # The footage this run wrote goes with it: a gate that leaves gigabytes
+    # behind is a gate nobody runs twice.
+    if (Test-Path $testSessionFolder) { Remove-Item $testSessionFolder -Recurse -Force -ErrorAction SilentlyContinue }
+    if (Test-Path $pluginCfg) { Remove-Item $pluginCfg -Force -ErrorAction SilentlyContinue }
+    if (Test-Path $cfgBackup) { Move-Item $cfgBackup $pluginCfg -Force -ErrorAction SilentlyContinue }
+    if (Test-Path $iniBackup) {
+        Copy-Item $iniBackup $globalIni -Force -ErrorAction SilentlyContinue
+        Remove-Item $iniBackup -Force -ErrorAction SilentlyContinue
+    }
+    # The collection name is ASSERTED, not restored: the backup was taken from a
+    # file OBS rewrites on exit, so it can already carry the gate's own name or a
+    # stale one. See the note where $operatorCollection is decided.
+    if ($operatorCollection -and (Test-Path $globalIni)) {
+        (Get-Content $globalIni) `
+            -replace '^SceneCollection=.*$', "SceneCollection=$operatorCollection" `
+            -replace '^SceneCollectionFile=.*$', "SceneCollectionFile=$operatorCollection" |
+            Set-Content $globalIni -Encoding UTF8
+    }
+}
+
 $scenesDir = Join-Path $env:APPDATA 'obs-studio\basic\scenes'
 $globalIni = Join-Path $env:APPDATA 'obs-studio\global.ini'
 $pluginCfg = Join-Path $env:APPDATA 'obs-studio\plugin_config\obs-multireplay\config.json'
@@ -366,33 +399,6 @@ for ($i = 0; $i -lt 8; $i++) {
 Step "MultiReplay config seeded (session folder $testSessionFolder)"
 
 # Put it all back whatever happens to the run — a failure, a crash, a Ctrl-C.
-function Restore-OperatorEnvironment {
-    # Other people's plugins go back on: they were switched off for the run, not
-    # judged.
-    if (Test-Path $modulesBackup) {
-        Copy-Item $modulesBackup $modulesJson -Force -ErrorAction SilentlyContinue
-        Remove-Item $modulesBackup -Force -ErrorAction SilentlyContinue
-    }
-    if (Test-Path $testCollectionFile) { Remove-Item $testCollectionFile -Force -ErrorAction SilentlyContinue }
-    # The footage this run wrote goes with it: a gate that leaves gigabytes
-    # behind is a gate nobody runs twice.
-    if (Test-Path $testSessionFolder) { Remove-Item $testSessionFolder -Recurse -Force -ErrorAction SilentlyContinue }
-    if (Test-Path $pluginCfg) { Remove-Item $pluginCfg -Force -ErrorAction SilentlyContinue }
-    if (Test-Path $cfgBackup) { Move-Item $cfgBackup $pluginCfg -Force -ErrorAction SilentlyContinue }
-    if (Test-Path $iniBackup) {
-        Copy-Item $iniBackup $globalIni -Force -ErrorAction SilentlyContinue
-        Remove-Item $iniBackup -Force -ErrorAction SilentlyContinue
-    }
-    # The collection name is ASSERTED, not restored: the backup was taken from a
-    # file OBS rewrites on exit, so it can already carry the gate's own name or a
-    # stale one. See the note where $operatorCollection is decided.
-    if ($operatorCollection -and (Test-Path $globalIni)) {
-        (Get-Content $globalIni) `
-            -replace '^SceneCollection=.*$', "SceneCollection=$operatorCollection" `
-            -replace '^SceneCollectionFile=.*$', "SceneCollectionFile=$operatorCollection" |
-            Set-Content $globalIni -Encoding UTF8
-    }
-}
 trap { Restore-OperatorEnvironment; break }
 
 # --- 5. Launch OBS with the self-test environment ----------------------------
