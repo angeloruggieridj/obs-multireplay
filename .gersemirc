@@ -3,3 +3,11 @@ line_length: 100
 # gersemi fell back to its own default and the CI only ever noticed on a file
 # somebody had touched. Stated here, local runs and CI agree.
 indent: 2
+# The OBS plugin template defines its own CMake commands (set_target_properties_plugin
+# and friends, in cmake/{linux,macos,windows}/helpers.cmake). gersemi cannot know
+# them, and from 0.17 onwards it treats "unknown custom command" as a reason to
+# report the file — which is what turned an unrelated two-line change into a red
+# CI on formatting that had never been touched. Pointing it at the definitions
+# would work on one platform and warn about the other two, since each defines the
+# same command; saying we do not want the warning is the honest version.
+warn_about_unknown_commands: false
