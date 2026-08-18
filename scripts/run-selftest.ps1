@@ -106,6 +106,186 @@ if (Test-Path $modulesJson) {
     }
 }
 
+# --- 4b. A SCENE COLLECTION AND A PLUGIN CONFIG OF ITS OWN -------------------
+# The gate used to run inside the operator's own scene collection and his own
+# MultiReplay config, and the two got in each other's way three separate ways in
+# one afternoon:
+#
+#   - it armed whatever OBS sources were NAMED in -Sources, which is not the
+#     same thing as the angle labels on the panel: camera 1 was sourceName
+#     "Media" (PARTITA.mp4) with displayName "C1", while two older sources were
+#     literally called C1 and C2. The gate recorded and replayed the old ones
+#     while the panel said C1;
+#   - it rewrote his camera configuration and had to put it back afterwards,
+#     which only works if the run survives to the end;
+#   - OBS saves the scene collection on a clean exit and NOT on a crash, so a
+#     run that died took his unsaved source edits with it.
+#
+# So the gate now builds a collection of its own containing only the sources it
+# was asked for (copied WITHOUT their filters, Branch Output ones included),
+# points OBS at it with --collection, and deletes it afterwards. His config.json
+# is moved aside for the duration and put back, and global.ini's record of which
+# collection is current is restored too: without that his next manual launch
+# would open a collection this script had already deleted.
+$scenesDir = Join-Path $env:APPDATA 'obs-studio\basic\scenes'
+$globalIni = Join-Path $env:APPDATA 'obs-studio\global.ini'
+$pluginCfg = Join-Path $env:APPDATA 'obs-studio\plugin_config\obs-multireplay\config.json'
+$testCollection = 'MRSelfTest'
+$testCollectionFile = Join-Path $scenesDir "$testCollection.json"
+$cfgBackup = Join-Path $env:TEMP 'obs-multireplay-config.backup.json'
+$iniBackup = Join-Path $env:TEMP 'obs-multireplay-global.backup.ini'
+
+# global.ini is backed up so the operator's current-collection setting can be
+# handed back, but it is NOT used to FIND the sources. It is written on exit and
+# was measured saying "Senza titolo" while the collection actually in use was
+# REC_schermo — believing it would have failed a run for a source that was right
+# there. The sources are looked for in every collection instead, most recently
+# modified first, which is also the honest answer to "where does this name live".
+if (Test-Path $globalIni) { Copy-Item $globalIni $iniBackup -Force }
+$collectionFiles = @(Get-ChildItem -Path $scenesDir -Filter '*.json' -ErrorAction SilentlyContinue |
+                     Where-Object { $_.BaseName -ne $testCollection } |
+                     Sort-Object LastWriteTime -Descending)
+
+$wantedSources = @()
+if ($Sources) { $wantedSources = $Sources.Split(',') | ForEach-Object { $_.Trim() } }
+
+# ONE SCENE PER CAMERA, plus one per replay bay — the shape of a real rig, and
+# the shape the operator's own collection has (Cam1 scene / Cam2 scene / Scena /
+# Scena B). A single scene holding every camera at once is not something anyone
+# would build, and "to output" has nowhere to switch TO.
+#
+# The two replay scenes are written EMPTY on purpose: "MultiReplay - Replay A"
+# and "…B" do not exist until the plugin has loaded, and a scene item naming a
+# source that is not there yet is dropped by OBS when it reads the file. The gate
+# puts them in at runtime, which is also what it already does for its own output
+# scenes.
+$collection = [ordered]@{
+    name                  = $testCollection
+    current_scene         = 'MRCam 1'
+    current_program_scene = 'MRCam 1'
+    scene_order           = @()
+    sources               = @()
+}
+$copied = @()
+
+function New-MRScene($name, $items) {
+    [ordered]@{
+        prev_ver = 520093697; name = $name; uuid = [guid]::NewGuid().ToString()
+        id = 'scene'; versioned_id = 'scene'; settings = @{ items = $items }
+        mixers = 0; sync = 0; flags = 0; volume = 1.0; balance = 0.5
+        enabled = $true; muted = $false
+        'push-to-mute' = $false; 'push-to-mute-delay' = 0
+        'push-to-talk' = $false; 'push-to-talk-delay' = 0; hotkeys = @{}
+    }
+}
+foreach ($want in $wantedSources) {
+    $found = $null
+    $foundIn = $null
+    foreach ($cf in $collectionFiles) {
+        $src = Get-Content $cf.FullName -Raw | ConvertFrom-Json
+        $hit = $src.sources | Where-Object { $_.name -eq $want } | Select-Object -First 1
+        if ($hit) { $found = $hit; $foundIn = $cf.BaseName; break }
+    }
+    if (-not $found) {
+        Fail "no scene collection defines a source named '$want'"
+        foreach ($cf in $collectionFiles) {
+            $names = (Get-Content $cf.FullName -Raw | ConvertFrom-Json).sources |
+                     ForEach-Object { $_.name }
+            Write-Host "    $($cf.BaseName): $($names -join ', ')" -ForegroundColor DarkGray
+        }
+        Restore-OperatorEnvironment
+        exit 2
+    }
+    # Without its filters: a Branch Output filter carried over would arm a
+    # recording nobody asked for, writing to a path this run does not own.
+    $found.PSObject.Properties.Remove('filters')
+    $collection.sources += $found
+    $copied += "$want (from $foundIn)"
+    # bounds_type 2 (SCALE_INNER) over the full canvas, centred: C1 and C2 are
+    # 720p files and the canvas is 1080p, so an item placed at scale 1.0 would
+    # sit in the top-left corner at two thirds size. Fitted, they fill the frame
+    # the way the operator has them.
+    $item = [ordered]@{
+        name = $want; source_uuid = $found.uuid
+        visible = $true; locked = $false; rot = 0.0
+        scale_ref = @{ x = 1920.0; y = 1080.0 }
+        align = 0; bounds_type = 2; bounds_align = 0; bounds_crop = $false
+        crop_left = 0; crop_top = 0; crop_right = 0; crop_bottom = 0
+        id = 1; group_item_backup = $false
+        pos = @{ x = 960.0; y = 540.0 }; pos_rel = @{ x = 0.0; y = 0.0 }
+        scale = @{ x = 1.0; y = 1.0 }; scale_rel = @{ x = 1.0; y = 1.0 }
+        bounds = @{ x = 1920.0; y = 1080.0 }
+        bounds_rel = @{ x = 2.0; y = 2.0 }
+        scale_filter = 'disable'; blend_method = 'default'; blend_type = 'normal'
+        show_transition = @{ duration = 300 }; hide_transition = @{ duration = 300 }
+        private_settings = @{}
+    }
+    # One scene per camera, named for the slot it feeds.
+    $sceneName = "MRCam $($copied.Count)"
+    $collection.sources += (New-MRScene $sceneName @($item))
+    $collection.scene_order += @{ name = $sceneName }
+}
+# ...and one per replay bay, empty until the plugin has made its sources.
+foreach ($bay in @('MRReplay A', 'MRReplay B')) {
+    $collection.sources += (New-MRScene $bay @())
+    $collection.scene_order += @{ name = $bay }
+}
+New-Item -ItemType Directory -Force -Path $scenesDir | Out-Null
+$collection | ConvertTo-Json -Depth 30 | Set-Content $testCollectionFile -Encoding UTF8
+Step "Scene collection '$testCollection' generated$(if ($copied) { " with $($copied -join ', ')" })"
+
+# His MultiReplay config goes aside for the duration: the gate creates its own
+# project and its own camera slots, and must not be able to leave a trace in the
+# one he takes into a match.
+#
+# AND IT IS REPLACED, not just removed. A blank config has no session folder, so
+# the pre-flight refuses the take before anything can attach — the first run with
+# this isolation came back with cameras_armed 2 and every other check false,
+# which is what "no folder to record into" looks like from the outside. The seed
+# names the same sources the collection above carries, in the same slots, and
+# points the recordings at a directory of this run's own that goes away with it.
+$testSessionFolder = Join-Path $env:TEMP 'obs-multireplay-gate-session'
+if (Test-Path $pluginCfg) { Move-Item $pluginCfg $cfgBackup -Force }
+New-Item -ItemType Directory -Force -Path (Split-Path -Parent $pluginCfg) | Out-Null
+New-Item -ItemType Directory -Force -Path $testSessionFolder | Out-Null
+$seedCams = @()
+for ($i = 0; $i -lt 8; $i++) {
+    if ($i -lt $wantedSources.Count) {
+        $seedCams += [ordered]@{ sourceName = $wantedSources[$i]; displayName = $wantedSources[$i] }
+    } else {
+        $seedCams += [ordered]@{ sourceName = ''; displayName = '' }
+    }
+}
+([ordered]@{
+    sessionFolder      = $testSessionFolder
+    currentProjectName = ''
+    videoBitrateKbps   = 4000
+    audioBitrateKbps   = 320
+    videoEncoderId     = ''
+    replaySourceName   = ''
+    musicSourceName    = ''
+    eventIdDigits      = 4
+    eventListCount     = 20
+    showMultiview      = $true
+    cameras            = $seedCams
+} | ConvertTo-Json -Depth 10) | Set-Content $pluginCfg -Encoding UTF8
+Step "MultiReplay config seeded (session folder $testSessionFolder)"
+
+# Put it all back whatever happens to the run — a failure, a crash, a Ctrl-C.
+function Restore-OperatorEnvironment {
+    if (Test-Path $testCollectionFile) { Remove-Item $testCollectionFile -Force -ErrorAction SilentlyContinue }
+    # The footage this run wrote goes with it: a gate that leaves gigabytes
+    # behind is a gate nobody runs twice.
+    if (Test-Path $testSessionFolder) { Remove-Item $testSessionFolder -Recurse -Force -ErrorAction SilentlyContinue }
+    if (Test-Path $pluginCfg) { Remove-Item $pluginCfg -Force -ErrorAction SilentlyContinue }
+    if (Test-Path $cfgBackup) { Move-Item $cfgBackup $pluginCfg -Force -ErrorAction SilentlyContinue }
+    if (Test-Path $iniBackup) {
+        Copy-Item $iniBackup $globalIni -Force -ErrorAction SilentlyContinue
+        Remove-Item $iniBackup -Force -ErrorAction SilentlyContinue
+    }
+}
+trap { Restore-OperatorEnvironment; break }
+
 # --- 5. Launch OBS with the self-test environment ----------------------------
 if (Test-Path $report) { Remove-Item $report -Force }
 
@@ -120,7 +300,7 @@ else { Remove-Item Env:OBS_MULTIREPLAY_SELFTEST_SOURCES -ErrorAction SilentlyCon
 Step "Launching OBS (window will appear; measurement window ${Seconds}s)"
 # --disable-shutdown-check stops OBS offering safe mode after we close it.
 $proc = Start-Process -FilePath $obsExe -WorkingDirectory $obsDir `
-    -ArgumentList '--disable-shutdown-check', '--multi' -PassThru
+    -ArgumentList '--disable-shutdown-check', '--multi', '--collection', $testCollection -PassThru
 
 # --- 6. Wait for the plugin to write its verdict -----------------------------
 # Measurement window + engine checks + the dock pass, which replays a two-angle
@@ -156,6 +336,7 @@ if (-not $haveReport) {
     Write-Host '--- plugin lines from the OBS log ---' -ForegroundColor DarkGray
     Select-String -Path $log.FullName -Pattern 'multireplay|\[tap\]|\[selftest\]|branch' |
         Select-Object -Last 40 | ForEach-Object { $_.Line }
+    Restore-OperatorEnvironment
     exit 2
 }
 
@@ -168,6 +349,7 @@ if ($r.verdict -ne 'PASS') {
     Write-Host '--- plugin lines from the OBS log ---' -ForegroundColor DarkGray
     Select-String -Path $log.FullName -Pattern '\[tap\]|\[selftest\]|osi-branch-output' |
         Select-Object -Last 40 | ForEach-Object { $_.Line }
+    Restore-OperatorEnvironment
     exit 1
 }
 
@@ -191,7 +373,7 @@ function Invoke-SoakPass {
 
     Step "Soak pass: recording for $Minutes minute(s) in its own project"
     $p = Start-Process -FilePath $obsExe -WorkingDirectory $obsDir `
-        -ArgumentList '--disable-shutdown-check', '--multi' -PassThru
+        -ArgumentList '--disable-shutdown-check', '--multi', '--collection', $testCollection -PassThru
 
     # The pass itself is Minutes long; add the setup, the teardown and the
     # remove_all of what may be several GB.
@@ -228,6 +410,7 @@ function Invoke-SoakPass {
 if ($SkipReopen) {
     Write-Host 'M0 GATE: PASS (reopen pass skipped)' -ForegroundColor Green
     if ($SoakMinutes -gt 0) { exit (Invoke-SoakPass -Minutes $SoakMinutes) }
+    Restore-OperatorEnvironment
     exit 0
 }
 
@@ -242,7 +425,7 @@ $env:OBS_MULTIREPLAY_SELFTEST_OUT = $reopenReport
 
 Step 'Relaunching OBS on the same project (reopen pass)'
 $proc2 = Start-Process -FilePath $obsExe -WorkingDirectory $obsDir `
-    -ArgumentList '--disable-shutdown-check', '--multi' -PassThru
+    -ArgumentList '--disable-shutdown-check', '--multi', '--collection', $testCollection -PassThru
 
 # The file lengths are demuxed one per watcher pass and only accepted when two
 # reads agree, so this pass waits in the tens of seconds by design.
@@ -273,6 +456,7 @@ if (-not $haveReopen) {
     Fail "No reopen report at $reopenReport - that pass did not complete."
     Select-String -Path $log2.FullName -Pattern '\[selftest\]|\[segments\]' |
         Select-Object -Last 30 | ForEach-Object { $_.Line }
+    Restore-OperatorEnvironment
     exit 2
 }
 
@@ -283,10 +467,12 @@ $r2 = $json2 | ConvertFrom-Json
 if ($r2.verdict -eq 'PASS') {
     Write-Host 'M0 GATE: PASS (take + reopen)' -ForegroundColor Green
     if ($SoakMinutes -gt 0) { exit (Invoke-SoakPass -Minutes $SoakMinutes) }
+    Restore-OperatorEnvironment
     exit 0
 } else {
     Fail 'M0 GATE: FAIL (reopened project)'
     Select-String -Path $log2.FullName -Pattern '\[selftest\]|\[segments\]' |
         Select-Object -Last 30 | ForEach-Object { $_.Line }
+    Restore-OperatorEnvironment
     exit 1
 }
