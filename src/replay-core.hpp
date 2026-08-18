@@ -293,6 +293,21 @@ private:
 	std::string recordingFolderLocked() const;
 	// Update Branch Output filter path on every configured camera source.
 	// Must be called WITHOUT mutex_ held (ensureFilter reads recordingFolder).
+	// --- settings files --------------------------------------------------
+	// TWO of them, and which is which decides what an operator has to set up
+	// twice. The global one is the plugin's own config: it holds the session
+	// folder and which project is open, and it is what a NEW project is seeded
+	// from. The project one lives inside the project folder and holds
+	// everything else — cameras, bitrates, encoder, output scenes,
+	// transitions, rolls, tags. Before this existed a new project silently
+	// inherited the rig of whatever was recorded last, which is how a two-
+	// camera match got the three-camera setup of the one before it.
+	void loadConfigFile(const char *path, bool projectScoped);
+	void saveConfigFile(const char *path) const;
+	std::string projectSettingsPath() const;
+	void saveProjectSettings() const;
+	void loadProjectSettings();
+
 	void reapplyFilterSettings();
 	// The "add" half of it, static so it can be posted to a later turn of the
 	// UI loop without keeping the instance alive across the hop. Splitting the

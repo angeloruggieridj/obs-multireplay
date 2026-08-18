@@ -37,6 +37,7 @@ bool debugLoggingEnabled()
 namespace {
 
 constexpr const char *kConfigFile = "config.json";
+constexpr const char *kProjectSettingsFile = "settings.json";
 
 // Hardware encoders in order of preference, then software fallback.
 // Ids as registered by OBS Studio encoder plugins.
@@ -160,6 +161,10 @@ void ReplayCore::load()
 	EventStore::instance().setSessionEpoch(sessionEpoch());
 
 	loadConfig();
+	// ...and, if a project was open when OBS last closed, ITS settings on top.
+	// Without this the plugin comes back with the global config, which is the
+	// last thing SAVED and not necessarily this project's rig.
+	loadProjectSettings();
 
 	// The events of the last project were just restored; without this its
 	// footage would not be, and the operator would see marks with nothing
@@ -1002,6 +1007,14 @@ bool ReplayCore::newProject(const std::string &title, std::string &errorOut)
 		errorOut = "cannot create project folder: " + ec.message();
 		return false;
 	}
+	// A COPY of what is configured right now, written into the new project.
+	// From here the two are independent: changing this one leaves the previous
+	// project's settings alone, and reopening that one gets its own back. The
+	// alternative — starting empty — is eight camera slots to fill in before
+	// every match, which is how a rig gets configured wrong under time
+	// pressure. saveConfig() writes both files, so it seeds and persists in
+	// one call.
+	saveConfig();
 	EventStore::instance().setSessionFolder(path);
 	// Empty folder, so nothing to read back — but the index must stop pointing
 	// at the previous project, or its files would answer this project's lookups.
@@ -1033,6 +1046,12 @@ bool ReplayCore::openProject(const std::string &folderName,
 		}
 		config_.currentProjectName = folderName;
 	}
+	// ITS settings, before anything is pointed anywhere. The Branch Output
+	// filters, the segment index and the event store below are all set up
+	// FROM the configuration, so loading the project's own has to happen
+	// first — otherwise the project opens with the last project's cameras and
+	// only picks up its own the next time something calls setConfig().
+	loadProjectSettings();
 	saveConfig();
 	EventStore::instance().setSessionFolder(path);
 	// Footage of a project recorded in an EARLIER OBS run: SegmentIndex reads
@@ -1074,15 +1093,39 @@ void ReplayCore::loadConfig()
 	char *path = obs_module_config_path(kConfigFile);
 	if (!path)
 		return;
-	obs_data_t *data = obs_data_create_from_json_file(path);
+	loadConfigFile(path, false);
 	bfree(path);
+}
+
+// SETTINGS BELONG TO A PROJECT, and this is the one function both files go
+// through. A project written before this existed has no settings.json; the
+// first time it is opened it ADOPTS what is configured now and writes it, so
+// nothing has to be set up again and no project ever opens blank.
+//
+// `projectScoped` says where the file came from, and it decides exactly two
+// fields. The session folder is where projects LIVE, so a project cannot own
+// it without being able to move itself somewhere else; and the current project
+// name is which project is open, which is a statement about the installation
+// and not about the project. Everything else — cameras, bitrates, encoder,
+// output scenes, transitions, rolls, tags — follows the project, because those
+// are the things that differ between one match and the next and that used to
+// arrive inherited from whatever was recorded last.
+void ReplayCore::loadConfigFile(const char *path, bool projectScoped)
+{
+	obs_data_t *data = obs_data_create_from_json_file(path);
 	if (!data)
 		return;
 
 	std::lock_guard<std::mutex> lock(mutex_);
+	const std::string keepFolder = config_.sessionFolder;
+	const std::string keepProject = config_.currentProjectName;
 	config_.sessionFolder = obs_data_get_string(data, "sessionFolder");
 	config_.currentProjectName =
 		obs_data_get_string(data, "currentProjectName");
+	if (projectScoped) {
+		config_.sessionFolder = keepFolder;
+		config_.currentProjectName = keepProject;
+	}
 	if (obs_data_has_user_value(data, "port"))
 		config_.port = (int)obs_data_get_int(data, "port");
 	if (obs_data_has_user_value(data, "splitMinutes"))
@@ -1205,6 +1248,60 @@ void ReplayCore::loadConfig()
 
 void ReplayCore::saveConfig() const
 {
+	char *path = obs_module_config_path(kConfigFile);
+	if (!path)
+		return;
+	saveConfigFile(path);
+	bfree(path);
+	// ...and into the project itself, so reopening it next month finds the rig
+	// it was recorded with rather than the rig of whatever was opened since.
+	saveProjectSettings();
+}
+
+// Where a project keeps its own settings. Empty when no project is open — the
+// session folder on its own is where projects live, not a project.
+std::string ReplayCore::projectSettingsPath() const
+{
+	std::lock_guard<std::mutex> lock(mutex_);
+	if (config_.currentProjectName.empty() || config_.sessionFolder.empty())
+		return std::string();
+	return (std::filesystem::path(config_.sessionFolder) /
+		config_.currentProjectName / kProjectSettingsFile)
+		.string();
+}
+
+void ReplayCore::saveProjectSettings() const
+{
+	const std::string p = projectSettingsPath();
+	if (!p.empty())
+		saveConfigFile(p.c_str());
+}
+
+// Called when a project is opened. Adopts-and-writes when the project has no
+// settings of its own (see loadConfigFile): every project on disk predates this
+// file, and one that opened with no cameras would be a rig to rebuild by hand
+// before a match.
+void ReplayCore::loadProjectSettings()
+{
+	const std::string p = projectSettingsPath();
+	if (p.empty())
+		return;
+	std::error_code ec;
+	if (std::filesystem::exists(p, ec)) {
+		loadConfigFile(p.c_str(), true);
+		obs_log(LOG_INFO, "[config] project settings loaded from %s",
+			p.c_str());
+	} else {
+		saveConfigFile(p.c_str());
+		obs_log(LOG_INFO,
+			"[config] project had no settings of its own — adopted the "
+			"current ones and wrote %s",
+			p.c_str());
+	}
+}
+
+void ReplayCore::saveConfigFile(const char *path) const
+{
 	std::lock_guard<std::mutex> lock(mutex_);
 
 	obs_data_t *data = obs_data_create();
@@ -1271,16 +1368,14 @@ void ReplayCore::saveConfig() const
 	obs_data_set_array(data, "commentPresets", pre);
 	obs_data_array_release(pre);
 
-	char *dir = obs_module_config_path("");
-	if (dir) {
-		os_mkdirs(dir);
-		bfree(dir);
-	}
-	char *path = obs_module_config_path(kConfigFile);
-	if (path) {
-		obs_data_save_json_safe(data, path, "tmp", "bak");
-		bfree(path);
-	}
+	// The directory of whichever file this is — the plugin's own config
+	// directory for the global one, the project folder for a project's.
+	std::error_code ec;
+	const std::filesystem::path parent =
+		std::filesystem::path(path).parent_path();
+	if (!parent.empty())
+		std::filesystem::create_directories(parent, ec);
+	obs_data_save_json_safe(data, path, "tmp", "bak");
 	obs_data_release(data);
 }
 
