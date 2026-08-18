@@ -631,6 +631,17 @@ private:
 	QWidget *buildAngleCell(int eventId, int cam0, bool on, double speed,
 				const std::string &note,
 				const std::vector<std::string> &presets);
+	// The fast path: write the three values into a cell that already belongs
+	// to this event and angle. False = it does not, and the caller must build
+	// a new one. See the note on the function.
+	bool updateAngleCell(QWidget *cell, int eventId, int cam0, bool on,
+			     double speed, const std::string &note);
+	// Bumped whenever the list of comments a cell would offer changes — a word
+	// typed on any event, or the presets edited in Settings. A cell records the
+	// version it was built with; a newer one means it cannot be reused, because
+	// its list would be missing the word just added.
+	uint64_t commentVocabVersion_ = 0;
+	std::vector<std::string> lastCommentPresets_;
 
 	// --- trimming an event already marked --------------------------------
 	// A live mark is late by definition: the operator saw the action first.

@@ -5612,10 +5612,16 @@ void MultiReplayDock::poll()
 	uint64_t ev = EventStore::instance().version();
 	if (ev != lastEventVersion_) {
 		lastEventVersion_ = ev;
-		// Third suspect, and this one is our own arithmetic: the table is
-		// rebuilt with real widgets in every camera cell.
+		// TWO phases, not one. They were timed together and the total was
+		// read as the table's — but the table's own breakdown never showed
+		// a rebuild anywhere near the 567 ms this phase reported, which
+		// means the time was in the other half or in neither. A phase that
+		// covers two things names neither.
+		{
+			Phase _ph(this, "refreshAngles");
+			refreshAngles();
+		}
 		Phase _ph(this, "refreshEvents/version");
-		refreshAngles();
 		refreshEvents(); // rebuilds markerNs_ (raw ns pairs)
 	} else if (eventsDirty_ || commentsDirty_) {
 		// A rebuild the store did not ask for: one that was deferred past an
@@ -5912,12 +5918,22 @@ void MultiReplayDock::refreshEvents()
 	// Here rather than only where a name is edited: opening another project
 	// loads that project's list names without ever bumping the version
 	// counter, and this is the one function every one of those paths calls.
+	// From the TOP, not from where the rows are built. Timed only around the
+	// row building, this function reported 62 ms while poll()'s phase around
+	// the whole of it reported 307 — so a quarter of a second was going
+	// somewhere upstream of the timer, and a breakdown that cannot see it
+	// points at the wrong half. listJson() below serialises every event of the
+	// list, with all its angles, under the store's lock, and it is called on
+	// every refresh.
+	const uint64_t refreshStartNs = os_gettime_ns();
 	refreshListNames();
 	// Same reason: the camera columns follow the camera configuration, and a
 	// no-op unless that really changed (it clears the table).
 	rebuildEventColumns();
 	int list = EventStore::instance().selectedList();
+	const uint64_t jsonStartNs = os_gettime_ns();
 	Data d(EventStore::instance().listJson(list));
+	const int64_t jsonNs = (int64_t)(os_gettime_ns() - jsonStartNs);
 	if (!d)
 		return;
 	QString needle = search_ ? search_->text().trimmed().toLower() : QString();
@@ -5935,11 +5951,17 @@ void MultiReplayDock::refreshEvents()
 	}
 
 	refreshing_ = true;
-	// Block selection signals during the rebuild: setRowCount(0) clears the
-	// selection and selectRow() below re-sets it, and nothing downstream needs
-	// to hear about a selection that is only being restored.
+	// Block selection signals during the rebuild: the row count changes below
+	// and selectRow() re-sets the selection, and nothing downstream needs to
+	// hear about a selection that is only being restored.
 	QSignalBlocker selBlock(events_->selectionModel());
-	events_->setRowCount(0);
+	// NOTE: the table is NOT emptied here any more. It used to be
+	// setRowCount(0), which destroys every item and every angle-cell widget,
+	// and the rows were then created from nothing — on every bump of the
+	// store's version, so on every mark, every trim, every tick of a checkbox.
+	// Measured: one row of two angle cells, 50-180 ms, almost all of it Qt
+	// resolving this dock's 376 lines of style sheet for the five widgets a
+	// cell is made of. Rows are reused in place below; see reuseCount.
 	obs_data_array_t *arr = obs_data_get_array(d, "events");
 	if (!arr) {
 		refreshing_ = false;
@@ -5951,6 +5973,13 @@ void MultiReplayDock::refreshEvents()
 	// what made this function the longest thing in poll(). See buildAngleCell.
 	const std::vector<std::string> commentPresets =
 		ReplayCore::instance().getConfig().commentPresets;
+	// The operator's vocabulary can also change in Settings, which does not go
+	// through rememberComment. Same consequence for a reused cell, so it counts
+	// as a move of the same version.
+	if (commentPresets != lastCommentPresets_) {
+		lastCommentPresets_ = commentPresets;
+		commentVocabVersion_++;
+	}
 	// Where a slow rebuild goes. This function is the longest thing the dock's
 	// poll does, and knowing THAT is not enough to fix it: hoisting a
 	// whole-Config copy out of the per-cell path — the obvious culprit from
@@ -5958,7 +5987,7 @@ void MultiReplayDock::refreshEvents()
 	// way poll() was, and for the same reason.
 	const uint64_t rebuildStartNs = os_gettime_ns();
 	int64_t cellBuildNs = 0, cellInsertNs = 0;
-	int cellCount = 0;
+	int cellCount = 0, cellReused = 0;
 	std::vector<std::pair<int64_t, int64_t>> rawMarkers;
 	// ...and which event each of them belongs to, so its edge can be taken
 	// hold of on the bar (SeekBar::markerDragged).
@@ -6094,16 +6123,32 @@ void MultiReplayDock::refreshEvents()
 				 });
 	const int idDigits = std::clamp(rowCfg.eventIdDigits, 1, 8);
 
-	auto roItem = [](const QString &txt, Qt::Alignment al) {
-		auto *it = new QTableWidgetItem(txt);
-		it->setTextAlignment(al);
-		it->setFlags(Qt::ItemIsSelectable | Qt::ItemIsEnabled);
+	// Set the text of a read-only cell, REUSING the item that is already
+	// there. Creating a QTableWidgetItem is cheap; the row it hangs off is
+	// not, and neither is the widget in the camera cell beside it.
+	auto setRoCell = [&](int row, int col, const QString &txt,
+			     Qt::Alignment al) -> QTableWidgetItem * {
+		QTableWidgetItem *it = events_->item(row, col);
+		if (!it) {
+			it = new QTableWidgetItem(txt);
+			it->setTextAlignment(al);
+			it->setFlags(Qt::ItemIsSelectable | Qt::ItemIsEnabled);
+			events_->setItem(row, col, it);
+			return it;
+		}
+		if (it->text() != txt)
+			it->setText(txt);
 		return it;
 	};
 
-	for (const Row &r : rows) {
-		const int row = events_->rowCount();
-		events_->insertRow(row);
+	// Grow or shrink to fit; the rows that survive keep their items and their
+	// angle cells. Shrinking destroys the surplus, which is what should happen
+	// to a row that no longer exists.
+	events_->setRowCount((int)rows.size());
+
+	for (size_t ri = 0; ri < rows.size(); ri++) {
+		const Row &r = rows[ri];
+		const int row = (int)ri;
 
 		const bool closed = r.tout != kNoInstant;
 		QString dur = closed ? formatTc(r.tout - r.tin)
@@ -6125,20 +6170,21 @@ void MultiReplayDock::refreshEvents()
 		// the whole match and can be called out loud.
 		const QString idText =
 			QString("%1").arg(r.id, idDigits, 10, QLatin1Char('0'));
-		auto *idItem = roItem(playable ? idText
-					       : QStringLiteral("⚠ ") + idText,
-				      Qt::AlignCenter);
+		QTableWidgetItem *idItem = setRoCell(
+			row, kColId,
+			playable ? idText : QStringLiteral("⚠ ") + idText,
+			Qt::AlignCenter);
 		idItem->setData(Qt::UserRole, r.id);
-		if (!playable)
-			idItem->setToolTip(
-				obs_module_text("Dock.EventNoFootage"));
-		events_->setItem(row, kColId, idItem);
-		events_->setItem(row, kColIn, roItem(relTc(r.tin), mid));
-		events_->setItem(row, kColOut,
-				 roItem(closed ? relTc(r.tout)
-					       : QStringLiteral("--"),
-					mid));
-		events_->setItem(row, kColDur, roItem(dur, mid));
+		// Reused rows carry the previous occupant's tooltip, so the
+		// "no footage" mark has to be cleared as well as set.
+		idItem->setToolTip(playable
+					   ? QString()
+					   : obs_module_text(
+						     "Dock.EventNoFootage"));
+		setRoCell(row, kColIn, relTc(r.tin), mid);
+		setRoCell(row, kColOut,
+			  closed ? relTc(r.tout) : QStringLiteral("--"), mid);
+		setRoCell(row, kColDur, dur, mid);
 
 		// ONE cell per camera, holding the three things an operator says
 		// about that angle: does it play, how fast, and what is it. They
@@ -6150,43 +6196,65 @@ void MultiReplayDock::refreshEvents()
 		for (size_t ci = 0; ci < camCols_.size(); ci++) {
 			const int cam = camCols_[ci];
 			const int col = kColFirstCam + (int)ci * kColsPerCam;
-			const uint64_t t0 = os_gettime_ns();
-			QWidget *cell = buildAngleCell(r.id, cam, r.camOn[cam],
-						       r.camSpeeds[cam],
-						       r.camNotes[cam],
-						       commentPresets);
-			const uint64_t t1 = os_gettime_ns();
-			events_->setCellWidget(row, col, cell);
-			cellBuildNs += (int64_t)(t1 - t0);
-			cellInsertNs += (int64_t)(os_gettime_ns() - t1);
-			cellCount++;
+
+			// REUSE FIRST. The widgets in this cell are connected to
+			// an event and an angle; while those two are unchanged
+			// the connections stay right and only the three values
+			// have to be written. That is the ordinary case by a long
+			// way — a mark appended, a point trimmed, an angle
+			// ticked — and it is the difference between touching
+			// three widgets and building five against a 376-line
+			// style sheet.
+			QWidget *cell = events_->cellWidget(row, col);
+			if (updateAngleCell(cell, r.id, cam, r.camOn[cam],
+					    r.camSpeeds[cam], r.camNotes[cam])) {
+				cellReused++;
+			} else {
+				const uint64_t t0 = os_gettime_ns();
+				cell = buildAngleCell(r.id, cam, r.camOn[cam],
+						      r.camSpeeds[cam],
+						      r.camNotes[cam],
+						      commentPresets);
+				const uint64_t t1 = os_gettime_ns();
+				// Replaces and deletes whatever was there.
+				events_->setCellWidget(row, col, cell);
+				cellBuildNs += (int64_t)(t1 - t0);
+				cellInsertNs += (int64_t)(os_gettime_ns() - t1);
+				cellCount++;
+			}
 			// The cell still carries an item underneath: the gate and
 			// the selection model both address rows through items, and
 			// a cell that is only a widget is a hole in that.
-			auto *slot = new QTableWidgetItem(QString());
-			slot->setFlags(Qt::ItemIsSelectable | Qt::ItemIsEnabled);
+			QTableWidgetItem *slot = events_->item(row, col);
+			if (!slot) {
+				slot = new QTableWidgetItem(QString());
+				slot->setFlags(Qt::ItemIsSelectable |
+					       Qt::ItemIsEnabled);
+				events_->setItem(row, col, slot);
+			}
 			slot->setData(Qt::UserRole, r.id);
-			events_->setItem(row, col, slot);
 		}
 	}
 	refreshing_ = false;
 	// Only when it actually hurt, and at most once every few seconds: a
 	// rebuild is a normal thing that happens on every mark.
-	const int64_t rebuildNs = (int64_t)(os_gettime_ns() - rebuildStartNs);
+	const int64_t rebuildNs = (int64_t)(os_gettime_ns() - refreshStartNs);
+	const int64_t rowsNs = (int64_t)(os_gettime_ns() - rebuildStartNs);
 	if (rebuildNs > 50'000'000LL &&
 	    (lastRebuildLogNs_ == 0 ||
 	     (int64_t)(os_gettime_ns() - lastRebuildLogNs_) > 5'000'000'000LL)) {
 		lastRebuildLogNs_ = os_gettime_ns();
 		obs_log(LOG_INFO,
-			"[ui] event table rebuilt in %lld ms: %d row(s), %d angle "
-			"cell(s) — building them %lld ms, inserting them %lld ms, "
-			"the rest %lld ms",
+			"[ui] event table refreshed in %lld ms: %d row(s), %d angle "
+			"cell(s) reused, %d rebuilt — listJson %lld ms, rows %lld ms "
+			"(building cells %lld, inserting them %lld), the rest %lld ms",
 			(long long)(rebuildNs / 1'000'000),
-			events_->rowCount(), cellCount,
+			events_->rowCount(), cellReused, cellCount,
+			(long long)(jsonNs / 1'000'000),
+			(long long)(rowsNs / 1'000'000),
 			(long long)(cellBuildNs / 1'000'000),
 			(long long)(cellInsertNs / 1'000'000),
-			(long long)((rebuildNs - cellBuildNs - cellInsertNs) /
-				    1'000'000));
+			(long long)((rebuildNs - jsonNs - rowsNs) / 1'000'000));
 	}
 	markerNs_ = std::move(rawMarkers);
 	markerIds_ = std::move(rawMarkerIds);
@@ -6408,6 +6476,65 @@ void MultiReplayDock::centreComboItems(QComboBox *cb)
 				Qt::TextAlignmentRole);
 }
 
+// Write the three values into a cell that is ALREADY about this event and this
+// angle, and say whether that was possible.
+//
+// This is the fast path of the event table, and it exists because the slow one
+// was measured: rebuilding a row of two angle cells cost 50-180 ms, nearly all
+// of it Qt resolving the dock's style sheet for the five widgets a cell is made
+// of, and poll() did it on every bump of the store's version — every mark,
+// every trim, every checkbox. The ordinary case never needs it: the rows are
+// the same events in the same order and only their values moved.
+//
+// It refuses, rather than adapting, in the three cases where a cell is not
+// interchangeable: a different event or angle (the signal handlers captured
+// those), and a comment vocabulary newer than the one the cell was built with.
+// Refusing costs a rebuild, which is exactly what used to happen every time.
+//
+// refreshing_ is true throughout, so the handlers below early-out and none of
+// this reaches the store.
+bool MultiReplayDock::updateAngleCell(QWidget *cell, int eventId, int cam0,
+				      bool on, double speed,
+				      const std::string &note)
+{
+	if (!cell)
+		return false;
+	if (cell->property("mrEventId").toInt() != eventId ||
+	    cell->property("mrCam").toInt() != cam0 ||
+	    cell->property("mrVocab").toULongLong() != commentVocabVersion_)
+		return false;
+
+	auto *box = cell->findChild<QCheckBox *>();
+	auto *sp = cell->findChild<QComboBox *>(QStringLiteral("mrAngleSpeed"));
+	auto *cm = cell->findChild<QComboBox *>(QStringLiteral("mrAngleNote"));
+	if (!box || !sp || !cm)
+		return false;
+
+	if (box->isChecked() != on)
+		box->setChecked(on);
+
+	const int pct = speed >= 0 ? (int)std::lround(speed * 100.0) : -1;
+	if (sp->currentData().toInt() != pct) {
+		int idx = sp->findData(pct);
+		if (idx < 0 && pct > 0) { // a speed set elsewhere
+			sp->addItem(QString("%1%").arg(pct), pct);
+			centreComboItems(sp);
+			idx = sp->count() - 1;
+		}
+		sp->setCurrentIndex(idx < 0 ? 0 : idx);
+	}
+	const bool noOverride = pct <= 0;
+	if (sp->property("mrNoOverride").toBool() != noOverride) {
+		sp->setProperty("mrNoOverride", noOverride);
+		repolish(sp);
+	}
+
+	const QString noteQ = QString::fromStdString(note);
+	if (cm->currentText() != noteQ)
+		cm->setCurrentText(noteQ);
+	return true;
+}
+
 // `presets` is passed IN, and that is the whole of a 175 ms fix.
 //
 // This used to call ReplayCore::getConfig() for its comment list — once per
@@ -6510,6 +6637,16 @@ QWidget *MultiReplayDock::buildAngleCell(int eventId, int cam0, bool on,
 	cm->lineEdit()->setAlignment(Qt::AlignCenter);
 	centreComboItems(cm);
 	h->addWidget(cm, 1);
+
+	// WHAT THIS CELL IS ABOUT, so refreshEvents can tell whether it may be
+	// updated in place instead of rebuilt. The connections below capture the
+	// event and the angle by value, so a cell may only ever be reused for that
+	// same pair — reusing it for another event would write the operator's next
+	// edit onto the wrong one. The vocabulary version is here for the same
+	// reason: a reused cell keeps the comment list it was built with.
+	w->setProperty("mrEventId", eventId);
+	w->setProperty("mrCam", cam0);
+	w->setProperty("mrVocab", (qulonglong)commentVocabVersion_);
 
 	const int a1 = cam0 + 1; // EventStore is 1-based
 
@@ -6663,7 +6800,13 @@ void MultiReplayDock::rememberComment(const QString &text)
 	while (sessionComments_.size() > kMaxSessionComments)
 		sessionComments_.removeFirst();
 	// The cells are rebuilt from this list on the next refresh, and a new
-	// comment has to reach the OTHER rows, so ask for one.
+	// comment has to reach the OTHER rows, so ask for one — and say that the
+	// VOCABULARY moved, not just the table. Cells are reused in place now, and
+	// a reused cell keeps the list it was built with: without this the word
+	// just typed would reach every other row only when something else happened
+	// to force those cells to be rebuilt, which is exactly the kind of "it
+	// works, sometimes" the reuse must not introduce.
+	commentVocabVersion_++;
 	commentsDirty_ = true;
 	obs_log(LOG_INFO, "[dock] comment '%s' added to this session's list (%d)",
 		t.toUtf8().constData(), (int)sessionComments_.size());
