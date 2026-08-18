@@ -106,6 +106,39 @@ if (Test-Path $modulesJson) {
     }
 }
 
+# --- 4a. THIRD-PARTY DOCKS THAT REWRITE OUR SOURCES --------------------------
+# obs-playlist-deck is switched off for the duration of the run, and this is not
+# tidiness. Traced from the log, with the two lines it prints either side of it:
+#
+#   13:33:29.924  [obs-playlist-deck] dock registered
+#   13:33:29.935  [Media Source 'C1']: settings:  input:          <- emptied
+#   13:33:29.937  [obs-chapter-marker] dock registered
+#
+# The gate's collection does not contain the "Playlist" source that plugin
+# expects, so on registering its dock it writes an empty local_file into a
+# media source that is not its own — the camera the run is about to record.
+# Nothing in obs-multireplay writes local_file anywhere (grep says so), and the
+# camera came up correct at load and was blank three seconds later.
+#
+# A harness cannot measure a plugin while another one is editing its inputs, so
+# it is disabled and put back. Worth knowing outside the gate too: the same
+# thing can happen on a real rig the day that source goes missing.
+$modulesBackup = Join-Path $env:TEMP 'obs-multireplay-modules.backup.json'
+$disabledModules = @('obs-playlist-deck')
+if (Test-Path $modulesJson) {
+    Copy-Item $modulesJson $modulesBackup -Force
+    $mods = Get-Content $modulesJson -Raw | ConvertFrom-Json
+    $touched = @()
+    foreach ($name in $disabledModules) {
+        $e = $mods | Where-Object module_name -eq $name
+        if ($e -and $e.enabled) { $e.enabled = $false; $touched += $name }
+    }
+    if ($touched) {
+        $mods | ConvertTo-Json -Depth 10 | Set-Content $modulesJson -Encoding UTF8
+        Step "Disabled for this run: $($touched -join ', ') (it rewrites other plugins' media sources)"
+    }
+}
+
 # --- 4b. A SCENE COLLECTION AND A PLUGIN CONFIG OF ITS OWN -------------------
 # The gate used to run inside the operator's own scene collection and his own
 # MultiReplay config, and the two got in each other's way three separate ways in
@@ -334,6 +367,12 @@ Step "MultiReplay config seeded (session folder $testSessionFolder)"
 
 # Put it all back whatever happens to the run — a failure, a crash, a Ctrl-C.
 function Restore-OperatorEnvironment {
+    # Other people's plugins go back on: they were switched off for the run, not
+    # judged.
+    if (Test-Path $modulesBackup) {
+        Copy-Item $modulesBackup $modulesJson -Force -ErrorAction SilentlyContinue
+        Remove-Item $modulesBackup -Force -ErrorAction SilentlyContinue
+    }
     if (Test-Path $testCollectionFile) { Remove-Item $testCollectionFile -Force -ErrorAction SilentlyContinue }
     # The footage this run wrote goes with it: a gate that leaves gigabytes
     # behind is a gate nobody runs twice.

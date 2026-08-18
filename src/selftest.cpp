@@ -136,6 +136,38 @@ void runOnUi(const std::function<void()> &fn)
 }
 
 // A synthetic camera. OBS renamed the colour source a few times; try newest first.
+// Put a channel's input into the scene that is meant to put it on air.
+//
+// A scene NAMED as the output scene but empty switches the Program to black,
+// and every check that asks "did the Program change" still passes — a run that
+// proves the switch happened and nothing about what went out. The harness
+// generates the collection before this plugin has loaded, so the replay inputs
+// do not exist yet and cannot be written into that file; they go in here.
+//
+// Idempotent: adds nothing that is already there. UI thread only (obs_scene_add).
+void ensureChannelInScene(const char *sceneName, Which which)
+{
+	if (!sceneName || !*sceneName)
+		return;
+	obs_source_t *sceneSrc = obs_get_source_by_name(sceneName);
+	if (!sceneSrc)
+		return;
+	obs_scene_t *scene = obs_scene_from_source(sceneSrc);
+	obs_source_t *chan = ReplayChannel::instance(which).acquireSource();
+	if (scene && chan) {
+		const char *n = obs_source_get_name(chan);
+		if (n && !obs_scene_find_source(scene, n)) {
+			obs_scene_add(scene, chan);
+			obs_log(LOG_INFO,
+				"[selftest] added '%s' to output scene '%s'", n,
+				sceneName);
+		}
+	}
+	if (chan)
+		obs_source_release(chan);
+	obs_source_release(sceneSrc);
+}
+
 obs_source_t *createSyntheticCamera(int idx, uint32_t cx, uint32_t cy)
 {
 	static const char *kColorIds[] = {"color_source_v3", "color_source_v2",
@@ -650,6 +682,11 @@ HealthChecks runHealthChecks(const std::vector<obs_source_t *> &cams, int camCou
 			cfgOut.outputSceneName = "MRSelfTest Out A";
 			cfgOut.outputSceneNameB = "MRSelfTest Out B";
 			core.setConfig(cfgOut);
+			// ...with the replay in them. An output scene that does not
+			// contain the channel puts BLACK on the Program, and the
+			// check that only asks "did the Program change" passes.
+			ensureChannelInScene("MRSelfTest Out A", Which::A);
+			ensureChannelInScene("MRSelfTest Out B", Which::B);
 		});
 		std::string oerr;
 		std::string programAfterB;
@@ -3372,6 +3409,15 @@ void runSelfTest()
 			want[i] = true;
 			armed++;
 		}
+
+		// THE OUTPUT SCENES HAVE TO CONTAIN THE REPLAY, or "to output"
+		// switches the Program to an empty scene: black, on air, and every
+		// check about it still green because the switch itself happened.
+		// The scenes come from the collection the harness generated; the
+		// sources cannot be written into that file because they do not
+		// exist until this plugin has loaded, so they are put in here.
+		ensureChannelInScene(cfg.outputSceneName.c_str(), Which::A);
+		ensureChannelInScene(cfg.outputSceneNameB.c_str(), Which::B);
 	});
 
 	// --- A configured filter must NOT be a recording filter ---------------
