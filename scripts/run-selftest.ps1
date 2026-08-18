@@ -215,6 +215,14 @@ foreach ($want in $wantedSources) {
     # collection and not to a throwaway one.
     $found.PSObject.Properties.Remove('hotkeys')
 
+    # A UUID OF ITS OWN. Copying the source verbatim carried the operator's uuid
+    # across, so his collection and this throwaway one both declared a source
+    # with the same one. libobs keeps a process-wide uuid -> source map, and two
+    # collections claiming the same entry across a switch is how a camera comes
+    # up for an instant and then goes black with its file path emptied — which
+    # is exactly what was reported, and it is caused here, not by the plugin.
+    $found | Add-Member -NotePropertyName uuid -NotePropertyValue ([guid]::NewGuid().ToString()) -Force
+
     # A MEDIA SOURCE IS NORMALISED, NOT JUST COPIED. Copying an OBS source
     # object verbatim carries whatever the operator's collection happens to
     # hold, and what it holds is not always complete: C2 came across with
