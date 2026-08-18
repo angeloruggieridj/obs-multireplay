@@ -54,15 +54,14 @@ target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE CURL::libcurl)
 # Finder copied from obs-studio (cmake/finders); obs-deps prebuilt provide
 # FFmpeg on Windows/macOS, system packages on Linux (libavformat-dev etc.).
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake/finders")
-find_package(FFmpeg REQUIRED COMPONENTS avcodec avformat avutil swscale swresample)
+find_package(
+  FFmpeg
+  REQUIRED
+  COMPONENTS avcodec avformat avutil swscale swresample
+)
 target_link_libraries(
   ${CMAKE_PROJECT_NAME}
-  PRIVATE
-    FFmpeg::avcodec
-    FFmpeg::avformat
-    FFmpeg::avutil
-    FFmpeg::swscale
-    FFmpeg::swresample
+  PRIVATE FFmpeg::avcodec FFmpeg::avformat FFmpeg::avutil FFmpeg::swscale FFmpeg::swresample
 )
 
 target_sources(
@@ -138,9 +137,7 @@ if(ENABLE_TESTS)
     tests/standalone/obs_stub.cpp
     src/event-store.cpp
   )
-  target_include_directories(
-    obs-multireplay-eventstore-tests PRIVATE tests/fakeobs src
-  )
+  target_include_directories(obs-multireplay-eventstore-tests PRIVATE tests/fakeobs src)
   target_compile_features(obs-multireplay-eventstore-tests PRIVATE cxx_std_20)
   add_test(NAME event_store COMMAND obs-multireplay-eventstore-tests)
 
@@ -160,9 +157,7 @@ if(ENABLE_TESTS)
   # M4 health rules. Thresholds are opinions about numbers, and this is the only
   # place they can be argued with cheaply: no OBS, no disk, no cameras, so the
   # "disk is full" and "the angle died" cases are testable at all.
-  add_executable(
-    obs-multireplay-health-tests tests/standalone/health_rules_test.cpp
-  )
+  add_executable(obs-multireplay-health-tests tests/standalone/health_rules_test.cpp)
   target_include_directories(obs-multireplay-health-tests PRIVATE src)
   target_compile_features(obs-multireplay-health-tests PRIVATE cxx_std_20)
   add_test(NAME health_rules COMMAND obs-multireplay-health-tests)
@@ -172,9 +167,7 @@ if(ENABLE_TESTS)
   # releases — so it is pure and it is tested here. "1.0.0 is newer than
   # 1.0.0-beta2" and "beta10 is newer than beta2" are the two an updater gets
   # wrong in front of an operator.
-  add_executable(
-    obs-multireplay-version-tests tests/standalone/version_compare_test.cpp
-  )
+  add_executable(obs-multireplay-version-tests tests/standalone/version_compare_test.cpp)
   target_include_directories(obs-multireplay-version-tests PRIVATE src)
   target_compile_features(obs-multireplay-version-tests PRIVATE cxx_std_20)
   add_test(NAME version_compare COMMAND obs-multireplay-version-tests)

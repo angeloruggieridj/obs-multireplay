@@ -1,1 +1,5 @@
 line_length: 100
+# The repo has always been indented two spaces; the config never said so, so
+# gersemi fell back to its own default and the CI only ever noticed on a file
+# somebody had touched. Stated here, local runs and CI agree.
+indent: 2
