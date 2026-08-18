@@ -4404,6 +4404,22 @@ void MultiReplayDock::cueSelected()
 			// press would be worse than silence.
 			obs_log(LOG_INFO, "[dock] cue %s: event %d not playable: %s",
 				channelLetter(w), ev.id, err.c_str());
+
+		// ...AND GET THE WHOLE CLIP READY WHILE HE LOOKS AT THE IN.
+		//
+		// Cueing is what an operator does immediately before playing, and
+		// the play that follows had to read the clip out of a file all over
+		// again — an open, a seek and a demux between his press and the
+		// picture. The two frames above have just paid for finding the
+		// file; this asks for the rest of the event on the same angle,
+		// which is what Play will want, and it happens while he is looking
+		// at the frozen IN. If he plays before it is ready nothing is lost:
+		// play() fetches for itself.
+		if (ev.tOutNs != kNoInstant && ev.tOutNs > ev.tInNs) {
+			ReplayChannel::PlayRequest full = req;
+			full.outNs = ev.tOutNs;
+			ReplayChannel::instance(w).prefetch(full);
+		}
 	}
 }
 

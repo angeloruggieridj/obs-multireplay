@@ -137,6 +137,26 @@ public:
 	// clamp.
 	bool play(const PlayRequest &req, std::string &errorOut);
 
+	// GET THE PACKETS READY WITHOUT PLAYING THEM.
+	//
+	// play() fetches the clip before it starts it — out of the ring when the
+	// range is recent, out of the recorded files when it is not — and reading
+	// from a file means opening it, seeking and demuxing. That fetch sits
+	// between the operator's action and the first frame, and it is the two
+	// things reported from a real panel: cueing one event after another took
+	// seconds, and the last frames of a clip appeared to freeze before the
+	// next angle of a sequence arrived — that freeze IS the next clip being
+	// fetched, with the previous one's last picture still on screen.
+	//
+	// So the fetch can be asked for early. It runs on a thread of its own and
+	// leaves the result in a small cache that play() consults first; asking
+	// for something already cached, or already being fetched, does nothing.
+	// NOTHING WAITS ON IT: a prefetch that has not finished by the time play()
+	// arrives is simply not used, and play() fetches as it always did. That is
+	// the whole safety argument — the fast path is an optimisation that can
+	// fail without changing what goes on air.
+	void prefetch(const PlayRequest &req);
+
 	// Play [inNs, outNs] of `camIndex` at `speedPct` (5..400; 100 = 1x),
 	// forwards. Kept because most call sites mean exactly this.
 	bool play(int camIndex, int64_t inNs, int64_t outNs, int speedPct,
@@ -287,6 +307,55 @@ private:
 	// Snapshotted by the worker when it starts, so a clip always fires the
 	// callback that was installed for IT, never a later one.
 	std::function<void()> onFinished_;
+
+	// --- the fetched-clip cache (see prefetch) ---------------------------
+	// A clip here is COMPRESSED packets, not pictures: about 2.5 MB for five
+	// seconds at 4 Mbit/s, which is why a handful of them can be kept while a
+	// single decoded 1080p second could not (see reverse-plan.hpp for the
+	// other side of that arithmetic).
+	struct ClipKey {
+		int cam = -1;
+		int64_t inNs = 0;
+		int64_t outNs = 0;
+		Source source = Source::Auto;
+		bool operator==(const ClipKey &o) const
+		{
+			return cam == o.cam && inNs == o.inNs &&
+			       outNs == o.outNs && source == o.source;
+		}
+	};
+	struct CachedClip {
+		ClipKey key;
+		std::vector<LivePacket> clip;
+		StreamConfig cfg;
+		int64_t presentIn = 0;
+		int64_t presentOut = 0;
+		size_t bytes = 0;
+	};
+	// Four entries or 64 MiB, whichever comes first. Four because the gesture
+	// this serves is going back and forth between a couple of events while
+	// choosing one, and because a queue is prefetched one item ahead.
+	static constexpr size_t kClipCacheMaxEntries = 4;
+	static constexpr size_t kClipCacheMaxBytes = 64u * 1024 * 1024;
+	mutable std::mutex cacheMutex_;
+	std::vector<CachedClip> cache_; // most recently used last
+	// The prefetch in flight, if any. One at a time: the thing worth having
+	// ready is the NEXT one, and a queue of stale requests would compete with
+	// the playback that is on air for the same disk.
+	std::thread prefetchWorker_;
+	ClipKey prefetchInFlight_;
+	bool prefetchBusy_ = false;
+
+	// The fetch itself, shared by play() and the prefetch thread. Consults
+	// the cache first and fills it on the way out. Never touches playback
+	// state, so it is safe to call from either.
+	bool fetchClip(const PlayRequest &req, std::vector<LivePacket> &clip,
+		       StreamConfig &cfg, int64_t &presentIn, int64_t &presentOut,
+		       std::string &errorOut, bool *fromCache = nullptr);
+	void cachePut(const ClipKey &key, const std::vector<LivePacket> &clip,
+		      const StreamConfig &cfg, int64_t presentIn,
+		      int64_t presentOut);
+	void joinPrefetch();
 
 	std::thread worker_;
 	std::atomic<bool> playing_{false};

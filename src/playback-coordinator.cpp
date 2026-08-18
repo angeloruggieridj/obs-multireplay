@@ -685,6 +685,30 @@ void PlaybackCoordinator::startNext()
 					? ", reverse"
 					: "",
 				queuePos_ + 1, queue_.size());
+			// THE NEXT ONE, FETCHED WHILE THIS ONE PLAYS.
+			//
+			// The gap between two clips of a sequence used to be the
+			// next clip being read — an open, a seek and a demux for
+			// anything older than the RAM ring — with the previous
+			// clip's last picture still on screen. That is what was
+			// reported as the end of an event freezing before the next
+			// angle came in. Asked for here, it has the whole of the
+			// current clip to be ready in.
+			//
+			// After the log line and after play() returned, so the
+			// picture is already moving: the join inside prefetch()
+			// costs the thread that calls it, and that thread is this
+			// one.
+			if (queuePos_ + 1 < queue_.size()) {
+				const QueueItem &nxt = queue_[queuePos_ + 1];
+				ReplayChannel::PlayRequest pre;
+				pre.camIndex = nxt.angle;
+				pre.inNs = nxt.tInNs;
+				pre.outNs = nxt.effectiveOutNs();
+				pre.speedPct = nxt.speedPct;
+				pre.direction = nxt.direction;
+				channel().prefetch(pre);
+			}
 			return;
 		}
 		obs_log(LOG_WARNING,

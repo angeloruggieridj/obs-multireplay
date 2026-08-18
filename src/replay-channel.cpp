@@ -16,6 +16,7 @@ See replay-channel.hpp.
 #include "replay-decoder.hpp"
 #include "reverse-plan.hpp"
 #include "segment-reader.hpp"
+#include "replay-core.hpp" // debugLoggingEnabled()
 
 #include <media-io/video-io.h>
 #include <util/platform.h>
@@ -323,6 +324,15 @@ void ReplayChannel::load()
 void ReplayChannel::unload()
 {
 	stop();
+	// The prefetch thread holds no OBS handles and cannot be aborted mid-read,
+	// but it MUST be joined: a std::thread still joinable at destruction is
+	// std::terminate, and that would be OBS disappearing on shutdown rather
+	// than closing. It is bounded by one fetch.
+	joinPrefetch();
+	{
+		std::lock_guard<std::mutex> lock(cacheMutex_);
+		cache_.clear();
+	}
 	std::lock_guard<std::mutex> lock(mutex_);
 	if (source_) {
 		obs_source_release(source_);
@@ -553,9 +563,153 @@ bool ReplayChannel::play(int camIndex, int64_t inNs, int64_t outNs, int speedPct
 	return play(req, errorOut);
 }
 
+// Where a clip's packets come from, and the only place that decides. Shared by
+// play() and by the prefetch thread, which is the point: what play() would have
+// had to wait for can be done before it is asked for.
+//
+// It touches no playback state, so the two callers cannot interfere. The cache
+// is the only thing they share and it has a lock of its own.
+bool ReplayChannel::fetchClip(const PlayRequest &req,
+			      std::vector<LivePacket> &clip, StreamConfig &cfg,
+			      int64_t &presentIn, int64_t &presentOut,
+			      std::string &errorOut, bool *fromCache)
+{
+	const ClipKey key{req.camIndex, req.inNs, req.outNs, req.source};
+	if (fromCache)
+		*fromCache = false;
+
+	{
+		std::lock_guard<std::mutex> lock(cacheMutex_);
+		for (size_t i = 0; i < cache_.size(); i++) {
+			if (!(cache_[i].key == key))
+				continue;
+			clip = cache_[i].clip;
+			cfg = cache_[i].cfg;
+			presentIn = cache_[i].presentIn;
+			presentOut = cache_[i].presentOut;
+			// Most recently used goes last, so what gets evicted is
+			// what nobody came back to.
+			CachedClip hit = std::move(cache_[i]);
+			cache_.erase(cache_.begin() + (long)i);
+			cache_.push_back(std::move(hit));
+			if (fromCache)
+				*fromCache = true;
+			return true;
+		}
+	}
+
+	bool got = false;
+	if (req.source != Source::Segments) {
+		got = PacketTap::instance().resolveRange(req.camIndex, req.inNs,
+							 req.outNs, clip,
+							 presentIn, presentOut);
+		if (got)
+			cfg = PacketTap::instance().streamConfig(req.camIndex);
+		else
+			errorOut = "that range is not held in full in the ring";
+	}
+	if (!got && req.source != Source::Ring) {
+		// Older than the RAM window: the same clip, read out of the
+		// files Branch Output already wrote. THIS is the slow one — an
+		// open, a seek and a demux — and it is what prefetching exists
+		// to get out from between the operator and the picture.
+		got = segment_reader::readRange(req.camIndex, req.inNs, req.outNs,
+						clip, cfg, presentIn, presentOut,
+						errorOut);
+	}
+	if (got)
+		cachePut(key, clip, cfg, presentIn, presentOut);
+	return got;
+}
+
+void ReplayChannel::cachePut(const ClipKey &key,
+			     const std::vector<LivePacket> &clip,
+			     const StreamConfig &cfg, int64_t presentIn,
+			     int64_t presentOut)
+{
+	size_t bytes = 0;
+	for (const LivePacket &p : clip)
+		bytes += p.data.size();
+	// A clip bigger than the whole budget is not cached, rather than emptying
+	// the cache for something that could not stay in it anyway.
+	if (bytes > kClipCacheMaxBytes)
+		return;
+
+	std::lock_guard<std::mutex> lock(cacheMutex_);
+	for (size_t i = 0; i < cache_.size(); i++) {
+		if (cache_[i].key == key) {
+			cache_.erase(cache_.begin() + (long)i);
+			break;
+		}
+	}
+	CachedClip entry;
+	entry.key = key;
+	entry.clip = clip;
+	entry.cfg = cfg;
+	entry.presentIn = presentIn;
+	entry.presentOut = presentOut;
+	entry.bytes = bytes;
+	cache_.push_back(std::move(entry));
+
+	size_t total = 0;
+	for (const CachedClip &c : cache_)
+		total += c.bytes;
+	while (!cache_.empty() && (cache_.size() > kClipCacheMaxEntries ||
+				   total > kClipCacheMaxBytes)) {
+		total -= cache_.front().bytes;
+		cache_.erase(cache_.begin());
+	}
+}
+
+void ReplayChannel::joinPrefetch()
+{
+	if (prefetchWorker_.joinable())
+		prefetchWorker_.join();
+	prefetchBusy_ = false;
+}
+
+void ReplayChannel::prefetch(const PlayRequest &req)
+{
+	if (req.outNs <= req.inNs)
+		return;
+	const ClipKey key{req.camIndex, req.inNs, req.outNs, req.source};
+
+	{
+		std::lock_guard<std::mutex> lock(cacheMutex_);
+		for (const CachedClip &c : cache_)
+			if (c.key == key)
+				return; // already have it
+		if (prefetchBusy_ && prefetchInFlight_ == key)
+			return; // already on its way
+	}
+
+	// One at a time. Joining the previous one is bounded by a single fetch and
+	// happens on the caller's thread — the coordinator, right after it has
+	// STARTED a clip, so the picture is already moving while this waits.
+	joinPrefetch();
+	{
+		std::lock_guard<std::mutex> lock(cacheMutex_);
+		prefetchInFlight_ = key;
+		prefetchBusy_ = true;
+	}
+	prefetchWorker_ = std::thread([this, req]() {
+		std::vector<LivePacket> clip;
+		StreamConfig cfg;
+		int64_t pin = 0, pout = 0;
+		std::string err;
+		const uint64_t t0 = os_gettime_ns();
+		const bool ok = fetchClip(req, clip, cfg, pin, pout, err);
+		if (debugLoggingEnabled())
+			obs_log(LOG_INFO, "[channel] prefetch cam%d %s in %lld ms",
+				req.camIndex + 1, ok ? "ready" : "failed",
+				(long long)((os_gettime_ns() - t0) / 1'000'000));
+		std::lock_guard<std::mutex> lock(cacheMutex_);
+		prefetchBusy_ = false;
+	});
+}
+
 bool ReplayChannel::play(const PlayRequest &req, std::string &errorOut)
 {
-	const int camIndex = req.camIndex;
 	const int64_t inNs = req.inNs;
 	const int64_t outNs = req.outNs;
 
@@ -567,23 +721,12 @@ bool ReplayChannel::play(const PlayRequest &req, std::string &errorOut)
 	std::vector<LivePacket> clip;
 	StreamConfig cfg;
 	int64_t presentIn = 0, presentOut = 0;
-	bool got = false;
-
-	if (req.source != Source::Segments) {
-		got = PacketTap::instance().resolveRange(camIndex, inNs, outNs,
-							 clip, presentIn,
-							 presentOut);
-		if (got)
-			cfg = PacketTap::instance().streamConfig(camIndex);
-		else
-			errorOut = "that range is not held in full in the ring";
-	}
-	if (!got && req.source != Source::Ring) {
-		// Older than the RAM window: the same clip, read out of the
-		// files Branch Output already wrote.
-		got = segment_reader::readRange(camIndex, inNs, outNs, clip, cfg,
-						presentIn, presentOut, errorOut);
-	}
+	bool cached = false;
+	const uint64_t tFetch0 = os_gettime_ns();
+	const bool got = fetchClip(req, clip, cfg, presentIn, presentOut,
+				   errorOut, &cached);
+	const int64_t fetchMs =
+		(int64_t)((os_gettime_ns() - tFetch0) / 1'000'000);
 	if (!got)
 		return false;
 
@@ -592,7 +735,19 @@ bool ReplayChannel::play(const PlayRequest &req, std::string &errorOut)
 		return false;
 	}
 
+	const uint64_t tJoin0 = os_gettime_ns();
 	joinWorker();
+	const int64_t joinMs = (int64_t)((os_gettime_ns() - tJoin0) / 1'000'000);
+	// The two halves of the delay between an operator's action and the first
+	// frame, kept apart because they are fixed in different ways: the fetch by
+	// asking for it early, the join by how promptly the previous worker
+	// notices it has been aborted. Logged only when it is worth seeing.
+	if (fetchMs + joinMs >= 40)
+		obs_log(LOG_INFO,
+			"[channel] play cam%d: fetch %lld ms (%s), stopping the "
+			"previous clip %lld ms",
+			req.camIndex + 1, (long long)fetchMs,
+			cached ? "cached" : "read", (long long)joinMs);
 
 	{
 		std::lock_guard<std::mutex> lock(mutex_);
@@ -651,6 +806,15 @@ void ReplayChannel::stop()
 void ReplayChannel::reset()
 {
 	stop();
+	// This is "forget the previous project", so the fetched clips go too. The
+	// keys are master-clock instants and could not collide across projects,
+	// but holding another project's footage in RAM after being told to forget
+	// it is not something to have to reason about later.
+	joinPrefetch();
+	{
+		std::lock_guard<std::mutex> lock(cacheMutex_);
+		cache_.clear();
+	}
 	{
 		std::lock_guard<std::mutex> lock(statsMutex_);
 		stats_ = PlaybackStats{};
