@@ -145,6 +145,36 @@ void runOnUi(const std::function<void()> &fn)
 // do not exist yet and cannot be written into that file; they go in here.
 //
 // Idempotent: adds nothing that is already there. UI thread only (obs_scene_add).
+// The items this harness put into scenes, so it can take them out again.
+//
+// IT HAS TO TAKE THEM OUT, and that is a crash paid for: adding the replay
+// input to the collection's output scenes and leaving it there made OBS die on
+// the way out, every run, in
+//
+//   obs.dll!obs_source_release          (on a NULL source)
+//   obs.dll!obs_sceneitem_release
+//   obs.dll!scene_destroy
+//   obs.dll!obs_source_destroy_defer    (libobs' deferred destroy thread)
+//
+// The first one is timestamped 14:04:53, which is the run that validated the
+// commit adding ensureChannelInScene. The plugin releases its channel sources
+// on SCENE_COLLECTION_CLEANUP and EXIT — deliberately, so OBS does not report
+// us as a plugin that failed to let go — and a scene the harness had seeded was
+// then torn down around an item whose source had already gone. Whatever the
+// exact ordering inside libobs, the harness leaving its own furniture in the
+// operator's scenes and hoping teardown copes is the part that is ours to fix.
+std::vector<obs_sceneitem_t *> g_seededItems;
+
+// Put a channel's input into the scene that is meant to put it on air.
+//
+// A scene NAMED as the output scene but empty switches the Program to black,
+// and every check that asks whether the Program changed still passes — a run
+// that proves the switch happened and nothing about what went out. The harness
+// generates the collection before this plugin has loaded, so the replay inputs
+// do not exist yet and cannot be written into that file; they go in here, and
+// come out in removeSeededSceneItems().
+//
+// Idempotent: adds nothing that is already there. UI thread only.
 void ensureChannelInScene(const char *sceneName, Which which)
 {
 	if (!sceneName || !*sceneName)
@@ -157,15 +187,39 @@ void ensureChannelInScene(const char *sceneName, Which which)
 	if (scene && chan) {
 		const char *n = obs_source_get_name(chan);
 		if (n && !obs_scene_find_source(scene, n)) {
-			obs_scene_add(scene, chan);
-			obs_log(LOG_INFO,
-				"[selftest] added '%s' to output scene '%s'", n,
-				sceneName);
+			if (obs_sceneitem_t *item = obs_scene_add(scene, chan)) {
+				// A reference of our own on the ITEM, so it is
+				// still ours to remove later however the scene
+				// is handled in between.
+				obs_sceneitem_addref(item);
+				g_seededItems.push_back(item);
+				obs_log(LOG_INFO,
+					"[selftest] added '%s' to output scene "
+					"'%s'",
+					n, sceneName);
+			}
 		}
 	}
 	if (chan)
 		obs_source_release(chan);
 	obs_source_release(sceneSrc);
+}
+
+// Undo the above. Called at the end of a pass, on the UI thread, BEFORE the
+// operator's project is restored and long before OBS clears scene data.
+void removeSeededSceneItems()
+{
+	for (obs_sceneitem_t *item : g_seededItems) {
+		if (!item)
+			continue;
+		obs_sceneitem_remove(item);
+		obs_sceneitem_release(item);
+	}
+	if (!g_seededItems.empty())
+		obs_log(LOG_INFO,
+			"[selftest] removed %d seeded scene item(s)",
+			(int)g_seededItems.size());
+	g_seededItems.clear();
 }
 
 obs_source_t *createSyntheticCamera(int idx, uint32_t cx, uint32_t cy)
@@ -4732,6 +4786,13 @@ void runSelfTest()
 	obs_log(LOG_INFO, "[selftest] VERDICT=%s — report written to %s",
 		pass ? "PASS" : "FAIL", outPath.c_str());
 	obs_data_release(root);
+
+	// The harness takes its own furniture back out of the operator's scenes.
+	// Left in, it killed OBS on the way out of every run since the day it was
+	// added — see the note on g_seededItems. After the verdict, so a crash
+	// here could never cost the report, and on the UI thread because that is
+	// where scene items are touched.
+	runOnUi([]() { removeSeededSceneItems(); });
 
 	// There is no public obs_frontend quit API, so the runner script closes
 	// OBS once this report file appears. Writing it is the "done" signal.
