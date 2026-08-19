@@ -118,8 +118,18 @@ QLabel#mrClock[rec="true"] { color: #e03030; font-weight: 700; }
 #MultiReplayDock QPushButton {
 	background: #1e1e1e; color: #b0b0b0;
 	border: 1px solid #2c2c2c; border-radius: 4px;
-	padding: 3px 9px; font-size: 11px; min-height: 26px;
+	padding: 3px 9px; font-size: 11px; min-height: 20px;
 }
+/* ONE HEIGHT FOR EVERY KEY: 28 px, and it is arithmetic, not a wish.
+   In Qt, a style sheet min-height is the CONTENT box — padding and border are
+   added to it. So min-height 26 with 3 px of padding and a 1 px border is a
+   34 px key, while the transport rule (min-height 26, padding 0) is a 28 px
+   one, and the toggles (padding 2) are 32. Three heights on one row, from a
+   number that looked identical in all three rules.
+   Every rule below therefore states min-height = 28 - 2*padding - 2, and the
+   inputs already land on the same 28 (min-height 20 + 3 + 3 + 1 + 1), so a
+   combo in a row of keys lines up with them instead of nearly lining up.
+   CHANGING A PADDING HERE MEANS CHANGING ITS min-height. */
 #MultiReplayDock QPushButton:hover  { background: #282828; border-color: #424242; }
 #MultiReplayDock QPushButton:pressed { background: #141414; }
 #MultiReplayDock QPushButton:disabled { color: #303030; border-color: #1e1e1e; }
@@ -158,7 +168,7 @@ QPushButton#mrPlay[playing="true"]:hover { background: #102818; border-color: #2
 QPushButton#mrNow {
 	background: #181818; border: 1px solid #2c2c2c; border-radius: 5px;
 	font-weight: 700; font-size: 10px; letter-spacing: 0.8px;
-	min-height: 26px; min-width: 36px; color: #484848;
+	min-height: 26px; min-width: 36px; padding: 0; color: #484848;
 }
 QPushButton#mrNow[live="true"] { background: #280808; border-color: #c02020; color: #e03030; }
 
@@ -167,7 +177,7 @@ QPushButton#mrLive {
 	background: #181818; color: #6a6a6a;
 	border: 1px solid #2c2c2c; border-radius: 3px;
 	font-weight: 700; font-size: 11px; letter-spacing: 0.6px;
-	min-height: 26px; min-width: 54px; padding: 2px 14px;
+	min-height: 22px; /* + 2px padding + 2px border = 28 */ min-width: 54px; padding: 2px 14px;
 }
 QPushButton#mrLive:hover { border-color: #424242; color: #9a9a9a; }
 QPushButton#mrLive:checked {
@@ -178,7 +188,7 @@ QPushButton#mrLive:checked {
 QPushButton#mrToggle {
 	background: #181818; color: #6a6a6a;
 	border: 1px solid #2c2c2c; border-radius: 3px;
-	font-size: 10px; min-height: 26px; padding: 2px 9px;
+	font-size: 10px; min-height: 22px; padding: 2px 9px;
 }
 QPushButton#mrToggle:hover { border-color: #424242; color: #9a9a9a; }
 /* A LIT TOGGLE IS A STATE, NOT AN INVITATION. It used to be the same filled
@@ -274,7 +284,7 @@ QLabel#mrChanStrip {
 /* REC button */
 QPushButton#mrRec {
 	font-weight: 700; font-size: 12px; letter-spacing: 0.6px;
-	border-radius: 4px; min-height: 26px; padding: 3px 14px;
+	border-radius: 4px; min-height: 20px; padding: 3px 14px;
 }
 QPushButton#mrRec[recording="false"] {
 	background: #181010; color: #b03030; border: 1px solid #2c1818;
@@ -291,7 +301,7 @@ QPushButton#mrRec[recording="true"]:hover { background: #740e0e; }
 QPushButton#mrChanSel {
 	background: #14161a; color: #7a879a; border: 1px solid #262b33;
 	border-radius: 3px; padding: 2px 6px; font-weight: 700; font-size: 11px;
-	min-height: 22px;
+	min-height: 22px; /* + 2px padding + 2px border = 28 */
 }
 QPushButton#mrChanSel:hover { background: #1b1f26; color: #c8d2de; }
 QPushButton#mrChanSel:checked {
@@ -302,7 +312,7 @@ QPushButton#mrChanSel:checked {
    beside REC and is hidden entirely while there is nothing to report. */
 QPushButton#mrHealth {
 	font-weight: 700; font-size: 12px; border-radius: 4px;
-	min-height: 26px; padding: 3px 8px;
+	min-height: 20px; padding: 3px 8px;
 }
 QPushButton#mrHealth[level="warn"] {
 	background: #2a2008; color: #e0a020; border: 1px solid #6a5010;
@@ -322,7 +332,7 @@ QToolButton#mrGear:hover { background: #222222; color: #c0c0c0; border-color: #4
 QPushButton#mrAngle {
 	background: #181818; border: 1px solid #2c2c2c; border-radius: 3px;
 	color: #383838; font-weight: 700; font-size: 10px;
-	min-width: 34px; min-height: 22px; padding: 0 4px;
+	min-width: 34px; min-height: 26px; padding: 0 4px;
 }
 QPushButton#mrAngle:hover { background: #202020; color: #585858; border-color: #424242; }
 QPushButton#mrAngle[state="preview"] {
@@ -338,7 +348,7 @@ QPushButton#mrAngle[state="program"]:hover { background: #280c0c; border-color: 
 QPushButton#mrSpeedChip {
 	background: #181818; border: 1px solid #2c2c2c; border-radius: 3px;
 	color: #484848; font-size: 9px; font-weight: 700;
-	min-width: 28px; min-height: 20px; padding: 1px 4px;
+	min-width: 28px; min-height: 24px; padding: 1px 4px;
 }
 QPushButton#mrSpeedChip:hover { background: #222222; color: #b0b0b0; border-color: #424242; }
 QPushButton#mrSpeedChip:pressed { background: #0c2212; border-color: #1c8a38; color: #28b050; }
@@ -844,7 +854,11 @@ QWidget *zoneBox(const QString &title, QWidget *content, QWidget *parent)
 	const int need = content->minimumSizeHint().height() > 0
 				 ? content->minimumSizeHint().height()
 				 : content->sizeHint().height();
-	box->setMinimumHeight(cap->sizeHint().height() + need + 7);
+	// Margins (2 + 3) + spacing (2) is 7, and 7 exactly is what clipped the
+	// bottom border of whatever sat in the zone: a minimum with no slack in
+	// it has to be right to the pixel on every font and every DPI, and it is
+	// not. Two spare pixels cost nothing the splitter cannot give.
+	box->setMinimumHeight(cap->sizeHint().height() + need + 9);
 	box->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Minimum);
 	return box;
 }
