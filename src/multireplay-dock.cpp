@@ -181,9 +181,16 @@ QPushButton#mrToggle {
 	font-size: 10px; min-height: 26px; padding: 2px 9px;
 }
 QPushButton#mrToggle:hover { border-color: #424242; color: #9a9a9a; }
+/* A LIT TOGGLE IS A STATE, NOT AN INVITATION. It used to be the same filled
+   green as the play key, so "Loop is on" and "press this to play" carried the
+   same weight — and on a panel read at a glance under pressure, two meanings in
+   one colour is one meaning too many. Lit but hollow: unmistakably on, clearly
+   not the thing that starts a replay. */
 QPushButton#mrToggle:checked {
-	background: #176533; color: #ffffff; border-color: #22a04a;
+	background: #14351f; color: #4fd07d; border-color: #22a04a;
+	font-weight: 700;
 }
+QPushButton#mrToggle:checked:hover { background: #1a4227; color: #6fe098; }
 
 /* ── list tabs (the reference controller: one tab per event list) ─────────────── */
 QTabBar#mrListTabs { background: transparent; }
@@ -344,10 +351,22 @@ QPushButton#mrSpeedChip[active="true"] {
 QWidget#mrSepLine { background: #1c1c1c; }
 
 /* ── accent / danger buttons ─────────────────────────────── */
+/* THE ONE FILLED KEY IN THE PANEL. "Play the selected events" is the action the
+   operator reaches for more than any other, and it was an outlined key with a
+   green tint — the same weight as Mark, as Export, as ⋯, so the eye had to READ
+   the row to find it. Filled, it is found without reading, and nothing else on
+   the panel is filled except the two states that are allowed to shout (the REC
+   key when armed, the on-air band). An action and a state look different here
+   on purpose: this one asks to be pressed, those two report. */
 QPushButton#mrAccent {
-	background: #0c1a0e; border: 1px solid #1a5a30; color: #28904a;
+	background: #1b8a44; border: 1px solid #22a352; color: #ffffff;
+	font-weight: 700;
 }
-QPushButton#mrAccent:hover { background: #0e2012; color: #32b058; border-color: #208040; }
+QPushButton#mrAccent:hover { background: #21a151; border-color: #2cbb63; }
+QPushButton#mrAccent:pressed { background: #146633; }
+QPushButton#mrAccent:disabled {
+	background: #16281c; border-color: #1e3a26; color: #4a5a50;
+}
 QPushButton#mrDanger { color: #b03030; border-color: #2c1818; }
 QPushButton#mrDanger:hover { background: #1e1010; border-color: #442020; }
 
@@ -413,12 +432,16 @@ R"QSS(
    which needs one pixel and no colour — a loud box would compete with the
    green band and the red REC key, which are the two things on this panel that
    are allowed to shout. */
+/* A caption over a hairline, not a box. Five bordered groups drew five frames
+   competing for attention with the green band and the REC key; a rule under a
+   title says "this group" just as well and disappears when it is not being
+   looked for. */
 QFrame#mrZone {
-	border: 1px solid #23262b; border-radius: 4px; background: #101215;
+	border: 0; border-top: 1px solid #22262c; background: transparent;
 }
 QLabel#mrZoneTitle {
-	color: #5c6674; font-size: 8px; font-weight: 700; letter-spacing: 0.4px;
-	padding: 0px; margin: 0px;
+	color: #6a7686; font-size: 9px; font-weight: 700; letter-spacing: 1.1px;
+	padding: 1px 0px 0px 1px; margin: 0px;
 }
 
 /* ── speed slider — steel blue ───────────────────────────── */
@@ -751,7 +774,12 @@ private:
 QWidget *flowBand(QWidget *parent, const QList<QWidget *> &children)
 {
 	auto *band = new QWidget(parent);
-	auto *fl = new FlowLayout(band);
+	// 6 px between keys, not 4. At 4 the row read as one undifferentiated
+	// field of keys — the eye needs a gap it can see to tell one key from the
+	// next, and the zone captions above can only group what is already legible
+	// as separate. Two pixels per gap costs a few pixels of width, which this
+	// panel has, and buys the thing the whole zone treatment is for.
+	auto *fl = new FlowLayout(band, 6, 4);
 	for (QWidget *w : children)
 		if (w)
 			fl->addWidget(w);
@@ -771,32 +799,53 @@ QWidget *flowBand(QWidget *parent, const QList<QWidget *> &children)
 //
 // The content keeps its own parent chain (addWidget reparents it into the
 // frame), so layoutProbe()'s mapTo(this, …) still reports the same order.
-// The caption is INLINE, at the left of the content, and that is not a style
-// choice: a caption on its own line above costs ~18 px of height per zone, and
-// this dock is height-bound (five of them piled the search row, the list tabs
-// and the table on top of each other at the top of the panel, because a
-// QVBoxLayout that cannot fit gives every child its minimum). Sideways it costs
-// ~26 px each, which the row's stretches absorb — the panel has width to spare
-// and no height at all.
+//
+// THE CAPTION SITS ABOVE THE CONTENT, and getting there safely is the whole
+// story of this function. It was inline at the left for one reason: a caption on
+// its own line costs height, this dock is height-bound, and an early attempt
+// piled the search row, the list tabs and the table on top of each other at the
+// top of the panel — a QVBoxLayout that cannot fit gives every child its
+// minimum, and the minimums here were zero.
+//
+// Above is where a section title belongs: it names the group it labels instead
+// of competing with the first key for the same line, and it lets the keys start
+// at the same x as everything else in the panel. The collapse is prevented at
+// its cause rather than avoided: the zone reports a real minimumHeight (caption
+// + rule + whatever the content needs), so a layout short of room has to take it
+// from the ONE child that can give it — the picture above, through the splitter
+// — instead of flattening every band to nothing.
+//
+// The frame is gone with it. A caption over a hairline reads as a section; a
+// border round every group draws five boxes competing with the two things on
+// this panel that are allowed to shout, the green band and the REC key.
 QWidget *zoneBox(const QString &title, QWidget *content, QWidget *parent)
 {
 	auto *box = new QFrame(parent);
 	box->setObjectName(QStringLiteral("mrZone"));
 	box->setFrameShape(QFrame::NoFrame); // the stylesheet draws it
-	auto *h = new QHBoxLayout(box);
-	h->setContentsMargins(5, 1, 5, 1);
-	h->setSpacing(5);
+	auto *v = new QVBoxLayout(box);
+	v->setContentsMargins(6, 2, 6, 3);
+	v->setSpacing(2);
+
 	auto *cap = new QLabel(title.toUpper(), box);
 	cap->setObjectName(QStringLiteral("mrZoneTitle"));
 	// NO width cap and NO wrapping. Capped at 34 px the captions were simply
-	// cut ("IN ONDA", "TIMELINE" — a label that has to be guessed is worse than
-	// no label), and wrapping cannot help a single word. The caption takes the
-	// width its text needs; the row's stretches give it up.
+	// cut ("IN ONDA", "TIMELINE" — a label that has to be guessed is worse
+	// than no label), and wrapping cannot help a single word.
 	cap->setWordWrap(false);
-	cap->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
-	cap->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Preferred);
-	h->addWidget(cap, 0);
-	h->addWidget(content, 1);
+	cap->setAlignment(Qt::AlignLeft | Qt::AlignBottom);
+	cap->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
+	v->addWidget(cap, 0);
+	v->addWidget(content, 1);
+
+	// The floor that keeps the panel from folding. Asked of the content
+	// rather than assumed, so it stays true when a band re-flows onto a
+	// second row or the operator's font is larger than ours.
+	const int need = content->minimumSizeHint().height() > 0
+				 ? content->minimumSizeHint().height()
+				 : content->sizeHint().height();
+	box->setMinimumHeight(cap->sizeHint().height() + need + 7);
+	box->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Minimum);
 	return box;
 }
 
