@@ -164,6 +164,19 @@ recording, and keeps the last minutes of them in a bounded ring in RAM.
   wins — the search box and the tag cells are two pixels away from these
   commands, and typing a tag must not send the panel back a frame.
 
+#### Projects and updates
+
+* **Settings belong to the project.** A new project starts from a copy of what
+  is configured now and then goes its own way, so a two-camera match cannot
+  inherit the three-camera rig of the one before it. A project already on disk
+  adopts the current settings the first time it is opened — none ever opens
+  blank. Only the session folder, which project is open and the update channel
+  belong to the installation.
+* **In-app updates** (⚙ ▸ Settings ▸ Updates). Checks the published releases,
+  shows what changed, downloads and installs. **Stable** or **beta** channel.
+  The plugin is never replaced under a running OBS: the install waits until you
+  close it, then starts it again.
+
 ### Requirements
 
 | | |
@@ -352,6 +365,19 @@ ne tiene gli ultimi minuti in un buffer circolare in RAM.
   Invio riproduce. Mentre stai scrivendo, però, ha la precedenza la scrittura:
   la casella di ricerca e le celle dei tag sono a due pixel da questi comandi, e
   digitare un tag non deve mandare il pannello indietro di un fotogramma.
+
+#### Progetti e aggiornamenti
+
+* **Le impostazioni appartengono al progetto.** Un progetto nuovo parte da una
+  copia di ciò che è configurato adesso e poi va per la sua strada: una partita
+  a due camere non può più ereditare il rig a tre di quella prima. Un progetto
+  già su disco adotta le impostazioni correnti alla prima apertura, così non se
+  ne apre mai uno vuoto. Restano dell'installazione soltanto la cartella di
+  sessione, quale progetto è aperto e il canale di aggiornamento.
+* **Aggiornamenti dal pannello** (⚙ ▸ Impostazioni ▸ Aggiornamenti). Controlla
+  le release pubblicate, mostra che cosa cambia, scarica e installa. Canale
+  **stabile** o **beta**. Il plugin non viene mai sostituito sotto un OBS in
+  esecuzione: l'installazione aspetta che tu lo chiuda, poi lo riavvia.
 
 ### Requisiti
 
