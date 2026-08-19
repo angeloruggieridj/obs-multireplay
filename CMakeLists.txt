@@ -117,6 +117,9 @@ target_sources(
     src/qt-display.hpp
     src/multireplay-dock.cpp
     src/multireplay-dock.hpp
+    src/dock-layout.cpp
+    src/dock-layout.hpp
+    src/dock-style.hpp
 )
 
 set_target_properties_plugin(${CMAKE_PROJECT_NAME} PROPERTIES OUTPUT_NAME ${_name})

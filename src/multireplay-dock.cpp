@@ -5,6 +5,8 @@ SPDX-License-Identifier: GPL-2.0-or-later
 */
 
 #include "multireplay-dock.hpp"
+#include "dock-layout.hpp"
+#include "dock-style.hpp"
 #include "qt-display.hpp"
 #include "replay-core.hpp"
 #include "updater.hpp"
@@ -83,433 +85,6 @@ namespace multireplay {
 // invented: an operator coming from the reference controller reads this panel by colour before he
 // reads it by label, and "green means the angle I am on, orange means the row I
 // have selected" is muscle memory worth more than any house style. Nothing here
-// is copied from the reference controller itself — these are hex values in our own stylesheet.
-//
-// Palette (sampled):
-//   #1D3D74  table header blue      #176533  active-angle header green
-//   #DB5026  selected row orange    #199847  position bar, played
-//   #00121C  row odd (navy black)   #146433  position bar, remaining
-//   #002A42  row even               #116B35  angle enabled (checkbox)
-//   #A81C1C  Live / REC red         #0c0c0c  dock background
-static const char *kDockStyle = R"QSS(
-/* ── base ─────────────────────────────────────────────── */
-#MultiReplayDock { background: #0c0c0c; }
-#MultiReplayDock QLabel { color: #d0d0d0; background: transparent; }
-
-/* labels */
-QLabel#mrMuted      { color: #787878; font-size: 10px; }
-QLabel#mrTimecode   { color: #c8c8c8; font-size: 12px; font-weight: 700;
-                      letter-spacing: 0.3px; }
-QLabel#mrSectionLabel { color: #686868; font-size: 9px; font-weight: 700;
-                        letter-spacing: 1.4px; text-transform: uppercase; }
-/* wall clock over the "remaining" line, the reference controller-red while a take is running */
-QLabel#mrClock      { color: #6a6a6a; font-size: 10px; }
-QLabel#mrClock[rec="true"] { color: #e03030; font-weight: 700; }
-
-/* ── generic buttons ───────────────────────────────────── */
-/* ONE HEIGHT for every key in the control rows: 26 px. A row mixing 22, 24, 26
-   and 28 px keys reads as several rows badly aligned — the eye follows the line
-   of the bottom borders, and four lines are four groups where there is one.
-   Widths stay free (they follow the label, which is what tells the keys apart),
-   heights do not.
-   Unified DOWNWARDS, to the middle of the old spread, because every pixel of
-   chrome here is a pixel the splitter takes off the PREVIEW, and the preview is
-   what the operator is actually looking at. */
-#MultiReplayDock QPushButton {
-	background: #1e1e1e; color: #b0b0b0;
-	border: 1px solid #2c2c2c; border-radius: 4px;
-	padding: 3px 9px; font-size: 11px; min-height: 20px;
-}
-/* ONE HEIGHT FOR EVERY KEY: 28 px, and it is arithmetic, not a wish.
-   In Qt, a style sheet min-height is the CONTENT box — padding and border are
-   added to it. So min-height 26 with 3 px of padding and a 1 px border is a
-   34 px key, while the transport rule (min-height 26, padding 0) is a 28 px
-   one, and the toggles (padding 2) are 32. Three heights on one row, from a
-   number that looked identical in all three rules.
-   Every rule below therefore states min-height = 28 - 2*padding - 2, and the
-   inputs already land on the same 28 (min-height 20 + 3 + 3 + 1 + 1), so a
-   combo in a row of keys lines up with them instead of nearly lining up.
-   CHANGING A PADDING HERE MEANS CHANGING ITS min-height. */
-#MultiReplayDock QPushButton:hover  { background: #282828; border-color: #424242; }
-#MultiReplayDock QPushButton:pressed { background: #141414; }
-#MultiReplayDock QPushButton:disabled { color: #303030; border-color: #1e1e1e; }
-
-/* ── transport step / icon buttons ────────────────────── */
-QPushButton#mrTransport {
-	background: #181818; border: 1px solid #2c2c2c; border-radius: 5px;
-	color: #c8c8c8; font-size: 14px;
-	min-width: 30px; min-height: 26px; padding: 0;
-}
-QPushButton#mrTransport:hover { background: #222222; border-color: #424242; color: #f0f0f0; }
-
-/* >> lives ON the green band, which is 28 px tall with 2 px of margin, so it
-   cannot ask for the 28 px of height a transport key asks for: a stylesheet
-   min-height LARGER than the widget's own fixed height makes the style draw a
-   taller frame than the widget owns, and the bottom border lands outside it.
-   Hence its own role, with the height it can actually have. */
-QPushButton#mrSkip {
-	background: #0f3d22; border: 1px solid #2b7a45; border-radius: 4px;
-	color: #d6f0e0; font-size: 11px; font-weight: 700;
-	min-width: 30px; min-height: 0px; padding: 0px 4px;
-}
-QPushButton#mrSkip:hover { background: #14512c; border-color: #3fa060; color: #ffffff; }
-
-/* play/pause */
-QPushButton#mrPlay {
-	background: #181818; border: 1px solid #2c2c2c; border-radius: 5px;
-	color: #c8c8c8; font-size: 16px;
-	min-width: 38px; min-height: 26px; padding: 0;
-}
-QPushButton#mrPlay:hover { background: #222222; border-color: #424242; color: #f0f0f0; }
-QPushButton#mrPlay[playing="true"] { background: #0c2212; border-color: #1c8a38; color: #28b050; }
-QPushButton#mrPlay[playing="true"]:hover { background: #102818; border-color: #22a040; }
-
-/* NOW / live-edge */
-QPushButton#mrNow {
-	background: #181818; border: 1px solid #2c2c2c; border-radius: 5px;
-	font-weight: 700; font-size: 10px; letter-spacing: 0.8px;
-	min-height: 26px; min-width: 36px; padding: 0; color: #484848;
-}
-QPushButton#mrNow[live="true"] { background: #280808; border-color: #c02020; color: #e03030; }
-
-/* ── the reference controller "Live" mode toggle — red when marks are taken as they happen ── */
-QPushButton#mrLive {
-	background: #181818; color: #6a6a6a;
-	border: 1px solid #2c2c2c; border-radius: 3px;
-	font-weight: 700; font-size: 11px; letter-spacing: 0.6px;
-	min-height: 22px; /* + 2px padding + 2px border = 28 */ min-width: 54px; padding: 2px 14px;
-}
-QPushButton#mrLive:hover { border-color: #424242; color: #9a9a9a; }
-QPushButton#mrLive:checked {
-	background: #A81C1C; color: #ffffff; border-color: #d03030;
-}
-
-/* ── latching toggles (Loop · music · to output) ─────────── */
-QPushButton#mrToggle {
-	background: #181818; color: #6a6a6a;
-	border: 1px solid #2c2c2c; border-radius: 3px;
-	font-size: 10px; min-height: 22px; padding: 2px 9px;
-}
-QPushButton#mrToggle:hover { border-color: #424242; color: #9a9a9a; }
-/* A LIT TOGGLE IS A STATE, NOT AN INVITATION. It used to be the same filled
-   green as the play key, so "Loop is on" and "press this to play" carried the
-   same weight — and on a panel read at a glance under pressure, two meanings in
-   one colour is one meaning too many. Lit but hollow: unmistakably on, clearly
-   not the thing that starts a replay. */
-QPushButton#mrToggle:checked {
-	background: #14351f; color: #4fd07d; border-color: #22a04a;
-	font-weight: 700;
-}
-QPushButton#mrToggle:checked:hover { background: #1a4227; color: #6fe098; }
-
-/* ── list tabs (the reference controller: one tab per event list) ─────────────── */
-QTabBar#mrListTabs { background: transparent; }
-/* No font-size here on purpose: the tab font is set on the WIDGET (see
-   buildToolbar). A size that lives only in the stylesheet is a size nothing
-   outside the painter can measure, and "is this tab wide enough for its own
-   name" is exactly the question the gate has to answer. */
-QTabBar#mrListTabs::tab {
-	background: #141414; color: #8a8a8a;
-	border: 1px solid #232323; border-bottom: 0;
-	padding: 3px 9px; margin-right: 1px; min-width: 16px;
-}
-QTabBar#mrListTabs::tab:hover { background: #1e1e1e; color: #c0c0c0; }
-QTabBar#mrListTabs::tab:selected {
-	background: #1D3D74; color: #ffffff; border-color: #2a5296;
-}
-
-/* ── settings dialog: side menu + pages ─────────────────────────────── */
-QListWidget#mrSettingsNav {
-	background: #121212; color: #9a9a9a;
-	border: 0; border-right: 1px solid #232323;
-	outline: 0; font-size: 11px;
-}
-QListWidget#mrSettingsNav::item { padding: 8px 12px; border: 0; }
-QListWidget#mrSettingsNav::item:hover { background: #1c1c1c; color: #d0d0d0; }
-QListWidget#mrSettingsNav::item:selected {
-	background: #1D3D74; color: #ffffff;
-}
-QLabel#mrSettingsTitle {
-	color: #e0e6ee; font-size: 14px; font-weight: 700;
-}
-QLabel#mrSettingsBlurb { color: #7a8490; font-size: 10px; }
-
-/* The two numbers an operator opens Settings to read before kick-off: how much
-   disk is left, and how much recording that is. A card each — as one line of
-   text the second number had no caption at all, and "09:12" with no word in
-   front of it reads as a clock. */
-QFrame#mrStatCard {
-	background: #121212; border: 1px solid #262626; border-radius: 3px;
-}
-QLabel#mrStatCaption {
-	color: #7a8490; font-size: 10px; font-weight: 600;
-	letter-spacing: 0.6px; text-transform: uppercase;
-}
-QLabel#mrStatValue { color: #e6ecf4; font-size: 19px; font-weight: 700; }
-QLabel#mrStatUnit { color: #7a8490; font-size: 11px; padding-bottom: 3px; }
-
-/* ── multiview tiles (the reference controller's camera thumbnails beside the A output) ── */
-QWidget#mrTile { background: #000000; }
-/* the reference controller captions its thumbnails with a blue band; the angle being watched turns
-   green and the one on air red, so the operator reads tally from the picture
-   itself instead of correlating it with the angle buttons. */
-QLabel#mrTileCap {
-	background: #1D3D74; color: #dfe8f6;
-	font-size: 9px; font-weight: 700; padding: 1px 4px;
-}
-QLabel#mrTileCap[tally="pvw"] { background: #176533; color: #ffffff; }
-QLabel#mrTileCap[tally="pgm"] { background: #A81C1C; color: #ffffff; }
-QLabel#mrTileCap[tally="replay"] { background: #3a2d10; color: #ffd07a; }
-
-/* ── channel strip under the preview (the reference controller green info band) ─ */
-QLabel#mrChanBadge {
-	background: #0e4523; color: #ffffff;
-	font-weight: 700; font-size: 11px; padding: 2px 7px;
-}
-/* The letter under each output box. the reference controller puts A on a green bar and B on a
-   blue one, and that colour is how the operator tells the two boxes apart
-   from across the room — faster than reading a letter. The one being driven
-   by the keys is the bright one. */
-QLabel#mrChanTag {
-	background: #12161c; color: #6b7787;
-	font-weight: 700; font-size: 10px; padding: 1px 0;
-}
-QLabel#mrChanTag[chan="A"][active="true"] { background: #146433; color: #ffffff; }
-QLabel#mrChanTag[chan="B"][active="true"] { background: #1d3d74; color: #ffffff; }
-QLabel#mrChanStrip {
-	background: #146433; color: #dff3e2;
-	font-size: 10px; padding: 2px 7px;
-}
-
-/* REC button */
-QPushButton#mrRec {
-	font-weight: 700; font-size: 12px; letter-spacing: 0.6px;
-	border-radius: 4px; min-height: 20px; padding: 3px 14px;
-}
-QPushButton#mrRec[recording="false"] {
-	background: #181010; color: #b03030; border: 1px solid #2c1818;
-}
-QPushButton#mrRec[recording="false"]:hover { background: #1e1010; border-color: #4a2020; }
-QPushButton#mrRec[recording="true"] {
-	background: #640808; color: #ffffff; border: 1px solid #c02020;
-}
-QPushButton#mrRec[recording="true"]:hover { background: #740e0e; }
-
-/* Channel selector A|B / A / B and the swap. Small, square and always visible:
-   it is the answer to "where is this key going", and an operator who has to
-   look for it has already pressed something on the wrong channel. */
-QPushButton#mrChanSel {
-	background: #14161a; color: #7a879a; border: 1px solid #262b33;
-	border-radius: 3px; padding: 2px 6px; font-weight: 700; font-size: 11px;
-	min-height: 22px; /* + 2px padding + 2px border = 28 */
-}
-QPushButton#mrChanSel:hover { background: #1b1f26; color: #c8d2de; }
-QPushButton#mrChanSel:checked {
-	background: #1d3d74; color: #ffffff; border-color: #2f5da8;
-}
-
-/* M4 health badge: amber = degraded, red = this take is not usable. It sits
-   beside REC and is hidden entirely while there is nothing to report. */
-QPushButton#mrHealth {
-	font-weight: 700; font-size: 12px; border-radius: 4px;
-	min-height: 20px; padding: 3px 8px;
-}
-QPushButton#mrHealth[level="warn"] {
-	background: #2a2008; color: #e0a020; border: 1px solid #6a5010;
-}
-QPushButton#mrHealth[level="bad"] {
-	background: #3a0c0c; color: #ff6a4a; border: 1px solid #8a1c1c;
-}
-
-/* settings gear */
-QToolButton#mrGear {
-	background: #181818; border: 1px solid #2c2c2c; border-radius: 4px;
-	padding: 3px 7px; color: #484848; font-size: 14px;
-}
-QToolButton#mrGear:hover { background: #222222; color: #c0c0c0; border-color: #424242; }
-
-/* ── angle selector — state drives color, not :checked ───── */
-QPushButton#mrAngle {
-	background: #181818; border: 1px solid #2c2c2c; border-radius: 3px;
-	color: #383838; font-weight: 700; font-size: 10px;
-	min-width: 34px; min-height: 26px; padding: 0 4px;
-}
-QPushButton#mrAngle:hover { background: #202020; color: #585858; border-color: #424242; }
-QPushButton#mrAngle[state="preview"] {
-	background: #081a0e; border-color: #1c8a38; color: #28b050;
-}
-QPushButton#mrAngle[state="preview"]:hover { background: #0c2014; border-color: #22a040; }
-QPushButton#mrAngle[state="program"] {
-	background: #200808; border-color: #be2020; color: #de3838;
-}
-QPushButton#mrAngle[state="program"]:hover { background: #280c0c; border-color: #cc2828; }
-
-/* ── speed preset chips ─────────────────────────────────── */
-QPushButton#mrSpeedChip {
-	background: #181818; border: 1px solid #2c2c2c; border-radius: 3px;
-	color: #484848; font-size: 9px; font-weight: 700;
-	min-width: 28px; min-height: 24px; padding: 1px 4px;
-}
-QPushButton#mrSpeedChip:hover { background: #222222; color: #b0b0b0; border-color: #424242; }
-QPushButton#mrSpeedChip:pressed { background: #0c2212; border-color: #1c8a38; color: #28b050; }
-/* the reference controller fills the chip that matches the current speed (100% by default). */
-QPushButton#mrSpeedChip[active="true"] {
-	background: #176533; border-color: #22a04a; color: #ffffff;
-}
-
-/* ── section separator line ─────────────────────────────── */
-QWidget#mrSepLine { background: #1c1c1c; }
-
-/* ── accent / danger buttons ─────────────────────────────── */
-/* THE ONE FILLED KEY IN THE PANEL. "Play the selected events" is the action the
-   operator reaches for more than any other, and it was an outlined key with a
-   green tint — the same weight as Mark, as Export, as ⋯, so the eye had to READ
-   the row to find it. Filled, it is found without reading, and nothing else on
-   the panel is filled except the two states that are allowed to shout (the REC
-   key when armed, the on-air band). An action and a state look different here
-   on purpose: this one asks to be pressed, those two report. */
-QPushButton#mrAccent {
-	background: #1b8a44; border: 1px solid #22a352; color: #ffffff;
-	font-weight: 700;
-}
-QPushButton#mrAccent:hover { background: #21a151; border-color: #2cbb63; }
-QPushButton#mrAccent:pressed { background: #146633; }
-QPushButton#mrAccent:disabled {
-	background: #16281c; border-color: #1e3a26; color: #4a5a50;
-}
-QPushButton#mrDanger { color: #b03030; border-color: #2c1818; }
-QPushButton#mrDanger:hover { background: #1e1010; border-color: #442020; }
-
-/* ── checkboxes ──────────────────────────────────────────── */
-#MultiReplayDock QCheckBox { color: #888888; spacing: 5px; font-size: 11px; }
-#MultiReplayDock QCheckBox::indicator {
-	width: 13px; height: 13px; border-radius: 3px;
-	border: 1px solid #2c2c2c; background: #181818;
-}
-#MultiReplayDock QCheckBox::indicator:checked { background: #1c8a38; border-color: #22a040; }
-
-)QSS"
-// SPLIT HERE, and it is the compiler's rule rather than a section boundary:
-// MSVC refuses a single string literal over 16380 bytes (C2026, "trailing
-// characters will be truncated" — a stylesheet silently missing its second
-// half). Adjacent literals are concatenated at translation, so the sheet is
-// still one string; it just arrives in two pieces. Any section boundary will do
-// when the next rule pushes it over again.
-R"QSS(
-/* ── inputs ──────────────────────────────────────────────── */
-#MultiReplayDock QComboBox, #MultiReplayDock QLineEdit {
-	background: #181818; color: #c0c0c0;
-	border: 1px solid #2c2c2c; border-radius: 3px;
-	padding: 3px 7px; min-height: 20px; font-size: 11px;
-}
-#MultiReplayDock QComboBox:hover, #MultiReplayDock QLineEdit:hover { border-color: #424242; }
-#MultiReplayDock QComboBox::drop-down { border: 0; width: 16px; }
-/* AN EDITABLE COMBO IS A COMBO WITH A LINE EDIT INSIDE IT, and the rule above
-   matches BOTH. So the per-angle speed and tag cells were paying for the box
-   twice: the combo's own 3px/7px padding, its border and its min-height, and
-   then the child line edit's again inside them. The text ended up pushed down
-   and right of the centre it had been told to sit in — which is what "the tag
-   and the custom percentages are not vertically centred" looks like. The child
-   contributes nothing of its own; the combo around it already draws the frame. */
-#MultiReplayDock QComboBox QLineEdit {
-	background: transparent; border: 0; padding: 0; min-height: 0;
-}
-/* "--" in an angle cell: no per-angle speed, the slider decides. Grey, because
-   it is an absence and not a choice. It lives here rather than in a
-   setStyleSheet() on the combo itself: a style sheet set on one widget makes Qt
-   build a separate style context for it and re-polish its subtree, and that was
-   a measurable part of a table rebuild that took over a tenth of a second. */
-#MultiReplayDock QComboBox[mrNoOverride="true"],
-#MultiReplayDock QComboBox[mrNoOverride="true"] QLineEdit {
-	color: #707070;
-}
-#MultiReplayDock QComboBox QAbstractItemView {
-	background: #181818; color: #c0c0c0; border: 1px solid #2c2c2c;
-	selection-background-color: #1a2e52; selection-color: #d0d8f0; outline: 0;
-}
-/* The rows of an open list. Without an explicit item rule the view inherits the
-   padding of the CLOSED box above (3px 7px plus its min-height), which leaves
-   each row taller than its text and the text sitting at the bottom of it —
-   which is exactly how a centred list stops looking centred. The height is
-   stated here and the horizontal centring is set per item, in code, because
-   Qt draws item text through the delegate and no stylesheet reaches it. */
-#MultiReplayDock QComboBox QAbstractItemView::item {
-	min-height: 20px; padding: 0px; border: 0;
-}
-
-/* ── zones: a captioned frame round each group of controls ───────
-   Quiet on purpose. The border is there to say "these keys belong together",
-   which needs one pixel and no colour — a loud box would compete with the
-   green band and the red REC key, which are the two things on this panel that
-   are allowed to shout. */
-/* A caption over a hairline, not a box. Five bordered groups drew five frames
-   competing for attention with the green band and the REC key; a rule under a
-   title says "this group" just as well and disappears when it is not being
-   looked for. */
-QFrame#mrZone {
-	border: 0; border-top: 1px solid #22262c; background: transparent;
-}
-QLabel#mrZoneTitle {
-	color: #6a7686; font-size: 9px; font-weight: 700; letter-spacing: 1.1px;
-	padding: 1px 0px 0px 1px; margin: 0px;
-}
-
-/* ── speed slider — steel blue ───────────────────────────── */
-QSlider#mrSpeed::groove:horizontal {
-	height: 3px; background: #1e1e1e; border-radius: 2px;
-}
-QSlider#mrSpeed::sub-page:horizontal { background: #365e8a; border-radius: 2px; }
-QSlider#mrSpeed::handle:horizontal {
-	width: 10px; height: 10px; margin: -4px 0;
-	background: #7aabc8; border-radius: 5px; border: 1px solid #284860;
-}
-QSlider#mrSpeed::handle:horizontal:hover { background: #e0e0e0; }
-
-/* ── event table (the reference controller: navy rows, orange selection) ─────── */
-QTableWidget#mrEvents {
-	background: #00121C; alternate-background-color: #002A42;
-	gridline-color: transparent; border: 1px solid #10243a;
-	border-radius: 0; color: #d6dde6; outline: 0;
-}
-QTableWidget#mrEvents::item { padding: 2px 5px; border: 0; }
-QTableWidget#mrEvents::item:selected { background: #DB5026; color: #ffffff; }
-/* The per-angle enable box, which in the reference controller IS the cell */
-QTableWidget#mrEvents::indicator {
-	width: 11px; height: 11px;
-	border: 1px solid #9aa4ae; background: #05131c;
-}
-QTableWidget#mrEvents::indicator:checked {
-	background: #116B35; border-color: #d8dde2;
-}
-/* The section BACKGROUND is not ours to set: OBS's own theme styles
-   QHeaderView::section (Yami.obt: background-color: var(--button_bg)) and wins
-   whatever we put here — measured on screen, #272A33 either way. That is why
-   the "angle I am watching" cue is a ▶ in the header TEXT (see
-   updateCamHeaderHighlight) and not the reference controller's green fill: a colour we cannot
-   guarantee is worse than a glyph we can. */
-QHeaderView::section {
-	color: #cfd8e4; padding: 3px 5px;
-	font-size: 9px; font-weight: 700; letter-spacing: 0.6px;
-}
-
-/* ── scrollbars ──────────────────────────────────────────── */
-#MultiReplayDock QScrollBar:vertical {
-	background: transparent; width: 6px; margin: 0;
-}
-#MultiReplayDock QScrollBar::handle:vertical {
-	background: #2a2a2a; border-radius: 3px; min-height: 20px;
-}
-#MultiReplayDock QScrollBar::handle:vertical:hover { background: #424242; }
-#MultiReplayDock QScrollBar::add-line, #MultiReplayDock QScrollBar::sub-line {
-	height: 0; width: 0;
-}
-
-QSplitter::handle:vertical {
-	background: #1e1e1e; height: 5px;
-}
-QSplitter::handle:vertical:hover { background: #2e2e2e; }
-QSplitter::handle:horizontal { background: #1e1e1e; width: 5px; }
-)QSS";
 
 namespace {
 
@@ -685,148 +260,6 @@ QLabel *sectionLabel(const QString &text, QWidget *parent)
 	return l;
 }
 
-// A row of controls that WRAPS instead of squeezing.
-//
-// The panel is height-bound and its width is whatever the operator docked it
-// at: a QHBoxLayout answers "not enough width" by taking it off the buttons
-// until the glyphs are unreadable and the hit target is smaller than a
-// fingertip — which is precisely how a transport key stops being pressable in
-// the middle of a match. Every control here is fixed-size on purpose, so the
-// only honest answer to a narrow panel is another line.
-//
-// The consequence that matters is the other way round: because the height of a
-// band is a function of its width, a WIDE dock puts the same keys on fewer
-// lines and gives the height back to the table. That is what "redistribute
-// when there is no vertical room" means in a layout — the keys move between
-// lines, they never shrink.
-//
-// heightForWidth() is what tells the parent layout that, and minimumSize() is
-// the promise that nothing is ever narrower than its own widest control.
-class FlowLayout : public QLayout {
-public:
-	explicit FlowLayout(QWidget *parent, int hSpacing = 4, int vSpacing = 3)
-		: QLayout(parent), hSpace_(hSpacing), vSpace_(vSpacing)
-	{
-		setContentsMargins(0, 0, 0, 0);
-	}
-	~FlowLayout() override
-	{
-		while (QLayoutItem *it = takeAt(0))
-			delete it;
-	}
-
-	void addItem(QLayoutItem *item) override { items_.append(item); }
-	int count() const override { return (int)items_.size(); }
-	QLayoutItem *itemAt(int i) const override
-	{
-		return (i >= 0 && i < items_.size()) ? items_.at(i) : nullptr;
-	}
-	QLayoutItem *takeAt(int i) override
-	{
-		return (i >= 0 && i < items_.size()) ? items_.takeAt(i) : nullptr;
-	}
-	Qt::Orientations expandingDirections() const override { return {}; }
-	bool hasHeightForWidth() const override { return true; }
-	int heightForWidth(int w) const override
-	{
-		return doLayout(QRect(0, 0, w, 0), true);
-	}
-	void setGeometry(const QRect &r) override
-	{
-		QLayout::setGeometry(r);
-		doLayout(r, false);
-	}
-	QSize sizeHint() const override { return minimumSize(); }
-	QSize minimumSize() const override
-	{
-		// The widest single control, never the sum: the sum is what makes a
-		// band refuse to wrap and start squeezing again.
-		QSize s(0, 0);
-		for (const QLayoutItem *it : items_)
-			s = s.expandedTo(it->minimumSize());
-		const QMargins m = contentsMargins();
-		return s + QSize(m.left() + m.right(), m.top() + m.bottom());
-	}
-
-private:
-	int doLayout(const QRect &rect, bool testOnly) const
-	{
-		const QMargins m = contentsMargins();
-		const QRect eff = rect.adjusted(m.left(), m.top(), -m.right(),
-						-m.bottom());
-		int x = eff.x(), y = eff.y(), lineHeight = 0;
-		for (QLayoutItem *it : items_) {
-			const QSize sz = it->sizeHint();
-			int next = x + sz.width();
-			if (lineHeight > 0 && next - hSpace_ > eff.right() + 1) {
-				x = eff.x();
-				y += lineHeight + vSpace_;
-				next = x + sz.width();
-				lineHeight = 0;
-			}
-			if (!testOnly)
-				it->setGeometry(QRect(QPoint(x, y), sz));
-			x = next + hSpace_;
-			lineHeight = std::max(lineHeight, sz.height());
-		}
-		return y + lineHeight - rect.y() + m.bottom();
-	}
-
-	QList<QLayoutItem *> items_;
-	int hSpace_;
-	int vSpace_;
-};
-
-// A widget whose only job is to hold a FlowLayout and report its own height as
-// a function of its width. Without the height-for-width size policy the parent
-// QVBoxLayout asks for sizeHint() once, at a width that is not the one the
-// widget ends up with, and the last wrapped line is drawn outside the widget.
-QWidget *flowBand(QWidget *parent, const QList<QWidget *> &children)
-{
-	auto *band = new QWidget(parent);
-	// 6 px between keys, not 4. At 4 the row read as one undifferentiated
-	// field of keys — the eye needs a gap it can see to tell one key from the
-	// next, and the zone captions above can only group what is already legible
-	// as separate. Two pixels per gap costs a few pixels of width, which this
-	// panel has, and buys the thing the whole zone treatment is for.
-	auto *fl = new FlowLayout(band, 6, 4);
-	for (QWidget *w : children)
-		if (w)
-			fl->addWidget(w);
-	QSizePolicy sp(QSizePolicy::Preferred, QSizePolicy::Minimum);
-	sp.setHeightForWidth(true);
-	band->setSizePolicy(sp);
-	return band;
-}
-
-// Put a captioned FRAME round a group of controls, the way MARK already had one.
-//
-// A dock this dense reads as one field of keys otherwise, and an operator
-// learning it has nothing to hang a name on — "the speed keys" and "the
-// transport keys" are two ideas that looked like one row. The caption is the
-// name he will use out loud; the border is what makes the group a thing rather
-// than a coincidence of position.
-//
-// The content keeps its own parent chain (addWidget reparents it into the
-// frame), so layoutProbe()'s mapTo(this, …) still reports the same order.
-//
-// THE CAPTION SITS ABOVE THE CONTENT, and getting there safely is the whole
-// story of this function. It was inline at the left for one reason: a caption on
-// its own line costs height, this dock is height-bound, and an early attempt
-// piled the search row, the list tabs and the table on top of each other at the
-// top of the panel — a QVBoxLayout that cannot fit gives every child its
-// minimum, and the minimums here were zero.
-//
-// Above is where a section title belongs: it names the group it labels instead
-// of competing with the first key for the same line, and it lets the keys start
-// at the same x as everything else in the panel. The collapse is prevented at
-// its cause rather than avoided: the zone reports a real minimumHeight (caption
-// + rule + whatever the content needs), so a layout short of room has to take it
-// from the ONE child that can give it — the picture above, through the splitter
-// — instead of flattening every band to nothing.
-//
-// The frame is gone with it. A caption over a hairline reads as a section; a
-// border round every group draws five boxes competing with the two things on
 // this panel that are allowed to shout, the green band and the REC key.
 QWidget *zoneBox(const QString &title, QWidget *content, QWidget *parent)
 {
@@ -862,7 +295,6 @@ QWidget *zoneBox(const QString &title, QWidget *content, QWidget *parent)
 	box->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Minimum);
 	return box;
 }
-
 // Render `src` letterboxed inside a cx*cy display. Shared by the big preview
 // and by every multiview tile: they differ in WHICH source they were handed,
 // never in how it is drawn, and one copy of this arithmetic is one place where
@@ -2552,25 +1984,120 @@ void MultiReplayDock::updateMultiviewTally()
 // Angle row — the reference controller's "A [1..8]" camera matrix
 // ---------------------------------------------------------------------------
 
-QWidget *MultiReplayDock::buildAngleMatrix()
+KeyBlock *MultiReplayDock::buildAngleMatrix()
 {
-	// TWO rows, A over B, as on the reference panel. They are not decoration: the
-	// working method of a replay operator is to keep one bay on air while
-	// lining the next angle up on the other, and a single shared row makes
-	// that impossible to express. Pressing a key sets THAT channel's angle
-	// and re-cues THAT channel; which channel the transport keys drive is
-	// still the A|B selector's business, and pressing a camera key does not
-	// quietly steal it.
-	auto *box = new QWidget(this);
-	auto *bv = new QVBoxLayout(box);
-	bv->setContentsMargins(0, 0, 0, 0);
-	bv->setSpacing(2);
+	// TWO ROWS of camera keys, with the two controls that are ABOUT both of
+	// them standing beside them: the bay selector at the left, the swap at
+	// the right. That is the reference panel's own arrangement, and it is
+	// what a selector on a row of its own could never be - three loose keys
+	// near the matrix rather than one control attached to it.
+	//
+	//   A|B A B   A [1..8]   swap
+	//             B [1..8]
+	//
+	// The B row and the selector exist only when the second bay does (see
+	// applyChannelBVisibility): with one bay they are not disabled, they are
+	// absent, and the section is simply one row of cameras.
+	auto *blk = new KeyBlock(obs_module_text("Dock.ZoneAngles"), this);
+	channelBWidgets_.clear();
+
+	QVector<Cell> rowA, rowB;
 	for (int ch = 0; ch < kChannels; ch++) {
-		QWidget *r = buildAngleRow((Which)ch);
-		angleRowBox_[ch] = r;
-		bv->addWidget(r);
+		QLabel *letter =
+			sectionLabel(QString(channelLetter((Which)ch)), this);
+		letter->setFixedWidth(kAngleLabelWidth);
+		letter->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+		(ch ? rowB : rowA) << Cell(letter, 1, false);
+
+		auto *group = new QButtonGroup(this);
+		group->setExclusive(true);
+		// All eight are BUILT, and refreshAngleRows() names the ones that
+		// are configured and draws the rest as empty slots. Built once and
+		// re-labelled, never created and destroyed: the checked state and
+		// the tally live on these widgets.
+		for (int i = 1; i <= kNCams; i++) {
+			auto *b = new QPushButton(QString::number(i), this);
+			b->setObjectName("mrAngle");
+			b->setCheckable(true);
+			b->setCursor(Qt::PointingHandCursor);
+			// FIXED HEIGHT. The style sheet asks these keys for 26 px
+			// of content plus a 1 px border top and bottom; a row that
+			// allocated a pixel less drew the bottom border outside
+			// the widget, which is what "the C1 and C2 keys are cut
+			// off at the bottom" was.
+			b->setFixedSize(kAngleKeyWidth, kKeyH);
+			b->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+			group->addButton(b, i);
+			(ch ? rowB : rowA) << Cell(b, 1, false);
+			angleKeys_[ch][i - 1] = b;
+			if (ch == 1)
+				channelBWidgets_ << b;
+		}
+		const Which which = (Which)ch;
+		connect(group, &QButtonGroup::idClicked, this,
+			[this, which](int id) { setAngleOn(which, id); });
+		angles_[ch] = group;
+		if (ch == 0)
+			anglesA_ = group; // the name the rest of the panel knows
+		else
+			channelBWidgets_ << letter;
 	}
-	return box;
+
+	QWidget *sel = buildChannelRow();
+	QVector<Cell> top;
+	top << Cell(sel, 1, false, 2);
+	top += rowA;
+	top << Cell(swapBtn_, 1, false, 2);
+	QVector<Cell> bottom;
+	bottom << Cell(nullptr, 1); // the selector's column, already taken
+	bottom += rowB;
+	blk->setShapes({top, bottom}, {});
+	angleBlock_ = blk;
+	return blk;
+}
+
+// The A|B / A / B selector and the swap, on the camera matrix's own columns.
+//
+// They are drawn at the angle keys' width and start at the angle keys' x, so the
+// three of them read as one segmented control sitting under the matrix rather
+// than as three loose keys near it. The swap skips a column: ⇄ is not a fourth
+// mode, and pressed by mistake it puts the wrong clip on air.
+QWidget *MultiReplayDock::buildChannelRow()
+{
+	auto *sel = new QWidget(this);
+	auto *h = new QHBoxLayout(sel);
+	h->setContentsMargins(0, 0, 0, 0);
+	h->setSpacing(3);
+
+	chanSel_ = new QButtonGroup(this);
+	chanSel_->setExclusive(true);
+	const std::pair<const char *, int> chanChoices[] = {
+		{"A|B", 2}, {"A", 0}, {"B", 1}};
+	for (const auto &[label, code] : chanChoices) {
+		auto *b = new QPushButton(QString::fromUtf8(label), sel);
+		b->setObjectName("mrChanSel");
+		b->setCheckable(true);
+		b->setChecked(code == 0); // A, as it has always been
+		b->setFixedSize(kChanKeyWidth, kKeyH);
+		b->setCursor(Qt::PointingHandCursor);
+		chanSel_->addButton(b, code);
+		h->addWidget(b);
+	}
+	connect(chanSel_, &QButtonGroup::idClicked, this, [this](int code) {
+		setActiveChannel(code == 1 ? Which::B : Which::A, code == 2);
+	});
+	sel->setFixedHeight(kKeyH);
+	channelBWidgets_ << sel;
+
+	swapBtn_ = new QPushButton(QStringLiteral("\u21c4"), this);
+	swapBtn_->setObjectName("mrChanSel");
+	swapBtn_->setToolTip(obs_module_text("Dock.SwapChannels"));
+	swapBtn_->setFixedSize(kChanKeyWidth, kKeyH);
+	swapBtn_->setCursor(Qt::PointingHandCursor);
+	connect(swapBtn_, &QPushButton::clicked, this,
+		&MultiReplayDock::swapChannels);
+	channelBWidgets_ << swapBtn_;
+	return sel;
 }
 
 void MultiReplayDock::buildSpeedDial()
@@ -2608,55 +2135,6 @@ void MultiReplayDock::buildSpeedDial()
 	});
 }
 
-QWidget *MultiReplayDock::buildAngleRow(Which which)
-{
-	auto *row = new QWidget(this);
-	auto *h = new QHBoxLayout(row);
-	h->setContentsMargins(0, 0, 0, 0);
-	h->setSpacing(3);
-
-	h->addWidget(sectionLabel(QString(channelLetter(which)), row));
-
-	auto *group = new QButtonGroup(this);
-	group->setExclusive(true);
-	// All eight are BUILT, and refreshAngleRows() shows only the cameras that
-	// are configured. Built once and hidden, never created and destroyed: the
-	// checked state and the tally live on these widgets, and rebuilding the row
-	// every time the config is read would throw both away.
-	//
-	// Fixed width, and the LABEL IS THE CAMERA'S NAME. A number is a thing the
-	// operator has to translate ("which one is 3 again?") while the name is
-	// what he calls it; and a key that grows with its label makes the row jump
-	// about as cameras are renamed, so the name is elided into the key and the
-	// full one is in the tooltip.
-	for (int i = 1; i <= kNCams; i++) {
-		auto *b = new QPushButton(QString::number(i), row);
-		b->setObjectName("mrAngle");
-		b->setCheckable(true);
-		b->setCursor(Qt::PointingHandCursor);
-		// Fixed, and MINIMUM too: the stylesheet's own min-width would
-		// otherwise win and the keys would come out narrower than the
-		// names they have to hold.
-		b->setMinimumWidth(kAngleKeyWidth);
-		b->setFixedWidth(kAngleKeyWidth);
-		b->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Preferred);
-		group->addButton(b, i);
-		h->addWidget(b, 0);
-		angleKeys_[(int)which][i - 1] = b;
-	}
-	// Left-aligned: the keys start at the letter and stop where the cameras
-	// stop, so "how many angles has this rig" is answered by their number and
-	// not by hunting for the ones that are greyed out.
-	h->addStretch(1);
-	connect(group, &QButtonGroup::idClicked, this,
-		[this, which](int id) { setAngleOn(which, id); });
-	angles_[(int)which] = group;
-	if (which == Which::A)
-		anglesA_ = group; // the name the rest of the panel knows it by
-
-	return row;
-}
-
 void MultiReplayDock::applyChannelBVisibility()
 {
 	const bool on = ReplayCore::instance().getConfig().enableChannelB;
@@ -2671,13 +2149,25 @@ void MultiReplayDock::applyChannelBVisibility()
 	// and a question the operator has to answer every time he looks at it.
 	if (bBox_)
 		bBox_->setVisible(on);
-	if (angleRowBox_[1])
-		angleRowBox_[1]->setVisible(on);
-	if (swapBtn_)
-		swapBtn_->setVisible(on);
-	if (chanSel_)
-		for (QAbstractButton *b : chanSel_->buttons())
-			b->setVisible(on);
+	// The B row and the selector row are made to COLLAPSE, not to hold their
+	// place: an unconfigured camera keeps its slot because the slot is coming
+	// back (see refreshAngleRows), while a bay the operator has switched off
+	// is not coming back until he switches it on. Retaining the size of these
+	// would leave the matrix two empty rows tall on a single-bay rig.
+	for (QWidget *w : channelBWidgets_) {
+		QSizePolicy sp = w->sizePolicy();
+		sp.setRetainSizeWhenHidden(false);
+		w->setSizePolicy(sp);
+		w->setVisible(on);
+	}
+	// The slots of the B row need their retain flag set again when the bay
+	// comes back; refreshAngleRows owns that, so make it run - and the
+	// section has one row fewer or one row more, which the strip only learns
+	// when the block is re-measured.
+	angleRowSig_.clear();
+	refreshAngleRows();
+	if (strip_ && angleBlock_)
+		strip_->blockChanged(angleBlock_);
 
 	if (on) {
 		// TWO bays, so the resting state is BOTH: the reference controller's A|B is what makes a
@@ -2702,9 +2192,9 @@ void MultiReplayDock::applyChannelBVisibility()
 
 void MultiReplayDock::refreshAngleRows()
 {
-	// Which cameras exist, and what they are called. Cheap enough for the slow
-	// beat of poll(); it does nothing at all unless the answer changed, because
-	// setText() on a visible button is a relayout.
+	// Which cameras exist, and what they are called. Cheap enough for the
+	// slow beat of poll(); it does nothing at all unless the answer changed,
+	// because setText() on a visible button is a relayout.
 	const Config cfg = ReplayCore::instance().getConfig();
 	QString signature;
 	int configured = 0;
@@ -2716,20 +2206,32 @@ void MultiReplayDock::refreshAngleRows()
 				 : QString()) +
 			     "\x1f";
 	}
+	signature += (channelBEnabled_ ? "B" : "-");
 	if (signature == angleRowSig_)
 		return;
 	angleRowSig_ = signature;
 
 	for (int ch = 0; ch < kChannels; ch++) {
+		// A hidden bay's row is gone, not held open (see
+		// applyChannelBVisibility).
+		const bool rowLives = ch == 0 || channelBEnabled_;
 		for (int i = 0; i < kNCams; i++) {
 			QPushButton *b = angleKeys_[ch][i];
 			if (!b)
 				continue;
-			// Every slot up to the last configured one stays, even if
-			// it is a hole: angle 3 is angle 3, and renumbering the
-			// keys because slot 2 is empty would change what the
-			// operator's fingers mean.
-			const bool show = i < configured;
+			// ONLY THE CONFIGURED CAMERAS ARE DRAWN, and the rest of
+			// the matrix is EMPTY SPACE. A key that does nothing is a
+			// key the eye has to rule out every time it reads the
+			// row; its PLACE, on the other hand, has to stay, or
+			// angle 5 moves the day a camera is added to slot 3 and
+			// the operator's fingers have to learn the row again
+			// mid-match.
+			const bool show = rowLives && i < configured;
+			QSizePolicy sp = b->sizePolicy();
+			if (sp.retainSizeWhenHidden() != rowLives) {
+				sp.setRetainSizeWhenHidden(rowLives);
+				b->setSizePolicy(sp);
+			}
 			b->setVisible(show);
 			if (!show)
 				continue;
@@ -2738,23 +2240,24 @@ void MultiReplayDock::refreshAngleRows()
 						     ? QString::number(i + 1)
 						     : QString::fromStdString(nm);
 			// Elided INTO the key, so a long name cannot stretch the
-			// row. Measured against the key's REAL width once it has
-			// one: the stylesheet has its own padding and min-width,
-			// so eliding against our constant left Qt to elide the
-			// result a second time and the operator read "Ca…" where
-			// "Cam1" fitted.
+			// row. Measured against the key's REAL width: the style
+			// sheet has its own padding, so eliding against our
+			// constant left Qt to elide the result a second time and
+			// the operator read "Ca..." where "Cam1" fitted.
 			const int avail =
-				(b->width() > 8 ? b->width() : kAngleKeyWidth) - 8;
+				(b->width() > 8 ? b->width() : kAngleKeyWidth) - 6;
 			const QFontMetrics fm(b->font());
 			b->setText(fm.elidedText(full, Qt::ElideRight, avail));
-			b->setToolTip(QString("%1 %2 — %3 (%4)")
+			b->setToolTip(QString("%1 %2 - %3 (%4)")
 					      .arg(obs_module_text("Dock.Angle"))
 					      .arg(i + 1)
 					      .arg(full)
 					      .arg(channelLetter((Which)ch)));
-			b->setEnabled(!cfg.cameras[i].sourceName.empty());
+			b->setEnabled(true);
 		}
 	}
+	if (angleBlock_)
+		angleBlock_->refresh();
 	obs_log(LOG_INFO, "[dock] angle keys: %d configured camera(s) shown",
 		configured);
 }
@@ -2763,19 +2266,32 @@ void MultiReplayDock::refreshAngleRows()
 // Transport — the reference controller's centre group: ⏸ ◀ ↺ [Play Events ▾] NOW ⏮ ⏭ Loop ♫
 // ---------------------------------------------------------------------------
 
-QWidget *MultiReplayDock::buildTransport()
+KeyBlock *MultiReplayDock::buildTransport()
 {
-	auto *box = new QWidget(this);
-	// Two lines, as on the reference panel: the keys, and the big timecode centred
-	// underneath them.
-	auto *col = new QVBoxLayout(box);
-	col->setContentsMargins(0, 0, 0, 0);
-	col->setSpacing(1);
-	auto *tr = new QHBoxLayout();
-	tr->setContentsMargins(0, 0, 0, 0);
-	// One spacing for the whole row. Mixed gaps (3 here, 6 there) read as
-	// groupings the keys do not actually have; the zone frames do the grouping.
-	tr->setSpacing(4);
+	// ONE ROW, in the reference panel's order:
+	//
+	//   play  reverse  last  [Riproduci eventi] menu  step-  step+  NOW
+	//   Loop  music  In output
+	//
+	// It was three rows of its own for a while, which made this section twice
+	// as tall as the ones beside it and pushed the whole strip down the panel.
+	// The reference keeps its transport on one line, and so does this.
+	auto *blk = new KeyBlock(obs_module_text("Dock.ZoneTransport"), this);
+
+	// THREE ROWS, ordered by what an operator reaches for first:
+	//
+	//   Riproduci eventi ▾   NOW      ← put a replay on air / come back to live
+	//   ⏸  ◀  ↺  ⏮  ⏭                 ← drive the clip that is on air
+	//   Loop  ♫  In output            ← the modes the two rows above run under
+	//
+	// One row of eleven keys made the two that matter most — play the events,
+	// and get back to the live edge — the same size and the same weight as a
+	// frame step, so the eye had to read the whole strip to find them. Rows
+	// give them a place: the top one is where the hand goes without looking.
+	//
+	// The grid is five columns wide, and the wide keys SPAN it, so every key
+	// stands on a column and the group reads as one block rather than three
+	// rows of unrelated lengths.
 
 	// ▶ U+25B6
 	playPauseBtn_ = transportBtn(QStringLiteral("▶"), this,
@@ -2921,22 +2437,23 @@ QWidget *MultiReplayDock::buildTransport()
 	// typed comment out of the config. Settings seeds the key at start-up; from
 	// then on the key is the live state and Settings is where the default lives.
 
-	tr->addWidget(playPauseBtn_);
-	tr->addWidget(revBtn);
-	tr->addWidget(lastBtn);
-	tr->addWidget(playSel);
-	tr->addWidget(more);
-	tr->addWidget(nowBtn_);
-	// The two frame keys sit side by side, in the order the timeline runs:
-	// the reference controller pairs them, and a step back two inches from the step forward is a
-	// key nobody finds under pressure.
-	tr->addWidget(stepBackBtn);
-	tr->addWidget(stepBtn);
-	tr->addSpacing(10); // the only deliberate gap: transport | modes
-	tr->addWidget(loopBtn_);
-	tr->addWidget(musicBtn_);
-	tr->addWidget(toOutputBtn_);
-	col->addLayout(tr);
+	// NOW IS A DESTINATION, not a modifier: it drops the replay and puts the
+	// operator back on the live edge, which during a match is the most
+	// consequential key on this panel after REC. It is given a width of its
+	// own and, in the style sheet, the red of the thing it does - at rest as
+	// well as when it is lit.
+	nowBtn_->setMinimumWidth(56);
+	more->setFixedSize(24, kKeyH);
+	for (QPushButton *b : {playPauseBtn_, revBtn, lastBtn, stepBackBtn,
+			       stepBtn, nowBtn_, loopBtn_, musicBtn_,
+			       toOutputBtn_})
+		b->setFixedHeight(kKeyH);
+	playSel->setFixedHeight(kKeyH);
+	blk->setShapes({{Cell(playPauseBtn_), Cell(revBtn), Cell(lastBtn),
+			 Cell(playSel), Cell(more), Cell(stepBackBtn),
+			 Cell(stepBtn), Cell(nowBtn_), Cell(loopBtn_),
+			 Cell(musicBtn_), Cell(toOutputBtn_)}},
+		       {});
 
 	// There WAS a big "position / length" readout under these keys. It is gone:
 	// the position bar prints the same two numbers on itself (setOverlayText),
@@ -2970,7 +2487,7 @@ QWidget *MultiReplayDock::buildTransport()
 		ReplayCore::instance().setFollowLive(true);
 	});
 
-	return box;
+	return blk;
 }
 
 // ---------------------------------------------------------------------------
@@ -2991,334 +2508,38 @@ QWidget *MultiReplayDock::buildBottomBar()
 	// is what absorbs a short dock.
 	box->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Minimum);
 
-	// ── Row 1: mark keys · angle row · clip actions ───────────────────
-	{
-		// the reference controller's "Export Clips", in the reference controller's corner.
-		auto *exp = compactBtn(obs_module_text("Dock.ExportClips"), this);
-		connect(exp, &QPushButton::clicked, this, [this]() {
-			auto ids = selectedEventIds();
-			if (ids.empty())
-				return;
-			QString folder = QFileDialog::getExistingDirectory(
-				this, obs_module_text("Dock.ExportFolder"));
-			if (folder.isEmpty())
-				return;
-			std::string err;
-			for (int id : ids)
-				ExportManager::instance().exportEvent(
-					id, 0, folder.toStdString(), err);
-		});
-
-
-		// ...and the whole selection as ONE file: the highlights reel.
-		// Same events, same order, same angles, same speeds — one clip
-		// after another, with the operator's music over it if the ♫ key
-		// is down. The music key doubles as the choice here rather than
-		// asking in a dialog: it is already the panel's answer to "do I
-		// want music with my replays".
-		auto *reel = compactBtn(obs_module_text("Dock.ExportReel"), this);
-		reel->setToolTip(obs_module_text("Dock.ExportReelHint"));
-		connect(reel, &QPushButton::clicked, this, [this]() {
-			auto ids = selectedEventIds();
-			if (ids.empty()) {
-				showNotice(obs_module_text("Dock.SelectToReorder"));
-				return;
-			}
-			QString folder = QFileDialog::getExistingDirectory(
-				this, obs_module_text("Dock.ExportFolder"));
-			if (folder.isEmpty())
-				return;
-			const bool music = musicBtn_ && musicBtn_->isChecked();
-			std::string err;
-			if (!ExportManager::instance().exportSequence(
-				    ids, music, folder.toStdString(), err))
-				showNotice(QString::fromStdString(err));
-			else
-				showNotice(obs_module_text("Dock.ExportReelStarted"));
-		});
-
-
-		// The running order is the operator's. the reference controller sorts by time or by
-		// the order marks were taken; neither is the order a highlights
-		// reel goes out in, and the only way to get that one is by hand.
-		// Two keys rather than drag-and-drop: a drag inside a table whose
-		// cells are all editable is a click away from starting an edit
-		// instead, and during a match that is the wrong thing to risk.
-		// Order keys and the ⋯ menu act on the same thing (the selected
-		// rows), so they wrap together or not at all.
-		auto *orderBox = new QWidget(this);
-		auto *ob = new QHBoxLayout(orderBox);
-		ob->setContentsMargins(0, 0, 0, 0);
-		ob->setSpacing(3);
-		for (const auto &mv : {std::pair<const char *, int>{"▲", -1},
-				       std::pair<const char *, int>{"▼", +1}}) {
-			const int delta = mv.second;
-			auto *b = transportBtn(QString::fromUtf8(mv.first), orderBox,
-					       obs_module_text(delta < 0
-								       ? "Dock.MoveUp"
-								       : "Dock.MoveDown"));
-			connect(b, &QPushButton::clicked, this,
-				[this, delta]() { moveSelectedEvent(delta); });
-			ob->addWidget(b);
-		}
-
-		// the reference controller keeps the clip-editing keys on the left of this row and the
-		// EXPORTS at its far right, with nothing but air between them: one
-		// is what the operator does during the match, the other what he
-		// does after it, and mixing the two is how a reel gets started in
-		// the middle of the second half.
-		// Duplicate / delete / delete-all have no place of their own on the
-		// reference panel (they live in its context menu), and four more buttons
-		// on this row would be four more things to read past. They are here,
-		// one click away, and on the table's right-click menu as well.
-		auto *edit = new QToolButton(orderBox);
-		edit->setObjectName("mrGear");
-		edit->setText(QStringLiteral("⋯"));
-		edit->setToolButtonStyle(Qt::ToolButtonTextOnly);
-		edit->setCursor(Qt::PointingHandCursor);
-		edit->setToolTip(obs_module_text("Dock.ClipActions"));
-		edit->setPopupMode(QToolButton::InstantPopup);
-		{
-			auto *menu = new QMenu(edit);
-			auto *actDup =
-				menu->addAction(obs_module_text("Dock.Duplicate"));
-			auto *actDel =
-				menu->addAction(obs_module_text("Dock.Delete"));
-			menu->addSeparator();
-			auto *actAll =
-				menu->addAction(obs_module_text("Dock.DeleteAll"));
-			edit->setMenu(menu);
-			connect(actDup, &QAction::triggered, this, [this]() {
-				for (int id : selectedEventIds())
-					EventStore::instance().duplicate(id);
-				refreshEvents();
-			});
-			connect(actDel, &QAction::triggered, this, [this]() {
-				for (int id : selectedEventIds())
-					EventStore::instance().remove(id);
-				refreshEvents();
-			});
-			connect(actAll, &QAction::triggered, this, [this]() {
-				if (QMessageBox::question(
-					    this, "obs-multireplay",
-					    obs_module_text(
-						    "Dock.DeleteAllConfirm"),
-					    QMessageBox::Yes | QMessageBox::No,
-					    QMessageBox::No) != QMessageBox::Yes)
-					return;
-				pc().stopEvents();
-				EventStore::instance().clearAll();
-			});
-		}
-		ob->addWidget(edit);
-
-		// the reference controller keeps the clip keys on the left of this row and the EXPORTS
-		// at its far right, with nothing but air between them: one is what
-		// the operator does during the match and the other what he does
-		// after it, and a reel is not something to start by accident in the
-		// middle of the second half. On a narrow panel that air is the first
-		// thing to go — the exports wrap onto their own line rather than the
-		// keys losing their labels.
-		auto *exportBox = new QWidget(this);
-		auto *eb = new QHBoxLayout(exportBox);
-		eb->setContentsMargins(0, 0, 0, 0);
-		eb->setSpacing(3);
-		exp->setParent(exportBox);
-		reel->setParent(exportBox);
-		eb->addWidget(exp);
-		eb->addWidget(reel);
-
-		v->addWidget(flowBand(box, {buildMarkers(), buildAngleMatrix(),
-					    orderBox, exportBox}));
-	}
-
-	// ── Row 2: ⚙ · REC · clock  |  transport  |  slow-motion speed ────
-	// Three ZONES, each captioned and framed (see zoneBox): as one long row of
-	// keys this read as a single undifferentiated field, and none of the three
-	// groups had a name the operator could use.
-	{
-		// The recording group gets its own container so the zone frame has
-		// something to wrap.
-		auto *recZone = new QWidget(this);
-		auto *rh = new QHBoxLayout(recZone);
-		rh->setContentsMargins(0, 0, 0, 0);
-		rh->setSpacing(4);
-
-		auto *gear = new QToolButton(this);
-		gear->setObjectName("mrGear");
-		gear->setText(QStringLiteral("⚙"));
-		gear->setToolButtonStyle(Qt::ToolButtonTextOnly);
-		gear->setCursor(Qt::PointingHandCursor);
-		gear->setToolTip(obs_module_text("Dock.Settings"));
-		gear->setPopupMode(QToolButton::InstantPopup);
-		{
-			auto *menu = new QMenu(gear);
-			auto *actNew =
-				menu->addAction(obs_module_text("Dock.NewProject"));
-			auto *actOpen = menu->addAction(
-				obs_module_text("Dock.OpenProject"));
-			menu->addSeparator();
-			auto *actSettings =
-				menu->addAction(obs_module_text("Dock.Settings"));
-			auto *actRename =
-				menu->addAction(obs_module_text("Dock.RenameList"));
-			// TAGS: the words this operator marks with. They are the
-			// same list the per-angle comment cell offers, and they are
-			// worth carrying between machines — a club's vocabulary
-			// ("Gol", "Fallo", "Rigore") is written once, not once per
-			// laptop. One line per tag, which is a format anybody can
-			// edit without this plugin.
-			auto *tags = menu->addMenu(obs_module_text("Dock.Tags"));
-			auto *actTagsImport =
-				tags->addAction(obs_module_text("Dock.TagsImport"));
-			auto *actTagsExport =
-				tags->addAction(obs_module_text("Dock.TagsExport"));
-			menu->addSeparator();
-			auto *actChapters = menu->addAction(
-				obs_module_text("Dock.YouTubeChapters"));
-			gear->setMenu(menu);
-			connect(actTagsImport, &QAction::triggered, this,
-				[this]() { importTags(); });
-			connect(actTagsExport, &QAction::triggered, this,
-				[this]() { exportTags(); });
-			connect(actRename, &QAction::triggered, this,
-				&MultiReplayDock::renameListDialog);
-			connect(actNew, &QAction::triggered, this,
-				&MultiReplayDock::newProjectDialog);
-			connect(actOpen, &QAction::triggered, this,
-				&MultiReplayDock::openProjectDialog);
-			connect(actSettings, &QAction::triggered, this,
-				&MultiReplayDock::openSettings);
-			connect(actChapters, &QAction::triggered, this,
-				&MultiReplayDock::copyYouTubeChapters);
-		}
-		rh->addWidget(gear);
-
-		recBtn_ = new QPushButton(QStringLiteral("●  REC"), this);
-		recBtn_->setObjectName("mrRec");
-		recBtn_->setProperty("recording", false);
-		recBtn_->setMinimumWidth(84);
-		recBtn_->setCursor(Qt::PointingHandCursor);
-		connect(recBtn_, &QPushButton::clicked, this, [this]() {
-			auto &core = ReplayCore::instance();
-			if (core.isRecording()) {
-				core.stopRecording();
-			} else {
-				// Stop any event playing BEFORE arming: a new take
-				// must not start while a clip is still being paced
-				// into the replay input.
-				pc().stopEvents();
-				std::string err;
-				if (!core.startRecording(err))
-					QMessageBox::warning(
-						this, "obs-multireplay",
-						QString::fromStdString(err));
-			}
-			poll();
-		});
-		rh->addWidget(recBtn_);
-
-		// M4: the health badge lives next to the record key because that
-		// is where the eye already goes when a take starts, and because
-		// what it reports is always about the take. Hidden unless there
-		// is something to say (see poll()).
-		healthBtn_ = new QPushButton(this);
-		healthBtn_->setObjectName("mrHealth");
-		healthBtn_->setCursor(Qt::PointingHandCursor);
-		healthBtn_->setFlat(true);
-		healthBtn_->hide();
-		connect(healthBtn_, &QPushButton::clicked, this,
-			&MultiReplayDock::showHealthDetails);
-		rh->addWidget(healthBtn_);
-
-		// the reference controller stacks the wall clock over the remaining recording time,
-		// right of the record key, in red. Same two lines, same place.
-		auto *clockBox = new QWidget(this);
-		auto *cv = new QVBoxLayout(clockBox);
-		cv->setContentsMargins(2, 0, 2, 0);
-		cv->setSpacing(0);
-		clockLbl_ = new QLabel(clockBox);
-		clockLbl_->setObjectName("mrClock");
-		clockLbl_->setFont(QFont(monoFamily()));
-		statusLbl_ = new QLabel(clockBox);
-		statusLbl_->setObjectName("mrMuted");
-		// FIXED WIDTH, both of them, and it is not cosmetic. These two
-		// change four times a second and their text changes LENGTH with it
-		// ("02:15:00 rimanenti" → "v1.0.0 • Idle"). This box sits in a
-		// QHBoxLayout inside a FlowLayout band, so a width change re-flows
-		// the band, which changes the band's heightForWidth, which makes
-		// the panel redistribute height — and the widgets that give it up
-		// are the previews above, whose resize re-allocates a D3D swap
-		// chain on the graphics thread. A label that cannot change width
-		// cannot start that chain.
-		const int kClockW =
-			clockLbl_->fontMetrics().horizontalAdvance(
-				QStringLiteral("0000-00-00 00:00:00")) +
-			8;
-		clockLbl_->setFixedWidth(kClockW);
-		statusLbl_->setFixedWidth(kClockW);
-		cv->addWidget(clockLbl_);
-		cv->addWidget(statusLbl_);
-		rh->addWidget(clockBox);
-
-		// The speed dial is BUILT here and PLACED in its own zone below the
-		// preset keys. Built first because the zone adds it to a layout,
-		// and a widget cannot be added before it exists.
-		buildSpeedDial();
-
-		QWidget *recZoneBox =
-			zoneBox(obs_module_text("Dock.ZoneRec"), recZone, this);
-		QWidget *transportZoneBox = zoneBox(
-			obs_module_text("Dock.ZoneTransport"), buildTransport(), this);
-
-		// Slow-motion presets, the reference controller's set (25/33/50/75/100) plus the 2×
-		// that is its fast forward — the engine takes any speed, since a
-		// speed is only the spacing between frames. The DIAL goes directly
-		// underneath them, in its own row: the presets and the dial are one
-		// control with two resolutions, and putting the dial anywhere else
-		// makes the operator look in two places to answer one question.
-		auto *speedBox = new QWidget(this);
-		auto *sv = new QVBoxLayout(speedBox);
-		sv->setContentsMargins(0, 0, 0, 0);
-		sv->setSpacing(2);
-		auto *chipRow = new QHBoxLayout();
-		chipRow->setContentsMargins(0, 0, 0, 0);
-		chipRow->setSpacing(3);
-
-		speedChips_ = new QButtonGroup(this);
-		speedChips_->setExclusive(false);
-		const std::pair<int, const char *> speedPresets[] = {
-			{25, "25%"},  {33, "33%"},  {50, "50%"},
-			{75, "75%"},  {100, "100%"}, {200, "2\xc3\x97"}};
-		for (const auto &[pct, lbl] : speedPresets) {
-			int p = pct; // copy: capturing a structured binding is
-				     // non-portable
-			auto *b = compactBtn(QString::fromUtf8(lbl), speedBox,
-					     "mrSpeedChip");
-			speedChips_->addButton(b, p);
-			connect(b, &QPushButton::clicked, this, [this, p]() {
-				QSignalBlocker block(speed_);
-				speed_->setValue(p);
-				speedLbl_->setText(QString::asprintf(
-					"%.2f\xc3\x97", p / 100.0));
-				applyReplaySpeed(p);
-			});
-			chipRow->addWidget(b);
-		}
-		sv->addLayout(chipRow);
-
-		auto *dialRow = new QHBoxLayout();
-		dialRow->setContentsMargins(0, 0, 0, 0);
-		dialRow->setSpacing(4);
-		dialRow->addWidget(speed_, 1);
-		dialRow->addWidget(speedLbl_, 0);
-		sv->addLayout(dialRow);
-
-		v->addWidget(flowBand(
-			box, {recZoneBox, transportZoneBox,
-			      zoneBox(obs_module_text("Dock.ZoneSpeed"), speedBox,
-				      this)}));
-	}
+	// -- THE CONTROL STRIP --------------------------------------------
+	// Two macro-rows, as on the reference panel:
+	//
+	//   MARK           A|B A B  [A 1..8 / B 1..8]  swap        EXPORT
+	//   REC            play rev last [Riproduci eventi] step NOW   VELOCITA
+	//
+	// The first line is what you do to the footage, the second is the take
+	// and the transport. Justification puts the first section of a line at
+	// the left and the last at the right, which is what keeps REC in one
+	// corner, the playback keys in the middle and the speed in the other.
+	//
+	// Every section declares that wide arrangement AND a compact fold of the
+	// same keys; the strip wears the wide one whenever the dock is wide
+	// enough to carry it and folds otherwise (dock-layout.hpp). Nothing is
+	// ever clipped and nothing is ever hidden.
+	//
+	// addStrip(), not addWidget(): the strip tells its parent two different
+	// heights - the one it can live with and the one it would like - and
+	// only a layout item of its own can carry both. Added as a plain widget
+	// its floor becomes its preference, which is what pinned the panel at
+	// 680 px and made it look unresizable.
+	// The rank is the order when the strip FOLDS on a narrow dock: what an
+	// operator reaches for through a whole match comes first, and the
+	// exports - which nobody touches while the ball is in play - come last.
+	strip_ = new ControlStrip(box);
+	strip_->addBlock(buildMarkers(), false, 1);
+	strip_->addBlock(buildAngleMatrix(), false, 2);
+	strip_->addBlock(buildExportBlock(), false, 5);
+	strip_->addBlock(buildRecBlock(), /*startsLine*/ true, 0);
+	strip_->addBlock(buildTransport(), false, 3);
+	strip_->addBlock(buildSpeedBlock(), false, 4);
+	addStrip(v, strip_);
 
 	// ── Row 3: the green ON-AIR band, and the key that skips past it ──
 	// What is playing, on which angle, how much is left, at what speed —
@@ -3372,51 +2593,10 @@ QWidget *MultiReplayDock::buildBottomBar()
 		v->addLayout(h);
 	}
 
-	// The keys that used to sit beside the green band, in the rows where
-	// they belong (the reference controller's own arrangement, see reference-gui/GUI.png).
-	{
-		auto *h = new QHBoxLayout();
-		h->setContentsMargins(0, 0, 0, 0);
-		h->setSpacing(3);
-
-		// the reference controller's channel selector, right where the reference controller puts it: A|B / A / B,
-		// then the swap. It says where the transport keys, the marks and
-		// the play buttons go — not what is on air, which is whatever the
-		// operator's scenes are showing.
-		chanSel_ = new QButtonGroup(this);
-		chanSel_->setExclusive(true);
-		const std::pair<const char *, int> chanChoices[] = {
-			{"A|B", 2}, {"A", 0}, {"B", 1}};
-		for (const auto &[label, code] : chanChoices) {
-			auto *b = new QPushButton(QString::fromUtf8(label), this);
-			b->setObjectName("mrChanSel");
-			b->setCheckable(true);
-			b->setChecked(code == 0); // A, as it has always been
-			b->setMinimumWidth(30);
-			b->setCursor(Qt::PointingHandCursor);
-			chanSel_->addButton(b, code);
-			h->addWidget(b, 0);
-		}
-		connect(chanSel_, &QButtonGroup::idClicked, this, [this](int code) {
-			setActiveChannel(code == 1 ? Which::B : Which::A,
-					 code == 2);
-		});
-
-		swapBtn_ = new QPushButton(QStringLiteral("⇄"), this);
-		swapBtn_->setObjectName("mrChanSel");
-		swapBtn_->setToolTip(obs_module_text("Dock.SwapChannels"));
-		swapBtn_->setMinimumWidth(28);
-		swapBtn_->setCursor(Qt::PointingHandCursor);
-		connect(swapBtn_, &QPushButton::clicked, this,
-			&MultiReplayDock::swapChannels);
-		h->addWidget(swapBtn_, 0);
-
-		h->addStretch(1);
-		// This row is read left to right as "which channel, then what to
-		// do to it", so it ends where the operator's eye is going next:
-		// the bar underneath.
-		v->insertLayout(v->count() - 1, h);
-	}
+	// (The channel selector A|B / A / B and the swap key used to be a row of
+	// their own here, under the green band. They are part of the camera
+	// matrix now — see buildChannelRow: they say which bay the angle keys
+	// drive, and that question belongs beside the keys it is about.)
 
 	// ── Row 4: the position bar over the whole recorded timeline ──────
 	// Graduated, and the widest thing on the panel: it is the only control
@@ -3481,21 +2661,328 @@ QWidget *MultiReplayDock::buildBottomBar()
 	return box;
 }
 
+
+// ---------------------------------------------------------------------------
+// REC - the take: settings, the record key, the clock
+// ---------------------------------------------------------------------------
+
+KeyBlock *MultiReplayDock::buildRecBlock()
+{
+	auto *blk = new KeyBlock(obs_module_text("Dock.ZoneRec"), this);
+
+	auto *gear = new QToolButton(this);
+	gear->setObjectName("mrGear");
+	gear->setText(QStringLiteral("\u2699"));
+	gear->setToolButtonStyle(Qt::ToolButtonTextOnly);
+	gear->setCursor(Qt::PointingHandCursor);
+	gear->setToolTip(obs_module_text("Dock.Settings"));
+	gear->setPopupMode(QToolButton::InstantPopup);
+	gear->setFixedHeight(kKeyH);
+	{
+		auto *menu = new QMenu(gear);
+		auto *actNew = menu->addAction(obs_module_text("Dock.NewProject"));
+		auto *actOpen = menu->addAction(obs_module_text("Dock.OpenProject"));
+		menu->addSeparator();
+		auto *actSettings = menu->addAction(obs_module_text("Dock.Settings"));
+		auto *actRename = menu->addAction(obs_module_text("Dock.RenameList"));
+		// TAGS: the words this operator marks with. Worth carrying
+		// between machines - a club's vocabulary is written once, not
+		// once per laptop.
+		auto *tags = menu->addMenu(obs_module_text("Dock.Tags"));
+		auto *actTagsImport = tags->addAction(obs_module_text("Dock.TagsImport"));
+		auto *actTagsExport = tags->addAction(obs_module_text("Dock.TagsExport"));
+		menu->addSeparator();
+		auto *actChapters =
+			menu->addAction(obs_module_text("Dock.YouTubeChapters"));
+		gear->setMenu(menu);
+		connect(actTagsImport, &QAction::triggered, this,
+			[this]() { importTags(); });
+		connect(actTagsExport, &QAction::triggered, this,
+			[this]() { exportTags(); });
+		connect(actRename, &QAction::triggered, this,
+			&MultiReplayDock::renameListDialog);
+		connect(actNew, &QAction::triggered, this,
+			&MultiReplayDock::newProjectDialog);
+		connect(actOpen, &QAction::triggered, this,
+			&MultiReplayDock::openProjectDialog);
+		connect(actSettings, &QAction::triggered, this,
+			&MultiReplayDock::openSettings);
+		connect(actChapters, &QAction::triggered, this,
+			&MultiReplayDock::copyYouTubeChapters);
+	}
+
+	recBtn_ = new QPushButton(QStringLiteral("\u25cf  REC"), this);
+	recBtn_->setObjectName("mrRec");
+	recBtn_->setProperty("recording", false);
+	recBtn_->setMinimumWidth(84);
+	recBtn_->setFixedHeight(kKeyH);
+	recBtn_->setCursor(Qt::PointingHandCursor);
+	connect(recBtn_, &QPushButton::clicked, this, [this]() {
+		auto &core = ReplayCore::instance();
+		if (core.isRecording()) {
+			core.stopRecording();
+		} else {
+			// Stop any event playing BEFORE arming: a new take must
+			// not start while a clip is still being paced into the
+			// replay input.
+			pc().stopEvents();
+			std::string err;
+			if (!core.startRecording(err))
+				QMessageBox::warning(this, "obs-multireplay",
+						     QString::fromStdString(err));
+		}
+		poll();
+	});
+
+	// M4: the health badge lives next to the record key because that is
+	// where the eye already goes when a take starts, and because what it
+	// reports is always about the take. Hidden unless there is something to
+	// say (see poll()).
+	healthBtn_ = new QPushButton(this);
+	healthBtn_->setObjectName("mrHealth");
+	healthBtn_->setCursor(Qt::PointingHandCursor);
+	healthBtn_->setFlat(true);
+	healthBtn_->setFixedHeight(kKeyH);
+	healthBtn_->hide();
+	connect(healthBtn_, &QPushButton::clicked, this,
+		&MultiReplayDock::showHealthDetails);
+
+	// The reference panel stacks the wall clock over the remaining recording
+	// time, right of the record key, in red. Same two lines, same place -
+	// and inside one widget, so the section stays one key-row tall.
+	auto *clockBox = new QWidget(this);
+	auto *cv = new QVBoxLayout(clockBox);
+	cv->setContentsMargins(2, 0, 0, 0);
+	cv->setSpacing(0);
+	clockLbl_ = new QLabel(clockBox);
+	clockLbl_->setObjectName("mrClock");
+	clockLbl_->setFont(QFont(monoFamily()));
+	statusLbl_ = new QLabel(clockBox);
+	statusLbl_->setObjectName("mrMuted");
+	// FIXED WIDTH, both of them, and it is not cosmetic. These two change
+	// four times a second and their text changes LENGTH with it. A width
+	// change re-flows the strip, which changes its height, which makes the
+	// panel redistribute height - and the widgets that give it up are the
+	// previews, whose resize re-allocates a D3D swap chain on the graphics
+	// thread. A label that cannot change width cannot start that chain.
+	const int kClockW = clockLbl_->fontMetrics().horizontalAdvance(
+				    QStringLiteral("0000-00-00 00:00:00")) +
+			    8;
+	clockLbl_->setFixedWidth(kClockW);
+	statusLbl_->setFixedWidth(kClockW);
+	cv->addWidget(clockLbl_);
+	cv->addWidget(statusLbl_);
+	clockBox->setFixedHeight(kKeyH);
+
+	blk->setShapes({{Cell(gear), Cell(recBtn_), Cell(healthBtn_),
+			 Cell(clockBox, 1, false)}},
+		       {{Cell(gear), Cell(recBtn_, 2), Cell(healthBtn_)},
+			{Cell(clockBox, 4, false)}});
+	return blk;
+}
+
+// ---------------------------------------------------------------------------
+// VELOCITA - the presets and the dial
+// ---------------------------------------------------------------------------
+
+KeyBlock *MultiReplayDock::buildSpeedBlock()
+{
+	// The dial is BUILT first because the shapes place it, and a widget
+	// cannot be placed before it exists.
+	buildSpeedDial();
+
+	auto *blk = new KeyBlock(obs_module_text("Dock.ZoneSpeed"), this);
+	QList<QPushButton *> chips;
+	speedChips_ = new QButtonGroup(this);
+	speedChips_->setExclusive(false);
+	// The reference set (25/33/50/75/100) plus the 2x that is its fast
+	// forward - the engine takes any speed, since a speed is only the
+	// spacing between frames.
+	const std::pair<int, const char *> speedPresets[] = {
+		{25, "25%"}, {33, "33%"},   {50, "50%"},
+		{75, "75%"}, {100, "100%"}, {200, "2\xc3\x97"}};
+	for (const auto &[pct, lbl] : speedPresets) {
+		int p = pct; // copy: capturing a structured binding is
+			     // non-portable
+		auto *b = compactBtn(QString::fromUtf8(lbl), this, "mrSpeedChip");
+		speedChips_->addButton(b, p);
+		connect(b, &QPushButton::clicked, this, [this, p]() {
+			QSignalBlocker block(speed_);
+			speed_->setValue(p);
+			speedLbl_->setText(
+				QString::asprintf("%.2f\xc3\x97", p / 100.0));
+			applyReplaySpeed(p);
+		});
+		b->setFixedHeight(kKeyH);
+		chips << b;
+	}
+	// ONE WIDTH for the six of them: "2x" is two characters and "100%" is
+	// four, so left to their labels they came out a ragged row of six
+	// different keys - six sizes for six values of one setting, with the
+	// widest reading as the most important.
+	equaliseKeyWidths(chips);
+
+	speed_->setMinimumWidth(110);
+	speed_->setFixedHeight(kKeyH);
+
+	// THE DIAL SITS UNDER THE PRESETS, in both arrangements: they are one
+	// control at two resolutions, and side by side the dial is a strip of
+	// nothing between two groups of keys.
+	blk->setShapes({{Cell(chips[0]), Cell(chips[1]), Cell(chips[2]),
+			 Cell(chips[3]), Cell(chips[4]), Cell(chips[5])},
+			{Cell(speed_, 5), Cell(speedLbl_, 1, false)}},
+		       {{Cell(chips[0]), Cell(chips[1]), Cell(chips[2])},
+			{Cell(chips[3]), Cell(chips[4]), Cell(chips[5])},
+			{Cell(speed_, 2), Cell(speedLbl_, 1, false)}});
+	return blk;
+}
+
+// ---------------------------------------------------------------------------
+// EXPORT - what is done with the clips once they are marked
+// ---------------------------------------------------------------------------
+
+KeyBlock *MultiReplayDock::buildExportBlock()
+{
+	auto *blk = new KeyBlock(obs_module_text("Dock.ZoneClips"), this);
+
+	// The running order is the operator's. Two keys rather than
+	// drag-and-drop: a drag inside a table whose cells are all editable is a
+	// click away from starting an edit instead, and during a match that is
+	// the wrong thing to risk.
+	int orderKeyW = 0;
+	QVector<QPushButton *> order;
+	for (const auto &mv : {std::pair<const char *, int>{"\u25b2", -1},
+			       std::pair<const char *, int>{"\u25bc", +1}}) {
+		const int delta = mv.second;
+		auto *b = transportBtn(QString::fromUtf8(mv.first), this,
+				       obs_module_text(delta < 0 ? "Dock.MoveUp"
+								 : "Dock.MoveDown"));
+		connect(b, &QPushButton::clicked, this,
+			[this, delta]() { moveSelectedEvent(delta); });
+		b->ensurePolished();
+		b->setFixedHeight(kKeyH);
+		b->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
+		orderKeyW = std::max(orderKeyW, b->sizeHint().width());
+		order << b;
+	}
+
+	// Duplicate / delete / delete-all have no place of their own on the
+	// reference panel (they live in its context menu), and three more
+	// buttons here would be three more things to read past. They are one
+	// click away, and on the table's right-click menu as well.
+	auto *edit = new QToolButton(this);
+	edit->setObjectName("mrGear");
+	edit->setText(QStringLiteral("\u22ef"));
+	edit->setToolButtonStyle(Qt::ToolButtonTextOnly);
+	edit->setCursor(Qt::PointingHandCursor);
+	edit->setToolTip(obs_module_text("Dock.ClipActions"));
+	edit->setPopupMode(QToolButton::InstantPopup);
+	{
+		auto *menu = new QMenu(edit);
+		auto *actDup = menu->addAction(obs_module_text("Dock.Duplicate"));
+		auto *actDel = menu->addAction(obs_module_text("Dock.Delete"));
+		menu->addSeparator();
+		auto *actAll = menu->addAction(obs_module_text("Dock.DeleteAll"));
+		edit->setMenu(menu);
+		connect(actDup, &QAction::triggered, this, [this]() {
+			for (int id : selectedEventIds())
+				EventStore::instance().duplicate(id);
+			refreshEvents();
+		});
+		connect(actDel, &QAction::triggered, this, [this]() {
+			for (int id : selectedEventIds())
+				EventStore::instance().remove(id);
+			refreshEvents();
+		});
+		connect(actAll, &QAction::triggered, this, [this]() {
+			if (QMessageBox::question(
+				    this, "obs-multireplay",
+				    obs_module_text("Dock.DeleteAllConfirm"),
+				    QMessageBox::Yes | QMessageBox::No,
+				    QMessageBox::No) != QMessageBox::Yes)
+				return;
+			pc().stopEvents();
+			EventStore::instance().clearAll();
+		});
+	}
+	// A tool button sizes itself around its glyph plus a menu arrow, so left
+	// alone it comes out narrower and shorter than the keys it stands with.
+	edit->setFixedHeight(kKeyH);
+	edit->setMinimumWidth(orderKeyW);
+	edit->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
+
+	auto *exp = compactBtn(obs_module_text("Dock.ExportClips"), this);
+	connect(exp, &QPushButton::clicked, this, [this]() {
+		auto ids = selectedEventIds();
+		if (ids.empty())
+			return;
+		QString folder = QFileDialog::getExistingDirectory(
+			this, obs_module_text("Dock.ExportFolder"));
+		if (folder.isEmpty())
+			return;
+		std::string err;
+		for (int id : ids)
+			ExportManager::instance().exportEvent(
+				id, 0, folder.toStdString(), err);
+	});
+
+	// ...and the whole selection as ONE file: the highlights reel. Same
+	// events, same order, same angles, same speeds - one clip after another,
+	// with the operator's music over it if the music key is down.
+	auto *reel = compactBtn(obs_module_text("Dock.ExportReel"), this);
+	reel->setToolTip(obs_module_text("Dock.ExportReelHint"));
+	connect(reel, &QPushButton::clicked, this, [this]() {
+		auto ids = selectedEventIds();
+		if (ids.empty()) {
+			showNotice(obs_module_text("Dock.SelectToReorder"));
+			return;
+		}
+		QString folder = QFileDialog::getExistingDirectory(
+			this, obs_module_text("Dock.ExportFolder"));
+		if (folder.isEmpty())
+			return;
+		const bool music = musicBtn_ && musicBtn_->isChecked();
+		std::string err;
+		if (!ExportManager::instance().exportSequence(
+			    ids, music, folder.toStdString(), err))
+			showNotice(QString::fromStdString(err));
+		else
+			showNotice(obs_module_text("Dock.ExportReelStarted"));
+	});
+	for (QPushButton *b : {exp, reel})
+		b->setFixedHeight(kKeyH);
+
+	blk->setShapes({{Cell(order[0]), Cell(order[1]), Cell(edit), Cell(exp),
+			 Cell(reel)}},
+		       // compact: the three small keys share the width of the two
+		       // wide ones, and nothing in the block is a hole
+		       {{Cell(order[0]), Cell(order[1]), Cell(edit)},
+			{Cell(exp, 3)},
+			{Cell(reel, 3)}});
+	return blk;
+}
+
 // ---------------------------------------------------------------------------
 // Markers: Live/Recorded + IN/OUT + presets
 // ---------------------------------------------------------------------------
 
-QWidget *MultiReplayDock::buildMarkers()
+KeyBlock *MultiReplayDock::buildMarkers()
 {
-	auto *box = new QWidget(this);
-	auto *h = new QHBoxLayout(box);
-	h->setContentsMargins(0, 0, 0, 0);
-	h->setSpacing(3);
-
-	// the reference controller labels this group "Mark" and then the keys are bare: In, Out,
-	// - 5, - 10, - 20. The caption carries the meaning, so the keys stay
-	// short enough to hit without reading.
-	h->addWidget(sectionLabel(obs_module_text("Dock.Mark"), box));
+	// THREE ROWS, and they are the three questions this group answers, in the
+	// order an operator asks them:
+	//
+	//   IN    OUT   Annulla      <- take a point / close it / throw it away
+	//   -5s   -10s  -20s         <- take the last N seconds whole
+	//   TRIM IN     TRIM OUT     <- move a point of the event already marked
+	//
+	// As one long row these eight keys were a strip with no internal
+	// structure: "-10s" and "OUT" are not the same kind of act, and putting
+	// them side by side said they were.
+	//
+	// SIX COLUMNS, not three, so that the row of two fills the section just as
+	// the rows of three do - on three columns the trim row left one empty cell
+	// in the corner, and the eye finds that hole every time it reads the block.
+	auto *blk = new KeyBlock(obs_module_text("Dock.Mark"), this);
 
 	auto *in = compactBtn(obs_module_text("Dock.MarkIn"), this, "mrAccent");
 	auto *out = compactBtn(obs_module_text("Dock.MarkOut"), this, "mrAccent");
@@ -3517,9 +3004,9 @@ QWidget *MultiReplayDock::buildMarkers()
 				obs_module_text("Dock.NoOpenEvent"));
 		refreshEvents();
 	});
-	h->addWidget(in);
-	h->addWidget(out);
 
+	QList<QPushButton *> keys{in, out};
+	QVector<QPushButton *> presets;
 	for (int sec : {5, 10, 20}) {
 		auto *b = compactBtn(QString("-%1s").arg(sec), this);
 		connect(b, &QPushButton::clicked, this, [this, sec]() {
@@ -3530,19 +3017,20 @@ QWidget *MultiReplayDock::buildMarkers()
 							 currentAngle1() - 1);
 			refreshEvents();
 		});
-		h->addWidget(b);
+		presets << b;
+		keys << b;
 	}
 
 	// Trim: move the SELECTED event's in or out point to where the position
-	// bar stands. A mark taken live is taken late by definition — the
-	// operator saw the action first — and until now the only way to fix one
-	// was to delete it and mark again from a scrub, which is two ways of
-	// saying the same thing and one of them loses the angles and the
-	// comments. Zoom the bar, put the playhead on the frame, press.
+	// bar stands. A mark taken live is taken late by definition - the operator
+	// saw the action first - and until now the only way to fix one was to
+	// delete it and mark again from a scrub, which is two ways of saying the
+	// same thing and one of them loses the angles and the comments. Zoom the
+	// bar, put the playhead on the frame, press.
 	//
 	// Frame nudges are hotkeys rather than four more keys on a full row (see
-	// registerDockHotkeys): a Stream Deck is where this kind of work
-	// actually happens, and the panel is already dense.
+	// registerDockHotkeys): a Stream Deck is where this kind of work actually
+	// happens, and the panel is already dense.
 	auto *trimIn = compactBtn(QStringLiteral("⇤IN"), this);
 	trimIn->setToolTip(obs_module_text("Dock.TrimInHint"));
 	connect(trimIn, &QPushButton::clicked, this,
@@ -3551,17 +3039,28 @@ QWidget *MultiReplayDock::buildMarkers()
 	trimOut->setToolTip(obs_module_text("Dock.TrimOutHint"));
 	connect(trimOut, &QPushButton::clicked, this,
 		[this]() { setSelectedPoint(false); });
-	h->addWidget(trimIn);
-	h->addWidget(trimOut);
+	keys << trimIn << trimOut;
 
+	// Cancel ends the FIRST row, beside the two keys it undoes, and it is the
+	// only key of this group in the danger colour. On the old single row it sat
+	// at the far end, five keys away from the thing it cancels.
 	auto *cancel = compactBtn(obs_module_text("Dock.Cancel"), this, "mrDanger");
 	connect(cancel, &QPushButton::clicked, this, [this]() {
 		EventStore::instance().markCancel();
 		refreshEvents();
 	});
-	h->addWidget(cancel);
+	keys << cancel;
 
-	return box;
+	// ONE ROW, in the reference panel's own order: take a point, close it,
+	// take the last N seconds whole, move a point, throw it away. The keys
+	// keep their natural widths - forcing them all to the widest ("Annulla")
+	// puts five short labels in five wide keys, and the row stops reading as
+	// a row of marks and starts reading as a form.
+	blk->setShapes({{Cell(in), Cell(out), Cell(presets[0]), Cell(presets[1]),
+			 Cell(presets[2]), Cell(trimIn), Cell(trimOut),
+			 Cell(cancel)}},
+		       {});
+	return blk;
 }
 
 // ---------------------------------------------------------------------------

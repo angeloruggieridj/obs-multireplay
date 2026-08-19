@@ -17,6 +17,8 @@ start.
 
 #pragma once
 
+#include "dock-layout.hpp"
+
 #include <obs.h>
 #include <util/platform.h>
 
@@ -530,9 +532,20 @@ private:
 	QWidget *buildToolbar();
 	QWidget *buildPreview();
 	QWidget *buildMultiview();
-	QWidget *buildMarkers();
-	QWidget *buildAngleMatrix();
-	QWidget *buildTransport();
+	// The six sections of the control strip, in the order they are added to
+	// it: REC | MARK | ANGOLI | RIPRODUZIONE | VELOCITA | EXPORT. Each one
+	// declares a tall shape and a flat one and lets ControlStrip decide (see
+	// dock-layout.hpp).
+	KeyBlock *buildRecBlock();
+	KeyBlock *buildMarkers();
+	KeyBlock *buildAngleMatrix();
+	KeyBlock *buildTransport();
+	KeyBlock *buildSpeedBlock();
+	KeyBlock *buildExportBlock();
+	ControlStrip *strip_ = nullptr;
+	// The camera section, kept because switching the second bay on or off
+	// changes how many rows it has and the strip has to be told.
+	KeyBlock *angleBlock_ = nullptr;
 	QWidget *buildEvents();
 	QWidget *buildBottomBar();
 
@@ -584,7 +597,6 @@ private:
 	QWidget *previewPane_ = nullptr;
 	// Applies the Monitors key to the pane and the rows inside it.
 	void applyMonitorsVisible(bool on);
-	QWidget *angleRowBox_[2] = {};       // the A row and the B row of camera keys
 	// THE JOIN between two clips of one sequence. The coordinator advances the
 	// queue on the finished callback, but the engine has not pushed a frame of
 	// the next clip yet — so for those few tens of milliseconds positionNs()
@@ -616,9 +628,23 @@ private:
 	// described only the ring — see the span assembly in poll().
 	int64_t takeAnchorNs_ = kNoInstant;
 
-	// Fixed, so a renamed camera cannot stretch the row and move every other
-	// key out from under the operator's fingers.
+	// The camera key at its full size — a renamed camera cannot stretch it,
+	// so the row never moves out from under the operator's fingers…
 	static constexpr int kAngleKeyWidth = 64;
+	// …and the size it will compress to when the dock is narrow. Eight fixed
+	// 64 px slots are 560 px this panel could never give back, which is what
+	// stopped the dock from being made narrower at all; with a floor instead,
+	// the matrix keeps all eight columns and simply draws them tighter. The
+	// name is re-elided at the width the key actually got (refreshAngleRows).
+	static constexpr int kAngleKeyMinWidth = 38;
+	// The bay selector and the swap: narrower than a camera key, because they
+	// carry one or two characters rather than a camera's name.
+	static constexpr int kChanKeyWidth = 38;
+	// The "A" / "B" prefix column. Fixed too, and for the same reason one
+	// step out: it is the lead-in of all three rows of the matrix (A, B, and
+	// the A|B / A / B selector under them), so the keys of the three rows
+	// stand on one set of columns.
+	static constexpr int kAngleLabelWidth = 12;
 	// 8 = kMaxCameras (replay-core.hpp, which this header does not include —
 	// the .cpp static_asserts the two agree).
 	QPushButton *angleKeys_[2][8] = {};
@@ -681,8 +707,16 @@ private:
 	void setActiveChannel(Which which, bool linked);
 	// the reference controller's ⇄: what A is playing goes to B and the other way round.
 	void swapChannels();
-	QButtonGroup *chanSel_ = nullptr;  // A|B / A / B
-	QPushButton *swapBtn_ = nullptr;   // ⇄
+	QButtonGroup *chanSel_ = nullptr; // A|B / A / B
+	QPushButton *swapBtn_ = nullptr;  // ⇄
+	// Everything that exists only because there is a second bay: B's row
+	// letter, B's eight camera keys, the A|B / A / B selector and the swap.
+	// Held as one list so one loop can take the whole lot away — with a single
+	// bay they are not disabled, they are absent.
+	QVector<QWidget *> channelBWidgets_;
+	// The selector row of the camera matrix, as cells on the matrix's own
+	// columns.
+	QWidget *buildChannelRow();
 	// Zoom factor of the position bar, and the key that resets it.
 	QPushButton *zoomBtn_ = nullptr;
 	// the reference controller paints the header of the angle being watched green. Cheap enough to
@@ -901,7 +935,6 @@ private:
 	QLabel *labelB_ = nullptr;
 	QButtonGroup *anglesA_ = nullptr; // channel A's row (kept by name)
 	QButtonGroup *angles_[kChannels] = {nullptr, nullptr};
-	QWidget *buildAngleRow(Which which);
 	void replayCurrentOn(Which which);
 	// the reference controller's green channel strip under the A preview.
 	QLabel *chanBadge_ = nullptr; // "A1"
