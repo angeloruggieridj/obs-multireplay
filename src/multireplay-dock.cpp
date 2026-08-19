@@ -4460,6 +4460,12 @@ void MultiReplayDock::replayCurrentOn(Which which)
 		showNotice(QString::fromStdString(err));
 }
 
+void MultiReplayDock::setSearchText(const QString &text)
+{
+	if (search_)
+		search_->setText(text); // textChanged does the rest
+}
+
 void MultiReplayDock::zoomWholeTimeline()
 {
 	if (seek_)
@@ -5818,17 +5824,50 @@ void MultiReplayDock::refreshListNames()
 	if (!listTabs_)
 		return;
 	auto &store = EventStore::instance();
+
+	// NOTHING TO DO IS THE ORDINARY CASE, and this is where 143 ms went.
+	//
+	// refreshEvents calls this on every bump of the store's version — every
+	// mark, every trim, every ticked checkbox — and it then wrote text,
+	// visibility and a tooltip onto all twenty tabs. Each of those makes
+	// QTabBar re-lay-out the whole row and recompute its size hints, so twenty
+	// writes are twenty relayouts of a widget nothing has changed. Measured
+	// from the dock's own phase accounting: a refresh that reused every angle
+	// cell and rebuilt none still took 143 ms, all of it here and in
+	// rebuildEventColumns, before any row work began.
+	//
+	// List names change when the operator renames one. The count changes when
+	// he changes it in Settings. Both are things he does between matches.
+	const int shown =
+		std::clamp(ReplayCore::instance().getConfig().eventListCount, 1,
+			   kEventLists);
+	const int tabs = std::min(kEventLists, listTabs_->count());
+	bool same = shown == lastShownTabs_ &&
+		    (int)lastListNames_.size() == tabs;
+	if (same) {
+		for (int i = 1; i <= tabs; i++) {
+			if (lastListNames_[(size_t)(i - 1)] != store.listName(i)) {
+				same = false;
+				break;
+			}
+		}
+	}
+	if (same)
+		return;
+
+	lastShownTabs_ = shown;
+	lastListNames_.resize((size_t)tabs);
+	for (int i = 1; i <= tabs; i++)
+		lastListNames_[(size_t)(i - 1)] = store.listName(i);
 	// Tab text only: changing it does not move the current tab, but blocking
 	// the signals keeps a rebuild from ever looking like an operator switching
 	// list.
 	QSignalBlocker block(listTabs_);
 
-	// How many lists the operator asked to see. The tabs beyond it are HIDDEN,
-	// not removed: what is in those lists is still there, still saved, and
-	// comes back the moment he raises the number.
-	const int shown =
-		std::clamp(ReplayCore::instance().getConfig().eventListCount, 1,
-			   kEventLists);
+	// How many lists the operator asked to see (computed above, with the
+	// early-out). The tabs beyond it are HIDDEN, not removed: what is in those
+	// lists is still there, still saved, and comes back the moment he raises
+	// the number.
 	for (int i = 1; i <= kEventLists && i <= listTabs_->count(); i++)
 		listTabs_->setTabVisible(i - 1, i <= shown);
 	// A hidden tab must not stay the current one: the table would be showing a
@@ -6011,6 +6050,8 @@ void MultiReplayDock::refreshEvents()
 	const uint64_t rebuildStartNs = os_gettime_ns();
 	int64_t cellBuildNs = 0, cellInsertNs = 0;
 	int cellCount = 0, cellReused = 0;
+	// The tallest angle cell built this pass; the rows are sized from it below.
+	int tallestCell = 0;
 	std::vector<std::pair<int64_t, int64_t>> rawMarkers;
 	// ...and which event each of them belongs to, so its edge can be taken
 	// hold of on the bar (SeekBar::markerDragged).
@@ -6241,6 +6282,20 @@ void MultiReplayDock::refreshEvents()
 				const uint64_t t1 = os_gettime_ns();
 				// Replaces and deletes whatever was there.
 				events_->setCellWidget(row, col, cell);
+				// THE ROW IS SIZED FROM THE CELL, not from a
+				// constant. It was 22 px against 28 px of
+				// content, then 30 px chosen by adding up the
+				// style sheet by hand — and it was still
+				// clipping the bottom border, because a
+				// stylesheet minimum is not a size hint: the
+				// font metrics and the frame the combo actually
+				// draws are bigger than the numbers in the
+				// rule. Asking the built widget is the only
+				// version of this that stays true when the
+				// sheet or the font changes.
+				const int want = cell->sizeHint().height() + 2;
+				if (want > tallestCell)
+					tallestCell = want;
 				cellBuildNs += (int64_t)(t1 - t0);
 				cellInsertNs += (int64_t)(os_gettime_ns() - t1);
 				cellCount++;
@@ -6258,6 +6313,15 @@ void MultiReplayDock::refreshEvents()
 			slot->setData(Qt::UserRole, r.id);
 		}
 	}
+	// Grow the rows to whatever the cells turned out to need, once, and never
+	// shrink them back: a row that changes height between refreshes makes the
+	// whole list jump under the operator's eyes while he is reading it.
+	if (tallestCell > events_->verticalHeader()->defaultSectionSize()) {
+		events_->verticalHeader()->setDefaultSectionSize(tallestCell);
+		obs_log(LOG_INFO, "[dock] event rows grown to %d px to fit their cells",
+			tallestCell);
+	}
+
 	refreshing_ = false;
 	// Only when it actually hurt, and at most once every few seconds: a
 	// rebuild is a normal thing that happens on every mark.
@@ -6664,10 +6728,24 @@ QWidget *MultiReplayDock::buildAngleCell(int eventId, int cam0, bool on,
 	for (const QString &s : sessionComments_)
 		if (cm->findText(s) < 0)
 			cm->addItem(s);
-	cm->setCurrentText(QString::fromStdString(note));
 	cm->lineEdit()->setPlaceholderText(kNoNote);
 	cm->lineEdit()->setAlignment(Qt::AlignCenter);
 	centreComboItems(cm);
+	// THE TEXT GOES IN LAST, and the order is the bug.
+	//
+	// A comment is free text: a word the operator invented is not in the item
+	// list, so the combo's current index stays on the empty first entry while
+	// the LINE EDIT carries the word. centreComboItems() then writes an
+	// alignment role onto every item — a model change — and Qt answers a model
+	// change by re-syncing the line edit from the current index, which is the
+	// empty entry. The word was wiped a line after it was set.
+	//
+	// Invisible until a rebuild: the cell is only rebuilt when its event or
+	// angle changes, so it showed up as "clear a search and the comments come
+	// back blank" while events.json held them all along. The speed combo never
+	// suffered because its value IS an item, so re-syncing writes it back
+	// unchanged. Set after the model is finished with, it stays.
+	cm->setCurrentText(QString::fromStdString(note));
 	h->addWidget(cm, 1);
 
 	// WHAT THIS CELL IS ABOUT, so refreshEvents can tell whether it may be

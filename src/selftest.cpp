@@ -384,6 +384,16 @@ struct DockChecks {
 	// speed cell, which must reach the store as that ANGLE's speed.
 	bool angleColumnsInTable = false;
 	bool tableEditsAngleSpeed = false;
+	// A search hides rows and clearing it brings them back. What comes back
+	// has to be what the STORE holds — reported from a real panel as the
+	// per-angle speed and comment reverting to their placeholders once a
+	// search was cleared, with the values still correct in events.json. The
+	// store is the truth here; the cell is the thing that can lie.
+	bool searchRestoresCellValues = false;
+	std::string searchCellNote;   // what the cell showed afterwards
+	std::string searchStoredNote; // what the store held all along
+	int searchCellPct = 0;
+	int searchStoredPct = 0;
 	int eventTableColumns = 0;
 	// M5: the green band is the state of the clip ON AIR (id, angle, time
 	// left, speed) with its fill as the progress through that clip — and the
@@ -1241,6 +1251,82 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 			"for %d camera(s)); picking 50%% in camera %d's cell stored "
 			"%.2f",
 			cols, wantCols, configured, editedCam0 + 1, stored);
+
+		// --- a search, then no search --------------------------------
+		// Type something that matches nothing, let the panel settle,
+		// clear it, and read the cell back. This is the gesture that was
+		// reported as losing the per-angle comment and speed: the row
+		// comes back and shows its placeholders while events.json still
+		// holds the values. Driven through the REAL search box, because
+		// the way the rows are rebuilt is exactly what is on trial.
+		if (editedCam0 >= 0) {
+			const std::string wantNote = "GateTag";
+			const double wantSpeed = 0.75;
+			store.setAngleNote(evId, editedCam0 + 1, wantNote);
+			store.setAngleSpeed(evId, editedCam0 + 1, wantSpeed);
+			// Settle windows: refreshEvents runs off the dock's own
+			// poll, and a rebuild deferred past an open editor takes
+			// one more tick to arrive.
+			runOnUi([&]() { dock->setSearchText("zzzz-no-match"); });
+			std::this_thread::sleep_for(std::chrono::milliseconds(400));
+			runOnUi([&]() { dock->setSearchText(""); });
+			std::this_thread::sleep_for(std::chrono::milliseconds(400));
+
+			runOnUi([&]() {
+				QTableWidget *t =
+					dock->findChild<QTableWidget *>();
+				if (!t)
+					return;
+				for (int r = 0; r < t->rowCount(); r++) {
+					QTableWidgetItem *idIt = t->item(
+						r, MultiReplayDock::kColId);
+					if (!idIt ||
+					    idIt->data(Qt::UserRole).toInt() !=
+						    evId)
+						continue;
+					QWidget *cell = t->cellWidget(
+						r,
+						MultiReplayDock::kColFirstCam);
+					if (!cell)
+						break;
+					if (auto *cm = cell->findChild<QComboBox *>(
+						    "mrAngleNote"))
+						c.searchCellNote =
+							cm->currentText()
+								.toStdString();
+					if (auto *sp = cell->findChild<QComboBox *>(
+						    "mrAngleSpeed"))
+						c.searchCellPct =
+							sp->currentData().toInt();
+					break;
+				}
+			});
+
+			ReplayEvent back;
+			if (store.get(evId, back)) {
+				c.searchStoredNote =
+					back.angles[editedCam0].note;
+				c.searchStoredPct =
+					back.angles[editedCam0].speed > 0
+						? (int)std::lround(
+							  back.angles[editedCam0]
+								  .speed *
+							  100.0)
+						: -1;
+			}
+			c.searchRestoresCellValues =
+				c.searchCellNote == c.searchStoredNote &&
+				c.searchCellPct == c.searchStoredPct;
+			obs_log(c.searchRestoresCellValues ? LOG_INFO : LOG_ERROR,
+				"[selftest] dock: after clearing a search the cell "
+				"shows note '%s' / %d%%, the store holds '%s' / %d%%",
+				c.searchCellNote.c_str(), c.searchCellPct,
+				c.searchStoredNote.c_str(), c.searchStoredPct);
+			// Put it back the way it was found.
+			store.setAngleNote(evId, editedCam0 + 1, "");
+			store.setAngleSpeed(evId, editedCam0 + 1, -1.0);
+		}
+
 	}
 
 	// Checked also that the range is servable, for the same modal reason.
@@ -4417,6 +4503,7 @@ void runSelfTest()
 			  dockChecks.displaysNeverStranded &&
 			  dockChecks.angleColumnsInTable &&
 			  dockChecks.tableEditsAngleSpeed &&
+			  dockChecks.searchRestoresCellValues &&
 			  dockChecks.clipBarReportsOnAir &&
 			  dockChecks.skipAdvancesQueue &&
 			  dockChecks.manualReorderMovesRow &&
@@ -4618,6 +4705,18 @@ void runSelfTest()
 			  dockChecks.angleColumnsInTable);
 	obs_data_set_bool(checks, "dock_table_edits_angle_speed",
 			  dockChecks.tableEditsAngleSpeed);
+	obs_data_set_bool(checks, "dock_search_restores_cell_values",
+			  dockChecks.searchRestoresCellValues);
+	// The two sides of it, because "false" alone does not say whether the
+	// cell went blank or showed somebody else's value.
+	obs_data_set_string(checks, "dock_search_cell_note",
+			    dockChecks.searchCellNote.c_str());
+	obs_data_set_string(checks, "dock_search_stored_note",
+			    dockChecks.searchStoredNote.c_str());
+	obs_data_set_int(checks, "dock_search_cell_pct",
+			 dockChecks.searchCellPct);
+	obs_data_set_int(checks, "dock_search_stored_pct",
+			 dockChecks.searchStoredPct);
 	// M5: the green band describes the clip ON AIR, and >> takes the next
 	// item of the queue instead of killing the sequence.
 	obs_data_set_bool(checks, "dock_clip_bar_reports_on_air",

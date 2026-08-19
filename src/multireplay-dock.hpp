@@ -415,6 +415,12 @@ public:
 	// the checking thread inside QMenu::exec().
 	void zoomWholeTimeline();
 
+	// Type into the search box, as the operator would. For the automated
+	// gate: filtering hides rows and clearing the filter brings them back,
+	// and what comes back has to be what the store holds. Driving the real
+	// widget is the point — the rebuild it triggers is what is on trial.
+	void setSearchText(const QString &text);
+
 	// What the preview is showing: true = the replay (a clip, a scrub review,
 	// or the frame the last one ended on), false = the live camera mirror.
 	//
@@ -1116,6 +1122,10 @@ private:
 	uint64_t uiLastStallLogNs_ = 0;
 	// Throttle for the event-table rebuild breakdown (see refreshEvents).
 	uint64_t lastRebuildLogNs_ = 0;
+	// What the list tabs currently say, so refreshListNames can do nothing when
+	// nothing has changed — which is nearly always. See the note there.
+	std::vector<std::string> lastListNames_;
+	int lastShownTabs_ = -1;
 	// WHERE a slow tick went. The total alone names nothing: a poll() of 964 ms
 	// was measured and the only honest thing that could be said about it was
 	// that it happened. Each phase reports its own cost here and the [ui] line
