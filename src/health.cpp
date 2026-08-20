@@ -13,6 +13,7 @@ every action is the operator's.
 
 #include "branch-output-control.hpp"
 #include "packet-tap.hpp"
+#include "path-utf8.hpp"
 #include "plugin-support.h"
 
 #include <util/platform.h>
@@ -77,12 +78,14 @@ bool folderIsWritable(const std::string &folder)
 	if (folder.empty())
 		return false;
 	std::error_code ec;
-	std::filesystem::create_directories(folder, ec);
-	if (!std::filesystem::is_directory(folder, ec))
+	const std::filesystem::path dir = utf8ToPath(folder);
+	std::filesystem::create_directories(dir, ec);
+	if (!std::filesystem::is_directory(dir, ec))
 		return false;
-	const std::filesystem::path probe =
-		std::filesystem::path(folder) / ".mr-writetest.tmp";
-	FILE *f = os_fopen(probe.string().c_str(), "wb");
+	const std::filesystem::path probe = dir / ".mr-writetest.tmp";
+	// A3: os_fopen wants UTF-8 (libobs converts to wide characters itself),
+	// and path::string() on MSVC hands it the ANSI code page instead.
+	FILE *f = os_fopen(pathToUtf8(probe).c_str(), "wb");
 	if (!f)
 		return false;
 	const bool wrote = fwrite("mr", 1, 2, f) == 2;
@@ -177,13 +180,13 @@ health::PreflightResult HealthMonitor::preflight(const Config &cfg,
 	// --- folder, space, bandwidth ---
 	std::string folder = cfg.sessionFolder;
 	if (!folder.empty() && !cfg.currentProjectName.empty())
-		folder = (std::filesystem::path(folder) / cfg.currentProjectName)
-				 .string();
+		folder = joinUtf8(folder, cfg.currentProjectName);
 	in.sessionFolderSet = !cfg.sessionFolder.empty();
 	in.sessionFolderWritable = in.sessionFolderSet && folderIsWritable(folder);
 	if (in.sessionFolderSet) {
 		std::error_code ec;
-		auto space = std::filesystem::space(cfg.sessionFolder, ec);
+		auto space = std::filesystem::space(
+			utf8ToPath(cfg.sessionFolder), ec);
 		if (!ec)
 			in.diskFreeBytes = (int64_t)space.available;
 	}
@@ -390,7 +393,7 @@ void HealthMonitor::sampleOnce()
 		diskChecked = true;
 		if (!folder.empty()) {
 			std::error_code ec;
-			auto space = std::filesystem::space(folder, ec);
+			auto space = std::filesystem::space(utf8ToPath(folder), ec);
 			diskFree = ec ? -1 : (int64_t)space.available;
 		}
 	}
@@ -475,14 +478,19 @@ void HealthMonitor::probeDiskAsync(const std::string &folder)
 	}
 	if (probeRunning_.exchange(true))
 		return;
+	// OWNED, not detached (A5). The old one wrote 8 MiB and then took this
+	// object~s mutex and called obs_log — both of which live in a module
+	// nobody was waiting for it to finish with.
+	if (probe_.joinable())
+		probe_.join();
 
-	std::thread([this, folder]() {
+	probe_ = std::thread([this, folder]() {
 		int64_t bps = -1;
 		std::error_code ec;
-		std::filesystem::create_directories(folder, ec);
-		const std::filesystem::path path =
-			std::filesystem::path(folder) / kProbeFileName;
-		FILE *f = os_fopen(path.string().c_str(), "wb");
+		const std::filesystem::path dir = utf8ToPath(folder);
+		std::filesystem::create_directories(dir, ec);
+		const std::filesystem::path path = dir / kProbeFileName;
+		FILE *f = os_fopen(pathToUtf8(path).c_str(), "wb");
 		if (f) {
 			std::vector<char> chunk(kProbeChunk, 0x5A);
 			const auto t0 = std::chrono::steady_clock::now();
@@ -512,7 +520,19 @@ void HealthMonitor::probeDiskAsync(const std::string &folder)
 			folder.c_str(),
 			bps > 0 ? health::detail::mbps(bps).c_str() : "failed");
 		probeRunning_.store(false);
-	}).detach();
+	});
+}
+
+HealthMonitor::~HealthMonitor()
+{
+	shutdown();
+}
+
+void HealthMonitor::shutdown()
+{
+	takeStopped();
+	if (probe_.joinable())
+		probe_.join();
 }
 
 std::string HealthMonitor::probedFolder() const

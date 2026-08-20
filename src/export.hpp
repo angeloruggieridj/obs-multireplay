@@ -48,8 +48,22 @@ public:
 
 	std::string statusJson() const;
 
+	// STOP EVERYTHING AND JOIN. Called from obs_module_unload, and it did not
+	// exist: this class is a function-local singleton with a std::thread as a
+	// member and no destructor, so an export still queued when OBS exits was a
+	// joinable thread at static destruction — std::terminate, i.e. OBS
+	// vanishing instead of closing. The reel was worse: it ran DETACHED and
+	// writes gigabytes for minutes, so it went on executing code out of a DLL
+	// that had been unloaded. The rule was already written down in
+	// replay-channel.cpp and simply had not been applied here.
+	//
+	// The abort is honoured inside the packet loops, so a reel that is half
+	// written stops within a frame or two rather than at the end of the file.
+	void shutdown();
+
 private:
 	ExportManager() = default;
+	~ExportManager();
 
 	struct Job {
 		int eventId;
@@ -85,7 +99,17 @@ private:
 	mutable std::mutex mutex_;
 	std::vector<Job> jobs_;
 	std::thread thread_;
+	// The reel. OWNED, not detached (see shutdown): one at a time, because a
+	// second reel would be competing with the first for the same disk to
+	// write a file nobody asked for yet.
+	std::thread reelThread_;
 	std::atomic<bool> workerRunning_{false};
+	std::atomic<bool> reelRunning_{false};
+	// Read inside the packet loops of runJob() and runReel().
+	std::atomic<bool> abort_{false};
+	// After shutdown(): nothing new is accepted, so a queue cannot be started
+	// again behind the join that has just finished.
+	std::atomic<bool> stopped_{false};
 };
 
 } // namespace multireplay

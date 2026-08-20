@@ -111,11 +111,20 @@ public:
 	// Measure once per folder, on a background thread, never while
 	// recording. -1 until an answer exists.
 	void probeDiskAsync(const std::string &folder);
+	// Stop the sampler and JOIN the disk probe. Called from
+	// obs_module_unload: the probe used to be a detached thread nobody ever
+	// waited for, writing 8 MiB and then touching this object's state, and
+	// this object is a function-local singleton in a DLL that is about to be
+	// unloaded. It is bounded by one 8 MiB write.
+	void shutdown();
 	int64_t diskWriteBytesPerSec() const { return diskWriteBps_.load(); }
 	std::string probedFolder() const;
 
 private:
 	HealthMonitor() = default;
+	// Same backstop as EventStore: the sampler and the disk probe are members,
+	// and a joinable std::thread at destruction is std::terminate.
+	~HealthMonitor();
 	HealthMonitor(const HealthMonitor &) = delete;
 	HealthMonitor &operator=(const HealthMonitor &) = delete;
 
@@ -169,6 +178,8 @@ private:
 	std::atomic<int64_t> diskWriteBps_{-1};
 	std::string probedFolder_;
 	std::atomic<bool> probeRunning_{false};
+	// OWNED, not detached (see shutdown).
+	std::thread probe_;
 };
 
 } // namespace multireplay

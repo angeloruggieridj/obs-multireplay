@@ -21,6 +21,7 @@ yet keep the packets — the ring lands in M1.
 #include <algorithm>
 #include <chrono>
 #include <cinttypes>
+#include <memory>
 #include <sstream>
 #include <utility>
 #include <vector>
@@ -49,6 +50,31 @@ constexpr int kArmMaxAttempts = 160; // ~40 s
 // and far shorter than anyone's patience during a match.
 constexpr int64_t kSilentAttachMs = 3000;
 constexpr int kReportEveryTicks = 120; // ~30 s
+
+// WHAT A DETACHED DISPOSAL THREAD IS STILL ALLOWED TO TOUCH (A5).
+//
+// dispose() runs on a thread nobody joins, because obs_output_stop() on our
+// tap output can block indefinitely when Branch Output is tearing the shared
+// encoder down at the same moment (measured: 20 s and still going). unload()
+// therefore waits a bounded time and then CARRIES ON — which used to leave that
+// thread about to re-take PacketTap::mutex_, write into a Channel and call
+// obs_log, all of which belong to a module that is being taken away.
+//
+// This block is heap-allocated and every disposal thread holds a share of it,
+// so the counter it decrements is alive whatever happens. Past `moduleGone` a
+// disposal touches libobs and nothing else — no member of ours, and above all
+// no obs_log, which is OUR function in OUR binary.
+struct DisposalState {
+	std::atomic<int> inFlight{0};
+	std::atomic<bool> moduleGone{false};
+};
+
+std::shared_ptr<DisposalState> disposalState()
+{
+	static std::shared_ptr<DisposalState> s =
+		std::make_shared<DisposalState>();
+	return s;
+}
 
 } // namespace
 
@@ -112,7 +138,15 @@ void PacketTap::tapEncodedPacket(void *data, struct encoder_packet *packet)
 	if (!ch || !packet)
 		return;
 
-	// Runs on the encoder thread: atomics only, no locks, no allocation.
+	// Runs on the ENCODER THREAD, so nothing here may block it for long.
+	//
+	// The counters below are atomics and cost nothing. The tail of this
+	// function is not free, and the comment used to claim it was ("atomics
+	// only, no locks, no allocation"): keeping the bytes means ONE allocation
+	// (lp.data.assign) and ONE short critical section on ringMutex to push.
+	// That is the deal the ring is built on, and stating it wrongly on the
+	// hottest path in the plugin is how someone later adds a second lock here
+	// believing the first one is not there (L1).
 	const int64_t nowNs = (int64_t)os_gettime_ns();
 
 	if (packet->type == OBS_ENCODER_VIDEO) {
@@ -251,13 +285,17 @@ void PacketTap::unload()
 	// before the module goes away under them. Bounded: one of them may be
 	// stuck in obs_output_stop() forever (that is why they are detached),
 	// and waiting for that would trade a leak for a hang on every exit.
-	for (int i = 0; i < 30 && disposing_.load() > 0; i++)
+	auto state = disposalState();
+	for (int i = 0; i < 30 && state->inFlight.load() > 0; i++)
 		std::this_thread::sleep_for(std::chrono::milliseconds(100));
-	if (disposing_.load() > 0)
+	if (state->inFlight.load() > 0)
 		obs_log(LOG_WARNING,
 			"[tap] %d detach(es) still finishing at unload — Branch "
 			"Output was tearing down the encoder at the same time",
-			disposing_.load());
+			state->inFlight.load());
+	// From here a disposal that comes back late touches libobs and its own
+	// heap block, and nothing of ours (A5).
+	state->moduleGone.store(true);
 }
 
 void PacketTap::armAsync(const std::array<bool, kMaxTapChannels> &wanted,
@@ -567,6 +605,12 @@ bool PacketTap::attachLocked(int camIndex)
 		const char *err = obs_output_get_last_error(ours);
 		obs_log(LOG_ERROR, "[tap] cam%d: obs_output_start failed: %s",
 			camIndex + 1, err ? err : "(no error reported)");
+		// M8: tapCreate() already pointed the channel at this output.
+		// Releasing it without clearing that leaves a live object holding
+		// a pointer to a destroyed one — nothing dereferences it today,
+		// which is exactly what makes it worth removing now.
+		if (ch.tapOutput == ours)
+			ch.tapOutput = nullptr;
 		obs_output_release(ours);
 		obs_encoder_release(vencRef);
 		if (aencRef)
@@ -587,6 +631,8 @@ bool PacketTap::attachLocked(int camIndex)
 			"backing off",
 			camIndex + 1);
 		obs_output_stop(ours);
+		if (ch.tapOutput == ours)
+			ch.tapOutput = nullptr; // M8, same reason as above
 		obs_output_release(ours);
 		obs_encoder_release(vencRef);
 		if (aencRef)
@@ -663,13 +709,14 @@ void PacketTap::dispose(Doomed d)
 {
 	if (d.empty())
 		return;
-	disposing_.fetch_add(1);
+	auto state = disposalState();
+	state->inFlight.fetch_add(1);
 	// Detached on purpose. obs_output_stop() here can block indefinitely
 	// when Branch Output is tearing the shared encoder down at the same
 	// moment (measured: 20 s and still going), and there is nobody it would
 	// be acceptable to make wait for that — not the arm thread, which
 	// unload() joins, and certainly not the UI thread inside STOP.
-	std::thread([this, d]() {
+	std::thread([this, d, state]() {
 		if (d.tapOutput) {
 			obs_output_stop(d.tapOutput);
 			obs_output_release(d.tapOutput);
@@ -680,19 +727,24 @@ void PacketTap::dispose(Doomed d)
 			obs_encoder_release(d.audioEncoder);
 		if (d.boOutput)
 			obs_output_release(d.boOutput);
-		if (d.channel) {
-			// Only now is the output really nobody's: the stop has
-			// returned, so tapStop() cannot be called on it again.
-			std::lock_guard<std::mutex> lock(mutex_);
-			if (d.channel->tapOutput == d.tapOutput)
-				d.channel->tapOutput = nullptr;
-			d.channel->disposing.store(false);
+		// PAST THIS POINT THE MODULE MAY BE GONE (A5). Everything above
+		// is libobs, which is still loaded; everything below is ours.
+		if (!state->moduleGone.load()) {
+			if (d.channel) {
+				// Only now is the output really nobody's: the stop
+				// has returned, so tapStop() cannot be called on it
+				// again.
+				std::lock_guard<std::mutex> lock(mutex_);
+				if (d.channel->tapOutput == d.tapOutput)
+					d.channel->tapOutput = nullptr;
+				d.channel->disposing.store(false);
+			}
+			obs_log(LOG_INFO,
+				"[tap] cam%d detached (%" PRIu64 " video, %" PRIu64
+				" audio packets)",
+				d.camIndex + 1, d.videoPackets, d.audioPackets);
 		}
-		obs_log(LOG_INFO,
-			"[tap] cam%d detached (%" PRIu64 " video, %" PRIu64
-			" audio packets)",
-			d.camIndex + 1, d.videoPackets, d.audioPackets);
-		disposing_.fetch_sub(1);
+		state->inFlight.fetch_sub(1);
 	}).detach();
 }
 
@@ -742,22 +794,60 @@ bool PacketTap::resolveRange(int camIndex, int64_t inNs, int64_t outNs,
 		return false;
 
 	const Channel &ch = channels_[camIndex];
-	std::lock_guard<std::mutex> lock(ch.ringMutex);
 
-	ResolvedRange r;
-	if (!ch.ring.resolveRange(inNs, outNs, r))
-		return false;
+	// WHERE the range is, under the lock. The COPY, in pieces (M3).
+	//
+	// This used to hold ringMutex for the whole copy — tens of megabytes for
+	// a long clip, every byte of it a memcpy plus an allocation, while the
+	// encoder thread has to take that same lock for EVERY packet it
+	// produces. A slow fetch was therefore a latency spike on the live path,
+	// i.e. on the one thing the ring exists to protect.
+	//
+	// The indices are made stable by evictedPackets(), which only ever
+	// grows: a packet's global index is its position plus everything thrown
+	// away before it. Between chunks the encoder gets the lock; if eviction
+	// somehow reached a packet we had not copied yet we REFUSE rather than
+	// hand back a clip with a hole in it — the same rule as everywhere else
+	// on this path, and in practice unreachable, since eviction takes the
+	// oldest first and so does this loop.
+	uint64_t firstGlobal = 0, lastGlobal = 0;
+	{
+		std::lock_guard<std::mutex> lock(ch.ringMutex);
+		ResolvedRange r;
+		if (!ch.ring.resolveRange(inNs, outNs, r))
+			return false;
+		const uint64_t base = ch.ring.evictedPackets();
+		firstGlobal = base + r.decodeStart;
+		lastGlobal = base + r.last;
+		presentInNs = r.presentInNs;
+		presentOutNs = r.presentOutNs;
+	}
 
-	// Copy the packets out so the caller can decode without holding the
-	// lock the encoder thread needs. (M2 will hand out shared buffers
-	// instead; at replay-event rates this copy is a few ms, once.)
 	packetsOut.clear();
-	packetsOut.reserve(r.last - r.decodeStart + 1);
-	for (size_t i = r.decodeStart; i <= r.last; i++)
-		packetsOut.push_back(ch.ring.at(i));
+	// Outside the lock on purpose: one allocation for the whole clip, and
+	// the encoder thread does not wait for it.
+	packetsOut.reserve((size_t)(lastGlobal - firstGlobal + 1));
 
-	presentInNs = r.presentInNs;
-	presentOutNs = r.presentOutNs;
+	// Small enough that the encoder never waits long, large enough that the
+	// lock is not taken once per packet.
+	constexpr uint64_t kChunk = 32;
+	for (uint64_t g = firstGlobal; g <= lastGlobal;) {
+		std::lock_guard<std::mutex> lock(ch.ringMutex);
+		const uint64_t evicted = ch.ring.evictedPackets();
+		const uint64_t stop = std::min(g + kChunk - 1, lastGlobal);
+		for (; g <= stop; g++) {
+			if (g < evicted) {
+				packetsOut.clear();
+				return false;
+			}
+			const size_t local = (size_t)(g - evicted);
+			if (local >= ch.ring.size()) {
+				packetsOut.clear();
+				return false;
+			}
+			packetsOut.push_back(ch.ring.at(local));
+		}
+	}
 	return true;
 }
 

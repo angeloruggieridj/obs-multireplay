@@ -10,9 +10,11 @@ SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <array>
 #include <atomic>
+#include <condition_variable>
 #include <cstdint>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace multireplay {
@@ -71,6 +73,10 @@ public:
 	void setSessionEpoch(const SessionEpoch &epoch);
 
 	void setSessionFolder(const std::string &folder); // loads events.json
+
+	// Wait for the pending events.json write to reach the disk, then stop the
+	// writer. Called from obs_module_unload — see the note on save().
+	void shutdown();
 	void clearAll();                                  // the reference controller "Delete All"
 
 	// --- Live / Recorded mode (the reference controller Live button) ---
@@ -144,8 +150,30 @@ public:
 
 private:
 	EventStore() = default;
+	// A writer thread still joinable at destruction is std::terminate, and
+	// this is a function-local singleton — so the destructor is the backstop
+	// for the case where obs_module_unload did not run (a crash on the way
+	// out, a host that unloads differently).
+	~EventStore();
+	// SERIALISE under mutex_, WRITE somewhere else (M4).
+	//
+	// save() used to call obs_data_save_json_safe() with mutex_ held, on
+	// every mark, tick, note and reorder — twenty-two call sites. On a
+	// session folder that lives on a NAS that is a network round trip per
+	// gesture, taken on the UI thread or the hotkey thread, while holding the
+	// lock the dock has to take thirty times a second to redraw the event
+	// table. Now it builds the JSON (which does need the lock: it reads the
+	// events) and hands the bytes to a writer thread that coalesces a burst
+	// of edits into one write.
 	void save() const; // mutex_ must be held
 	void load();       // mutex_ must be held
+	// Hand `json` to the writer for `path`. Last one wins; no lock of ours is
+	// held while anything touches the disk.
+	void queueWrite(const std::string &path, const std::string &json) const;
+	void writerLoop();
+	// Block until nothing is pending (bounded). Used by shutdown() and
+	// whenever the store is about to point at another project.
+	void flushWrites() const;
 	// Make every list's `order` dense and ascending, keeping the order they
 	// are already in. mutex_ must be held. Runs after a load (a file written
 	// before ordering existed has all-zero orders, and two events must never
@@ -167,6 +195,20 @@ private:
 	std::atomic<int64_t> preRollNs_{0};
 	std::atomic<int64_t> postRollNs_{0};
 	mutable std::atomic<uint64_t> version_{0};
+
+	// --- the events.json writer (see save) ------------------------------
+	mutable std::mutex writeMutex_;
+	mutable std::condition_variable writeCv_;
+	mutable std::string pendingPath_;
+	mutable std::string pendingJson_;
+	mutable bool pendingDirty_ = false;
+	// A write is on the disk right now. flushWrites() waits for this too, or
+	// it would report "flushed" the instant the writer picked the payload up.
+	mutable bool writing_ = false;
+	mutable bool flushNow_ = false;
+	mutable bool writerStop_ = false;
+	mutable bool writerStarted_ = false;
+	mutable std::thread writer_;
 };
 
 } // namespace multireplay

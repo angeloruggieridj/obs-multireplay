@@ -190,6 +190,14 @@ public:
 	// newer one.
 	void onClipFinished(uint64_t gen);
 
+	// FOR THE UI TASK ONLY (see switchSceneTask). Public because the task is a
+	// free function on the OBS task queue, not because anything else should
+	// call them: "where program came from" is now written and read on the UI
+	// thread, in queue order, which is what removed the blocking dispatch that
+	// could deadlock against a Stream Deck (B5).
+	void rememberPreviousScene(const std::string &name);
+	std::string takePreviousScene();
+
 private:
 	explicit PlaybackCoordinator(Which which = Which::A) : which_(which) {}
 	const Which which_ = Which::A;
@@ -273,6 +281,20 @@ private:
 	std::atomic<bool> loop_{false};
 	std::atomic<bool> musicEnabled_{false};
 	std::atomic<int> defaultSpeedPct_{100};
+	// WHERE PROGRAM CAME FROM, owned by the UI TASK QUEUE (B5).
+	//
+	// It used to be written by a wait=true dispatch made with mutex_ held,
+	// so that a short clip could not finish before it was set. That wait was
+	// an AB-BA deadlock waiting for a Stream Deck: the UI thread can already
+	// be blocked on mutex_ inside stopEvents() while this one waits for the
+	// UI thread.
+	//
+	// Both the save and the restore now run as ordinary non-blocking UI
+	// tasks, and the UI queue is FIFO — so the restore cannot possibly run
+	// before the save that was posted ahead of it, which is the ordering the
+	// wait was there to buy. Its own small mutex, because the UI thread
+	// writes it and the coordinator thread reads it.
+	mutable std::mutex sceneMutex_;
 	std::string previousSceneName_;
 	// Why the last startNext() could not play an item. Kept so a play request
 	// that ends up queueing nothing can tell the operator WHICH camera failed

@@ -145,6 +145,8 @@ bool ReplayDecoder::open(const StreamConfig &cfg, std::string &errorOut)
 
 void ReplayDecoder::close()
 {
+	pending_.clear();
+	havePending_ = false;
 	if (packet_)
 		av_packet_free(&packet_);
 	if (frame_)
@@ -152,6 +154,70 @@ void ReplayDecoder::close()
 	if (ctx_)
 		avcodec_free_context(&ctx_);
 	width_ = height_ = 0;
+}
+
+// M1: EAGAIN FROM avcodec_send_packet MEANS THE PACKET WAS NOT CONSUMED.
+//
+// It used to be lumped in with success, so the packet — a whole picture — was
+// dropped in silence, with no counter and nothing downstream able to notice. It
+// cannot happen while the caller drains after every send, and every caller
+// here does, which is exactly what made it a mine rather than a bug: the day
+// somebody writes a loop that does not drain, a replay quietly loses frames.
+//
+// So the packet is HELD and offered again ahead of the next one — order matters,
+// a decoder fed out of order predicts against the wrong reference. Refused a
+// second time with nothing drained in between, it is reported: that is the
+// caller~s mistake and it should not cost a picture to find out about it.
+bool ReplayDecoder::sendRaw(const uint8_t *data, size_t size, int64_t pts,
+			    int64_t dts, int flags, bool mayStash,
+			    std::string &errorOut)
+{
+	av_packet_unref(packet_);
+	// avcodec_send_packet does not take ownership, so pointing at the ring's
+	// bytes is safe for the duration of this call.
+	packet_->data = const_cast<uint8_t *>(data);
+	packet_->size = (int)size;
+	packet_->pts = pts;
+	packet_->dts = dts;
+	packet_->flags = flags;
+
+	const int rc = avcodec_send_packet(ctx_, packet_);
+	packet_->data = nullptr;
+	packet_->size = 0;
+
+	if (rc == AVERROR(EAGAIN)) {
+		if (!mayStash) {
+			errorOut = "the decoder refused the same packet twice: "
+				   "its output is not being drained";
+			return false;
+		}
+		pending_.assign(data, data + size);
+		pendingPts_ = pts;
+		pendingDts_ = dts;
+		pendingFlags_ = flags;
+		havePending_ = true;
+		stalls_++;
+		return true;
+	}
+	if (rc < 0 && rc != AVERROR_EOF) {
+		char buf[AV_ERROR_MAX_STRING_SIZE] = {};
+		av_strerror(rc, buf, sizeof(buf));
+		errorOut = std::string("avcodec_send_packet failed: ") + buf;
+		return false;
+	}
+	return true;
+}
+
+bool ReplayDecoder::flushPending(std::string &errorOut)
+{
+	if (!havePending_)
+		return true;
+	// Moved out first: sendRaw() may want to stash into the same buffer.
+	std::vector<uint8_t> data;
+	data.swap(pending_);
+	havePending_ = false;
+	return sendRaw(data.data(), data.size(), pendingPts_, pendingDts_,
+		       pendingFlags_, false, errorOut);
 }
 
 bool ReplayDecoder::send(const LivePacket &p, std::string &errorOut)
@@ -165,26 +231,12 @@ bool ReplayDecoder::send(const LivePacket &p, std::string &errorOut)
 	if (p.data.empty())
 		return true;
 
-	av_packet_unref(packet_);
-	// avcodec_send_packet does not take ownership, so pointing at the ring's
-	// bytes is safe for the duration of this call.
-	packet_->data = const_cast<uint8_t *>(p.data.data());
-	packet_->size = (int)p.data.size();
-	packet_->pts = p.masterNs;
-	packet_->dts = p.dtsNs;
-	packet_->flags = p.keyframe ? AV_PKT_FLAG_KEY : 0;
-
-	const int rc = avcodec_send_packet(ctx_, packet_);
-	packet_->data = nullptr;
-	packet_->size = 0;
-
-	if (rc < 0 && rc != AVERROR(EAGAIN) && rc != AVERROR_EOF) {
-		char buf[AV_ERROR_MAX_STRING_SIZE] = {};
-		av_strerror(rc, buf, sizeof(buf));
-		errorOut = std::string("avcodec_send_packet failed: ") + buf;
+	// Whatever was held back goes first, or the pictures arrive out of order.
+	if (!flushPending(errorOut))
 		return false;
-	}
-	return true;
+
+	return sendRaw(p.data.data(), p.data.size(), p.masterNs, p.dtsNs,
+		       p.keyframe ? AV_PKT_FLAG_KEY : 0, true, errorOut);
 }
 
 bool ReplayDecoder::receive(Frame &out)
@@ -216,6 +268,9 @@ bool ReplayDecoder::drain(std::string &errorOut)
 		errorOut = "decoder is not open";
 		return false;
 	}
+	// Anything held back belongs in the stream BEFORE the end of it.
+	if (!flushPending(errorOut))
+		return false;
 	const int rc = avcodec_send_packet(ctx_, nullptr);
 	if (rc < 0 && rc != AVERROR_EOF) {
 		char buf[AV_ERROR_MAX_STRING_SIZE] = {};
@@ -228,6 +283,11 @@ bool ReplayDecoder::drain(std::string &errorOut)
 
 void ReplayDecoder::flush()
 {
+	// The GOP is being abandoned, so a packet held back from it is too:
+	// offering it after the flush would predict against references that no
+	// longer exist.
+	pending_.clear();
+	havePending_ = false;
 	if (ctx_)
 		avcodec_flush_buffers(ctx_);
 }
@@ -329,12 +389,63 @@ bool ReplayAudioDecoder::open(const StreamConfig &cfg, std::string &errorOut)
 
 void ReplayAudioDecoder::close()
 {
+	pending_.clear();
+	havePending_ = false;
 	if (packet_)
 		av_packet_free(&packet_);
 	if (frame_)
 		av_frame_free(&frame_);
 	if (ctx_)
 		avcodec_free_context(&ctx_);
+}
+
+// The audio half of M1, same rule for the same reason. A lost audio packet is
+// a hole in the sound of a replay, and it was just as silent.
+bool ReplayAudioDecoder::sendRaw(const uint8_t *data, size_t size, int64_t pts,
+				 int64_t dts, bool mayStash,
+				 std::string &errorOut)
+{
+	av_packet_unref(packet_);
+	packet_->data = const_cast<uint8_t *>(data);
+	packet_->size = (int)size;
+	packet_->pts = pts;
+	packet_->dts = dts;
+
+	const int rc = avcodec_send_packet(ctx_, packet_);
+	packet_->data = nullptr;
+	packet_->size = 0;
+
+	if (rc == AVERROR(EAGAIN)) {
+		if (!mayStash) {
+			errorOut = "the audio decoder refused the same packet "
+				   "twice: its output is not being drained";
+			return false;
+		}
+		pending_.assign(data, data + size);
+		pendingPts_ = pts;
+		pendingDts_ = dts;
+		havePending_ = true;
+		stalls_++;
+		return true;
+	}
+	if (rc < 0 && rc != AVERROR_EOF) {
+		char buf[AV_ERROR_MAX_STRING_SIZE] = {};
+		av_strerror(rc, buf, sizeof(buf));
+		errorOut = std::string("audio send failed: ") + buf;
+		return false;
+	}
+	return true;
+}
+
+bool ReplayAudioDecoder::flushPending(std::string &errorOut)
+{
+	if (!havePending_)
+		return true;
+	std::vector<uint8_t> data;
+	data.swap(pending_);
+	havePending_ = false;
+	return sendRaw(data.data(), data.size(), pendingPts_, pendingDts_, false,
+		       errorOut);
 }
 
 bool ReplayAudioDecoder::send(const LivePacket &p, std::string &errorOut)
@@ -346,23 +457,11 @@ bool ReplayAudioDecoder::send(const LivePacket &p, std::string &errorOut)
 	if (p.kind != PacketKind::Audio || p.data.empty())
 		return true;
 
-	av_packet_unref(packet_);
-	packet_->data = const_cast<uint8_t *>(p.data.data());
-	packet_->size = (int)p.data.size();
-	packet_->pts = p.masterNs;
-	packet_->dts = p.dtsNs;
-
-	const int rc = avcodec_send_packet(ctx_, packet_);
-	packet_->data = nullptr;
-	packet_->size = 0;
-
-	if (rc < 0 && rc != AVERROR(EAGAIN) && rc != AVERROR_EOF) {
-		char buf[AV_ERROR_MAX_STRING_SIZE] = {};
-		av_strerror(rc, buf, sizeof(buf));
-		errorOut = std::string("audio send failed: ") + buf;
+	if (!flushPending(errorOut))
 		return false;
-	}
-	return true;
+
+	return sendRaw(p.data.data(), p.data.size(), p.masterNs, p.dtsNs, true,
+		       errorOut);
 }
 
 bool ReplayAudioDecoder::receive(Samples &out)
@@ -392,6 +491,8 @@ bool ReplayAudioDecoder::drain(std::string &errorOut)
 		errorOut = "audio decoder is not open";
 		return false;
 	}
+	if (!flushPending(errorOut))
+		return false;
 	const int rc = avcodec_send_packet(ctx_, nullptr);
 	if (rc < 0 && rc != AVERROR_EOF) {
 		char buf[AV_ERROR_MAX_STRING_SIZE] = {};

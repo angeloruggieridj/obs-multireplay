@@ -337,7 +337,9 @@ void ReplayChannel::load()
 
 void ReplayChannel::unload()
 {
-	stop();
+	std::lock_guard<std::mutex> cmd(commandMutex_);
+	stopLocked();
+	std::lock_guard<std::mutex> pf(prefetchMutex_);
 	// The prefetch thread holds no OBS handles and cannot be aborted mid-read,
 	// but it MUST be joined: a std::thread still joinable at destruction is
 	// std::terminate, and that would be OBS disappearing on shutdown rather
@@ -356,10 +358,11 @@ void ReplayChannel::unload()
 
 void ReplayChannel::releaseSource()
 {
-	// Stop FIRST and outside the lock: the worker holds its own ref while it
+	// Stop FIRST and outside mutex_: the worker holds its own ref while it
 	// pushes frames, and releasing ours while it is mid-push would leave it
 	// pushing into a source OBS is dismantling.
-	stop();
+	std::lock_guard<std::mutex> cmd(commandMutex_);
+	stopLocked();
 	std::lock_guard<std::mutex> lock(mutex_);
 	if (!source_)
 		return;
@@ -507,6 +510,11 @@ uint64_t ReplayChannel::waitForFrame(int64_t masterNs)
 			return 0;
 
 		uint64_t due = 0;
+		// M6: "paused" and "aborted" used to be the same value — zero —
+		// distinguished by convention. They are two different answers and
+		// now they look like it, which also frees dueFor() to return a
+		// legitimate zero (see its own note).
+		bool pausedNow = false;
 		{
 			std::lock_guard<std::mutex> lock(pacingMutex_);
 			if (pacing_.paused) {
@@ -517,11 +525,12 @@ uint64_t ReplayChannel::waitForFrame(int64_t masterNs)
 				const uint64_t now = os_gettime_ns();
 				pacing_.anchorWall += now - pacing_.pausedAt;
 				pacing_.pausedAt = now;
+				pausedNow = true;
 			} else {
 				due = pacing_.dueFor(masterNs);
 			}
 		}
-		if (due == 0) { // paused
+		if (pausedNow) {
 			std::this_thread::sleep_for(
 				std::chrono::nanoseconds(kNapNs));
 			continue;
@@ -703,8 +712,12 @@ void ReplayChannel::cachePut(const ClipKey &key,
 
 void ReplayChannel::joinPrefetch()
 {
+	// prefetchMutex_ is the CALLER's job (prefetch, reset, unload): joining
+	// while holding it is the whole point — two threads must not both decide
+	// the previous prefetch is theirs to join.
 	if (prefetchWorker_.joinable())
 		prefetchWorker_.join();
+	std::lock_guard<std::mutex> lock(cacheMutex_);
 	prefetchBusy_ = false;
 }
 
@@ -718,6 +731,11 @@ void ReplayChannel::prefetch(const PlayRequest &req)
 {
 	if (req.outNs <= req.inNs)
 		return;
+	// A8: prefetchWorker_ is a std::thread like any other, and two callers
+	// deciding at once that the previous one is theirs to join is the same
+	// race play()/stop() had. Its OWN lock, not commandMutex_: joining costs
+	// a whole fetch off disk and play() must never queue behind that.
+	std::lock_guard<std::mutex> pf(prefetchMutex_);
 	const ClipKey key{req.camIndex, req.inNs, req.outNs, req.source};
 
 	{
@@ -756,6 +774,9 @@ void ReplayChannel::prefetch(const PlayRequest &req)
 
 bool ReplayChannel::play(const PlayRequest &req, std::string &errorOut)
 {
+	// A8: one command at a time. Two plays, or a play and a stop, used to be
+	// a data race on worker_ and on abort_.
+	std::lock_guard<std::mutex> cmd(commandMutex_);
 	const int64_t inNs = req.inNs;
 	const int64_t outNs = req.outNs;
 
@@ -845,13 +866,21 @@ bool ReplayChannel::play(const PlayRequest &req, std::string &errorOut)
 
 void ReplayChannel::stop()
 {
+	std::lock_guard<std::mutex> cmd(commandMutex_);
+	stopLocked();
+}
+
+void ReplayChannel::stopLocked()
+{
 	joinWorker();
 	playing_.store(false);
 }
 
 void ReplayChannel::reset()
 {
-	stop();
+	std::lock_guard<std::mutex> cmd(commandMutex_);
+	stopLocked();
+	std::lock_guard<std::mutex> pf(prefetchMutex_);
 	// This is "forget the previous project", so the fetched clips go too. The
 	// keys are master-clock instants and could not collide across projects,
 	// but holding another project's footage in RAM after being told to forget
@@ -1231,6 +1260,17 @@ void ReplayChannel::playbackLoop()
 		stats_.lastRunCompleted = completed;
 	}
 
+	// M1: a decoder that had to hold a packet back means something stopped
+	// draining it. Zero on every path this plugin has — which is exactly why
+	// the old code, which reported EAGAIN as success and dropped the packet,
+	// could have lost pictures for a whole session without anybody knowing.
+	if (dec.stalls() > 0 || adec.stalls() > 0)
+		obs_log(LOG_WARNING,
+			"[channel] %s: the decoder held back %llu video and %llu "
+			"audio packet(s) — its output was not being drained",
+			sourceName(), (unsigned long long)dec.stalls(),
+			(unsigned long long)adec.stalls());
+
 	obs_source_release(source);
 	playing_.store(false);
 
@@ -1262,6 +1302,9 @@ bool ReplayChannel::playReverse(obs_source_t *source, ReplayDecoder &dec,
 	// One decode pass' worth of pictures, ready to show.
 	struct ReadyChunk {
 		std::vector<CachedFrame> frames; // ascending by instant
+		// What it costs, carried with it so the consumer can give the
+		// budget back when it has finished showing it (M7).
+		size_t bytes = 0;
 	};
 
 	// The size of a picture, measured. The plan divides the cache budget by
@@ -1352,6 +1395,13 @@ bool ReplayChannel::playReverse(obs_source_t *source, ReplayDecoder &dec,
 	// Set by the consumer when it has shown everything it was going to show
 	// (maxFrames), so the producer stops decoding passes nobody will see.
 	std::atomic<bool> stopDecoding{false};
+	// M7: the HIGH-WATER MARK OF EVERYTHING HELD AT ONCE, not of one pass.
+	// It used to be max(bytes of the pass being handed over), which by design
+	// is half the story: the whole point of the second thread is that TWO
+	// caches are in flight — one queued, one being shown. So the gate check
+	// reverse_cache_within_budget was verifying half of what it claimed to,
+	// against a budget written for both.
+	size_t heldBytes = 0; // guarded by qm
 	size_t cachePeak = 0; // guarded by qm
 
 	std::thread producer([&]() {
@@ -1445,7 +1495,9 @@ bool ReplayChannel::playReverse(obs_source_t *source, ReplayDecoder &dec,
 					});
 					continue;
 				}
-				cachePeak = std::max(cachePeak, bytes);
+				chunk.bytes = bytes;
+				heldBytes += bytes;
+				cachePeak = std::max(cachePeak, heldBytes);
 				ready.push_back(std::move(chunk));
 				qcv.notify_all();
 				handed = true;
@@ -1532,6 +1584,13 @@ bool ReplayChannel::playReverse(obs_source_t *source, ReplayDecoder &dec,
 				done = true;
 				break;
 			}
+		}
+		// Shown, so its pictures are about to be freed: the budget goes
+		// back before the next pass is admitted (M7).
+		{
+			std::lock_guard<std::mutex> lock(qm);
+			heldBytes = heldBytes > chunk.bytes ? heldBytes - chunk.bytes
+							    : 0;
 		}
 	}
 

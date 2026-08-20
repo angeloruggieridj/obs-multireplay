@@ -296,9 +296,11 @@ private:
 
 	std::thread armThread_;
 	std::atomic<bool> armRunning_{false};
-	// Disposals still in flight (see Doomed). unload() gives them a moment
-	// to finish before libobs goes away underneath them.
-	std::atomic<int> disposing_{0};
+	// Disposals still in flight are counted in a block that OUTLIVES this
+	// object (packet-tap.cpp, disposalState): the counter used to be a member
+	// here, and a detached thread that came back after unload() had given up
+	// waiting would decrement a field of an object on its way out. See
+	// dispose().
 	std::condition_variable armWake_;
 	bool registered_ = false;
 };

@@ -6,6 +6,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "branch-output-control.hpp"
 #include "replay-core.hpp"
+#include "path-utf8.hpp"
 #include "plugin-support.h"
 
 #include <filesystem>
@@ -37,11 +38,13 @@ obs_data_t *buildSettings(int camIndex, const Config &cfg)
 	// ReplayCore::instance().recordingFolder() here because buildSettings()
 	// is called from ensureFilter() which is called from startRecording()
 	// while holding ReplayCore::mutex_, causing a recursive-lock deadlock.
+	// A3: UTF-8. This string is handed to Branch Output, which hands it to
+	// the muxer; path::string() on MSVC would narrow it through the ANSI code
+	// page and a project folder with an accent in it would not be found.
 	std::string recPath = cfg.currentProjectName.empty()
 				      ? cfg.sessionFolder
-				      : (std::filesystem::path(cfg.sessionFolder) /
-					 cfg.currentProjectName)
-					        .string();
+				      : joinUtf8(cfg.sessionFolder,
+						 cfg.currentProjectName);
 	obs_data_set_string(settings, "path", recPath.c_str());
 	std::string nameFormat = "cam" + std::to_string(camIndex + 1) +
 				 "_%CCYY-%MM-%DD_%hh-%mm-%ss";

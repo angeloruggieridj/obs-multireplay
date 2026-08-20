@@ -10,7 +10,9 @@ SPDX-License-Identifier: GPL-2.0-or-later
 #include "health.hpp"
 #include "playback-coordinator.hpp"
 #include "packet-tap.hpp"
+#include "path-utf8.hpp"
 #include "plugin-support.h"
+#include "project-name.hpp"
 #include "replay-channel.hpp"
 #include "segment-index.hpp"
 
@@ -238,10 +240,30 @@ int hotkeyAngle0()
 
 using SimpleFn = void (*)();
 
+// EVERY hotkey runs on the GUI thread, and this is not tidiness (B5).
+//
+// OBS calls hotkey callbacks from its own hotkey thread. These ones go
+// straight into PlaybackCoordinator, which takes its mutex_ and — inside
+// switchToReplayScene() — used to dispatch to the UI thread and WAIT. Meanwhile
+// the operator pressing Stop enters stopEvents() on the UI thread and blocks on
+// that same mutex_. Deck play and a Stop half a second apart is then a complete
+// AB-BA: OBS frozen, with a take recording. The dock has always marshalled its
+// own hotkeys; these were the ones that did not, and they are the ones a Stream
+// Deck actually uses.
+//
+// The dispatch carries no allocation: `data` is a function pointer, not an
+// owned object, so nothing has to survive the queue.
 void onSimpleHotkey(void *data, obs_hotkey_id, obs_hotkey_t *, bool pressed)
 {
-	if (pressed)
+	if (!pressed)
+		return;
+	if (obs_in_task_thread(OBS_TASK_UI)) {
 		reinterpret_cast<SimpleFn>(data)();
+		return;
+	}
+	obs_queue_task(
+		OBS_TASK_UI,
+		[](void *p) { reinterpret_cast<SimpleFn>(p)(); }, data, false);
 }
 
 struct HotkeyDef {
@@ -365,11 +387,22 @@ void ReplayCore::unload()
 
 bool ReplayCore::startRecording(std::string &errorOut)
 {
-	std::lock_guard<std::mutex> lock(mutex_);
-
-	if (recording_) {
-		errorOut = "already recording";
-		return false;
+	// M5: THE PRE-FLIGHT DOES NOT HOLD THE CORE LOCK.
+	//
+	// It asks the filesystem how much space there is and WRITES a probe file
+	// to prove the folder is writable — on a session folder that lives on a
+	// NAS, two network round trips. Held under mutex_, which the dock's poll
+	// takes four times a second, pressing REC froze the interface for as long
+	// as the answer took. Nothing in the pre-flight changes state, so a copy
+	// of the configuration is all it needs.
+	Config cfg;
+	{
+		std::lock_guard<std::mutex> lock(mutex_);
+		if (recording_) {
+			errorOut = "already recording";
+			return false;
+		}
+		cfg = config_;
 	}
 
 	// --- M4 pre-flight ----------------------------------------------------
@@ -385,10 +418,10 @@ bool ReplayCore::startRecording(std::string &errorOut)
 	// Blockers refuse. Warnings never do — they are logged, kept for the
 	// dock's badge, and the take runs.
 	RingBudget budget;
-	budget.kbpsPerCamera = config_.videoBitrateKbps + config_.audioBitrateKbps;
+	budget.kbpsPerCamera = cfg.videoBitrateKbps + cfg.audioBitrateKbps;
 	auto &monitor = HealthMonitor::instance();
 	const health::PreflightResult preflight =
-		monitor.preflight(config_, budget.seconds);
+		monitor.preflight(cfg, budget.seconds);
 	monitor.rememberPreflight(preflight);
 	for (const auto &f : preflight.findings)
 		obs_log(f.level >= health::Level::Blocker ? LOG_ERROR
@@ -406,114 +439,135 @@ bool ReplayCore::startRecording(std::string &errorOut)
 	if (preflight.ringSeconds > 0)
 		budget.seconds = preflight.ringSeconds;
 
-	std::error_code ec;
-	std::string recFolder = recordingFolderLocked();
-	std::filesystem::create_directories(recFolder, ec);
-
+	// ARMING, and only arming, under the lock.
 	int started = 0;
-	for (int i = 0; i < kMaxCameras; i++) {
-		auto &st = cameraStatus_[i];
-		st = CameraStatus{};
-		st.index = i;
-		st.sourceName = config_.cameras[i].sourceName;
-		st.configured = !st.sourceName.empty();
-		if (!st.configured)
-			continue;
-
-		obs_source_t *target =
-			obs_get_source_by_name(st.sourceName.c_str());
-		if (!target) {
-			obs_log(LOG_WARNING, "Camera %d: source '%s' not found",
-				i + 1, st.sourceName.c_str());
-			continue;
-		}
-		st.sourceFound = true;
-
-		// REC arms; it does not configure.
-		//
-		// Writing settings here is what broke the take. obs_source_update()
-		// on an existing filter makes Branch Output log "Settings change
-		// detected, Attempting restart" and rebuild its pipeline - so the
-		// encoder the tap had just attached to is destroyed, the tap backs
-		// off and re-attaches seconds later, and by then the opening of the
-		// file it must anchor against has already left the ring. Result:
-		// "still unmatched ... (240 file, 17 ring)", no anchor, nothing
-		// replayable. The same restart, caught mid-attach, is what crashed
-		// gpu_encode_thread earlier.
-		//
-		// So an existing filter is only switched on. Settings belong to the
-		// Settings dialog, which applies them while nothing is recording.
-		const std::string filterName =
-			std::string(branch_output::kFilterNamePrefix) +
-			std::to_string(i + 1);
-		obs_source_t *filter =
-			obs_source_get_filter_by_name(target, filterName.c_str());
-		if (!filter)
-			filter = branch_output::ensureFilter(target, i, config_);
-		if (filter) {
-			st.filterPresent = true;
-			branch_output::setEnabled(filter, true);
-			st.startTimestampNs = os_gettime_ns();
-			st.recording = true;
-			started++;
-			obs_source_release(filter);
-		}
-		obs_source_release(target);
-	}
-
-	if (started == 0) {
-		errorOut = "no camera could be started (check sources and "
-			   "Branch Output installation)";
-		return false;
-	}
-
-	recording_ = true;
-
-	// M0: attach the live packet tap to the encoders Branch Output just
-	// started. Branch Output builds its infrastructure asynchronously, so
-	// this only arms a retry loop; it never blocks REC and never fails it
-	// (fail-SOFT in M0, fail-CLOSED from M1 once the ring is authoritative).
+	std::string recFolder;
+	std::array<bool, kMaxSegmentCameras> segCams{};
 	{
-		std::array<bool, kMaxTapChannels> wantTap{};
-		std::array<bool, kMaxCameras> armedCams{};
-		for (int i = 0; i < kMaxCameras; i++) {
-			armedCams[i] = cameraStatus_[i].recording;
-			if (i < kMaxTapChannels)
-				wantTap[i] = cameraStatus_[i].recording;
+		std::lock_guard<std::mutex> lock(mutex_);
+		// Between the snapshot above and here, another entry point may have
+		// started a take: the button, a hotkey and the gate all come through
+		// this function and only one of them can be first.
+		if (recording_) {
+			errorOut = "already recording";
+			return false;
 		}
-		// budget was filled in (and possibly cut to fit RAM) by pre-flight.
-		PacketTap::instance().armAsync(wantTap, budget);
 
-		// The monitor's baselines belong to this take: resident memory
-		// before it, the frame counters at its start, and the ring window
-		// it was actually granted rather than the one it asked for.
-		int armedCount = 0;
-		for (bool a : armedCams)
-			armedCount += a ? 1 : 0;
-		monitor.takeStarted(armedCams, budget.seconds,
-				    (int64_t)budget.kbpsPerCamera * 1000 / 8 *
-					    armedCount,
-				    config_.sessionFolder);
+		std::error_code ec;
+		recFolder = recordingFolderLocked();
+		std::filesystem::create_directories(utf8ToPath(recFolder), ec);
 
-		// Watch the files Branch Output writes so replay can reach back
-		// past the RAM window. The epoch pair ties this session's
-		// monotonic clock to wall time, which is the only thing that
-		// still means anything once OBS restarts.
-		std::array<bool, kMaxSegmentCameras> segCams{};
-		for (int i = 0; i < kMaxCameras && i < kMaxSegmentCameras; i++)
-			segCams[i] = cameraStatus_[i].recording;
-		// The session epoch, not a fresh sample: the anchors already on
-		// disk for this folder are about to be read back through it, and
-		// so are the event marks. One pair per process (see sessionEpoch).
+		for (int i = 0; i < kMaxCameras; i++) {
+			auto &st = cameraStatus_[i];
+			st = CameraStatus{};
+			st.index = i;
+			st.sourceName = config_.cameras[i].sourceName;
+			st.configured = !st.sourceName.empty();
+			if (!st.configured)
+				continue;
+
+			obs_source_t *target =
+				obs_get_source_by_name(st.sourceName.c_str());
+			if (!target) {
+				obs_log(LOG_WARNING, "Camera %d: source '%s' not found",
+					i + 1, st.sourceName.c_str());
+				continue;
+			}
+			st.sourceFound = true;
+
+			// REC arms; it does not configure.
+			//
+			// Writing settings here is what broke the take. obs_source_update()
+			// on an existing filter makes Branch Output log "Settings change
+			// detected, Attempting restart" and rebuild its pipeline - so the
+			// encoder the tap had just attached to is destroyed, the tap backs
+			// off and re-attaches seconds later, and by then the opening of the
+			// file it must anchor against has already left the ring. Result:
+			// "still unmatched ... (240 file, 17 ring)", no anchor, nothing
+			// replayable. The same restart, caught mid-attach, is what crashed
+			// gpu_encode_thread earlier.
+			//
+			// So an existing filter is only switched on. Settings belong to the
+			// Settings dialog, which applies them while nothing is recording.
+			const std::string filterName =
+				std::string(branch_output::kFilterNamePrefix) +
+				std::to_string(i + 1);
+			obs_source_t *filter =
+				obs_source_get_filter_by_name(target, filterName.c_str());
+			if (!filter)
+				filter = branch_output::ensureFilter(target, i, config_);
+			if (filter) {
+				st.filterPresent = true;
+				branch_output::setEnabled(filter, true);
+				st.startTimestampNs = os_gettime_ns();
+				st.recording = true;
+				started++;
+				obs_source_release(filter);
+			}
+			obs_source_release(target);
+		}
+
+		if (started == 0) {
+			errorOut = "no camera could be started (check sources and "
+				   "Branch Output installation)";
+			return false;
+		}
+
+		recording_ = true;
+
+		// M0: attach the live packet tap to the encoders Branch Output just
+		// started. Branch Output builds its infrastructure asynchronously, so
+		// this only arms a retry loop; it never blocks REC and never fails it
+		// (fail-SOFT in M0, fail-CLOSED from M1 once the ring is authoritative).
+		{
+			std::array<bool, kMaxTapChannels> wantTap{};
+			std::array<bool, kMaxCameras> armedCams{};
+			for (int i = 0; i < kMaxCameras; i++) {
+				armedCams[i] = cameraStatus_[i].recording;
+				if (i < kMaxTapChannels)
+					wantTap[i] = cameraStatus_[i].recording;
+			}
+			// budget was filled in (and possibly cut to fit RAM) by pre-flight.
+			PacketTap::instance().armAsync(wantTap, budget);
+
+			// The monitor's baselines belong to this take: resident memory
+			// before it, the frame counters at its start, and the ring window
+			// it was actually granted rather than the one it asked for.
+			int armedCount = 0;
+			for (bool a : armedCams)
+				armedCount += a ? 1 : 0;
+			monitor.takeStarted(armedCams, budget.seconds,
+					    (int64_t)budget.kbpsPerCamera * 1000 / 8 *
+						    armedCount,
+					    cfg.sessionFolder);
+
+			// Watch the files Branch Output writes so replay can reach back
+			// past the RAM window. The epoch pair ties this session's
+			// monotonic clock to wall time, which is the only thing that
+			// still means anything once OBS restarts.
+			for (int i = 0; i < kMaxCameras && i < kMaxSegmentCameras; i++)
+				segCams[i] = cameraStatus_[i].recording;
+		}
+	} // the core lock ends here
+
+	// AND SEGMENTINDEX::START() IS OUTSIDE IT (M5). It joins its watcher
+	// thread, parses anchors.json and stats every file named in it — seconds,
+	// on a network folder — and it touches no state of ours, so there was
+	// never a reason for the interface to wait behind it.
+	//
+	// The session epoch, not a fresh sample: the anchors already on disk for
+	// this folder are about to be read back through it, and so are the event
+	// marks. One pair per process (see sessionEpoch).
+	{
 		const SessionEpoch epoch = sessionEpoch();
-		SegmentIndex::instance().start(recFolder, segCams,
-					       epoch.masterNs, epoch.wallNs);
+		SegmentIndex::instance().start(recFolder, segCams, epoch.masterNs,
+					       epoch.wallNs);
 	}
 
 	// The encoder-startup latency detector is gone with the file-based engine:
 	// packets carry sys_dts_usec, so the first captured instant IS the first
 	// encoded frame. Nothing left to measure or subtract.
-	EventStore::instance().setSessionFolder(recordingFolderLocked());
+	EventStore::instance().setSessionFolder(recFolder);
 	EventStore::instance().setLiveMode(true); // the reference controller: recording => Live
 	followLive_.store(true);                  // a new take starts at the live edge
 	obs_log(LOG_INFO, "Recording started on %d camera(s)", started);
@@ -655,11 +709,12 @@ bool ReplayCore::deleteAllSession(std::string &errorOut)
 	namespace fs = std::filesystem;
 	std::error_code ec;
 	int removed = 0;
-	for (const auto &entry : fs::directory_iterator(folder, ec)) {
+	for (const auto &entry :
+	     fs::directory_iterator(utf8ToPath(folder), ec)) {
 		if (!entry.is_regular_file())
 			continue;
-		std::string name = entry.path().filename().string();
-		std::string ext = entry.path().extension().string();
+		std::string name = pathToUtf8(entry.path().filename());
+		std::string ext = pathToUtf8(entry.path().extension());
 		bool isRecording = name.rfind("cam", 0) == 0 &&
 				   (ext == ".mp4" || ext == ".mov");
 		// anchors.json belongs to the recordings being deleted; the
@@ -960,9 +1015,10 @@ std::string ReplayCore::recordingFolderLocked() const
 {
 	if (config_.currentProjectName.empty())
 		return config_.sessionFolder;
-	std::filesystem::path p(config_.sessionFolder);
-	p /= config_.currentProjectName;
-	return p.string();
+	// A3: UTF-8 in, UTF-8 out. path::string() on MSVC would narrow this
+	// through the ANSI code page, and the result is handed to FFmpeg, to
+	// os_fopen and to Branch Output — all of which want UTF-8.
+	return joinUtf8(config_.sessionFolder, config_.currentProjectName);
 }
 
 std::string ReplayCore::recordingFolder() const
@@ -985,13 +1041,15 @@ bool ReplayCore::newProject(const std::string &title, std::string &errorOut)
 			return false;
 		}
 		base = config_.sessionFolder;
-		// Sanitize title: alphanum/dash/underscore kept, spaces → '_'.
-		for (unsigned char c : title) {
-			if (std::isalnum(c) || c == '-' || c == '_')
-				folderName += (char)c;
-			else if (c == ' ' && !folderName.empty())
-				folderName += '_';
-		}
+		// M9: the sanitising used to be std::isalnum, which is
+		// LOCALE-DEPENDENT — in a single-byte ANSI locale the
+		// continuation bytes of a UTF-8 sequence pass it and in the "C"
+		// locale they do not, so the same title produced a different
+		// folder depending on a global nobody here sets. Either way every
+		// non-ASCII character was dropped without a word and "Città"
+		// became "Citt". project-name.hpp validates the UTF-8 and keeps
+		// it; path-utf8.hpp is what makes keeping it safe on Windows.
+		folderName = project_name::sanitize(title);
 		if (folderName.empty()) {
 			errorOut = "project name contains no valid characters";
 			return false;
@@ -1001,8 +1059,8 @@ bool ReplayCore::newProject(const std::string &title, std::string &errorOut)
 	saveConfig();
 
 	std::error_code ec;
-	std::string path = (std::filesystem::path(base) / folderName).string();
-	std::filesystem::create_directories(path, ec);
+	std::string path = joinUtf8(base, folderName);
+	std::filesystem::create_directories(utf8ToPath(path), ec);
 	if (ec) {
 		errorOut = "cannot create project folder: " + ec.message();
 		return false;
@@ -1038,9 +1096,16 @@ bool ReplayCore::openProject(const std::string &folderName,
 			errorOut = "configure session folder first";
 			return false;
 		}
-		path = (std::filesystem::path(config_.sessionFolder) / folderName)
-			       .string();
-		if (!std::filesystem::is_directory(path)) {
+		// M10: this argument used to be concatenated onto the session
+		// folder with no check at all, and one of the places it comes
+		// from is currentProjectName read out of config.json. ".." is a
+		// folder name as far as operator/ is concerned.
+		if (!project_name::isSafeFolderName(folderName)) {
+			errorOut = "that is not a project name: " + folderName;
+			return false;
+		}
+		path = joinUtf8(config_.sessionFolder, folderName);
+		if (!std::filesystem::is_directory(utf8ToPath(path))) {
 			errorOut = "project folder not found: " + path;
 			return false;
 		}
@@ -1076,10 +1141,10 @@ std::vector<std::string> ReplayCore::listProjects() const
 		return result;
 	std::error_code ec;
 	for (const auto &entry :
-	     std::filesystem::directory_iterator(base, ec)) {
+	     std::filesystem::directory_iterator(utf8ToPath(base), ec)) {
 		if (entry.is_directory(ec)) {
 			std::string name =
-				entry.path().filename().string();
+				pathToUtf8(entry.path().filename());
 			if (!name.empty() && name[0] != '.')
 				result.push_back(name);
 		}
@@ -1271,9 +1336,9 @@ std::string ReplayCore::projectSettingsPath() const
 	std::lock_guard<std::mutex> lock(mutex_);
 	if (config_.currentProjectName.empty() || config_.sessionFolder.empty())
 		return std::string();
-	return (std::filesystem::path(config_.sessionFolder) /
-		config_.currentProjectName / kProjectSettingsFile)
-		.string();
+	return joinUtf8(joinUtf8(config_.sessionFolder,
+				config_.currentProjectName),
+			kProjectSettingsFile);
 }
 
 void ReplayCore::saveProjectSettings() const
@@ -1379,8 +1444,7 @@ void ReplayCore::saveConfigFile(const char *path) const
 	// The directory of whichever file this is — the plugin's own config
 	// directory for the global one, the project folder for a project's.
 	std::error_code ec;
-	const std::filesystem::path parent =
-		std::filesystem::path(path).parent_path();
+	const std::filesystem::path parent = utf8ToPath(path).parent_path();
 	if (!parent.empty())
 		std::filesystem::create_directories(parent, ec);
 	obs_data_save_json_safe(data, path, "tmp", "bak");

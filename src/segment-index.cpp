@@ -11,6 +11,7 @@ See segment-index.hpp.
 #include "segment-index.hpp"
 
 #include "packet-tap.hpp"
+#include "path-utf8.hpp"
 #include "plugin-support.h"
 #include "segment-anchor.hpp"
 #include "session-clock.hpp"
@@ -59,7 +60,7 @@ int cameraIndexFromName(const std::string &name)
 
 bool isRecordingFile(const std::filesystem::path &p)
 {
-	const std::string ext = p.extension().string();
+	const std::string ext = pathToUtf8(p.extension());
 	return ext == ".mp4" || ext == ".mov" || ext == ".mkv";
 }
 
@@ -251,18 +252,24 @@ void SegmentIndex::scanFolder()
 		return;
 
 	std::error_code ec;
-	for (const auto &entry : std::filesystem::directory_iterator(folder, ec)) {
+	for (const auto &entry :
+	     std::filesystem::directory_iterator(utf8ToPath(folder), ec)) {
 		if (ec)
 			break;
 		if (!entry.is_regular_file(ec) || !isRecordingFile(entry.path()))
 			continue;
 
-		const std::string name = entry.path().filename().string();
+		// A3: UTF-8, never path::string(). This path is stored, written
+		// into anchors.json and handed to FFmpeg, and on MSVC
+		// path::string() narrows through the ANSI code page — so a
+		// project folder with an accent in it produced a path nothing
+		// downstream could open.
+		const std::string name = pathToUtf8(entry.path().filename());
 		const int cam = cameraIndexFromName(name);
 		if (cam < 0 || cam >= kMaxSegmentCameras || !cams[cam])
 			continue;
 
-		const std::string full = entry.path().string();
+		const std::string full = pathToUtf8(entry.path());
 		std::lock_guard<std::mutex> lock(mutex_);
 
 		const auto known = std::any_of(segments_[cam].begin(),
@@ -321,10 +328,9 @@ void SegmentIndex::tryAnchorPending()
 						"derive one from - it stays "
 						"unplayable rather than guessed",
 						cam + 1,
-						std::filesystem::path(it->first)
-							.filename()
-							.string()
-							.c_str());
+						pathToUtf8(utf8ToPath(it->first)
+									  .filename())
+								.c_str());
 					it->second = kAnchorAbandoned;
 				}
 				++it;
@@ -408,9 +414,7 @@ void SegmentIndex::tryAnchorPending()
 				obs_log(LOG_INFO,
 					"[segments] cam%d: anchored %s at master %lld ms",
 					cam + 1,
-					std::filesystem::path(path)
-						.filename()
-						.string()
+					pathToUtf8(utf8ToPath(path).filename())
 						.c_str(),
 					(long long)(anchorMasterNs / 1000000));
 				continue;
@@ -440,9 +444,7 @@ void SegmentIndex::tryAnchorPending()
 					"its position cannot be established without "
 					"guessing",
 					cam + 1,
-					std::filesystem::path(path)
-						.filename()
-						.string()
+					pathToUtf8(utf8ToPath(path).filename())
 						.c_str(),
 					res == AnchorResult::Ambiguous
 						? "ambiguous"
@@ -532,9 +534,7 @@ void SegmentIndex::refreshDurations()
 		if (settled)
 			obs_log(LOG_INFO, "[segments] cam%d: %s is %lld ms long",
 				targetCam + 1,
-				std::filesystem::path(target)
-					.filename()
-					.string()
+				pathToUtf8(utf8ToPath(target).filename())
 					.c_str(),
 				(long long)(it->durationNs / 1000000));
 		return;
@@ -550,7 +550,7 @@ void SegmentIndex::refreshDurations()
 			"end stays unknown rather than estimated, so it does not "
 			"extend the timeline",
 			targetCam + 1,
-			std::filesystem::path(target).filename().string().c_str());
+			pathToUtf8(utf8ToPath(target).filename()).c_str());
 	}
 }
 
@@ -578,7 +578,13 @@ bool SegmentIndex::resolve(int camIndex, int64_t masterNs, std::string &pathOut,
 		const RecordingSegment &s = segs[i];
 		if (!s.anchored || masterNs < s.anchorMasterNs)
 			continue;
-		if (s.endMasterNs != kNoInstant && masterNs >= s.endMasterNs)
+		// L4: coveredEndNs(), not endMasterNs. For the last file of a
+		// REOPENED project endMasterNs is kNoInstant — nothing follows it
+		// — and reading that as "still growing" made this answer yes for
+		// any instant after the anchor, hours past the end of a recording
+		// that finished yesterday. The measured duration knows better.
+		const int64_t covered = s.coveredEndNs();
+		if (covered != kNoInstant && masterNs >= covered)
 			continue;
 		pathOut = s.path;
 		fileTimeNsOut = masterNs - s.anchorMasterNs;
@@ -722,8 +728,7 @@ void SegmentIndex::save() const
 	if (folder_.empty())
 		return;
 
-	const std::string outPath =
-		(std::filesystem::path(folder_) / kAnchorsFile).string();
+	const std::string outPath = joinUtf8(folder_, kAnchorsFile);
 
 	// Never write an empty index over a file that has entries. save() runs
 	// from stop(), and start() calls stop() first - so a run that failed to
@@ -738,7 +743,7 @@ void SegmentIndex::save() const
 		held += (int)segs.size();
 	if (held == 0) {
 		std::error_code ec;
-		if (std::filesystem::exists(outPath, ec)) {
+		if (std::filesystem::exists(utf8ToPath(outPath), ec)) {
 			obs_log(LOG_INFO,
 				"[segments] nothing anchored this run - leaving %s "
 				"as it is rather than blanking it",
@@ -787,8 +792,7 @@ void SegmentIndex::load()
 	if (folder_.empty())
 		return;
 
-	const std::string path =
-		(std::filesystem::path(folder_) / kAnchorsFile).string();
+	const std::string path = joinUtf8(folder_, kAnchorsFile);
 	obs_data_t *root = obs_data_create_from_json_file(path.c_str());
 	if (!root)
 		return;
@@ -818,15 +822,15 @@ void SegmentIndex::load()
 			// file would be queued for anchoring a second time.
 			std::error_code ec;
 			const std::filesystem::path full =
-				std::filesystem::path(folder_) /
-				std::filesystem::path(stored).filename();
+				utf8ToPath(folder_) /
+				utf8ToPath(stored).filename();
 			if (!std::filesystem::is_regular_file(full, ec)) {
 				dropped++;
 				obs_data_release(o);
 				continue;
 			}
 
-			const std::string fullStr = full.string();
+			const std::string fullStr = pathToUtf8(full);
 			const bool known =
 				std::any_of(segments_[cam].begin(),
 					    segments_[cam].end(),

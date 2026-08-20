@@ -308,10 +308,23 @@ private:
 		int64_t shownMaster = 0;
 		bool seated = false;
 
+		// M6: the offset can be NEGATIVE — a frame before the anchor,
+		// which is exactly what a step backwards asks for — and
+		// converting a negative double to uint64_t is UNDEFINED, not
+		// merely ugly. The sign is resolved in int64_t first, and an
+		// instant that would land before the wall clock's zero is clamped
+		// to zero rather than wrapping to eighteen quintillion.
 		uint64_t dueFor(int64_t masterNs) const
 		{
-			const double off = (double)(dir * (masterNs - anchorMaster));
-			return anchorWall + (uint64_t)(off / (speed > 0 ? speed : 1.0));
+			const double sp = speed > 0 ? speed : 1.0;
+			const double off =
+				(double)(dir * (masterNs - anchorMaster)) / sp;
+			const int64_t delta = (int64_t)(off < 0 ? off - 0.5
+							       : off + 0.5);
+			if (delta >= 0)
+				return anchorWall + (uint64_t)delta;
+			const uint64_t back = (uint64_t)(-delta);
+			return back >= anchorWall ? 0 : anchorWall - back;
 		}
 	};
 	// Seat the anchor on the first frame of a run.
@@ -402,6 +415,31 @@ private:
 
 	mutable std::mutex statsMutex_;
 	PlaybackStats stats_;
+
+	// EVERY COMMAND IS SERIALISED (A8).
+	//
+	// play(), stop(), reset(), unload() and releaseSource() all write worker_
+	// and abort_, and nothing guarded them. Two of them at once is a data
+	// race on a std::thread — assigning to one that is still joinable is
+	// std::terminate — and an abort_ cleared underneath a clip that has just
+	// been started. It held together only because nearly every call site is
+	// the UI thread; the hotkeys in replay-core.cpp were not, which is the
+	// same discovery as B5 seen from the other end.
+	//
+	// Held ACROSS the join, so it is bounded by how quickly a worker notices
+	// abort_ — the same wait play() already did. Lock order is command, then
+	// mutex_/pacingMutex_/statsMutex_; never the reverse, and never held
+	// while a callback runs.
+	std::mutex commandMutex_;
+	// stop() without taking commandMutex_, for the callers that already hold
+	// it.
+	void stopLocked();
+
+	// The prefetch thread has a lock of its OWN rather than sharing
+	// commandMutex_: joining it waits for one whole fetch off a possibly slow
+	// disk, and play() must never queue behind that — the point of prefetching
+	// is to be ahead of the operator, not in front of him.
+	std::mutex prefetchMutex_;
 };
 
 } // namespace multireplay

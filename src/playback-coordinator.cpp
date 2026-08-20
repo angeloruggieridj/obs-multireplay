@@ -31,14 +31,24 @@ namespace multireplay {
 namespace {
 
 // obs_frontend_set_current_scene must run on the UI thread.
+//
+// `owner` replaced a raw `std::string *saveCurrentInto` pointing straight at
+// PlaybackCoordinator::previousSceneName_. The name is now read and written
+// through the coordinator, under its own small mutex, ON THIS THREAD — which is
+// what lets both the switch and the restore be non-blocking tasks and still
+// happen in the right order (see switchToReplayScene, B5).
 struct SceneSwitchCtx {
+	// Empty when `restore` is set: the scene to go to is whatever the switch
+	// task recorded, and only the UI thread knows it yet.
 	std::string sceneName;
-	std::string *saveCurrentInto; // optional: record the previous scene
+	PlaybackCoordinator *owner = nullptr;
 	// THE EVENT TRANSITION (the reference controller): which OBS transition takes the replay to
 	// air, and for how long. Empty = do not touch what the operator has set,
 	// which is the default and is exactly how this plugin behaved before.
 	std::string transitionName;
 	int transitionMs = 0;
+	// true = "put program back where it was", false = "take program".
+	bool restore = false;
 };
 
 // Put OBS's transition back the way the operator had it, after ours has had
@@ -143,7 +153,17 @@ void switchSceneTask(void *param)
 {
 	auto *ctx = static_cast<SceneSwitchCtx *>(param);
 
-	if (ctx->saveCurrentInto) {
+	std::string target = ctx->sceneName;
+	if (ctx->restore) {
+		// Whatever the switch task recorded, and it has already run:
+		// this is the same FIFO queue.
+		target = ctx->owner ? ctx->owner->takePreviousScene()
+				    : std::string();
+		if (target.empty()) {
+			delete ctx;
+			return; // program was never taken
+		}
+	} else if (ctx->owner) {
 		obs_source_t *current = obs_frontend_get_current_scene();
 		if (current) {
 			const char *name = obs_source_get_name(current);
@@ -152,8 +172,8 @@ void switchSceneTask(void *param)
 			// already on air must not record IT as "the scene to go
 			// back to" — that would strand program on the replay
 			// scene once the queue drains.
-			if (cur != ctx->sceneName)
-				*ctx->saveCurrentInto = cur;
+			if (cur != target)
+				ctx->owner->rememberPreviousScene(cur);
 			obs_source_release(current);
 		}
 	}
@@ -163,14 +183,13 @@ void switchSceneTask(void *param)
 	// then program moves exactly as OBS was already set to move it.
 	useTransition(ctx->transitionName, ctx->transitionMs);
 
-	obs_source_t *scene =
-		obs_get_source_by_name(ctx->sceneName.c_str());
+	obs_source_t *scene = obs_get_source_by_name(target.c_str());
 	if (scene) {
 		obs_frontend_set_current_scene(scene);
 		obs_source_release(scene);
 	} else {
 		obs_log(LOG_WARNING, "coordinator: scene '%s' not found",
-			ctx->sceneName.c_str());
+			target.c_str());
 	}
 	delete ctx;
 }
@@ -919,6 +938,57 @@ void PlaybackCoordinator::startNextDipped(int fadeMs)
 // end, so it cannot outlive the thing it belongs to.
 static constexpr uint32_t kMusicChannel = 7;
 
+// WHOSE CHANNEL 7 IS IT (A9).
+//
+// applyMusic() used to call obs_set_output_source(7, ours) and releaseMusic()
+// used to call obs_set_output_source(7, nullptr). Two things were wrong with
+// that pair. Whatever the operator — or another plugin — had put on that mixer
+// channel disappeared without a word and never came back; and with the second
+// bay enabled A and B are two coordinators doing it to each other, so the bed
+// of whichever one started first goes silent when the other one plays.
+//
+// So: the channel is TAKEN by one owner at a time, what was there is held and
+// put back, and the second bay is refused with a line in the log instead of
+// winning silently. File-scope because there is one mixer, not one per bay.
+namespace {
+std::mutex g_musicChannelMutex;
+const void *g_musicChannelOwner = nullptr;
+obs_source_t *g_musicChannelPrev = nullptr; // ref held while we own it
+
+bool takeMusicChannel(const void *owner, obs_source_t *src)
+{
+	std::lock_guard<std::mutex> lock(g_musicChannelMutex);
+	if (g_musicChannelOwner && g_musicChannelOwner != owner) {
+		obs_log(LOG_WARNING,
+			"[music] the other bay is already playing the bed — "
+			"leaving it alone");
+		return false;
+	}
+	if (!g_musicChannelOwner) {
+		// Adds a ref, which we hold until we give the channel back.
+		g_musicChannelPrev = obs_get_output_source(kMusicChannel);
+		g_musicChannelOwner = owner;
+	}
+	obs_set_output_source(kMusicChannel, src);
+	return true;
+}
+
+void giveBackMusicChannel(const void *owner)
+{
+	std::lock_guard<std::mutex> lock(g_musicChannelMutex);
+	if (g_musicChannelOwner != owner)
+		return;
+	// Back to whatever was there, which is usually nothing — and when it is
+	// not, it is somebody else's and was never ours to drop.
+	obs_set_output_source(kMusicChannel, g_musicChannelPrev);
+	if (g_musicChannelPrev) {
+		obs_source_release(g_musicChannelPrev);
+		g_musicChannelPrev = nullptr;
+	}
+	g_musicChannelOwner = nullptr;
+}
+} // namespace
+
 std::string PlaybackCoordinator::musicProblem() const
 {
 	const Config cfg = ReplayCore::instance().getConfig();
@@ -1003,7 +1073,8 @@ void PlaybackCoordinator::applyMusic(bool on)
 			obs_data_release(s);
 		}
 		obs_source_set_muted(musicSrc_, false);
-		obs_set_output_source(kMusicChannel, musicSrc_);
+		if (!takeMusicChannel(this, musicSrc_))
+			return;
 		// FROM THE TOP, every time. A bed parked at the end of its track
 		// is silence with the volume up, which is exactly what the
 		// second replay of an evening would have got.
@@ -1012,7 +1083,7 @@ void PlaybackCoordinator::applyMusic(bool on)
 	}
 
 	if (!on && musicSrc_) {
-		obs_set_output_source(kMusicChannel, nullptr);
+		giveBackMusicChannel(this);
 		obs_source_media_stop(musicSrc_);
 	}
 
@@ -1049,7 +1120,7 @@ void PlaybackCoordinator::releaseMusic()
 {
 	if (!musicSrc_)
 		return;
-	obs_set_output_source(kMusicChannel, nullptr);
+	giveBackMusicChannel(this);
 	obs_source_release(musicSrc_);
 	musicSrc_ = nullptr;
 	obs_log(LOG_INFO, "[music] player released");
@@ -1059,16 +1130,23 @@ void PlaybackCoordinator::switchToReplayScene()
 {
 	// mutex_ held by caller.
 	//
-	// Use wait=true so the UI thread executes switchSceneTask (which saves
-	// the current scene name into previousSceneName_) BEFORE this function
-	// returns.  Without this, for short events the event can finish and
-	// restorePreviousScene() can be called while previousSceneName_ is still
-	// empty (the async task hasn't run yet), leaving OBS stuck on the replay
-	// scene with no way to switch back.
+	// NOT wait=true, and this is the fix for a real deadlock (B5).
 	//
-	// switchSceneTask does not acquire mutex_ or any lock owned by the
-	// calling thread, so waiting cannot deadlock on our own state; runOnUi
-	// handles the "already on the GUI thread" case (see above).
+	// It used to wait so that previousSceneName_ was filled in before this
+	// returned — otherwise a very short clip could finish and call
+	// restorePreviousScene() while the name was still empty, stranding
+	// program on the replay scene. The reasoning about switchSceneTask was
+	// right (it takes no lock of ours) and stopped one step short: THE
+	// DEADLOCK IS NOT INSIDE THE TASK, it is that the UI thread may already
+	// be waiting on mutex_. A Stream Deck "play" enters playEvents on the
+	// hotkey thread, takes mutex_ and waits for the UI thread; the operator
+	// presses Stop, the UI thread enters stopEvents and waits for mutex_.
+	// AB-BA, OBS frozen, with a take recording.
+	//
+	// The ordering is bought a different way now: the save happens INSIDE the
+	// task, and the restore is another task posted afterwards onto the same
+	// FIFO UI queue. A queue cannot run the second before the first, which is
+	// all the wait was ever guaranteeing.
 	//
 	// There is no plugin-managed scene any more: "MultiReplay - Replay A" is
 	// an ordinary OBS input the operator puts where he wants it, so the only
@@ -1091,23 +1169,42 @@ void PlaybackCoordinator::switchToReplayScene()
 	}
 	// the reference controller's event transition: how the replay ARRIVES. Empty = leave OBS's own
 	// transition alone, which is the default.
-	auto *ctx = new SceneSwitchCtx{scene, &previousSceneName_,
-				       cfg.transitionInName, cfg.transitionMs};
-	runOnUi(switchSceneTask, ctx, true);
+	auto *ctx = new SceneSwitchCtx{scene, this, cfg.transitionInName,
+				       cfg.transitionMs, false};
+	runOnUi(switchSceneTask, ctx, false);
 }
 
 void PlaybackCoordinator::restorePreviousScene()
 {
-	// mutex_ held by caller
-	if (previousSceneName_.empty())
-		return;
+	// mutex_ held by caller.
+	//
+	// The name is NOT read here. It is read on the UI thread, by the task,
+	// after whatever switch task was posted before it has run — which is the
+	// ordering that replaced the blocking dispatch (see switchToReplayScene).
+	// Reading it here would be reading it too early again, just without the
+	// deadlock.
+	//
 	// ...and how program COMES BACK, which is a different moment and gets its
 	// own choice: a dip to the replay and a cut back out is a normal way to work.
 	const Config cfg = ReplayCore::instance().getConfig();
-	auto *ctx = new SceneSwitchCtx{previousSceneName_, nullptr,
-				       cfg.transitionOutName, cfg.transitionMs};
+	auto *ctx = new SceneSwitchCtx{std::string(), this,
+				       cfg.transitionOutName, cfg.transitionMs,
+				       true};
 	runOnUi(switchSceneTask, ctx, false);
-	previousSceneName_.clear();
+}
+
+void PlaybackCoordinator::rememberPreviousScene(const std::string &name)
+{
+	std::lock_guard<std::mutex> lock(sceneMutex_);
+	previousSceneName_ = name;
+}
+
+std::string PlaybackCoordinator::takePreviousScene()
+{
+	std::lock_guard<std::mutex> lock(sceneMutex_);
+	std::string out;
+	out.swap(previousSceneName_);
+	return out;
 }
 
 } // namespace multireplay

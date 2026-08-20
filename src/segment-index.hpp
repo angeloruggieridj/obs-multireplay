@@ -72,6 +72,34 @@ struct RecordingSegment {
 	// as unknown, never estimated - so it must also stop being re-demuxed.
 	int durationProbes = 0;
 	bool anchored = false;
+
+	// WHERE THIS FILE ACTUALLY STOPS COVERING THE TIMELINE, which is not the
+	// same question as endMasterNs.
+	//
+	// endMasterNs is the NEXT segment's anchor, so between two takes it
+	// claims the earlier file covers the gap in between: stop recording, talk
+	// for a minute, start again, and the first file is described as covering
+	// that minute. And for the LAST segment of a REOPENED project it is
+	// kNoInstant, which resolve() read as "still growing" — so it answered
+	// yes for any instant after the anchor, however far past the real end of
+	// a recording that finished yesterday (L4).
+	//
+	// A measured, FINAL duration is the truth about a file nothing is writing
+	// to. When both are known the earlier one wins: a file cannot cover past
+	// where the next one begins, nor past its own last frame. kNoInstant here
+	// means genuinely unknown — the file is being written and only the live
+	// edge knows how far it reaches.
+	int64_t coveredEndNs() const
+	{
+		const int64_t measured = (durationFinal && durationNs > 0)
+						 ? anchorMasterNs + durationNs
+						 : kNoInstant;
+		if (measured == kNoInstant)
+			return endMasterNs;
+		if (endMasterNs == kNoInstant)
+			return measured;
+		return measured < endMasterNs ? measured : endMasterNs;
+	}
 };
 
 class SegmentIndex {

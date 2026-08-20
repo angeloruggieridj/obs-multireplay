@@ -10,6 +10,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
 #include "plugin-support.h"
 
 #include "event-store.hpp"
+#include "path-utf8.hpp"
 #include "replay-core.hpp"
 #include "segment-index.hpp"
 
@@ -33,10 +34,42 @@ ExportManager &ExportManager::instance()
 	return mgr;
 }
 
+ExportManager::~ExportManager()
+{
+	shutdown();
+}
+
+void ExportManager::shutdown()
+{
+	stopped_.store(true);
+	abort_.store(true);
+	// Both threads read abort_ inside their packet loops, so this is bounded
+	// by one packet each and not by the length of the file being written.
+	if (thread_.joinable())
+		thread_.join();
+	if (reelThread_.joinable())
+		reelThread_.join();
+	workerRunning_.store(false);
+	reelRunning_.store(false);
+	{
+		std::lock_guard<std::mutex> lock(mutex_);
+		for (auto &j : jobs_)
+			if (j.state == "queued" || j.state == "running") {
+				j.state = "failed";
+				j.detail = "OBS closed before this export finished";
+			}
+	}
+	obs_log(LOG_INFO, "[export] stopped");
+}
+
 bool ExportManager::exportEvent(int eventId, int angle1Based,
 				const std::string &customFolder,
 				std::string &errorOut)
 {
+	if (stopped_.load()) {
+		errorOut = "OBS is closing";
+		return false;
+	}
 	ReplayEvent ev;
 	if (!EventStore::instance().get(eventId, ev) ||
 	    ev.tOutNs == kNoInstant) {
@@ -60,12 +93,16 @@ bool ExportManager::exportEvent(int eventId, int angle1Based,
 
 	std::string folder = customFolder;
 	if (folder.empty()) {
-		fs::path p(ReplayCore::instance().recordingFolder());
-		p /= "export";
-		folder = p.string();
+		// A3: every path in this file travels as UTF-8. On MSVC
+		// path::string() narrows through the ANSI code page, so a
+		// session folder with an accent in it produced a DIFFERENT
+		// folder — and FFmpeg, which wants UTF-8, then could not open
+		// what had been written.
+		folder = joinUtf8(ReplayCore::instance().recordingFolder(),
+				  "export");
 	}
 	std::error_code ec;
-	fs::create_directories(folder, ec);
+	fs::create_directories(utf8ToPath(folder), ec);
 
 	{
 		std::lock_guard<std::mutex> lock(mutex_);
@@ -80,7 +117,7 @@ bool ExportManager::exportEvent(int eventId, int angle1Based,
 						  : 1.0;
 			const int pct = (int)std::lround(sp * 100.0);
 
-			fs::path out(folder);
+			fs::path out(utf8ToPath(folder));
 			// The speed goes in the name when it is not 100%: two
 			// exports of one event at two speeds are two clips, and
 			// the second must not silently overwrite the first.
@@ -96,7 +133,7 @@ bool ExportManager::exportEvent(int eventId, int angle1Based,
 			job.tInNs = ev.tInNs;
 			job.tOutNs = ev.tOutNs;
 			job.speed = sp;
-			job.outPath = out.string();
+			job.outPath = pathToUtf8(out);
 			jobs_.push_back(std::move(job));
 		}
 
@@ -199,12 +236,16 @@ bool ExportManager::exportSequence(const std::vector<int> &eventIds,
 
 	std::string folder = customFolder;
 	if (folder.empty()) {
-		fs::path p(ReplayCore::instance().recordingFolder());
-		p /= "export";
-		folder = p.string();
+		// A3: every path in this file travels as UTF-8. On MSVC
+		// path::string() narrows through the ANSI code page, so a
+		// session folder with an accent in it produced a DIFFERENT
+		// folder — and FFmpeg, which wants UTF-8, then could not open
+		// what had been written.
+		folder = joinUtf8(ReplayCore::instance().recordingFolder(),
+				  "export");
 	}
 	std::error_code ec;
-	fs::create_directories(folder, ec);
+	fs::create_directories(utf8ToPath(folder), ec);
 	std::string musicPath;
 	if (withMusic) {
 		// A PATH FIRST, if the operator gave one. Digging the file out of a
@@ -214,7 +255,7 @@ bool ExportManager::exportSequence(const std::vector<int> &eventIds,
 		// needs.
 		const Config cfg = ReplayCore::instance().getConfig();
 		if (!cfg.musicFilePath.empty()) {
-			if (fs::exists(cfg.musicFilePath))
+			if (fs::exists(utf8ToPath(cfg.musicFilePath)))
 				musicPath = cfg.musicFilePath;
 			else
 				obs_log(LOG_WARNING,
@@ -250,20 +291,30 @@ bool ExportManager::exportSequence(const std::vector<int> &eventIds,
 
 	// A name that says what it holds: how many clips, and whether it has
 	// music on it. Two reels of the same selection must not collide.
-	fs::path out(folder);
+	fs::path out(utf8ToPath(folder));
 	out /= "highlights_" + std::to_string(clips.size()) + "clips" +
 	       (musicPath.empty() ? "" : "_music") + ".mp4";
-	const std::string outPath = out.string();
+	const std::string outPath = pathToUtf8(out);
 
 	// Runs on a thread of its own: this reads and writes gigabytes, and the
-	// dock's button must come back immediately.
-	std::thread([this, clips, musicPath, outPath]() {
+	// dock button must come back immediately. OWNED, not detached — a reel
+	// still running when OBS exits used to go on executing code out of an
+	// unloaded DLL (see shutdown).
+	if (reelRunning_.load()) {
+		errorOut = "a highlight reel is already being written";
+		return false;
+	}
+	if (reelThread_.joinable())
+		reelThread_.join();
+	reelRunning_.store(true);
+	reelThread_ = std::thread([this, clips, musicPath, outPath]() {
 		std::string detail;
 		const bool ok = runReel(clips, musicPath, outPath, detail);
 		obs_log(ok ? LOG_INFO : LOG_ERROR, "[reel] %s: %s",
-			ok ? "wrote" : "FAILED", ok ? outPath.c_str()
-						    : detail.c_str());
-	}).detach();
+			ok ? "wrote" : "FAILED",
+			ok ? outPath.c_str() : detail.c_str());
+		reelRunning_.store(false);
+	});
 	return true;
 }
 
@@ -323,6 +374,8 @@ bool ExportManager::runReel(const std::vector<ReelClip> &clips,
 			AVCodecParameters *par = probe->streams[i]->codecpar;
 			if (par->codec_type == AVMEDIA_TYPE_VIDEO && !vOut) {
 				vOut = avformat_new_stream(out, nullptr);
+				if (!vOut)
+					continue; // L3: out of memory, not a stream
 				avcodec_parameters_copy(vOut->codecpar, par);
 				vOut->codecpar->codec_tag = 0;
 				vTb = probe->streams[i]->time_base;
@@ -331,6 +384,8 @@ bool ExportManager::runReel(const std::vector<ReelClip> &clips,
 			} else if (par->codec_type == AVMEDIA_TYPE_AUDIO &&
 				   clipAudio && !aOut) {
 				aOut = avformat_new_stream(out, nullptr);
+				if (!aOut)
+					continue; // L3
 				avcodec_parameters_copy(aOut->codecpar, par);
 				aOut->codecpar->codec_tag = 0;
 				aOut->time_base = probe->streams[i]->time_base;
@@ -357,8 +412,10 @@ bool ExportManager::runReel(const std::vector<ReelClip> &clips,
 				if (music->streams[i]->codecpar->codec_type !=
 				    AVMEDIA_TYPE_AUDIO)
 					continue;
-				musicIdx = (int)i;
 				aOut = avformat_new_stream(out, nullptr);
+				if (!aOut)
+					break; // L3
+				musicIdx = (int)i;
 				avcodec_parameters_copy(aOut->codecpar,
 							music->streams[i]->codecpar);
 				aOut->codecpar->codec_tag = 0;
@@ -449,7 +506,17 @@ bool ExportManager::runReel(const std::vector<ReelClip> &clips,
 
 		const int64_t startTs = av_rescale_q(c.inOffsetNs, nsTb,
 						     in->streams[vIdx]->time_base);
-		av_seek_frame(in, vIdx, startTs, AVSEEK_FLAG_BACKWARD);
+		// L2: a seek that failed starts the read wherever the file happens
+		// to be, i.e. at its beginning — which would put a whole 20-minute
+		// segment into the reel in place of a five-second highlight.
+		if (av_seek_frame(in, vIdx, startTs, AVSEEK_FLAG_BACKWARD) < 0) {
+			const std::string why =
+				"cannot seek to the in-point of event " +
+				std::to_string(c.eventId) + " angle " +
+				std::to_string(c.angle + 1);
+			avformat_close_input(&in);
+			return fail(why);
+		}
 
 		AVPacket *pkt = av_packet_alloc();
 		if (!pkt) {
@@ -468,7 +535,22 @@ bool ExportManager::runReel(const std::vector<ReelClip> &clips,
 				av_packet_unref(pkt);
 				continue;
 			}
+			if (abort_.load()) {
+				av_packet_unref(pkt);
+				av_packet_free(&pkt);
+				avformat_close_input(&in);
+				return fail("cancelled");
+			}
 			AVStream *ist = in->streams[pkt->stream_index];
+			// M2: a packet with NO pts cannot be rescaled. The
+			// arithmetic below would run on AV_NOPTS_VALUE, which is
+			// INT64_MIN, and write a timestamp that makes the file
+			// undecodable from there on. segment-reader.cpp has always
+			// asked this question; the exporter did not.
+			if (pkt->pts == AV_NOPTS_VALUE) {
+				av_packet_unref(pkt);
+				continue;
+			}
 			const int64_t ptsNs =
 				av_rescale_q(pkt->pts, ist->time_base, nsTb);
 			if (isVideo && ptsNs > c.outOffsetNs) {
@@ -488,8 +570,12 @@ bool ExportManager::runReel(const std::vector<ReelClip> &clips,
 			// the stream's own units. Mixing the two is what corrupted
 			// the audio track (see offsetNs above).
 			int64_t relPtsNs = ptsNs - baseNs;
+			// A packet may carry a pts and no dts (the muxer will
+			// derive one); the presentation time is the honest stand-in.
+			const int64_t dtsRaw = pkt->dts != AV_NOPTS_VALUE ? pkt->dts
+									  : pkt->pts;
 			int64_t relDtsNs =
-				av_rescale_q(pkt->dts, ist->time_base, nsTb) - baseNs;
+				av_rescale_q(dtsRaw, ist->time_base, nsTb) - baseNs;
 			int64_t durNs =
 				av_rescale_q(pkt->duration, ist->time_base, nsTb);
 			if (stretch != 1.0) {
@@ -542,6 +628,13 @@ bool ExportManager::runReel(const std::vector<ReelClip> &clips,
 				continue;
 			}
 			AVStream *ist = music->streams[musicIdx];
+			// Same guard as the clips: no pts, no place to put it.
+			if (pkt->pts == AV_NOPTS_VALUE || abort_.load()) {
+				av_packet_unref(pkt);
+				if (abort_.load())
+					break;
+				continue;
+			}
 			if (av_rescale_q(pkt->pts, ist->time_base, nsTb) > reelNs) {
 				av_packet_unref(pkt);
 				break;
@@ -580,6 +673,10 @@ void ExportManager::worker()
 		bool found = false;
 		{
 			std::lock_guard<std::mutex> lock(mutex_);
+			if (abort_.load()) {
+				workerRunning_ = false;
+				return;
+			}
 			for (auto &j : jobs_) {
 				if (j.state == "queued") {
 					j.state = "running";
@@ -677,6 +774,8 @@ bool ExportManager::runJob(Job &job)
 		if (stretched && par->codec_type == AVMEDIA_TYPE_AUDIO)
 			continue;
 		AVStream *os = avformat_new_stream(out, nullptr);
+		if (!os)
+			continue; // L3
 		avcodec_parameters_copy(os->codecpar, par);
 		os->codecpar->codec_tag = 0;
 		os->time_base = in->streams[i]->time_base;
@@ -699,13 +798,23 @@ bool ExportManager::runJob(Job &job)
 		// Seek to the keyframe at/before In on the video stream.
 		int vIdx = av_find_best_stream(in, AVMEDIA_TYPE_VIDEO, -1, -1,
 					       nullptr, 0);
+		if (vIdx < 0) {
+			job.detail = "the recording has no video stream";
+			break;
+		}
 		AVRational nsTb{1, 1000000000};
 		int64_t seekTs = av_rescale_q(job.tInNs >= 0 ? inOffsetNs : 0,
 					      nsTb,
 					      in->streams[vIdx]->time_base);
 		if (in->streams[vIdx]->start_time != AV_NOPTS_VALUE)
 			seekTs += in->streams[vIdx]->start_time;
-		av_seek_frame(in, vIdx, seekTs, AVSEEK_FLAG_BACKWARD);
+		// L2: an unchecked seek reads from wherever the file happens to
+		// be. For a 20-minute segment that is 20 minutes of the wrong
+		// footage in a file named after one event.
+		if (av_seek_frame(in, vIdx, seekTs, AVSEEK_FLAG_BACKWARD) < 0) {
+			job.detail = "cannot seek to the in-point";
+			break;
+		}
 
 		AVPacket *pkt = av_packet_alloc();
 		if (!pkt) {
@@ -734,7 +843,20 @@ bool ExportManager::runJob(Job &job)
 				av_packet_unref(pkt);
 				continue;
 			}
+			if (abort_.load()) {
+				job.detail = "cancelled";
+				ok = false;
+				av_packet_unref(pkt);
+				break;
+			}
 			AVStream *ist = in->streams[sIdx];
+			// M2, the single-clip half: no pts, nothing to rebase.
+			if (pkt->pts == AV_NOPTS_VALUE) {
+				av_packet_unref(pkt);
+				continue;
+			}
+			if (pkt->dts == AV_NOPTS_VALUE)
+				pkt->dts = pkt->pts;
 			int64_t ptsNs = av_rescale_q(
 				pkt->pts - (ist->start_time != AV_NOPTS_VALUE
 						    ? ist->start_time
@@ -788,7 +910,7 @@ bool ExportManager::runJob(Job &job)
 	} else {
 		obs_log(LOG_WARNING, "export failed: %s", job.detail.c_str());
 		std::error_code ec;
-		std::filesystem::remove(job.outPath, ec);
+		std::filesystem::remove(utf8ToPath(job.outPath), ec);
 	}
 	return ok;
 }

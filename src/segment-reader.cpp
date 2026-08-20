@@ -12,6 +12,7 @@ See segment-reader.hpp.
 
 #include "plugin-support.h"
 #include "segment-index.hpp"
+#include "timeline-map.hpp" // kJoinToleranceNs
 
 extern "C" {
 #include <libavformat/avformat.h>
@@ -53,9 +54,13 @@ const char *codecName(AVCodecID id)
 
 // Read one file's contribution to the range. `fromNs`/`toNs` are master times;
 // `anchorNs` is where this file's time zero sits on the master clock.
+// `reachedPastOut` comes back true when a VIDEO packet later than `toNs` was
+// actually seen: that is the file demonstrating it holds footage past the OUT,
+// which is what tells a range that was fully served from one that merely ran
+// out of file (see readRange).
 bool readOne(const std::string &path, int64_t anchorNs, int64_t fromNs,
 	     int64_t toNs, std::vector<LivePacket> &out, StreamConfig &cfg,
-	     bool wantConfig, std::string &errorOut)
+	     bool wantConfig, bool &reachedPastOut, std::string &errorOut)
 {
 	AVFormatContext *fmt = nullptr;
 	if (avformat_open_input(&fmt, path.c_str(), nullptr, nullptr) < 0) {
@@ -109,7 +114,14 @@ bool readOne(const std::string &path, int64_t anchorNs, int64_t fromNs,
 	// playback starting exactly on the marker.
 	const int64_t seekTs = av_rescale_q(std::max<int64_t>(0, fromNs - anchorNs),
 					    kNs, fmt->streams[vs]->time_base);
-	av_seek_frame(fmt, vs, seekTs, AVSEEK_FLAG_BACKWARD);
+	// L2: an unchecked seek reads from wherever the file happens to be,
+	// which for a 20-minute segment is 20 minutes of the wrong footage
+	// stamped with the instants of the right one.
+	if (av_seek_frame(fmt, vs, seekTs, AVSEEK_FLAG_BACKWARD) < 0) {
+		avformat_close_input(&fmt);
+		errorOut = "cannot seek inside " + path;
+		return false;
+	}
 
 	AVPacket *pkt = av_packet_alloc();
 	bool ok = pkt != nullptr;
@@ -133,6 +145,7 @@ bool readOne(const std::string &path, int64_t anchorNs, int64_t fromNs,
 			// Video is in order, so once past the OUT we are done;
 			// trailing audio would only be discarded anyway.
 			if (idx == vs) {
+				reachedPastOut = true;
 				av_packet_unref(pkt);
 				break;
 			}
@@ -181,25 +194,77 @@ bool readRange(int camIndex, int64_t inNs, int64_t outNs,
 	}
 
 	packetsOut.clear();
+	// L5: the contract does not depend on the caller having zeroed these.
+	// It used to — `presentOutNs == 0` was read below as "not set yet",
+	// which is exactly the sentinel kNoInstant exists to prevent: zero is a
+	// legitimate instant, and everything recorded before the machine's last
+	// boot sits at NEGATIVE ones (session-clock.hpp).
+	presentInNs = kNoInstant;
+	presentOutNs = kNoInstant;
+
 	bool haveConfig = false;
+	// A RANGE IS SERVED EXACTLY OR IT IS NOT SERVED (A4). This is the
+	// invariant the whole design rests on — it is why the ring refuses
+	// instead of clamping, and why continuePastOut can ask the engine
+	// whether a longer range exists rather than guessing. The file path did
+	// not honour it: it read whatever the files happened to hold and
+	// returned true, so a review running past the end of the recording
+	// played a shorter clip and said nothing, and a continuation past the
+	// OUT was granted by a path that could not actually serve it.
+	bool startCovered = false;  // a file begins at or before the IN
+	bool endCovered = false;    // a file demonstrably reaches past the OUT
+	int64_t reach = kNoInstant; // how far the files taken so far get us
 
 	for (const auto &s : segs) {
 		if (!s.anchored)
 			continue;
-		// Does this file overlap the requested range at all?
-		const int64_t segEnd =
-			s.endMasterNs != kNoInstant ? s.endMasterNs : outNs + 1;
+		// Does this file overlap the requested range at all? An unknown
+		// end means the file is still being written, so it reaches at
+		// least as far as anything we might ask of it.
+		const int64_t covered = s.coveredEndNs();
+		const bool openEnded = covered == kNoInstant;
+		const int64_t segEnd = openEnded ? outNs + 1 : covered;
 		if (segEnd <= inNs || s.anchorMasterNs > outNs)
 			continue;
 
+		if (s.anchorMasterNs <= inNs) {
+			startCovered = true;
+		} else if (reach == kNoInstant ||
+			   s.anchorMasterNs > reach + kJoinToleranceNs) {
+			// Footage begins here and there is nothing continuous
+			// behind it: the request crosses a hole. Splicing across
+			// one is what the ring refuses to do, and for the same
+			// reason — the result plays as one continuous piece of
+			// action that never happened.
+			errorOut = "the recorded files do not cover that range "
+				   "without a gap";
+			return false;
+		}
+
+		bool pastOut = false;
 		if (!readOne(s.path, s.anchorMasterNs, inNs, outNs, packetsOut,
-			     configOut, !haveConfig, errorOut))
+			     configOut, !haveConfig, pastOut, errorOut))
 			return false;
 		haveConfig = true;
+		if (pastOut)
+			endCovered = true;
+		if (!openEnded) {
+			reach = covered;
+			if (covered > outNs)
+				endCovered = true;
+		}
 	}
 
 	if (!haveConfig || packetsOut.empty()) {
 		errorOut = "the anchored files do not cover that range";
+		return false;
+	}
+	if (!startCovered) {
+		errorOut = "no recorded file covers that in-point";
+		return false;
+	}
+	if (!endCovered) {
+		errorOut = "the recording ends before that out-point";
 		return false;
 	}
 
@@ -211,6 +276,7 @@ bool readRange(int camIndex, int64_t inNs, int64_t outNs,
 			 });
 
 	bool haveIn = false;
+	bool haveOut = false;
 	for (const auto &p : packetsOut) {
 		if (p.kind != PacketKind::Video)
 			continue;
@@ -218,11 +284,16 @@ bool readRange(int camIndex, int64_t inNs, int64_t outNs,
 			presentInNs = p.masterNs;
 			haveIn = true;
 		}
+		// L5 again: `haveOut`, never `presentOutNs == 0`. On a project
+		// reopened after a reboot every instant here is negative, and
+		// the old test then took the FIRST frame as the last one.
 		if (p.masterNs <= outNs &&
-		    (!haveIn || p.masterNs > presentOutNs || presentOutNs == 0))
+		    (!haveOut || p.masterNs > presentOutNs)) {
 			presentOutNs = p.masterNs;
+			haveOut = true;
+		}
 	}
-	if (!haveIn) {
+	if (!haveIn || !haveOut) {
 		errorOut = "no video frame at or after the requested in-point";
 		return false;
 	}

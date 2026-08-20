@@ -23,8 +23,12 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #include <QWidget> // the dock's parent: OBS's main window (see obs_module_post_load)
 
 #include "plugin-support.h"
+#include "event-store.hpp"
+#include "export.hpp"
+#include "health.hpp"
 #include "multireplay-dock.hpp"
 #include "replay-core.hpp"
+#include "segment-index.hpp"
 #include "packet-tap.hpp"
 #include "playback-coordinator.hpp"
 #include "replay-channel.hpp"
@@ -192,6 +196,25 @@ void obs_module_post_load(void)
 	}
 }
 
+// EVERY SUBSYSTEM THAT OWNS A THREAD IS STOPPED HERE, IN THIS ORDER.
+//
+// The rule was already written down — "a std::thread still joinable at
+// destruction is std::terminate", replay-channel.cpp — and three subsystems had
+// simply never been told: ExportManager (whose reel ran DETACHED and writes
+// gigabytes for minutes, i.e. executing code out of a DLL that has been
+// unloaded), HealthMonitor (sampler plus a detached disk probe) and
+// SegmentIndex (a watcher that demuxes files and calls into PacketTap).
+//
+// The order is not alphabetical. Producers first, then the things that read
+// what they produce, and last the ones that only write to disk:
+//   tap    — stop capturing before anything that reads the ring goes away
+//   channels — their playback and prefetch threads read the ring and the files
+//   export — its jobs read SegmentIndex
+//   segment index — its watcher calls PacketTap::videoSamples()
+//   health — its sampler calls PacketTap::stats()
+//   events — flush the last events.json write
+//   core   — hotkeys and recording state
+//   updater — a network thread that touches none of the above
 void obs_module_unload(void)
 {
 	obs_frontend_remove_event_callback(onFrontendEvent, nullptr);
@@ -201,6 +224,10 @@ void obs_module_unload(void)
 	for (int i = 0; i < multireplay::kChannels; i++)
 		multireplay::ReplayChannel::instance((multireplay::Which)i)
 			.unload();
+	multireplay::ExportManager::instance().shutdown();
+	multireplay::SegmentIndex::instance().stop();
+	multireplay::HealthMonitor::instance().shutdown();
+	multireplay::EventStore::instance().shutdown();
 	multireplay::ReplayCore::instance().unload();
 	// A check or a download still in flight is a thread still joinable, and a
 	// joinable thread at static destruction is std::terminate — OBS vanishing

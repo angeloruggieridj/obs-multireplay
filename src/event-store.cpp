@@ -11,7 +11,10 @@ SPDX-License-Identifier: GPL-2.0-or-later
 #include <obs-module.h>
 #include "plugin-support.h"
 
+#include "path-utf8.hpp"
+
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <filesystem>
 
@@ -35,6 +38,10 @@ void EventStore::setSessionEpoch(const SessionEpoch &epoch)
 
 void EventStore::setSessionFolder(const std::string &folder)
 {
+	// Anything still queued belongs to the project we are leaving. It
+	// carries its own path, so it cannot land in the wrong folder — but it
+	// must land before that folder is described as saved.
+	flushWrites();
 	std::lock_guard<std::mutex> lock(mutex_);
 	folder_ = folder;
 	events_.clear();
@@ -592,18 +599,115 @@ void EventStore::save() const
 	obs_data_set_array(root, "events", arr);
 	obs_data_array_release(arr);
 
-	std::filesystem::path p(folder_);
-	p /= kEventsFile;
-	obs_data_save_json_safe(root, p.string().c_str(), "tmp", "bak");
+	// The bytes, here, with the lock. The DISK, elsewhere: see queueWrite.
+	const char *json = obs_data_get_json(root);
+	const std::string payload = json ? json : "";
 	obs_data_release(root);
+	queueWrite(joinUtf8(folder_, kEventsFile), payload);
+}
+
+void EventStore::queueWrite(const std::string &path,
+			    const std::string &json) const
+{
+	{
+		std::lock_guard<std::mutex> lock(writeMutex_);
+		if (writerStop_)
+			return;
+		pendingPath_ = path;
+		pendingJson_ = json;
+		pendingDirty_ = true;
+		if (!writerStarted_) {
+			writerStarted_ = true;
+			writer_ = std::thread([this]() {
+				const_cast<EventStore *>(this)->writerLoop();
+			});
+		}
+	}
+	writeCv_.notify_all();
+}
+
+void EventStore::writerLoop()
+{
+	using namespace std::chrono_literals;
+	for (;;) {
+		std::string path, json;
+		{
+			std::unique_lock<std::mutex> lock(writeMutex_);
+			writeCv_.wait(lock, [this]() {
+				return pendingDirty_ || writerStop_;
+			});
+			if (!pendingDirty_ && writerStop_)
+				return;
+			// COALESCE. Marking an event touches the store three or
+			// four times in as many milliseconds (the mark, the angle,
+			// the note), and each of those used to be its own write.
+			// A quarter of a second later there is one file to write
+			// and it is the only one that was ever going to matter.
+			if (!writerStop_ && !flushNow_)
+				writeCv_.wait_for(lock, 250ms, [this]() {
+					return writerStop_ || flushNow_;
+				});
+			path = pendingPath_;
+			json = pendingJson_;
+			pendingDirty_ = false;
+			writing_ = true;
+		}
+		if (!path.empty() && !json.empty()) {
+			if (obs_data_t *d =
+				    obs_data_create_from_json(json.c_str())) {
+				obs_data_save_json_safe(d, path.c_str(), "tmp",
+							"bak");
+				obs_data_release(d);
+			}
+		}
+		{
+			std::lock_guard<std::mutex> lock(writeMutex_);
+			flushNow_ = false;
+			writing_ = false;
+		}
+		writeCv_.notify_all();
+	}
+}
+
+void EventStore::flushWrites() const
+{
+	using namespace std::chrono_literals;
+	std::unique_lock<std::mutex> lock(writeMutex_);
+	if (!writerStarted_)
+		return;
+	flushNow_ = true;
+	writeCv_.notify_all();
+	// Bounded: an unreachable network folder must cost a wait, not a hang on
+	// the way out of OBS. And it waits for the WRITE, not just for the queue
+	// to be picked up — "nothing pending" goes true the moment the writer
+	// takes the payload, which is before a byte has reached the disk.
+	writeCv_.wait_for(lock, 3s, [this]() {
+		return !pendingDirty_ && !writing_;
+	});
+	flushNow_ = false;
+}
+
+EventStore::~EventStore()
+{
+	shutdown();
+}
+
+void EventStore::shutdown()
+{
+	flushWrites();
+	{
+		std::lock_guard<std::mutex> lock(writeMutex_);
+		writerStop_ = true;
+	}
+	writeCv_.notify_all();
+	if (writer_.joinable())
+		writer_.join();
 }
 
 void EventStore::load()
 {
-	std::filesystem::path p(folder_);
-	p /= kEventsFile;
-	obs_data_t *root =
-		obs_data_create_from_json_file(p.string().c_str());
+	const std::string path = joinUtf8(folder_, kEventsFile);
+	obs_data_t *root = obs_data_create_from_json_file(path.c_str());
 	if (!root)
 		return;
 

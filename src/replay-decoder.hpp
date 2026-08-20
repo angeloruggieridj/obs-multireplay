@@ -26,6 +26,7 @@ deal only with plain plane pointers.
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 struct AVCodecContext;
 struct AVFrame;
@@ -78,13 +79,35 @@ public:
 
 	uint32_t width() const { return width_; }
 	uint32_t height() const { return height_; }
+	// How many packets the decoder refused with EAGAIN and this class had to
+	// hold back (M1). Should be zero: every caller drains after every send.
+	// It exists because the old code reported EAGAIN as SUCCESS and dropped
+	// the packet — a picture gone, with no counter, no log line and nothing
+	// downstream able to tell.
+	uint64_t stalls() const { return stalls_; }
 
 private:
+	// Feed the decoder raw bytes. `mayStash` false means "this is the
+	// held-back packet coming round again": a second EAGAIN then is the
+	// caller not draining, and is reported instead of swallowed.
+	bool sendRaw(const uint8_t *data, size_t size, int64_t pts, int64_t dts,
+		     int flags, bool mayStash, std::string &errorOut);
+	bool flushPending(std::string &errorOut);
+
 	AVCodecContext *ctx_ = nullptr;
 	AVFrame *frame_ = nullptr;
 	AVPacket *packet_ = nullptr;
 	uint32_t width_ = 0;
 	uint32_t height_ = 0;
+
+	// The packet avcodec_send_packet did NOT consume, kept in presentation
+	// order ahead of whatever comes next.
+	std::vector<uint8_t> pending_;
+	int64_t pendingPts_ = 0;
+	int64_t pendingDts_ = 0;
+	int pendingFlags_ = 0;
+	bool havePending_ = false;
+	uint64_t stalls_ = 0;
 };
 
 // The audio half. Same streaming shape, same master-clock timestamps, so video
@@ -113,11 +136,23 @@ public:
 	bool send(const LivePacket &p, std::string &errorOut);
 	bool receive(Samples &out);
 	bool drain(std::string &errorOut);
+	// See ReplayDecoder::stalls().
+	uint64_t stalls() const { return stalls_; }
 
 private:
+	bool sendRaw(const uint8_t *data, size_t size, int64_t pts, int64_t dts,
+		     bool mayStash, std::string &errorOut);
+	bool flushPending(std::string &errorOut);
+
 	AVCodecContext *ctx_ = nullptr;
 	AVFrame *frame_ = nullptr;
 	AVPacket *packet_ = nullptr;
+
+	std::vector<uint8_t> pending_;
+	int64_t pendingPts_ = 0;
+	int64_t pendingDts_ = 0;
+	bool havePending_ = false;
+	uint64_t stalls_ = 0;
 };
 
 } // namespace multireplay
