@@ -192,13 +192,19 @@ recording, and keeps the last minutes of them in a bounded ring in RAM.
   The plugin is never replaced under a running OBS: the install waits until you
   close it, then starts it again.
 
+  Every download is **checked against the SHA-256 the release publishes** before
+  anything is staged, and a release that publishes no checksum for its own file
+  is refused rather than installed. Only the archive built for *your* platform
+  is offered; where there is no installer (macOS, Linux) the panel says so
+  instead of pretending, and hands you the file to unpack yourself.
+
 ### Requirements
 
 | | |
 |---|---|
 | OBS Studio | **32 or newer** |
 | Branch Output | **[Download](https://github.com/OPENSPHERE-Inc/branch-output/releases)** · [repository](https://github.com/OPENSPHERE-Inc/branch-output) — this is the recording layer, and MultiReplay does nothing without it |
-| Platforms | Windows (primary) · macOS · Linux (X11/XWayland; native Wayland is not supported) |
+| Platforms | Windows (primary) · macOS · Linux (X11/XWayland; under native Wayland the embedded previews say so in the box rather than going black) |
 
 ### Installation
 
@@ -409,13 +415,20 @@ ne tiene gli ultimi minuti in un buffer circolare in RAM.
   **stabile** o **beta**. Il plugin non viene mai sostituito sotto un OBS in
   esecuzione: l'installazione aspetta che tu lo chiuda, poi lo riavvia.
 
+  Ogni download viene **verificato contro lo SHA-256 che la release pubblica**
+  prima di essere messo da parte, e una release che non pubblica il checksum del
+  proprio file viene rifiutata invece che installata. Ti viene offerto soltanto
+  l'archivio costruito per la *tua* piattaforma; dove non esiste un installatore
+  (macOS, Linux) il pannello lo dice invece di far finta, e ti consegna il file
+  da scompattare a mano.
+
 ### Requisiti
 
 | | |
 |---|---|
 | OBS Studio | **32 o successivo** |
 | Branch Output | **[Download](https://github.com/OPENSPHERE-Inc/branch-output/releases)** · [repository](https://github.com/OPENSPHERE-Inc/branch-output) — è lo strato che registra, e senza di lui MultiReplay non fa niente |
-| Piattaforme | Windows (principale) · macOS · Linux (X11/XWayland; Wayland nativo non è supportato) |
+| Piattaforme | Windows (principale) · macOS · Linux (X11/XWayland; sotto Wayland nativo le anteprime lo scrivono nel riquadro invece di restare nere) |
 
 ### Installazione
 
