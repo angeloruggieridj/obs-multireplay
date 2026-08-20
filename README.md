@@ -131,12 +131,27 @@ recording, and keeps the last minutes of them in a bounded ring in RAM.
   rather than from the in-point.
 * **Reverse playback** and **single-frame step in both directions**, because
   finding the right frame means passing it and coming back.
+* **Watch a stretch nobody marked.** Put the position bar anywhere in the
+  recorded timeline and press play: that footage plays, from there, until you
+  press stop — no event, no row in the list, nothing added to your running
+  order. It plays **off air**, so reviewing an action you did not mark can
+  never reach Program by itself. If you decide it should go up, **"Play events"
+  is what puts it there** — the key's second function — and it starts from the
+  same instant you were watching, not from wherever you stopped. Stop hands
+  Program back to the scene it was on.
 * **A position bar over the whole recorded timeline** — graduated, zoomable by
   time span ("show me the last five minutes", not "zoom 8×"), with event
   markers you can drag by their edges. Stops between takes are drawn as joins,
   not gaps: every position on the bar is footage that exists.
 * **Multiview** of every configured camera, with tally — green for the angle you
   are watching, red for the one on air. Click a tile to select that angle.
+* **The angle boxes follow what you are reviewing.** Cue an event, play one, or
+  move the position bar, and every box shows **that moment on its own lens** —
+  which is what the strip is for: choosing the angle before the replay goes up.
+  Press **Live** and they go back to the cameras in real time. A box showing
+  the camera as it is *now* while you review something that happened two
+  minutes ago is worse than a black rectangle, because it looks like the
+  footage you are reviewing.
 * **To Program, with your transitions.** Separate in and out transitions
   (stingers included), and between two events either a **cut or a dip through
   black**. Between two *angles* of the same event it stays a cut on purpose: you
@@ -327,6 +342,14 @@ ne tiene gli ultimi minuti in un buffer circolare in RAM.
 * **Riproduzione all'indietro** e **avanzamento di un fotogramma nelle due
   direzioni**, perché trovare il fotogramma giusto vuol dire superarlo e
   tornare indietro.
+* **Rivedi un tratto che nessuno ha marcato.** Porta la barra di posizione dove
+  vuoi sul girato e premi play: quel girato parte da lì e va avanti finché non
+  premi stop — nessun evento, nessuna riga in lista, niente che finisca nella
+  tua scaletta. Va **fuori onda**, così rivedere un'azione che non hai marcato
+  non può arrivare al Program da sé. Se decidi che deve andarci, **è
+  "Riproduci eventi" a mandarcela** — è la seconda funzione di quel tasto — e
+  riparte dall'istante che stavi guardando, non da dove ti sei fermato. Lo stop
+  restituisce il Program alla scena su cui stava.
 * **Una barra di posizione su tutto il girato** — graduata, con zoom per
   intervallo di tempo ("fammi vedere gli ultimi cinque minuti", non "zoom 8×") e
   marcatori degli eventi che puoi trascinare per i bordi. Gli stop fra una take
@@ -335,6 +358,13 @@ ne tiene gli ultimi minuti in un buffer circolare in RAM.
 * **Multiview** di tutte le camere configurate, con tally: verde l'angolo che
   stai guardando, rosso quello in onda. Un clic su un riquadro seleziona quella
   camera.
+* **I riquadri degli angoli seguono quello che stai rivedendo.** Metti in cue un
+  evento, riproducilo o muovi la barra di posizione, e ogni riquadro mostra
+  **quel momento sul proprio obiettivo** — che è il motivo per cui la striscia
+  esiste: scegliere l'angolo prima di mandare il replay in onda. Premi **Live**
+  e tornano alle camere in tempo reale. Un riquadro che mostra la camera com'è
+  *adesso* mentre rivedi qualcosa successo due minuti fa è peggio di un
+  rettangolo nero, perché sembra il girato che stai rivedendo.
 * **Messa in onda con le tue transizioni.** Transizione di andata e di ritorno
   separate (stinger compresi) e, fra un evento e l'altro, **stacco oppure
   dissolvenza al nero**. Fra due *angoli* dello stesso evento resta uno stacco,
