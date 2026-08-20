@@ -990,8 +990,11 @@ private:
 	void ensureTileFeeds();
 	// Show [inNs, outNs] on every feed. A no-op when the range has not moved —
 	// this is called from poll(), thirty times a second.
+	// `maxFrames` > 0 stops each feed after that many pictures, which is how a
+	// CUE asks for the same range the play after it will ask for — same range,
+	// same cache key, one fetch between them instead of two.
 	void cueTiles(int64_t inNs, int64_t outNs, int speedPct,
-		      ReplayChannel::Direction dir);
+		      ReplayChannel::Direction dir, int maxFrames = 0);
 	// Get a range ready on every feed WITHOUT showing it. Mirrors what
 	// cueSelected() already does for the bay: cueing is what an operator does
 	// immediately before playing, so the clip the play will want is fetched
@@ -1039,6 +1042,11 @@ private:
 	int tileCueSpeedPct_ = 0;
 	ReplayChannel::Direction tileCueDir_ =
 		ReplayChannel::Direction::Forward;
+	// Part of the cue's identity, not a detail: a cue and the play that
+	// follows it now ask for the SAME range and differ only in this. Left out,
+	// the play would look like the cue that is already running and be skipped
+	// — the boxes would hold the in-point still for the whole replay.
+	int tileCueMaxFrames_ = 0;
 	// What refreshTileSources() last published: the camera mirrors, or the
 	// feeds. Kept so the swap happens the tick the mode changes rather than on
 	// the next 4 Hz beat — a quarter of a second of the wrong picture in eight

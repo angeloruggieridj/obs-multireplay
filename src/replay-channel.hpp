@@ -182,6 +182,16 @@ public:
 	// fail without changing what goes on air.
 	void prefetch(const PlayRequest &req);
 
+	// Is a prefetch still reading? Asking first is how a caller avoids the
+	// one blocking step in here: prefetch() JOINS the previous worker on the
+	// calling thread before starting a new one. For the coordinator that is
+	// deliberate and harmless — it asks right after starting a clip, so the
+	// picture is already moving while it waits — but a caller on the UI
+	// thread, with one of these per camera, would be stalling the whole panel
+	// by up to a file read per angle. Such a caller skips the busy ones: a
+	// prefetch is an optimisation, and not issuing one costs nothing but time.
+	bool prefetchBusy() const;
+
 	// Play [inNs, outNs] of `camIndex` at `speedPct` (5..400; 100 = 1x),
 	// forwards. Kept because most call sites mean exactly this.
 	bool play(int camIndex, int64_t inNs, int64_t outNs, int speedPct,

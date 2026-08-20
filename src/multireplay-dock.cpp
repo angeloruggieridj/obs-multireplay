@@ -1918,7 +1918,16 @@ void MultiReplayDock::prefetchTiles(int64_t inNs, int64_t outNs, int speedPct)
 	outNs = std::min(outNs, inNs + kTileReviewMaxNs);
 	const int pct = std::clamp(speedPct > 0 ? speedPct : 100, 5, 400);
 	for (int cam = 0; cam < (int)tileFeed_.size(); cam++) {
-		if (!tileFeed_[cam])
+		// SKIP THE ONES STILL READING. prefetch() joins the previous
+		// worker on the calling thread, and this thread is the one that
+		// draws the panel: with a feed per camera, an operator walking the
+		// list faster than a cold read completes would stall the dock by
+		// up to a file read PER ANGLE, and the stall would come and go
+		// with how warm the cache happened to be. Skipping is free — a
+		// prefetch that is not issued only means play() fetches for
+		// itself, which is the arrangement everything here already
+		// tolerates.
+		if (!tileFeed_[cam] || tileFeed_[cam]->prefetchBusy())
 			continue;
 		ReplayChannel::PlayRequest req;
 		req.camIndex = cam;
@@ -1930,7 +1939,7 @@ void MultiReplayDock::prefetchTiles(int64_t inNs, int64_t outNs, int speedPct)
 }
 
 void MultiReplayDock::cueTiles(int64_t inNs, int64_t outNs, int speedPct,
-			       ReplayChannel::Direction dir)
+			       ReplayChannel::Direction dir, int maxFrames)
 {
 	if (inNs == kNoInstant || outNs == kNoInstant || outNs <= inNs)
 		return;
@@ -1945,12 +1954,14 @@ void MultiReplayDock::cueTiles(int64_t inNs, int64_t outNs, int speedPct,
 	// thirty times a second, which is not slow, it is a dock that never shows
 	// a picture.
 	if (inNs == tileCueInNs_ && outNs == tileCueOutNs_ &&
-	    pct == tileCueSpeedPct_ && dir == tileCueDir_)
+	    pct == tileCueSpeedPct_ && dir == tileCueDir_ &&
+	    maxFrames == tileCueMaxFrames_)
 		return;
 	tileCueInNs_ = inNs;
 	tileCueOutNs_ = outNs;
 	tileCueSpeedPct_ = pct;
 	tileCueDir_ = dir;
+	tileCueMaxFrames_ = maxFrames;
 
 	ensureTileFeeds();
 	for (int cam = 0; cam < (int)tileFeed_.size(); cam++) {
@@ -1962,6 +1973,7 @@ void MultiReplayDock::cueTiles(int64_t inNs, int64_t outNs, int speedPct,
 		req.outNs = outNs;
 		req.speedPct = pct;
 		req.direction = dir;
+		req.maxFrames = maxFrames;
 		std::string err;
 		if (!tileFeed_[cam]->play(req, err))
 			// NOT a notice, and not a warning either. An angle with
@@ -4381,8 +4393,22 @@ void MultiReplayDock::cueSelected()
 	// the feeds' clips are already in their caches and their play() starts at
 	// once. Nothing waits on any of it — a prefetch that has not landed just
 	// means play() fetches for itself, exactly as before.
+	//
+	// ONE RANGE FOR THE CUE AND THE PLAY, which is what makes this
+	// predictable instead of merely fast on a good day. The cue asks for the
+	// WHOLE event and stops on the first picture (PlayRequest::maxFrames), so
+	// it leaves in the cache exactly the clip the play after it will ask for.
+	// It used to ask for a two-frame range instead: a different range is a
+	// different key, so the cue fetched, and then the play fetched the same
+	// footage again — and whether that second read was a memcpy out of the
+	// ring or an open-seek-demux off the disk is what made the wait feel
+	// random.
+	const int64_t cueOutNs =
+		(ev.tOutNs != kNoInstant && ev.tOutNs > ev.tInNs)
+			? ev.tOutNs
+			: ev.tInNs + 2 * frameNs;
 	ensureTileFeeds();
-	prefetchTiles(ev.tInNs, ev.tInNs + 2 * frameNs, 100);
+	prefetchTiles(ev.tInNs, cueOutNs, 100);
 
 	for (Which w : targetChannels()) {
 		auto &pcw = PlaybackCoordinator::instance(w);
@@ -4402,8 +4428,14 @@ void MultiReplayDock::cueSelected()
 		ReplayChannel::PlayRequest req;
 		req.camIndex = angle1_[(int)w] - 1;
 		req.inNs = ev.tInNs;
-		req.outNs = ev.tInNs + 2 * frameNs;
+		req.outNs = cueOutNs;
 		req.speedPct = 100;
+		// The still is a frame cap, not a short range — see cueOutNs. The
+		// fetch this pays for is the one the play will want, so there is
+		// no second prefetch here any more: it was a whole extra read of
+		// the same footage, and the join it did on this thread was a UI
+		// stall of up to a file read per bay.
+		req.maxFrames = 2;
 		std::string err;
 		if (!ReplayChannel::instance(w).play(req, err))
 			// Not a notice: a cue is a side effect of moving the
@@ -4412,22 +4444,6 @@ void MultiReplayDock::cueSelected()
 			// press would be worse than silence.
 			obs_log(LOG_INFO, "[dock] cue %s: event %d not playable: %s",
 				channelLetter(w), ev.id, err.c_str());
-
-		// ...AND GET THE WHOLE CLIP READY WHILE HE LOOKS AT THE IN.
-		//
-		// Cueing is what an operator does immediately before playing, and
-		// the play that follows had to read the clip out of a file all over
-		// again — an open, a seek and a demux between his press and the
-		// picture. The two frames above have just paid for finding the
-		// file; this asks for the rest of the event on the same angle,
-		// which is what Play will want, and it happens while he is looking
-		// at the frozen IN. If he plays before it is ready nothing is lost:
-		// play() fetches for itself.
-		if (ev.tOutNs != kNoInstant && ev.tOutNs > ev.tInNs) {
-			ReplayChannel::PlayRequest full = req;
-			full.outNs = ev.tOutNs;
-			ReplayChannel::instance(w).prefetch(full);
-		}
 	}
 
 	// THE ANGLE BOXES SHOW THE CUE TOO — every lens, on the in-point.
@@ -4440,19 +4456,11 @@ void MultiReplayDock::cueSelected()
 	//
 	// AFTER the bay, on the clips the prefetch above has been reading while
 	// the bay did its own: this play() is a cache hit, so the boxes light up
-	// with it rather than a fetch apiece behind it.
-	cueTiles(ev.tInNs, ev.tInNs + 2 * frameNs, 100,
-		 ReplayChannel::Direction::Forward);
-	// ...and the boxes get the whole clip ready too, exactly as the bay just
-	// did. Without this the feeds paid a cold fetch at the moment poll() cued
-	// them for the PLAY — after the bay had already started, which is the
-	// asymmetry that shows during a replay rather than during the cue.
-	//
-	// This JOINS each feed's previous prefetch, on this thread, which is the
-	// second reason the order matters: by now those are the two-frame reads
-	// asked for above and they have finished under the bay's own fetch, so
-	// the join costs nothing. Asked the other way round it would block here.
-	prefetchTiles(ev.tInNs, ev.tOutNs, 100);
+	// with it rather than a fetch apiece behind it. Same range, same frame
+	// cap: one fetch per angle serves both this still and the replay that
+	// follows it.
+	cueTiles(ev.tInNs, cueOutNs, 100, ReplayChannel::Direction::Forward,
+		 /*maxFrames*/ 2);
 }
 
 void MultiReplayDock::replayCurrent()

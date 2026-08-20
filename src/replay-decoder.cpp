@@ -89,6 +89,26 @@ bool ReplayDecoder::open(const StreamConfig &cfg, std::string &errorOut)
 	// Packets are stamped in master-timeline nanoseconds, so decoded frames
 	// come back on the same clock the markers use - no rescaling anywhere.
 	ctx_->pkt_timebase = AVRational{1, 1'000'000'000};
+
+	// FRAME THREADING, WHICH IS THE DEFAULT, AND DO NOT "FIX" IT AGAIN.
+	//
+	// The wait between pressing a row and seeing the picture is decode time —
+	// measured, with the clip served out of the ring and a preroll of zero
+	// frames, at 33..127 ms and varying cue to cue with nothing else changing.
+	// The obvious suspect is frame threading: libavcodec hands nothing back
+	// until roughly thread_count packets have gone in, so the first picture
+	// looks like it costs eight frames of decoding.
+	//
+	// IT WAS TRIED. `thread_type = FF_THREAD_SLICE` plus
+	// AV_CODEC_FLAG_LOW_DELAY made it WORSE, not better: the same cue went
+	// from 45..105 ms to 85..290 ms, because slice threading decodes each
+	// picture more slowly and this decoder is competing with two QSV encoders
+	// for the same chip. The delay frame threading adds is smaller than the
+	// throughput it buys back.
+	//
+	// The spread that remains is the decoder's, and it tracks the CONTENT: in
+	// the same run one camera's stream came back in 22..26 ms while the
+	// other's took 143..155 ms. There is no threading flag that fixes that.
 	ctx_->thread_count = 0; // let FFmpeg pick
 
 	if (!cfg.videoExtradata.empty()) {

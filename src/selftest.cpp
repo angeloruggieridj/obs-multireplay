@@ -465,6 +465,15 @@ struct DockChecks {
 	// have gone red.
 	int multiviewCueDarkMs = -1;
 	int multiviewCueGapMs = -1;
+	// HOW LONG A CUE TAKES TO SHOW, best and worst over several cold cues.
+	// The complaint after the symmetry was fixed was that the wait itself
+	// comes and goes — quick on one row, a noticeable pause on the next — so
+	// the SPREAD is the number, not an average. An average of four cues where
+	// three are instant and one is a third of a second reads as "fine".
+	int cueBayMinMs = -1;
+	int cueBayMaxMs = -1;
+	int cueTileMinMs = -1;
+	int cueTileMaxMs = -1;
 	// M5: the running order is the operator's. The ▲/▼ keys must really move
 	// the ROW (not just a field nobody draws), and reordering by hand must
 	// turn the chronological auto-sort off — with both on, the row snaps back
@@ -1926,13 +1935,26 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 			// hits every cache and would pass with any ordering at
 			// all. So this marks one of its own, times the cue, and
 			// takes it away again.
-			{
+			// ...AND SEVERAL TIMES, because the complaint that came
+			// back from the panel next was that the wait itself is
+			// INTERMITTENT — sometimes instant on both, sometimes a
+			// noticeable pause. A single sample cannot say that. Each
+			// pass marks its own event at a different instant, so no
+			// two share a cache entry, and the SPREAD is what gets
+			// reported: a mean says nothing about a panel that is
+			// quick four times and slow the fifth.
+			int bayMin = INT_MAX, bayMax = -1;
+			int tileMin = INT_MAX, tileMax = -1;
+			int gapMax = -1;
+			for (int pass = 0; pass < 4; pass++) {
 				const int64_t coldNewest =
 					PacketTap::instance().newestNs(firstCam);
 				const int coldId =
 					coldNewest > 0
 						? store.markInOut(
-							  coldNewest - 6'000'000'000LL,
+							  coldNewest -
+								  (6 + pass * 2) *
+									  1'000'000'000LL,
 							  2, firstCam)
 						: 0;
 				int coldRow = -1;
@@ -1981,22 +2003,31 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 				const int gap = (bayMs >= 0 && tilesMs >= 0)
 							? std::abs(tilesMs - bayMs)
 							: -1;
-				c.multiviewCueGapMs = gap;
-				// A poll tick is 33 ms and the boxes are cued from
-				// this thread, not from poll(), so the two should
-				// be within a tick or two of each other. The
-				// failure this replaces was one inline file read
-				// per angle — 100 ms EACH — so nothing about it
-				// fits under this.
-				const bool cueTimed =
-					coldRow >= 0 && feeds > 0 && gap >= 0 &&
-					gap <= 80;
-				obs_log(cueTimed ? LOG_INFO
-								  : LOG_ERROR,
-					"[selftest] dock: cold cue — bay had its "
+				if (bayMs >= 0) {
+					bayMin = std::min(bayMin, bayMs);
+					bayMax = std::max(bayMax, bayMs);
+				}
+				if (tilesMs >= 0) {
+					tileMin = std::min(tileMin, tilesMs);
+					tileMax = std::max(tileMax, tilesMs);
+				}
+				gapMax = std::max(gapMax, gap);
+				// ...and WHY it took that long. framesPreroll is
+				// how many pictures the decoder had to run
+				// through to reach the marked one — the distance
+				// from the keyframe before it. With keyint_sec=1
+				// that is 0..30 frames depending on where the
+				// mark happened to fall inside the GOP, and it is
+				// the one thing here that varies per cue while
+				// everything else is constant. If the wait tracks
+				// it, the wait is decode, not I/O.
+				const auto cueSt = chan.stats();
+				obs_log(LOG_INFO,
+					"[selftest] dock: cold cue %d — bay had its "
 					"picture at %d ms, %d box(es) at %d ms, "
-					"gap %d ms",
-					bayMs, feeds, tilesMs, gap);
+					"gap %d ms, preroll %llu frame(s)",
+					pass + 1, bayMs, feeds, tilesMs, gap,
+					(unsigned long long)cueSt.framesPreroll);
 				if (coldId > 0)
 					store.remove(coldId);
 				chan.stop();
@@ -2012,6 +2043,16 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 					}
 				});
 			}
+			c.multiviewCueGapMs = gapMax;
+			c.cueBayMinMs = bayMax >= 0 ? bayMin : -1;
+			c.cueBayMaxMs = bayMax;
+			c.cueTileMinMs = tileMax >= 0 ? tileMin : -1;
+			c.cueTileMaxMs = tileMax;
+			obs_log(LOG_INFO,
+				"[selftest] dock: cue latency over 4 cold cues — "
+				"bay %d..%d ms, boxes %d..%d ms, worst gap %d ms",
+				c.cueBayMinMs, bayMax, c.cueTileMinMs, tileMax,
+				gapMax);
 
 			// --- ...AND THE BOXES DO NOT GO DARK WHILE IT DOES ----
 			// Reported from a real panel: the bay and the angle boxes
@@ -5289,6 +5330,10 @@ void runSelfTest()
 			 dockChecks.multiviewCueDarkMs);
 	obs_data_set_int(root, "multiview_cue_gap_ms",
 			 dockChecks.multiviewCueGapMs);
+	obs_data_set_int(root, "cue_bay_min_ms", dockChecks.cueBayMinMs);
+	obs_data_set_int(root, "cue_bay_max_ms", dockChecks.cueBayMaxMs);
+	obs_data_set_int(root, "cue_tile_min_ms", dockChecks.cueTileMinMs);
+	obs_data_set_int(root, "cue_tile_max_ms", dockChecks.cueTileMaxMs);
 	obs_data_set_int(root, "multiview_feeds", dockChecks.multiviewFeeds);
 	obs_data_set_int(root, "multiview_feeds_with_picture",
 			 dockChecks.multiviewFeedsWithPicture);

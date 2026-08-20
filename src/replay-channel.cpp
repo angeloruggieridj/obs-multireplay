@@ -708,6 +708,12 @@ void ReplayChannel::joinPrefetch()
 	prefetchBusy_ = false;
 }
 
+bool ReplayChannel::prefetchBusy() const
+{
+	std::lock_guard<std::mutex> lock(cacheMutex_);
+	return prefetchBusy_;
+}
+
 void ReplayChannel::prefetch(const PlayRequest &req)
 {
 	if (req.outNs <= req.inNs)
@@ -894,6 +900,15 @@ void ReplayChannel::playbackLoop()
 		return;
 	}
 
+	// WHERE THE WAIT BETWEEN THE KEY AND THE PICTURE ACTUALLY GOES.
+	//
+	// A cue was measured at anywhere from 45 to 125 ms with the fetch served
+	// out of the ring and a preroll of zero frames — so it was neither I/O nor
+	// the decoder walking a GOP, and there was nothing in the log to say what
+	// it was. These two lines split the rest in half: opening the decoder, and
+	// getting the first picture out of it. Behind the debug flag, so a
+	// production run pays nothing.
+	const uint64_t loopStartNs = os_gettime_ns();
 	ReplayDecoder dec;
 	std::string err;
 	if (!dec.open(cfg, err)) {
@@ -906,6 +921,7 @@ void ReplayChannel::playbackLoop()
 			onFinished();
 		return;
 	}
+	const uint64_t decOpenNs = os_gettime_ns() - loopStartNs;
 
 	// --- backwards: a different schedule, not a different decode ----------
 	// Everything above is shared (the source, the decoder, the failure path);
@@ -1108,8 +1124,15 @@ void ReplayChannel::playbackLoop()
 		// nothing more than stretching this offset — and because the
 		// spacing is computed per frame against a live anchor, the dial
 		// can move mid-clip without the clip restarting.
-		if (pushed == 0)
+		if (pushed == 0) {
+			MR_DLOG("[channel] %s first picture: decoder open "
+				"%lld ms, decode %lld ms",
+				sourceName(), (long long)(decOpenNs / 1'000'000),
+				(long long)((os_gettime_ns() - loopStartNs -
+					     decOpenNs) /
+					    1'000'000));
 			seatPacing(f.masterNs, +1);
+		}
 		const uint64_t due = waitForFrame(f.masterNs);
 		if (due == 0)
 			return; // aborted
@@ -1136,11 +1159,25 @@ void ReplayChannel::playbackLoop()
 		}
 	};
 
+	// STOP AFTER N PICTURES, FORWARDS TOO (it used to be a reverse-only knob).
+	//
+	// It is what lets a CUE ask for the same range the play after it will ask
+	// for. A cue is a still on the in-point, so it used to request its own
+	// two-frame range — a different range, therefore a different key in the
+	// clip cache, therefore its own fetch, and then the play fetched the whole
+	// thing all over again. Asking for the full range and stopping on the
+	// first picture makes the two one fetch: the cue pays it, and the play
+	// that follows is a cache hit.
+	//
+	// The run is still `completed` when it stops here: it showed everything it
+	// was asked to show. Reporting it as broken would make the queue treat a
+	// cue as a clip that died.
+	bool hitFrameCap = false;
 	bool completed = true;
 	ReplayDecoder::Frame frame;
 	for (const auto &p : clip) {
-		if (abort_.load()) {
-			completed = false;
+		if (abort_.load() || hitFrameCap) {
+			completed = !abort_.load();
 			break;
 		}
 		pumpAudio(p);
@@ -1155,13 +1192,20 @@ void ReplayChannel::playbackLoop()
 				completed = false;
 				break;
 			}
+			if (maxFrames > 0 && pushed >= (uint64_t)maxFrames) {
+				hitFrameCap = true;
+				break;
+			}
 		}
 	}
-	if (completed && dec.drain(err)) {
+	if (completed && !hitFrameCap && dec.drain(err)) {
 		while (dec.receive(frame) && !abort_.load())
 			emit(frame);
 	}
-	if (completed && adec.opened()) {
+	// ...and no audio tail either when the run stopped on its frame cap: the
+	// pictures were cut short deliberately, so the sound that belongs after
+	// them is sound nobody asked for.
+	if (completed && !hitFrameCap && adec.opened()) {
 		std::string aerr;
 		if (adec.drain(aerr)) {
 			ReplayAudioDecoder::Samples s;
