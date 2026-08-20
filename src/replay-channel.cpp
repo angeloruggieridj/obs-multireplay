@@ -286,6 +286,20 @@ ReplayChannel::~ReplayChannel()
 	unload();
 }
 
+std::unique_ptr<ReplayChannel> ReplayChannel::makePreview(std::string name)
+{
+	// make_unique cannot reach a private constructor, and the constructor
+	// stays private so nothing accidentally builds a third CHANNEL.
+	std::unique_ptr<ReplayChannel> feed(new ReplayChannel(Which::A));
+	feed->preview_ = true;
+	feed->previewName_ = std::move(name);
+	// No load(): the source type is registered once by the channels, and a
+	// feed registering it again would be a second obs_register_source for the
+	// same id.
+	feed->ensureSource();
+	return feed;
+}
+
 const char *ReplayChannel::sourceNameOf(Which which)
 {
 	return kSourceNames[which == Which::B ? 1 : 0];
@@ -293,7 +307,7 @@ const char *ReplayChannel::sourceNameOf(Which which)
 
 const char *ReplayChannel::sourceName() const
 {
-	return sourceNameOf(which_);
+	return preview_ ? previewName_.c_str() : sourceNameOf(which_);
 }
 
 void ReplayChannel::load()
@@ -359,6 +373,29 @@ void ReplayChannel::ensureSource()
 {
 	std::lock_guard<std::mutex> lock(mutex_);
 
+	// A PREVIEW FEED OWNS ITS INPUT OUTRIGHT. No find-by-name: a private
+	// source is not in the name table, so looking one up would find nothing
+	// and create a second one on every call. There is nothing to adopt after a
+	// scene-collection change either — the collection never held it.
+	if (preview_) {
+		if (source_)
+			return;
+		obs_data_t *psettings = obs_data_create();
+		source_ = obs_source_create_private(kSourceId,
+						    previewName_.c_str(),
+						    psettings);
+		obs_data_release(psettings);
+		if (!source_) {
+			obs_log(LOG_ERROR, "[channel] could not create feed '%s'",
+				previewName_.c_str());
+			return;
+		}
+		obs_source_set_async_unbuffered(source_, true);
+		obs_log(LOG_INFO, "[channel] created preview feed '%s'",
+			previewName_.c_str());
+		return;
+	}
+
 	// Look the name up BEFORE dropping what we hold. A scene-collection
 	// change replaces the objects behind the names, so the stale ref does
 	// have to go — but releasing it first destroys the very input we are
@@ -399,7 +436,10 @@ void ReplayChannel::applyCanvasFit(bool enable)
 
 void ReplayChannel::fitSceneItems()
 {
-	if (!fitToCanvas_.load())
+	// A preview feed is in no scene, so there is no item to fit — and walking
+	// every scene in the collection once per tile per clip would be the one
+	// place a multiview could cost the UI thread real time.
+	if (preview_ || !fitToCanvas_.load())
 		return;
 
 	obs_source_t *target = acquireSource();
@@ -904,7 +944,11 @@ void ReplayChannel::playbackLoop()
 	//     the audio of a slice has to be turned round and laid against that
 	//     schedule. The plan says not to promise it before its cost on an iGPU
 	//     has been measured, and it has not been.
-	const bool wantAudio = !cfg.audioCodec.empty();
+	//   - A PREVIEW FEED IS SILENT, and not by muting: the decoder is never
+	//     opened at all. Eight tiles decoding the same action would be eight
+	//     AAC decodes for sound nothing can hear — a feed is in no scene and
+	//     on no output channel, so libobs mixes none of it.
+	const bool wantAudio = !preview_ && !cfg.audioCodec.empty();
 	ReplayAudioDecoder adec;
 	if (wantAudio && !adec.open(cfg, err))
 		obs_log(LOG_WARNING, "[channel] audio unavailable: %s", err.c_str());

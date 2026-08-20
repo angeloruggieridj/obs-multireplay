@@ -571,6 +571,12 @@ PlaybackCoordinator::PlayState PlaybackCoordinator::playState() const
 		s.speedPct = queue_[queuePos_].speedPct;
 		s.reverse = queue_[queuePos_].direction ==
 			    ReplayChannel::Direction::Reverse;
+		// The EFFECTIVE out again, for the same reason the green band uses
+		// it: with "continue past the OUT" on the clip really runs to
+		// there, and a multiview cued to the marked OUT would freeze a
+		// second and a half before the picture on air does.
+		s.clipInNs = queue_[queuePos_].tInNs;
+		s.clipOutNs = queue_[queuePos_].effectiveOutNs();
 	}
 	// Kept for the next caller that finds the lock busy. Refreshed on every
 	// successful read — the dock's own 30 Hz poll — so it is never more than a

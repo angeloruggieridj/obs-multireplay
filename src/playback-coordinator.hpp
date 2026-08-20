@@ -125,6 +125,19 @@ public:
 		// cannot say how far through three clips the operator is — nor
 		// where to draw the joins between them.
 		std::vector<int64_t> queuedWallNs;
+		// THE RANGE THE CLIP ON AIR COVERS, in master instants. kNoInstant
+		// on both when nothing is playing.
+		//
+		// This is what the multiview follows. The tiles have to show the
+		// same moment as the picture on air on every other lens, and the
+		// only thing that knows which moment that is — through a
+		// multi-angle sequence, a review split across a junction, and the
+		// chunks of a free run — is the queue. Rebuilding it in the dock
+		// from the event's marks would be a second copy of the queue's
+		// rules, and it would be wrong on exactly the clips that are NOT
+		// an event (a scrub, a free review), because those have no marks.
+		int64_t clipInNs = kNoInstant;
+		int64_t clipOutNs = kNoInstant;
 	};
 	PlayState playState() const;
 

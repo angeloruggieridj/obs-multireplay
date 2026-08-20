@@ -402,6 +402,39 @@ struct DockChecks {
 	// status bar that has nothing to say.
 	bool clipBarReportsOnAir = false;
 	bool skipAdvancesQueue = false;
+	// v1.4: FOOTAGE NOBODY MARKED.
+	//
+	// ▶ on a stretch no event covers has to play THAT stretch, and it has to
+	// do it off air — the second half is the whole safety of the first, and
+	// it is invisible to any check that only asks whether something played.
+	// So the Program scene is read before and after, and a review that took
+	// it fails here.
+	bool freeReviewPlaysUnmarked = false;
+	// ...and Play events is what puts it up. The claim is not "something
+	// played": it is that the queue starts at the instant the operator armed
+	// and carries NO event id. An event replay would satisfy a weaker check
+	// exactly, and that IS the bug — the key ignoring the free review and
+	// replaying the selected row instead.
+	bool freeReviewIsSecondPlayFunction = false;
+	// A free run ends on Stop, so Stop has to be a key. It used to be two
+	// clicks deep in a menu, which was survivable only while every replay
+	// ended by itself at its OUT.
+	bool stopKeyEndsPlayback = false;
+	// v1.4: THE ANGLE BOXES FOLLOW THE REVIEW.
+	//
+	// A tile still mirroring the live camera during a replay looks perfectly
+	// fine on its own — it is a moving picture of the right camera. It is
+	// wrong only next to the picture on air, which no widget check compares
+	// it with. So this asks the dock what the boxes are for right now, and
+	// how many feeds have really pushed a frame: a feed that never decoded
+	// anything and a camera with no signal are the same black rectangle.
+	bool multiviewFollowsReview = false;
+	int multiviewFeeds = 0;
+	int multiviewFeedsWithPicture = 0;
+	// ...and Live is what brings them back — including letting the feeds GO.
+	// Eight decoders kept alive to hold a still nobody is looking at is the
+	// one way this feature could cost something while it is not in use.
+	bool multiviewReturnsToLive = false;
 	// M5: the running order is the operator's. The ▲/▼ keys must really move
 	// the ROW (not just a field nobody draws), and reordering by hand must
 	// turn the chronological auto-sort off — with both on, the row snaps back
@@ -2386,6 +2419,307 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 				"still on the footage afterwards=%s",
 				played ? "yes" : "NO",
 				stillFootage ? "yes" : "NO");
+		}
+	}
+
+	// --- v1.4: FOOTAGE NOBODY MARKED --------------------------------------
+	// Park the bar on a stretch no event covers, press ▶, and three things
+	// have to be true at once: it plays, it plays THAT stretch (a queue with
+	// no event behind it, starting where the operator armed), and Program is
+	// untouched. Then Stop gives it up, and Play events — the key's second
+	// function — puts the same stretch up again from the same instant.
+	//
+	// The middle claim is the one that needs the queue rather than the
+	// engine: "something is playing" is equally true of the selected event
+	// being replayed from somewhere else on the timeline, which is exactly
+	// what this key used to do.
+	{
+		auto &pc = PlaybackCoordinator::instance();
+		auto &chan = ReplayChannel::instance();
+		SeekBar *bar = nullptr;
+		QPushButton *playKey = nullptr;  // ▶ / ⏸
+		QPushButton *stopKey = nullptr;  // ■
+		QPushButton *playSelKey = nullptr; // "Play events"
+		QPushButton *outKey = nullptr;   // "In output"
+		const QString playSelText =
+			QString::fromUtf8(obs_module_text("Dock.PlaySelected"));
+		const QString stopGlyph = QStringLiteral("■");
+		// BY TEXT, not by objectName. The object names here are STYLE
+		// roles, and two different keys legitimately share one: Live and
+		// Monitors are both "mrLive" because they are drawn the same way,
+		// so findChild("mrLive") answers with whichever was built first.
+		// The text is what tells them apart, and it goes through the same
+		// obs_module_text() the dock builds them with.
+		const QString outText =
+			QString::fromUtf8(obs_module_text("Dock.ToOutput"));
+		runOnUi([&]() {
+			bar = dock->findChild<SeekBar *>();
+			playKey = dock->findChild<QPushButton *>(
+				QStringLiteral("mrPlay"));
+			for (QPushButton *b : dock->findChildren<QPushButton *>()) {
+				if (b->text() == stopGlyph)
+					stopKey = b;
+				else if (b->text() == playSelText)
+					playSelKey = b;
+				else if (b->text() == outText)
+					outKey = b;
+			}
+		});
+
+		// ARM IT. seekToFraction only arms when the instant it lands on is
+		// outside the selected event, which is the point — so try a few
+		// places rather than assuming any one of them is unmarked. The gate
+		// has marked events of its own by now, and where they fall depends
+		// on how long the take has been running.
+		int64_t armed = kNoInstant;
+		double armedAt = 0.0;
+		if (bar) {
+			for (double f : {0.85, 0.65, 0.45, 0.25}) {
+				runOnUi([&]() { emit bar->seekRequested(f); });
+				std::this_thread::sleep_for(
+					std::chrono::milliseconds(250));
+				armed = dock->freeReviewInNs();
+				if (armed != kNoInstant) {
+					armedAt = f;
+					break;
+				}
+			}
+		}
+		// Let the scrub's own review finish; ▶ on a playing clip is a
+		// pause, and that is a different key entirely.
+		runOnUi([&]() { pc.stopEvents(); });
+		std::this_thread::sleep_for(std::chrono::milliseconds(300));
+
+		if (!bar || !playKey || !stopKey || !playSelKey ||
+		    armed == kNoInstant) {
+			obs_log(LOG_ERROR,
+				"[selftest] dock: free review not testable "
+				"(bar=%p play=%p stop=%p playSel=%p armed=%s)",
+				(void *)bar, (void *)playKey, (void *)stopKey,
+				(void *)playSelKey,
+				armed == kNoInstant ? "NO" : "yes");
+		} else {
+			// The Program scene as it stands. A review that takes it
+			// fails, whatever else it does right.
+			std::string sceneBefore, sceneAfter;
+			runOnUi([&]() {
+				if (obs_source_t *sc =
+					    obs_frontend_get_current_scene()) {
+					sceneBefore = obs_source_get_name(sc);
+					obs_source_release(sc);
+				}
+			});
+
+			runOnUi([&]() { playKey->click(); });
+			PlaybackCoordinator::PlayState st;
+			for (int i = 0; i < 60; i++) {
+				st = pc.playState();
+				if (st.active && chan.stats().framesPushed > 0)
+					break;
+				std::this_thread::sleep_for(
+					std::chrono::milliseconds(50));
+			}
+			runOnUi([&]() {
+				if (obs_source_t *sc =
+					    obs_frontend_get_current_scene()) {
+					sceneAfter = obs_source_get_name(sc);
+					obs_source_release(sc);
+				}
+			});
+			// WHERE IT REALLY STARTED, read back from the dock.
+			//
+			// Not `armed`: the scrub that armed this also played a
+			// short review, and that review walks the bar on while it
+			// runs — so by the time ▶ is pressed the bar is a few
+			// hundred milliseconds past the instant the scrub landed
+			// on, and ▶ means "from where the bar is". Re-reading is
+			// the claim being made anyway: whatever instant the free
+			// review started from is the one the arm holds, and the
+			// one Play events has to come back to after a Stop.
+			const int64_t startedAt = dock->freeReviewInNs();
+			const bool ranFree = st.active && st.eventId == 0 &&
+					     startedAt != kNoInstant &&
+					     st.clipInNs == startedAt;
+			const bool stayedOffAir = sceneBefore == sceneAfter;
+			c.freeReviewPlaysUnmarked = ranFree && stayedOffAir &&
+						    chan.stats().framesPushed > 0;
+			obs_log(c.freeReviewPlaysUnmarked ? LOG_INFO : LOG_ERROR,
+				"[selftest] dock: ▶ on unmarked footage at %.0f%% "
+				"— queue active=%s event=%d in=%lld (armed %lld), "
+				"frames=%llu, program '%s' → '%s'",
+				armedAt * 100.0, st.active ? "yes" : "NO",
+				st.eventId, (long long)st.clipInNs,
+				(long long)startedAt,
+				(unsigned long long)chan.stats().framesPushed,
+				sceneBefore.c_str(), sceneAfter.c_str());
+
+			// --- v1.4: THE ANGLE BOXES ARE ON THE REVIEW ---------
+			// Sampled HERE, while the free review is running: the
+			// boxes have to be showing that moment on every lens,
+			// which is what makes choosing an angle possible at all.
+			// Feeds are decoded on threads of their own, so this
+			// waits for a picture rather than demanding one instantly.
+			MultiReplayDock::MultiviewState mv;
+			for (int i = 0; i < 60; i++) {
+				mv = dock->multiviewState();
+				if (mv.followingReview && mv.feedsWithPicture > 0)
+					break;
+				std::this_thread::sleep_for(
+					std::chrono::milliseconds(100));
+			}
+			c.multiviewFeeds = mv.feeds;
+			c.multiviewFeedsWithPicture = mv.feedsWithPicture;
+			c.multiviewFollowsReview = mv.followingReview &&
+						   mv.feeds > 0 &&
+						   mv.feedsWithPicture > 0;
+			obs_log(c.multiviewFollowsReview ? LOG_INFO : LOG_ERROR,
+				"[selftest] dock: angle boxes during a review — "
+				"following=%s, %d feed(s), %d with a picture, "
+				"cued [%lld, %lld]",
+				mv.followingReview ? "yes" : "NO", mv.feeds,
+				mv.feedsWithPicture, (long long)mv.cueInNs,
+				(long long)mv.cueOutNs);
+
+			// --- Stop is a KEY, and it gives Program back --------
+			runOnUi([&]() { stopKey->click(); });
+			bool stopped = false;
+			for (int i = 0; i < 40 && !stopped; i++) {
+				stopped = !pc.playState().active;
+				std::this_thread::sleep_for(
+					std::chrono::milliseconds(50));
+			}
+			std::string sceneStopped;
+			runOnUi([&]() {
+				if (obs_source_t *sc =
+					    obs_frontend_get_current_scene()) {
+					sceneStopped = obs_source_get_name(sc);
+					obs_source_release(sc);
+				}
+			});
+			c.stopKeyEndsPlayback = stopped &&
+						sceneStopped == sceneBefore;
+			obs_log(c.stopKeyEndsPlayback ? LOG_INFO : LOG_ERROR,
+				"[selftest] dock: ■ stopped the free review=%s, "
+				"program back to '%s' (was '%s')",
+				stopped ? "yes" : "NO", sceneStopped.c_str(),
+				sceneBefore.c_str());
+
+			// --- ...AND PLAY EVENTS IS WHAT AIRS IT --------------
+			// The armed instant has to survive the Stop: the operator
+			// watched a stretch, stopped when he had seen enough, and
+			// what he wants up is what he watched — from its
+			// beginning, not from wherever the picture stopped.
+			const bool stillArmed =
+				startedAt != kNoInstant &&
+				dock->freeReviewInNs() == startedAt;
+			// "In output" ON, because that is the panel's own on-air
+			// switch and this key has no private route past it.
+			bool outWasChecked = false;
+			runOnUi([&]() {
+				if (outKey) {
+					outWasChecked = outKey->isChecked();
+					if (!outWasChecked)
+						outKey->setChecked(true);
+				}
+				playSelKey->click();
+			});
+			PlaybackCoordinator::PlayState st2;
+			for (int i = 0; i < 60; i++) {
+				st2 = pc.playState();
+				if (st2.active)
+					break;
+				std::this_thread::sleep_for(
+					std::chrono::milliseconds(50));
+			}
+			std::string sceneAired;
+			runOnUi([&]() {
+				if (obs_source_t *sc =
+					    obs_frontend_get_current_scene()) {
+					sceneAired = obs_source_get_name(sc);
+					obs_source_release(sc);
+				}
+			});
+			c.freeReviewIsSecondPlayFunction =
+				stillArmed && st2.active && st2.eventId == 0 &&
+				st2.clipInNs == startedAt;
+			obs_log(c.freeReviewIsSecondPlayFunction ? LOG_INFO
+								 : LOG_ERROR,
+				"[selftest] dock: Play events aired the free "
+				"section — still armed=%s, queue active=%s "
+				"event=%d in=%lld (armed %lld), program '%s'",
+				stillArmed ? "yes" : "NO",
+				st2.active ? "yes" : "NO", st2.eventId,
+				(long long)st2.clipInNs, (long long)startedAt,
+				sceneAired.c_str());
+
+			runOnUi([&]() {
+				pc.stopEvents();
+				if (outKey && !outWasChecked)
+					outKey->setChecked(false);
+			});
+			std::this_thread::sleep_for(
+				std::chrono::milliseconds(300));
+
+			// --- Live puts the whole panel back on the front -----
+			// Including the boxes: they go back to mirroring their
+			// cameras, and the feeds are let go rather than left
+			// holding a still.
+			QPushButton *liveKey = nullptr;
+			const QString liveText = QString::fromUtf8(
+				obs_module_text("Dock.LiveMode"));
+			runOnUi([&]() {
+				// By text again: Monitors shares Live's style
+				// role, so the object name cannot pick between
+				// them.
+				for (QPushButton *b :
+				     dock->findChildren<QPushButton *>())
+					if (b->text() == liveText)
+						liveKey = b;
+				if (liveKey) {
+					// setChecked(true) on an already-checked
+					// key emits nothing, and it is the
+					// TOGGLE that carries the behaviour.
+					liveKey->setChecked(false);
+					liveKey->setChecked(true);
+				}
+			});
+			MultiReplayDock::MultiviewState mvLive;
+			for (int i = 0; i < 40; i++) {
+				mvLive = dock->multiviewState();
+				if (!mvLive.followingReview && mvLive.feeds == 0)
+					break;
+				std::this_thread::sleep_for(
+					std::chrono::milliseconds(50));
+			}
+			c.multiviewReturnsToLive = liveKey != nullptr &&
+						   !mvLive.followingReview &&
+						   mvLive.feeds == 0 &&
+						   dock->freeReviewInNs() ==
+							   kNoInstant;
+			obs_log(c.multiviewReturnsToLive ? LOG_INFO : LOG_ERROR,
+				"[selftest] dock: Live returned the panel — "
+				"following review=%s, %d feed(s) left, free "
+				"review armed=%s",
+				mvLive.followingReview ? "STILL" : "no",
+				mvLive.feeds,
+				dock->freeReviewInNs() == kNoInstant ? "no"
+								     : "STILL");
+
+			// PUT THE PANEL BACK WHERE THE CHECKS AFTER THIS ONE
+			// EXPECT IT, and this is not tidiness.
+			//
+			// Live has just parked the transport ON THE LIVE EDGE,
+			// and a frame step refuses there — correctly: there is no
+			// next frame yet. The two step checks that follow then
+			// measured two refusals against each other and called the
+			// step broken. A check that changes the panel's mode owes
+			// the next check the mode it found.
+			runOnUi([&]() { emit bar->seekRequested(armedAt); });
+			std::this_thread::sleep_for(
+				std::chrono::milliseconds(300));
+			runOnUi([&]() { pc.stopEvents(); });
+			std::this_thread::sleep_for(
+				std::chrono::milliseconds(200));
 		}
 	}
 
@@ -4506,6 +4840,11 @@ void runSelfTest()
 			  dockChecks.searchRestoresCellValues &&
 			  dockChecks.clipBarReportsOnAir &&
 			  dockChecks.skipAdvancesQueue &&
+			  dockChecks.freeReviewPlaysUnmarked &&
+			  dockChecks.freeReviewIsSecondPlayFunction &&
+			  dockChecks.stopKeyEndsPlayback &&
+			  dockChecks.multiviewFollowsReview &&
+			  dockChecks.multiviewReturnsToLive &&
 			  dockChecks.manualReorderMovesRow &&
 			  dockChecks.manualReorderDisablesAutoSort &&
 			  dockChecks.listTabsFitTheirNames &&
@@ -4723,6 +5062,24 @@ void runSelfTest()
 			  dockChecks.clipBarReportsOnAir);
 	obs_data_set_bool(checks, "dock_skip_advances_queue",
 			  dockChecks.skipAdvancesQueue);
+	// v1.4: footage nobody marked can be watched, and only Play events can
+	// put it up. The off-air half is the one that matters: it is what keeps a
+	// review of an unmarked action from reaching Program by itself.
+	obs_data_set_bool(checks, "free_review_plays_unmarked_footage",
+			  dockChecks.freeReviewPlaysUnmarked);
+	obs_data_set_bool(checks, "free_review_is_the_second_play_function",
+			  dockChecks.freeReviewIsSecondPlayFunction);
+	obs_data_set_bool(checks, "stop_key_ends_playback",
+			  dockChecks.stopKeyEndsPlayback);
+	// v1.4: the angle boxes show the reviewed moment on every lens, and Live
+	// is what gives them back to the cameras.
+	obs_data_set_bool(checks, "multiview_follows_review",
+			  dockChecks.multiviewFollowsReview);
+	obs_data_set_bool(checks, "multiview_returns_to_live",
+			  dockChecks.multiviewReturnsToLive);
+	obs_data_set_int(root, "multiview_feeds", dockChecks.multiviewFeeds);
+	obs_data_set_int(root, "multiview_feeds_with_picture",
+			 dockChecks.multiviewFeedsWithPicture);
 	// M5: the running order is arranged by hand and it really moves the row.
 	obs_data_set_bool(checks, "dock_manual_reorder_moves_row",
 			  dockChecks.manualReorderMovesRow);

@@ -35,6 +35,7 @@ and playReverse() for the two threads that run it.
 #include <condition_variable>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -66,6 +67,30 @@ public:
 	// Defaulted to A so the call sites that only ever meant "the replay
 	// channel" keep saying exactly that.
 	static ReplayChannel &instance(Which which = Which::A);
+
+	// A PREVIEW FEED: the same engine, bound to an input of its own that the
+	// operator never sees.
+	//
+	// The multiview has to show the moment being reviewed on EVERY angle at
+	// once — that is the whole reason an operator looks at it, to pick the lens
+	// before the replay goes up. One channel cannot do that, because a channel
+	// plays one clip; and eight named inputs in the scene collection would be
+	// eight objects the operator has to know about and eight a collection
+	// reload has to reconcile.
+	//
+	// So a feed's input is PRIVATE (obs_source_create_private): libobs ticks it
+	// and our tile display renders it, but it is never saved with the
+	// collection, never appears in the source list, and is in no scene. That
+	// last fact is also why it is SILENT (see wantAudio in playbackLoop) —
+	// eight angles of the same action arriving in the audio mixer would be the
+	// loudest bug this plugin could ship.
+	//
+	// The caller owns it; destroying it stops and joins its worker.
+	static std::unique_ptr<ReplayChannel> makePreview(std::string name);
+
+	// Public because of makePreview(): the two singletons above live in static
+	// storage and never reach this, but a unique_ptr has to be able to.
+	~ReplayChannel();
 
 	// Registers the source type (once, however many channels there are) and
 	// binds this instance to its own name. Call from obs_module_load, before
@@ -239,7 +264,6 @@ public:
 
 private:
 	explicit ReplayChannel(Which which = Which::A) : which_(which) {}
-	~ReplayChannel();
 	ReplayChannel(const ReplayChannel &) = delete;
 	ReplayChannel &operator=(const ReplayChannel &) = delete;
 
@@ -292,6 +316,10 @@ private:
 	std::atomic<bool> paused_{false};
 
 	const Which which_;
+	// A preview feed answers to a name of its own and creates its input
+	// privately. Written once by makePreview(), before anything can read it.
+	bool preview_ = false;
+	std::string previewName_;
 	obs_source_t *source_ = nullptr; // owned (ref held)
 	mutable std::mutex mutex_;
 

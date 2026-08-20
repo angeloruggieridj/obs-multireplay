@@ -1467,8 +1467,23 @@ QWidget *MultiReplayDock::buildToolbar()
 	liveBtn_->setCursor(Qt::PointingHandCursor);
 	liveBtn_->setToolTip(obs_module_text("Dock.LiveModeHint"));
 	liveBtn_->setChecked(EventStore::instance().liveMode());
-	connect(liveBtn_, &QPushButton::toggled, this,
-		[](bool on) { EventStore::instance().setLiveMode(on); });
+	connect(liveBtn_, &QPushButton::toggled, this, [this](bool on) {
+		EventStore::instance().setLiveMode(on);
+		if (!on)
+			return;
+		// LIVE IS THE MODE THE WHOLE PANEL IS IN, so pressing it puts the
+		// whole panel back on the live edge — the replay is dropped, the
+		// transport follows the front again, and the angle boxes go back
+		// to mirroring their cameras in real time. It used to change only
+		// where a mark lands, which left the one key labelled "Live"
+		// unable to get the operator back to live.
+		//
+		// Turning it OFF does not do the opposite: marking at the bar is
+		// a choice about marking, and it must not stop a replay.
+		pc().stopEvents();
+		ReplayCore::instance().setFollowLive(true);
+		clearFreeReview();
+	});
 	h->addWidget(liveBtn_);
 
 	// the reference controller's Monitors key, in the reference controller's place: right of Live. It takes the whole
@@ -1784,6 +1799,18 @@ void MultiReplayDock::rebuildMultiview()
 void MultiReplayDock::refreshTileSources()
 {
 	const Config cfg = ReplayCore::instance().getConfig();
+	// LIVE OR REVIEW — the same question the big preview asks, and the same
+	// answer.
+	//
+	// Following live, a tile is a confidence monitor: that camera as it is
+	// now. Out of follow-live — the operator has cued a row, played an event
+	// or moved the bar — a tile still showing the camera as it is NOW is worse
+	// than a black rectangle, because it reads as the footage of the moment
+	// being reviewed and is not. So it shows that moment on its own lens,
+	// which is what the boxes are for: choosing the angle before the replay
+	// goes up.
+	const bool live = ReplayCore::instance().followLive();
+	tilesLive_ = live;
 	for (int i = 0; i < kMaxPreviewTiles; i++) {
 		PreviewTile &t = tiles_[i];
 		obs_source_t *next = nullptr;
@@ -1795,11 +1822,21 @@ void MultiReplayDock::refreshTileSources()
 				if (previewHasContent_)
 					next = chan()
 						       .acquireSource();
-			} else {
+			} else if (live) {
 				const std::string &nm =
 					cfg.cameras[t.cam0].sourceName;
 				if (!nm.empty())
 					next = obs_get_source_by_name(nm.c_str());
+			} else if (t.cam0 < (int)tileFeed_.size() &&
+				   tileFeed_[t.cam0]) {
+				// hasPosition(), not positionNs() > 0: an instant
+				// of zero is legitimate and footage older than
+				// the machine's last boot is negative (see
+				// kNoInstant). "Has this feed ever shown a frame"
+				// is the question, and until it has, black is the
+				// honest answer.
+				if (tileFeed_[t.cam0]->hasPosition())
+					next = tileFeed_[t.cam0]->acquireSource();
 			}
 		}
 		obs_source_t *prev = nullptr;
@@ -1814,6 +1851,107 @@ void MultiReplayDock::refreshTileSources()
 		if (prev)
 			obs_source_release(prev);
 	}
+}
+
+// ---------------------------------------------------------------------------
+// The angle boxes during a review — a preview feed per camera
+// ---------------------------------------------------------------------------
+
+void MultiReplayDock::ensureTileFeeds()
+{
+	const Config cfg = ReplayCore::instance().getConfig();
+	for (int cam = 0; cam < (int)tileFeed_.size(); cam++) {
+		// A feed exists for a camera the operator has configured AND whose
+		// tile is on screen. Monitors off, the multiview switched off, an
+		// unconfigured slot: no feed, no decoder, no source. That is the
+		// whole cost control, and it is the same one the tiles themselves
+		// already use.
+		const bool wanted =
+			!cfg.cameras[cam].sourceName.empty() &&
+			cam < kMaxPreviewTiles && tiles_[cam].box &&
+			tiles_[cam].box->isVisible();
+		if (wanted == (bool)tileFeed_[cam])
+			continue;
+		if (!wanted) {
+			// Destroying it stops and joins its worker; the private
+			// input goes with it.
+			tileFeed_[cam].reset();
+			continue;
+		}
+		tileFeed_[cam] = ReplayChannel::makePreview(
+			"MultiReplay - Angle feed " + std::to_string(cam + 1));
+	}
+}
+
+void MultiReplayDock::cueTiles(int64_t inNs, int64_t outNs, int speedPct,
+			       ReplayChannel::Direction dir)
+{
+	if (inNs == kNoInstant || outNs == kNoInstant || outNs <= inNs)
+		return;
+	// Capped, because a feed materialises its clip's packets in RAM and a free
+	// review can ask for a whole session. Past the cap the tiles simply hold
+	// the last frame they were given, which is still the reviewed moment on
+	// that lens.
+	outNs = std::min(outNs, inNs + kTileReviewMaxNs);
+	const int pct = std::clamp(speedPct > 0 ? speedPct : 100, 5, 400);
+	// CALLED FROM poll(), thirty times a second. Re-issuing the same cue would
+	// restart every feed on every tick — eight decoders started and joined
+	// thirty times a second, which is not slow, it is a dock that never shows
+	// a picture.
+	if (inNs == tileCueInNs_ && outNs == tileCueOutNs_ &&
+	    pct == tileCueSpeedPct_ && dir == tileCueDir_)
+		return;
+	tileCueInNs_ = inNs;
+	tileCueOutNs_ = outNs;
+	tileCueSpeedPct_ = pct;
+	tileCueDir_ = dir;
+
+	ensureTileFeeds();
+	for (int cam = 0; cam < (int)tileFeed_.size(); cam++) {
+		if (!tileFeed_[cam])
+			continue;
+		ReplayChannel::PlayRequest req;
+		req.camIndex = cam;
+		req.inNs = inNs;
+		req.outNs = outNs;
+		req.speedPct = pct;
+		req.direction = dir;
+		std::string err;
+		if (!tileFeed_[cam]->play(req, err))
+			// NOT a notice, and not a warning either. An angle with
+			// nothing behind it at that instant is ordinary — a camera
+			// added mid-session, a slot whose ring has wrapped — and
+			// the tile answering with black is exactly right. Shouting
+			// about it on every cue would train the operator to ignore
+			// the strip that carries the messages that matter.
+			MR_DLOG("[dock] angle feed %d: %s", cam + 1, err.c_str());
+	}
+}
+
+void MultiReplayDock::releaseTileFeeds()
+{
+	for (auto &f : tileFeed_)
+		f.reset();
+	tileCueInNs_ = kNoInstant;
+	tileCueOutNs_ = kNoInstant;
+	tileCueSpeedPct_ = 0;
+	tileCueDir_ = ReplayChannel::Direction::Forward;
+}
+
+MultiReplayDock::MultiviewState MultiReplayDock::multiviewState() const
+{
+	MultiviewState s;
+	s.followingReview = !ReplayCore::instance().followLive();
+	for (const auto &f : tileFeed_) {
+		if (!f)
+			continue;
+		s.feeds++;
+		if (f->hasPosition())
+			s.feedsWithPicture++;
+	}
+	s.cueInNs = tileCueInNs_;
+	s.cueOutNs = tileCueOutNs_;
+	return s;
 }
 
 MultiReplayDock::PreviewStats MultiReplayDock::previewStats() const
@@ -1856,6 +1994,12 @@ int MultiReplayDock::heldSourceRefs() const
 		n += previewSource_ ? 1 : 0;
 		n += previewSourceB_ ? 1 : 0;
 	}
+	// ...and the angle feeds. Their inputs are PRIVATE, so they are not part
+	// of the operator's scene collection — but they are sources libobs is
+	// holding on our behalf, and "released everything before OBS cleared its
+	// data" is a claim that has to include them or it is not the claim.
+	for (const auto &f : tileFeed_)
+		n += f ? 1 : 0;
 	std::lock_guard<std::mutex> lk(tileMutex_);
 	for (obs_source_t *s : tileSource_)
 		n += s ? 1 : 0;
@@ -1921,6 +2065,13 @@ void MultiReplayDock::dropPreviewRefs()
 			if (s)
 				obs_source_release(s);
 	}
+	// ...and the angle FEEDS, which own private inputs of their own. Same
+	// reason and the same deadline: this runs on the way out of a scene
+	// collection and on exit, and anything still alive at that moment is
+	// reported to the operator as a plugin that leaked. Destroying a feed
+	// stops and joins its worker first, which is why it is safe here — the
+	// worker takes no lock this thread can be holding.
+	releaseTileFeeds();
 	// So poll() resolves them all again rather than trusting its cache.
 	previewCam0_ = -1;
 }
@@ -2297,6 +2448,16 @@ KeyBlock *MultiReplayDock::buildTransport()
 	playPauseBtn_ = transportBtn(QStringLiteral("▶"), this,
 				     obs_module_text("Dock.PlayPause"), "mrPlay");
 
+	// ■ U+25A0 — Stop. It used to live two clicks deep in the ▾ menu, which
+	// was survivable while every replay ended by itself at its OUT. A free
+	// review does not: it runs until it is stopped, so the way to stop it has
+	// to be a key. And ▶ cannot be that key — while something plays it is a
+	// PAUSE, which holds the picture instead of giving Program back.
+	// EXACTLY ONE button in this dock may carry this glyph: the gate finds
+	// Stop by it.
+	stopBtn_ = transportBtn(QStringLiteral("■"), this,
+				obs_module_text("Dock.Stop"));
+
 	// ◀ U+25C0 — the reference controller's reverse-play key, and it works now (v1.3). Nothing
 	// decodes backwards, so this is a GOP cache shown newest-first; see
 	// reverse-plan.hpp. EXACTLY ONE button in this dock may carry this glyph:
@@ -2345,6 +2506,11 @@ KeyBlock *MultiReplayDock::buildTransport()
 		auto *actStop = menu->addAction(obs_module_text("Dock.Stop"));
 		more->setMenu(menu);
 		connect(actOut, &QAction::triggered, this, [this]() {
+			// Explicitly the EVENT, so an unmarked stretch armed on
+			// the bar stops being what the play keys are about. This
+			// entry is also the way back to the selected row when a
+			// free review is armed and the main key is answering it.
+			clearFreeReview();
 			std::string err;
 			if (!pc().playEvents(
 				    selectedEventIds(), currentAngle1() - 1,
@@ -2444,15 +2610,17 @@ KeyBlock *MultiReplayDock::buildTransport()
 	// well as when it is lit.
 	nowBtn_->setMinimumWidth(56);
 	more->setFixedSize(24, kKeyH);
-	for (QPushButton *b : {playPauseBtn_, revBtn, lastBtn, stepBackBtn,
-			       stepBtn, nowBtn_, loopBtn_, musicBtn_,
-			       toOutputBtn_})
+	for (QPushButton *b : {playPauseBtn_, stopBtn_, revBtn, lastBtn,
+			       stepBackBtn, stepBtn, nowBtn_, loopBtn_,
+			       musicBtn_, toOutputBtn_})
 		b->setFixedHeight(kKeyH);
 	playSel->setFixedHeight(kKeyH);
-	blk->setShapes({{Cell(playPauseBtn_), Cell(revBtn), Cell(lastBtn),
-			 Cell(playSel), Cell(more), Cell(stepBackBtn),
-			 Cell(stepBtn), Cell(nowBtn_), Cell(loopBtn_),
-			 Cell(musicBtn_), Cell(toOutputBtn_)}},
+	// Stop stands next to Play, in that order, because that is the pair: one
+	// starts the picture and the other gives Program back.
+	blk->setShapes({{Cell(playPauseBtn_), Cell(stopBtn_), Cell(revBtn),
+			 Cell(lastBtn), Cell(playSel), Cell(more),
+			 Cell(stepBackBtn), Cell(stepBtn), Cell(nowBtn_),
+			 Cell(loopBtn_), Cell(musicBtn_), Cell(toOutputBtn_)}},
 		       {});
 
 	// There WAS a big "position / length" readout under these keys. It is gone:
@@ -2475,16 +2643,41 @@ KeyBlock *MultiReplayDock::buildTransport()
 				pcw.setPaused(!chw.paused());
 				continue;
 			}
-			// Nothing running on this channel: ▶ means "play what is
-			// selected", which is what it has always meant.
+			// NOTHING RUNNING, AND THE BAR IS ON FOOTAGE NOBODY
+			// MARKED: play THAT, off air.
+			//
+			// This is what the key was missing. Parked on an unmarked
+			// stretch it used to replay the selected event instead —
+			// something else entirely, from somewhere else on the
+			// timeline — so the only way to look at an action that had
+			// not been marked was to mark it, which is precisely what
+			// the operator was trying not to do. It runs until Stop,
+			// and it never touches Program: putting it on air is a
+			// second, deliberate press of "Play events".
+			//
+			// Once, for the bay the selector is on: a free review is a
+			// range, not an event, and playing the same range on both
+			// bays would be two decoders showing one picture.
+			if (playheadIsFreeFootage()) {
+				if (w == targetChannels().front())
+					playFreeReview(/*toOutput*/ false);
+				continue;
+			}
+			// Otherwise ▶ means "play what is selected", which is what
+			// it has always meant.
 			ReplayCore::instance().setFollowLive(false);
 			replayCurrentOn(w);
 		}
 	});
+	connect(stopBtn_, &QPushButton::clicked, this,
+		[this]() { stopPlayback(); });
 	connect(nowBtn_, &QPushButton::clicked, this, [this]() {
 		// the reference controller NOW: drop the replay and watch the live edge again.
 		pc().stopEvents();
 		ReplayCore::instance().setFollowLive(true);
+		// Back at the front, so the stretch that was armed on the bar is
+		// no longer what the play keys are about.
+		clearFreeReview();
 	});
 
 	return blk;
@@ -3559,6 +3752,11 @@ bool MultiReplayDock::playOnTargets(const std::vector<int> &ids,
 	// one scene. So it goes to the bay the operator nominated in Settings
 	// (Config.abOutputUsesB) and the other bay plays without touching Program.
 	const bool toOut = toOutputBtn_ && toOutputBtn_->isChecked();
+	// Playing EVENTS is talking about events, so an unmarked stretch armed on
+	// the bar stops being what the play keys mean. (playSelected() answers the
+	// armed review before it ever gets here; this catches ◀ and the hotkeys,
+	// which go straight to the events.)
+	clearFreeReview();
 	const bool useB = ReplayCore::instance().getConfig().abOutputUsesB;
 	const auto targets = targetChannels();
 	bool any = false;
@@ -3578,8 +3776,157 @@ bool MultiReplayDock::playOnTargets(const std::vector<int> &ids,
 	return any;
 }
 
+// ---------------------------------------------------------------------------
+// Unmarked footage: watching it, and then deciding to air it
+// ---------------------------------------------------------------------------
+
+void MultiReplayDock::clearFreeReview()
+{
+	freeReviewInNs_ = kNoInstant;
+	freeReviewOnAir_ = false;
+}
+
+bool MultiReplayDock::playheadIsFreeFootage() const
+{
+	// Following live there is no "here" to play: the bar is at the front and
+	// the footage under it is the instant that has just happened. ▶ keeps
+	// meaning what it has always meant.
+	if (ReplayCore::instance().followLive())
+		return false;
+	if (playheadNs_ == kNoInstant || timelineStartNs_ == kNoInstant ||
+	    displayDurNs_ <= 0)
+		return false;
+
+	// Asked of the SELECTION, not of the whole list. The table auto-selects
+	// the newest mark, so "is there an event somewhere near here" would answer
+	// yes for the whole match; the question that decides what ▶ does is
+	// whether the bar is standing on the event ▶ would otherwise replay.
+	std::vector<int> ids = selectedEventIds();
+	if (ids.empty())
+		ids = {EventStore::instance().lastEventId()};
+	if (ids.empty() || ids.front() <= 0)
+		return true; // nothing marked at all: it is all free footage
+	ReplayEvent ev;
+	if (!EventStore::instance().get(ids.front(), ev) ||
+	    ev.tInNs == kNoInstant)
+		return true;
+	const int64_t outNs =
+		(ev.tOutNs != kNoInstant && ev.tOutNs > ev.tInNs) ? ev.tOutNs
+								  : ev.tInNs;
+	// Half a second of slack at both ends. Cueing a row parks the bar ON the
+	// in-point and the engine's own frame instants drift by a frame or two, so
+	// an exact comparison would call the cued event "free footage" about as
+	// often as not — and ▶ would then play something else than the row the
+	// operator is looking at.
+	constexpr int64_t kSlackNs = 500'000'000LL;
+	return playheadNs_ < ev.tInNs - kSlackNs ||
+	       playheadNs_ > outNs + kSlackNs;
+}
+
+bool MultiReplayDock::playFreeReview(bool toOutput)
+{
+	if (playheadNs_ == kNoInstant || timelineStartNs_ == kNoInstant ||
+	    displayDurNs_ <= 0) {
+		showNotice(obs_module_text("Dock.NothingToStep"));
+		return false;
+	}
+	// From the bar to the end of the footage, cut at the seams and CHUNKED.
+	//
+	// One range would be wrong twice over. It would include the gaps between
+	// takes, which are not footage and which the engine refuses outright (the
+	// same reason a scrub review is split — see seekToFraction); and a single
+	// range of "everything from here" would ask the engine to materialise a
+	// whole session's packets in RAM. A queue of minute-long links is neither:
+	// the coordinator chains them exactly as it chains the angles of an event,
+	// and each link is about thirty megabytes.
+	const int64_t inNs = playheadNs_;
+	const int64_t edge = timelineStartNs_ + displayDurNs_;
+	std::vector<std::pair<int64_t, int64_t>> ranges;
+	const auto chop = [&](int64_t a, int64_t b) {
+		for (int64_t t = a;
+		     t < b && (int)ranges.size() < kFreeReviewMaxChunks;
+		     t += kFreeReviewChunkNs)
+			ranges.push_back({t, std::min(b, t + kFreeReviewChunkNs)});
+	};
+	if (timeline_.empty()) {
+		if (edge > inNs)
+			chop(inNs, edge);
+	} else {
+		for (const TimelineSpan &s : timeline_.spansFrom(
+			     inNs, kFreeReviewChunkNs *
+					   (int64_t)kFreeReviewMaxChunks))
+			chop(s.startNs, s.endNs);
+	}
+	if (ranges.empty()) {
+		showNotice(obs_module_text("Dock.NoFootageHere"));
+		return false;
+	}
+
+	auto &core = ReplayCore::instance();
+	// Same discipline as a scrub: kill the queue first so its own finish
+	// callback cannot cut in, and consume the transition so poll() does not
+	// read the stop as "the sequence ended, go back to the live edge".
+	pc().stopEvents();
+	prevSequenceActive_ = false;
+	core.setFollowLive(false);
+	playheadNs_ = inNs;
+	// ARMED, and it outlives the clip on purpose: the operator watches this
+	// off air, presses Stop, decides, and then presses Play events — which has
+	// to start from the instant he chose, not from wherever the review
+	// happened to stop.
+	freeReviewInNs_ = inNs;
+	freeReviewOnAir_ = toOutput;
+
+	std::string err;
+	if (!pc().playRanges(ranges, currentAngle1() - 1, speedPct_, toOutput,
+			     err)) {
+		showNotice(QString("%1 — %2")
+				   .arg(obs_module_text("Dock.NoFootageHere"))
+				   .arg(QString::fromStdString(err)));
+		obs_log(LOG_WARNING,
+			"[dock] free review on angle %d at %lld ms refused: %s",
+			currentAngle1(),
+			(long long)((inNs - timelineStartNs_) / 1000000),
+			err.c_str());
+		return false;
+	}
+	obs_log(LOG_INFO,
+		"[dock] free review: %zu chunk(s) from %lld ms on angle %d, %s",
+		ranges.size(),
+		(long long)((inNs - timelineStartNs_) / 1000000),
+		currentAngle1(), toOutput ? "TO OUTPUT" : "off air");
+	showNotice(obs_module_text(toOutput ? "Dock.FreeReviewOnAir"
+					    : "Dock.FreeReviewOffAir"));
+	return true;
+}
+
+void MultiReplayDock::stopPlayback()
+{
+	// Every bay the selector points at, because that is what the selector
+	// means everywhere else. stopEvents() puts the operator's previous scene
+	// back in Program when the sequence had taken it.
+	for (Which w : targetChannels())
+		PlaybackCoordinator::instance(w).stopEvents();
+}
+
 void MultiReplayDock::playSelected()
 {
+	// THE SECOND FUNCTION OF THIS KEY.
+	//
+	// With a free review armed — the operator moved the bar onto footage
+	// nobody marked and pressed ▶ — this key is what puts THAT on air. It is
+	// the only way it can get there: ▶ deliberately plays it off air, so
+	// reviewing an unmarked action can never reach Program by itself, and the
+	// decision to air it stays a separate press.
+	//
+	// "In output" still governs, exactly as it does for an event: this key
+	// does not have a private route to Program that the panel's own on-air
+	// switch cannot see.
+	if (freeReviewInNs_ != kNoInstant) {
+		playheadNs_ = freeReviewInNs_;
+		playFreeReview(toOutputBtn_ && toOutputBtn_->isChecked());
+		return;
+	}
 	std::string err;
 	if (!playOnTargets(selectedEventIds(),
 			   ReplayChannel::Direction::Forward, err))
@@ -3661,6 +4008,13 @@ void MultiReplayDock::stepFrameForward()
 	core.setFollowLive(false);
 	playheadNs_ = inNs;
 
+	// The boxes step with it: a frame step is how an operator finds the exact
+	// picture, and finding it on one lens while the others sit a second behind
+	// defeats the comparison the strip is there for. Straight at the channel
+	// again, so poll() has no queue to read this off.
+	cueTiles(inNs, std::min(outNs, edge), 100,
+		 ReplayChannel::Direction::Forward);
+
 	std::string err;
 	if (!chan().play(currentAngle1() - 1, inNs,
 					    std::min(outNs, edge), 100, err))
@@ -3727,6 +4081,13 @@ void MultiReplayDock::stepFrameBackward()
 	req.speedPct = 100;
 	req.direction = ReplayChannel::Direction::Reverse;
 	req.maxFrames = 2; // the frame on screen, then the one before it
+	// The boxes step back with it (see stepFrameForward for why this is here
+	// and not in poll()) — but FORWARDS over the same window, not backwards.
+	// A tile is not the picture being trimmed: it only has to be on the moment
+	// the operator is on, and playing this three-frame window forwards leaves
+	// it there for the price of an ordinary decode. Reverse would be a GOP
+	// decode per tile per key repeat, and this key is held down.
+	cueTiles(inNs, outNs, 100, ReplayChannel::Direction::Forward);
 	std::string err;
 	if (!chan().play(req, err))
 		showNotice(QString("%1 — %2")
@@ -3938,6 +4299,19 @@ void MultiReplayDock::cueSelected()
 	core.setFollowLive(false);
 	prevSequenceActive_ = false;
 	playheadNs_ = ev.tInNs;
+	// Picking a row is talking about THAT event, so whatever unmarked stretch
+	// was armed on the bar is no longer what the play keys mean.
+	clearFreeReview();
+
+	// THE ANGLE BOXES SHOW THE CUE TOO — every lens, on the in-point.
+	//
+	// This is the gesture the multiview exists for: the operator picks a row
+	// and looks along the strip to decide which camera saw it. Done here and
+	// not from poll() because a cue never reaches the coordinator — it is two
+	// frames played straight at the channel, so there is no queue for poll()
+	// to read it off.
+	cueTiles(ev.tInNs, ev.tInNs + 2 * frameNs, 100,
+		 ReplayChannel::Direction::Forward);
 
 	for (Which w : targetChannels()) {
 		auto &pcw = PlaybackCoordinator::instance(w);
@@ -3999,6 +4373,21 @@ void MultiReplayDock::replayCurrentOn(Which which)
 	// recording, which the ring makes possible and is the whole point.
 	if (ReplayCore::instance().followLive())
 		return;
+	// A FREE REVIEW IS RE-CUED ON THE CHOSEN CAMERA, not abandoned for an
+	// event. Changing the angle means "the same moment, on that lens" — which
+	// is exactly as true of a stretch nobody marked as it is of a marked one,
+	// and it is what the angle boxes have just been showing him. Jumping to
+	// the selected event here would take the operator somewhere else on the
+	// timeline for pressing a camera key.
+	if (freeReviewInNs_ != kNoInstant) {
+		// Once, on the active bay: a free review is a range, and playing
+		// one range on both bays is two decoders showing one picture.
+		if (which == activeChannel_) {
+			playheadNs_ = freeReviewInNs_;
+			playFreeReview(freeReviewOnAir_);
+		}
+		return;
+	}
 	auto &pc = PlaybackCoordinator::instance(which);
 	std::string err;
 	std::vector<int> ids = selectedEventIds();
@@ -4469,6 +4858,16 @@ void MultiReplayDock::seekToFraction(double frac)
 	// stays under the operator's finger instead of snapping back.
 	playheadNs_ = inNs;
 
+	// DID HE JUST LAND ON FOOTAGE NOBODY MARKED? Then that stretch is what
+	// the play keys are about from here on: ▶ watches it off air, and Play
+	// events puts it up. Landing inside the selected event instead changes
+	// nothing — Play events still replays the event, which is what a scrub
+	// through a marked action has always meant.
+	if (playheadIsFreeFootage())
+		freeReviewInNs_ = inNs;
+	else
+		clearFreeReview();
+
 	std::string err;
 	// Through the QUEUE, not straight at the channel: the queue is what plays
 	// one range after another, so a review that crosses a seam carries on into
@@ -4746,7 +5145,17 @@ void MultiReplayDock::poll()
 	// on the QUEUE ending, natural or by Stop, not on each clip — a two-angle
 	// event must not snap back to live halfway through.
 	if (prevSequenceActive_ && !eventActive) {
-		if (liveFrontFed) {
+		if (freeReviewInNs_ != kNoInstant) {
+			// A FREE REVIEW DOES NOT HAND THE PANEL BACK TO LIVE.
+			//
+			// The operator stopped it on purpose — that is how it
+			// ends — and what he does next is decide whether to air
+			// it. Snapping to the live edge here would throw away the
+			// stretch he just chose, and with it the second function
+			// of the Play key, which replays exactly that stretch.
+			// The armed in-point is left alone: it is the beginning of
+			// what he watched, not wherever he pressed Stop.
+		} else if (liveFrontFed) {
 			// Back to the front, exactly like NOW.
 			core.setFollowLive(true);
 			playheadNs_ = liveEdgeNs;
@@ -4912,6 +5321,9 @@ void MultiReplayDock::poll()
 	// the new take instead of sitting on the last clip that played.
 	if (rec && !prevRecording_) {
 		core.setFollowLive(true);
+		// A new take: whatever stretch of the last one was armed on the
+		// bar is not what the play keys are about any more.
+		clearFreeReview();
 		// Start the watchdog on every take, however it was started (the
 		// REC button, a hotkey, the API): the failure it catches is not
 		// the dock's, it is Branch Output declining.
@@ -5036,12 +5448,44 @@ void MultiReplayDock::poll()
 			if (prevB)
 				obs_source_release(prevB);
 		}
+		// --- the angle boxes follow the REVIEW -----------------------
+		// The tiles have to show the moment on air on every other lens,
+		// and the only thing that knows which moment that is — through a
+		// multi-angle sequence, a review split across a junction, and the
+		// chunks of a free run — is the QUEUE. Driving them from here, off
+		// playState(), is one hook instead of a cueTiles() call sprinkled
+		// over every play path, and the one that would be forgotten is
+		// always the path that has no event behind it.
+		//
+		// cueTiles() is a no-op unless the range really moved, which on an
+		// ordinary tick it has not.
+		if (!followLive && playSt.active &&
+		    playSt.clipInNs != kNoInstant) {
+			Phase _ph(this, "cueTiles");
+			cueTiles(playSt.clipInNs, playSt.clipOutNs,
+				 playSt.speedPct,
+				 playSt.reverse
+					 ? ReplayChannel::Direction::Reverse
+					 : ReplayChannel::Direction::Forward);
+		}
+		// Back on the live edge: the feeds are decoders and private
+		// sources, and keeping eight of them alive to hold a still nobody
+		// is looking at is the one way this feature could cost something
+		// when it is not in use.
+		if (followLive && tileCueInNs_ != kNoInstant)
+			releaseTileFeeds();
+
 		// The tiles are resolved on the same 4 Hz beat and by the same
 		// rules: a lookup on the UI thread, an owned ref published for the
 		// graphics thread. Re-running it periodically is also what catches
 		// a camera source renamed, deleted or swapped by a scene-collection
 		// change — the tile goes black instead of holding a stale pointer.
-		if (refreshStatus)
+		//
+		// ...and IMMEDIATELY when live/review flips, not on the next 4 Hz
+		// beat: a quarter of a second of eight boxes showing the wrong
+		// kind of picture is exactly the sort of thing an operator sees
+		// and cannot name.
+		if (refreshStatus || tilesLive_ != followLive)
 			refreshTileSources();
 	}
 	// Cheap (two compares in the common case) and it has to follow the angle

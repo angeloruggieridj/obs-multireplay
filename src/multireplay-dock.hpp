@@ -433,6 +433,31 @@ public:
 	// it from its own thread while poll() writes it on the UI thread.
 	bool previewShowsReplay() const { return previewShowsReplay_.load(); }
 
+	// WHAT THE ANGLE BOXES ARE SHOWING, for the automated gate.
+	//
+	// "The tiles follow the review" cannot be seen from outside any other way:
+	// a tile black because its feed never played and a tile black because the
+	// camera has no signal are the same rectangle, and a tile still mirroring
+	// the live camera during a replay is the bug this exists to catch — it
+	// looks perfectly fine until you compare it with the picture on air.
+	struct MultiviewState {
+		// false = the boxes mirror the live cameras (follow-live), true =
+		// they are showing the moment being reviewed.
+		bool followingReview = false;
+		int feeds = 0;            // preview feeds created, one per camera
+		int feedsWithPicture = 0; // ...of which have pushed a frame
+		// The range every feed was last cued to. kNoInstant = never.
+		int64_t cueInNs = kNoInstant;
+		int64_t cueOutNs = kNoInstant;
+	};
+	MultiviewState multiviewState() const;
+
+	// The in-point of the FREE REVIEW armed on the position bar, or kNoInstant
+	// when there is none. Published for the gate, which has to tell "Play
+	// events put the free section on air" apart from "Play events replayed the
+	// selected event" — the same queue, with different instants in it.
+	int64_t freeReviewInNs() const { return freeReviewInNs_; }
+
 	// What the preview area actually amounts to, for the automated gate.
 	// Counting OBSQTDisplay children from outside would say how many widgets
 	// exist but not whether each got a real obs_display, and "the tile is
@@ -790,6 +815,25 @@ private:
 	// the reference controller's ◀ key: play what is selected (or the last event) BACKWARDS, from
 	// its OUT to its IN, through the same queue as ▶.
 	void playSelectedReverse();
+
+	// --- unmarked footage -------------------------------------------------
+	// Is the bar parked on a stretch that the event ▶ would otherwise replay
+	// does not cover? That is the question that decides what ▶ means, and it
+	// has to be asked of the SELECTION rather than of the whole list: the
+	// table auto-selects the newest mark, so "is there an event somewhere near
+	// here" would answer yes all match long.
+	bool playheadIsFreeFootage() const;
+	// Watch the footage from the bar onwards — no event behind it. `toOutput`
+	// is what separates ▶ (never) from Play events (through the "In output"
+	// key), and it is the only difference between them.
+	bool playFreeReview(bool toOutput);
+	// Forget the armed free review. Anything that means "I am talking about
+	// something else now" calls this.
+	void clearFreeReview();
+	// the reference controller's Stop, as a key rather than a menu entry. The free review runs
+	// until it is stopped, so the way to stop it cannot be two clicks deep in
+	// a dropdown — and ▶ is a PAUSE while something plays, not a stop.
+	void stopPlayback();
 	// Play on every bay the selector points at (both, under A|B). "To output"
 	// can only go to ONE of them — Program is one scene — so it goes to the bay
 	// named in Settings and the other plays without touching Program.
@@ -916,6 +960,45 @@ private:
 	void updateMultiviewTally();
 	static void drawTile(void *data, uint32_t cx, uint32_t cy);
 
+	// --- THE ANGLE BOXES DURING A REVIEW ---------------------------------
+	// Out of follow-live, a tile stops being a camera monitor and becomes the
+	// reviewed moment on that lens — which is the whole reason an operator
+	// looks at a multiview: to pick the angle before the replay goes up. Each
+	// configured camera gets a preview FEED of its own (ReplayChannel::
+	// makePreview: the same engine, a private input, silent) and every feed is
+	// cued to the same range.
+	//
+	// Cost is bounded by construction, in the same three ways the tiles
+	// themselves are: a feed exists only for a configured camera whose tile is
+	// on screen (Monitors off or showMultiview off ⇒ no feeds at all), the cue
+	// is capped at kTileReviewMaxNs so a feed never materialises more than a
+	// minute of packets, and a feed decodes no audio whatsoever.
+	void ensureTileFeeds();
+	// Show [inNs, outNs] on every feed. A no-op when the range has not moved —
+	// this is called from poll(), thirty times a second.
+	void cueTiles(int64_t inNs, int64_t outNs, int speedPct,
+		      ReplayChannel::Direction dir);
+	// Stop and destroy every feed, and forget the cue. Called when the panel
+	// goes back to live and on the way out.
+	void releaseTileFeeds();
+	// Longest range a feed is ever asked for. A clip is COMPRESSED packets in
+	// RAM (~2.5 MB for five seconds at 4 Mbit/s), so a minute per angle is the
+	// order of 30 MB — bounded, and far more footage than anyone chooses an
+	// angle over. A longer review simply holds its last frame on the tiles.
+	static constexpr int64_t kTileReviewMaxNs = 60'000'000'000LL;
+
+	std::array<std::unique_ptr<ReplayChannel>, 8> tileFeed_{};
+	int64_t tileCueInNs_ = kNoInstant;
+	int64_t tileCueOutNs_ = kNoInstant;
+	int tileCueSpeedPct_ = 0;
+	ReplayChannel::Direction tileCueDir_ =
+		ReplayChannel::Direction::Forward;
+	// What refreshTileSources() last published: the camera mirrors, or the
+	// feeds. Kept so the swap happens the tick the mode changes rather than on
+	// the next 4 Hz beat — a quarter of a second of the wrong picture in eight
+	// boxes is the kind of thing an operator sees and cannot name.
+	bool tilesLive_ = true;
+
 	std::array<PreviewTile, kMaxPreviewTiles> tiles_{};
 	std::array<TileCtx, kMaxPreviewTiles> tileCtx_{};
 	mutable std::mutex tileMutex_; // pointer copy + addref only
@@ -978,6 +1061,9 @@ private:
 	// eye already is; two copies of the same timecode is two things to
 	// reconcile.)
 	QPushButton *playPauseBtn_ = nullptr;
+	// ■ — Stop. EXACTLY ONE button in this dock may carry this glyph: the gate
+	// finds Stop by it.
+	QPushButton *stopBtn_ = nullptr;
 	QPushButton *nowBtn_ = nullptr;
 	bool seekDragging_ = false;
 
@@ -1078,6 +1164,41 @@ private:
 	// kNoInstant, not 0: this is an instant on the master clock and instants
 	// go negative for footage older than the machine's last boot.
 	int64_t playheadNs_ = kNoInstant;
+
+	// --- THE FREE REVIEW: footage nobody marked ---------------------------
+	// Where the bar was when the operator asked to watch a stretch that no
+	// event covers, or kNoInstant when no such review is armed.
+	//
+	// It exists because the two keys have to mean different things here, and
+	// only a remembered in-point can hold them apart:
+	//   ▶            watch it, OFF AIR. Reviewing an action that was never
+	//                marked must not be able to reach Program by itself —
+	//                that is the whole safety of letting ▶ play unmarked
+	//                footage at all.
+	//   Play events  put THAT on air (through the "In output" key, like every
+	//                other play path). This is the key's second function, and
+	//                it is why the in-point outlives the clip: the operator
+	//                watches, presses Stop, decides, and then airs it — from
+	//                the same instant, not from wherever the bar stopped.
+	// Cleared by anything that means "I am no longer talking about that
+	// stretch": picking a row, NOW, Live, or a new take.
+	int64_t freeReviewInNs_ = kNoInstant;
+	// Whether the armed review is currently taking Program. Needed because an
+	// angle key re-cues what is being watched on the chosen camera, and doing
+	// that to a review that is ON AIR must not quietly drop it off air — nor
+	// put an off-air one up.
+	bool freeReviewOnAir_ = false;
+	// One chunk of a free run. The engine materialises a clip's packets in
+	// RAM, so "play from here to the end of the session" cannot be one range —
+	// an hour of footage is gigabytes. It is a QUEUE of these instead, which
+	// the coordinator already chains the way it chains the angles of an event,
+	// and each link is a minute of compressed packets (~30 MB).
+	static constexpr int64_t kFreeReviewChunkNs = 60'000'000'000LL;
+	// ...and at most this many links, so a free run started by accident on a
+	// long session is bounded rather than open-ended. Half an hour of watching
+	// is far past the point where the operator would have scrubbed again.
+	static constexpr int kFreeReviewMaxChunks = 30;
+
 	// Until when showNotice()'s message owns the channel strip (master ns),
 	// and the message itself. It goes on the strip rather than in the corner
 	// status line because that line is two inches wide and this is the answer
