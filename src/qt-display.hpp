@@ -36,6 +36,7 @@ created even if Qt never raises an exposure flag that libobs does not need.
 
 #include <obs.h>
 
+#include <QString>
 #include <QWidget>
 #include <atomic>
 #include <functional>
@@ -69,8 +70,19 @@ public:
 	// this is the only number that can tell the two apart from outside.
 	int64_t blockedMs() const;
 
-	// Qt must NOT paint over the native surface OBS renders into.
-	QPaintEngine *paintEngine() const override { return nullptr; }
+	// Qt must NOT paint over the native surface OBS renders into — EXCEPT
+	// where there is no native surface to render into. On a platform this
+	// widget cannot serve (Wayland: libobs binds a swap chain to an X window
+	// and Wayland hands out a wl_surface) it becomes an ordinary widget that
+	// paints a sentence saying so, because a black rectangle is
+	// indistinguishable from a camera with no signal (A1).
+	QPaintEngine *paintEngine() const override
+	{
+		return unsupported_ ? QWidget::paintEngine() : nullptr;
+	}
+
+	// Empty when the previews work here. Set once, in the constructor.
+	QString unsupportedReason() const { return unsupportedText_; }
 
 	obs_display_t *display() const { return display_; }
 
@@ -120,6 +132,10 @@ private:
 	// one-shot bool that logged the first failure and then said nothing ever
 	// again: a preview that never appeared left exactly one line in the log
 	// and no way to tell a slow start from a permanent one.
+	// Set once in the constructor: this platform cannot back an obs_display,
+	// and the widget says so instead of being black.
+	bool unsupported_ = false;
+	QString unsupportedText_;
 	uint64_t blockedSinceNs_ = 0;
 	// Last time the dry spell was logged, so the retry is audible without
 	// being a flood at 30 Hz.

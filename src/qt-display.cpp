@@ -11,10 +11,21 @@ SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <util/platform.h>
 
+#include <QGuiApplication>
+#include <QPainter>
 #include <QResizeEvent>
 #include <QShowEvent>
 #include <QWindow>
-#include <QGuiApplication>
+
+// A1: the X Display pointer libobs needs on X11. QNativeInterface is PUBLIC Qt
+// 6 API (QtGui), not a private module, so wiring it costs nothing that the
+// build has to carry.
+#if defined(__linux__) || defined(__FreeBSD__) || defined(__OpenBSD__)
+#if __has_include(<QtGui/qguiapplication_platform.h>)
+#include <QtGui/qguiapplication_platform.h>
+#define MR_HAVE_QX11 1
+#endif
+#endif
 
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -30,10 +41,37 @@ namespace multireplay {
 
 namespace {
 
-// Translate a Qt native window into a libobs gs_window. Windows and macOS are
-// a direct winId() cast; Linux X11 also needs the X Display pointer. Wayland
-// is NOT supported by this path (OBS needs the wl_surface) — run OBS under
-// X11/XWayland for the embedded previews.
+// WHY THIS WIDGET CANNOT WORK HERE, when it cannot (A1).
+//
+// Empty means it can. A non-empty string is shown IN the widget instead of
+// leaving a black rectangle that is indistinguishable from a camera with no
+// signal — which is what Linux users got, because this file deliberately passed
+// display = nullptr and said so only in a comment.
+const char *platformBlocker()
+{
+#if defined(_WIN32) || defined(__APPLE__)
+	return nullptr;
+#else
+	const QString platform = QGuiApplication::platformName();
+	if (platform.startsWith(QStringLiteral("xcb")))
+		return nullptr; // X11 or XWayland: supported below
+#if defined(MR_HAVE_QX11)
+	return "The embedded previews need X11. Run OBS under X11 or "
+	       "XWayland: libobs binds its swap chain to an X window, and "
+	       "Wayland hands out a wl_surface instead.";
+#else
+	return "This build of Qt does not expose the X11 native interface, so "
+	       "the embedded previews cannot be given a display connection.";
+#endif
+#endif
+}
+
+// Translate a Qt native window into a libobs gs_window. Windows and macOS are a
+// direct winId() cast; X11 also needs the X Display pointer, and it comes from
+// PUBLIC Qt 6 API (QNativeInterface::QX11Application) rather than from a private
+// module. It used to be left null with a note explaining that the preview
+// therefore did not work on Linux — which is the plugin's central widget not
+// working on a whole platform, recorded as a comment.
 gs_window qtToGsWindow(WId wid)
 {
 	gs_window gswin = {};
@@ -41,13 +79,14 @@ gs_window qtToGsWindow(WId wid)
 	gswin.hwnd = (void *)wid;
 #elif defined(__APPLE__)
 	gswin.view = (id)wid;
-#else // Linux / *nix (X11). Wayland is not supported by this path.
-	// NOTE: the embedded preview targets Windows/macOS. On Linux the X
-	// Display pointer would need to be wired via the QX11Application native
-	// interface; left null here to keep the build free of Qt private
-	// modules. Run OBS under X11 if the Linux preview is needed.
+#else // X11 (and XWayland). Wayland proper is refused above.
 	gswin.id = (uint32_t)wid;
 	gswin.display = nullptr;
+#if defined(MR_HAVE_QX11)
+	if (auto *x11 = qGuiApp->nativeInterface<
+		    QNativeInterface::QX11Application>())
+		gswin.display = x11->display();
+#endif
 #endif
 	return gswin;
 }
@@ -101,6 +140,18 @@ std::atomic<int> OBSQTDisplay::forcedCount_{0};
 
 OBSQTDisplay::OBSQTDisplay(QWidget *parent) : QWidget(parent)
 {
+	// A1: decided ONCE, before a single attribute is set. On a platform that
+	// cannot back an obs_display this must stay an ORDINARY widget — the
+	// attributes below are what stop Qt painting, and a widget that neither
+	// Qt nor libobs paints is a black rectangle with no explanation.
+	if (const char *why = platformBlocker()) {
+		unsupported_ = true;
+		unsupportedText_ = QString::fromUtf8(why);
+		setMinimumSize(64, 36);
+		obs_log(LOG_WARNING, "[display] not available here: %s", why);
+		return;
+	}
+
 	// These are the attributes OBS Studio itself sets on its previews, and
 	// they have to be kept together — they describe ONE arrangement, not a
 	// menu to pick from:
@@ -158,7 +209,7 @@ void OBSQTDisplay::setRenderCallback(void (*draw)(void *, uint32_t, uint32_t),
 
 void OBSQTDisplay::createDisplay(const char *why)
 {
-	if (display_ || destroying_)
+	if (display_ || destroying_ || unsupported_)
 		return;
 
 	// internalWinId() reports the handle Qt has ALREADY created and never
@@ -299,7 +350,7 @@ int64_t OBSQTDisplay::blockedMs() const
 
 void OBSQTDisplay::recheckWindow(const char *why)
 {
-	if (destroying_)
+	if (destroying_ || unsupported_)
 		return;
 
 	const WId wid = internalWinId();
@@ -339,6 +390,17 @@ void OBSQTDisplay::resizeEvent(QResizeEvent *event)
 
 void OBSQTDisplay::paintEvent(QPaintEvent *)
 {
+	// A1: on a platform without an obs_display this is the ONLY thing in the
+	// box, and it is a sentence rather than a black rectangle.
+	if (unsupported_) {
+		QPainter p(this);
+		p.fillRect(rect(), QColor(0x14, 0x16, 0x1a));
+		p.setPen(QColor(0xc0, 0xc4, 0xcc));
+		p.drawText(rect().adjusted(8, 8, -8, -8),
+			   Qt::AlignCenter | Qt::TextWordWrap,
+			   unsupportedText_);
+		return;
+	}
 	// Nothing to paint: libobs owns this surface. A paint request does mean
 	// the window is up and mapped, which is a good moment to (re)check it.
 	recheckWindow("paint");
