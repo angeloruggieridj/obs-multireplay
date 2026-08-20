@@ -181,6 +181,48 @@ static void test_asset_names_that_are_paths_are_refused()
 	CHECK(!pick(poisoned, Platform::Windows, out));
 }
 
+static void test_the_names_the_workflow_actually_published()
+{
+	using namespace update_asset;
+	// Copied verbatim from the 1.0.0-beta7 draft release. The list above is
+	// the shape the workflow is MEANT to produce; this is the shape it did.
+	// They differ — the Linux package is "-x86_64-linux-gnu.deb", not
+	// "-x86_64.deb" — and the difference is exactly the kind that decides
+	// which binary an operator installs.
+	const std::vector<Asset> published = {
+		{"obs-multireplay-1.0.0-macos-universal.pkg", "https://x/1",
+		 10517557},
+		{"obs-multireplay-1.0.0-source.tar.xz", "https://x/2", 752288},
+		{"obs-multireplay-1.0.0-windows-x64.zip", "https://x/3", 4016458},
+		{"obs-multireplay-1.0.0-x86_64-linux-gnu-dbgsym.ddeb",
+		 "https://x/4", 50836},
+		{"obs-multireplay-1.0.0-x86_64-linux-gnu.deb", "https://x/5",
+		 718894},
+	};
+	Asset out;
+	CHECK(pick(published, Platform::Windows, out));
+	CHECK(out.name == "obs-multireplay-1.0.0-windows-x64.zip");
+	CHECK(pick(published, Platform::MacOS, out));
+	CHECK(out.name == "obs-multireplay-1.0.0-macos-universal.pkg");
+	CHECK(pick(published, Platform::Linux, out));
+	CHECK(out.name == "obs-multireplay-1.0.0-x86_64-linux-gnu.deb");
+
+	// ...and the body the workflow publishes AS the release notes.
+	const std::string body =
+		"### Checksums\n"
+		"    obs-multireplay-1.0.0-macos-universal.pkg: 7e2fd98f870ae3d0d1f1d09e339d3403d1885047e9fddfcbfc4f43fb02aec971\n"
+		"    obs-multireplay-1.0.0-source.tar.xz: 0e45a8d582ce395e8047a1d0188840f16247c626d589d053f75fb9345abd96da\n"
+		"    obs-multireplay-1.0.0-windows-x64.zip: 7898911ea7609c643a98b33ee0656aa92392fce45856cb57e2c9b50dc66ceccc\n"
+		"    obs-multireplay-1.0.0-x86_64-linux-gnu-dbgsym.ddeb: 96214b45921e9e25c16e4cace4b95cd1f775f70dde38a55064d87ad411befe6c\n"
+		"    obs-multireplay-1.0.0-x86_64-linux-gnu.deb: b6e55b134ece72c1bbd5119b46b7a2bbc742c9412436024569ad9aed270adbfd\n";
+	CHECK(sha256For(body, "obs-multireplay-1.0.0-windows-x64.zip") ==
+	      "7898911ea7609c643a98b33ee0656aa92392fce45856cb57e2c9b50dc66ceccc");
+	CHECK(sha256For(body, "obs-multireplay-1.0.0-x86_64-linux-gnu.deb") ==
+	      "b6e55b134ece72c1bbd5119b46b7a2bbc742c9412436024569ad9aed270adbfd");
+	CHECK(sha256For(body, "obs-multireplay-1.0.0-macos-universal.pkg") ==
+	      "7e2fd98f870ae3d0d1f1d09e339d3403d1885047e9fddfcbfc4f43fb02aec971");
+}
+
 // --- the checksum in the release body (B1) ---------------------------------
 
 static void test_checksum_is_found_where_the_workflow_puts_it()
@@ -339,6 +381,7 @@ int main()
 	test_debug_symbols_and_sources_are_never_the_update();
 	test_an_unnamed_archive_still_works();
 	test_asset_names_that_are_paths_are_refused();
+	test_the_names_the_workflow_actually_published();
 	test_checksum_is_found_where_the_workflow_puts_it();
 	test_checksum_reading_is_tolerant_but_strict();
 	test_the_script_contains_no_path_at_all();
