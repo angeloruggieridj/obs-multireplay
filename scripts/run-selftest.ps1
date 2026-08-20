@@ -185,16 +185,35 @@ function Restore-OperatorEnvironment {
     # The collection name is ASSERTED, not restored: the backup was taken from a
     # file OBS rewrites on exit, so it can already carry the gate's own name or a
     # stale one. See the note where $operatorCollection is decided.
-    if ($operatorCollection -and (Test-Path $globalIni)) {
-        (Get-Content $globalIni) `
-            -replace '^SceneCollection=.*$', "SceneCollection=$operatorCollection" `
-            -replace '^SceneCollectionFile=.*$', "SceneCollectionFile=$operatorCollection" |
-            Set-Content $globalIni -Encoding UTF8
+    if (Test-Path $userIniBackup) {
+        Copy-Item $userIniBackup $userIni -Force -ErrorAction SilentlyContinue
+        Remove-Item $userIniBackup -Force -ErrorAction SilentlyContinue
+    }
+    # ...and asserted in BOTH files. user.ini is the one OBS reads; global.ini
+    # is the mirror. Setting only the mirror is what left the operator pointed
+    # at a collection this script had already deleted.
+    foreach ($ini in @($globalIni, $userIni)) {
+        if ($operatorCollection -and (Test-Path $ini)) {
+            $suffix = if ($ini -eq $userIni) { '.json' } else { '' }
+            (Get-Content $ini) `
+                -replace '^SceneCollection=.*$', "SceneCollection=$operatorCollection" `
+                -replace '^SceneCollectionFile=.*$', "SceneCollectionFile=$operatorCollection$suffix" |
+                Set-Content $ini -Encoding UTF8
+        }
     }
 }
 
 $scenesDir = Join-Path $env:APPDATA 'obs-studio\basic\scenes'
 $globalIni = Join-Path $env:APPDATA 'obs-studio\global.ini'
+# AND user.ini, which is the one that actually decides. OBS 30+ keeps the
+# per-user settings - the current scene collection among them - in user.ini and
+# only mirrors them into global.ini. Restoring global.ini alone therefore
+# restored nothing: the operator's next manual launch opened MRSelfTest, found
+# the gate had deleted it, fell back to whatever collection came to hand, and
+# wrote THAT everywhere. Which is very likely how a media source in his own
+# collection ended up with an empty file path.
+$userIni = Join-Path $env:APPDATA 'obs-studio\user.ini'
+$userIniBackup = Join-Path $env:TEMP 'obs-multireplay-user.backup.ini'
 $pluginCfg = Join-Path $env:APPDATA 'obs-studio\plugin_config\obs-multireplay\config.json'
 $testCollection = 'MRSelfTest'
 $testCollectionFile = Join-Path $scenesDir "$testCollection.json"
@@ -208,6 +227,7 @@ $iniBackup = Join-Path $env:TEMP 'obs-multireplay-global.backup.ini'
 # there. The sources are looked for in every collection instead, most recently
 # modified first, which is also the honest answer to "where does this name live".
 if (Test-Path $globalIni) { Copy-Item $globalIni $iniBackup -Force }
+if (Test-Path $userIni) { Copy-Item $userIni $userIniBackup -Force }
 $collectionFiles = @(Get-ChildItem -Path $scenesDir -Filter '*.json' -ErrorAction SilentlyContinue |
                      Where-Object { $_.BaseName -ne $testCollection } |
                      Sort-Object LastWriteTime -Descending)
