@@ -285,6 +285,49 @@ static void test_checksum_reading_is_tolerant_but_strict()
 		      .empty());
 }
 
+
+static void test_a_body_with_release_notes_in_front_of_the_checksums()
+{
+	// What the published bodies ACTUALLY look like since 1.0.0-beta4: hand
+	// written notes, then the checksum block. The notes NAME the assets
+	// without giving a digest - the install line is literally
+	// "sudo apt install ./obs-multireplay-...deb" - and a table row can carry
+	// pipes and backticks. Both are lines that match the asset name and must
+	// not be mistaken for the answer, and the second one is the reason the
+	// scan continues past a matching line instead of giving up on it.
+	const std::string body =
+		"**Pre-release.** Requires OBS >= 32.\n"
+		"\n"
+		"## Fixed\n"
+		"\n"
+		"| Area | Symptom | Fix |\n"
+		"|---|---|---|\n"
+		"| Updater | `obs-multireplay-1.0.0-windows-x64.zip` was not "
+		"verified | it is now |\n"
+		"\n"
+		"## Install\n"
+		"\n"
+		"- **Linux** - `sudo apt install "
+		"./obs-multireplay-1.0.0-x86_64-linux-gnu.deb`\n"
+		"\n"
+		"### Checksums\n"
+		"    obs-multireplay-1.0.0-windows-x64.zip: "
+		"7898911ea7609c643a98b33ee0656aa92392fce45856cb57e2c9b50dc66ceccc\n"
+		"    obs-multireplay-1.0.0-x86_64-linux-gnu.deb: "
+		"b6e55b134ece72c1bbd5119b46b7a2bbc742c9412436024569ad9aed270adbfd\n";
+
+	CHECK(update_asset::sha256For(
+		      body, "obs-multireplay-1.0.0-windows-x64.zip") ==
+	      "7898911ea7609c643a98b33ee0656aa92392fce45856cb57e2c9b50dc66ceccc");
+	CHECK(update_asset::sha256For(
+		      body, "obs-multireplay-1.0.0-x86_64-linux-gnu.deb") ==
+	      "b6e55b134ece72c1bbd5119b46b7a2bbc742c9412436024569ad9aed270adbfd");
+	// And an asset the notes mention but the block does not list is still
+	// empty, not the digest of whatever came next.
+	CHECK(update_asset::sha256For(body, "obs-multireplay-1.0.0-macos.pkg")
+		      .empty());
+}
+
 // --- the installer (B2) ----------------------------------------------------
 
 static void test_the_script_contains_no_path_at_all()
@@ -384,6 +427,7 @@ int main()
 	test_the_names_the_workflow_actually_published();
 	test_checksum_is_found_where_the_workflow_puts_it();
 	test_checksum_reading_is_tolerant_but_strict();
+	test_a_body_with_release_notes_in_front_of_the_checksums();
 	test_the_script_contains_no_path_at_all();
 	test_the_parameters_travel_verbatim();
 	test_the_command_line_is_quoted_the_way_windows_reads_it();
