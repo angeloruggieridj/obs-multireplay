@@ -7,7 +7,11 @@ SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "updater.hpp"
 
+#include "path-utf8.hpp"
 #include "plugin-support.h"
+#include "sha256.hpp"
+#include "update-asset.hpp"
+#include "update-installer.hpp"
 #include "version-compare.hpp"
 
 #include <util/platform.h>
@@ -15,11 +19,23 @@ SPDX-License-Identifier: GPL-2.0-or-later
 #include <curl/curl.h>
 
 #include <algorithm>
-#include <cstdlib>
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <mutex>
 #include <system_error>
+#include <vector>
+
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 
 namespace multireplay {
 
@@ -45,11 +61,40 @@ constexpr long kDownloadTimeoutSec = 600;
 // it so a redirect to something enormous cannot fill a recording disk.
 constexpr int64_t kMaxAssetBytes = 200ll * 1024 * 1024;
 
+// And the same idea for the JSON. CURLOPT_MAXFILESIZE_LARGE only acts on a
+// DECLARED Content-Length, so a chunked response can go on for as long as it
+// likes — into a std::string, in a plugin inside somebody's recording software.
+// Twenty releases with their notes are tens of kilobytes.
+constexpr size_t kMaxBodyBytes = 8u * 1024 * 1024;
+
+// libcurl's global state. OBS has already initialised it on every platform we
+// have looked at, but "has already" is not a guarantee — on Linux and macOS the
+// libcurl OBS loads may not even be the one this plugin linked against — and
+// calling curl_easy_init() before curl_global_init() is undefined rather than
+// merely unlucky. Done once, on first use, and deliberately NOT cleaned up: the
+// counter inside libcurl is shared with whoever else called it, and an
+// unmatched cleanup is a crash where an unreleased count is nothing at all.
+void ensureCurlGlobalInit()
+{
+	static std::once_flag once;
+	std::call_once(once, []() { curl_global_init(CURL_GLOBAL_DEFAULT); });
+}
+
+struct BodySink {
+	std::string data;
+	bool overflowed = false;
+};
+
 size_t appendToString(void *data, size_t size, size_t nmemb, void *user)
 {
-	auto *out = static_cast<std::string *>(user);
-	out->append(static_cast<const char *>(data), size * nmemb);
-	return size * nmemb;
+	auto *out = static_cast<BodySink *>(user);
+	const size_t n = size * nmemb;
+	if (out->data.size() + n > kMaxBodyBytes) {
+		out->overflowed = true;
+		return 0; // a short write aborts the transfer
+	}
+	out->data.append(static_cast<const char *>(data), n);
+	return n;
 }
 
 size_t appendToFile(void *data, size_t size, size_t nmemb, void *user)
@@ -79,9 +124,11 @@ int onProgress(void *user, curl_off_t total, curl_off_t now, curl_off_t,
 // One GET. Shared by the check and the download so there is a single place that
 // decides about redirects, timeouts and certificate verification — three
 // settings it is very easy to get wrong once per call site.
-bool httpGet(const std::string &url, long timeoutSec, std::string *body,
+bool httpGet(const std::string &url, long timeoutSec, BodySink *body,
 	     std::ofstream *file, ProgressCtx *progress, std::string &errorOut)
 {
+	ensureCurlGlobalInit();
+
 	CURL *curl = curl_easy_init();
 	if (!curl) {
 		errorOut = "could not initialise the HTTP client";
@@ -109,6 +156,11 @@ bool httpGet(const std::string &url, long timeoutSec, std::string *body,
 		curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, appendToString);
 		curl_easy_setopt(curl, CURLOPT_WRITEDATA, body);
 	}
+	// ALWAYS, download or check. The progress callback is the only thing
+	// abort_ can act through, and registering it for the download only meant
+	// a check against a server that had gone quiet was uninterruptible:
+	// shutdown() then waited out the whole HTTP timeout, i.e. OBS took up to
+	// thirty seconds to close.
 	if (progress) {
 		curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, onProgress);
 		curl_easy_setopt(curl, CURLOPT_XFERINFODATA, progress);
@@ -120,6 +172,10 @@ bool httpGet(const std::string &url, long timeoutSec, std::string *body,
 	curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http);
 	curl_easy_cleanup(curl);
 
+	if (body && body->overflowed) {
+		errorOut = "the server sent more than this plugin will read";
+		return false;
+	}
 	if (rc == CURLE_ABORTED_BY_CALLBACK) {
 		errorOut = "cancelled";
 		return false;
@@ -135,66 +191,32 @@ bool httpGet(const std::string &url, long timeoutSec, std::string *body,
 	return true;
 }
 
-// The asset to fetch, out of a release's list. Prefers an archive whose name
-// says which platform it is for: a release carries one per platform, and
-// installing the wrong one is worse than installing nothing.
+// The asset to fetch, out of a release's list. The CHOOSING is in
+// update-asset.hpp, pure and unit tested; this only turns obs_data into the
+// vector it takes.
 bool pickAsset(obs_data_array_t *assets, ReleaseInfo &out)
 {
-#if defined(_WIN32)
-	static const char *kWanted[] = {"windows", "win64", "x64"};
-#elif defined(__APPLE__)
-	static const char *kWanted[] = {"macos", "mac", "darwin"};
-#else
-	static const char *kWanted[] = {"ubuntu", "linux"};
-#endif
+	std::vector<update_asset::Asset> list;
 	const size_t n = obs_data_array_count(assets);
-	std::string fallbackUrl, fallbackName;
-	int64_t fallbackBytes = 0;
-
+	list.reserve(n);
 	for (size_t i = 0; i < n; i++) {
 		obs_data_t *a = obs_data_array_item(assets, i);
-		const std::string name = obs_data_get_string(a, "name");
-		const std::string url =
-			obs_data_get_string(a, "browser_download_url");
-		const int64_t size = obs_data_get_int(a, "size");
+		update_asset::Asset item;
+		item.name = obs_data_get_string(a, "name");
+		item.url = obs_data_get_string(a, "browser_download_url");
+		item.size = obs_data_get_int(a, "size");
 		obs_data_release(a);
-		if (url.empty() || name.empty())
-			continue;
-
-		std::string lower = name;
-		std::transform(lower.begin(), lower.end(), lower.begin(),
-			       [](unsigned char c) { return (char)tolower(c); });
-		const bool isArchive =
-			(lower.size() > 4 &&
-			 lower.rfind(".zip") == lower.size() - 4) ||
-			(lower.size() > 7 &&
-			 lower.rfind(".tar.gz") == lower.size() - 7);
-		if (!isArchive)
-			continue;
-
-		for (const char *w : kWanted) {
-			if (lower.find(w) != std::string::npos) {
-				out.assetUrl = url;
-				out.assetName = name;
-				out.assetBytes = size;
-				return true;
-			}
-		}
-		if (fallbackUrl.empty()) {
-			fallbackUrl = url;
-			fallbackName = name;
-			fallbackBytes = size;
-		}
+		if (!item.name.empty() && !item.url.empty())
+			list.push_back(std::move(item));
 	}
-	// A release with a single archive and no platform in its name is the
-	// ordinary shape of a small project's first releases.
-	if (!fallbackUrl.empty()) {
-		out.assetUrl = fallbackUrl;
-		out.assetName = fallbackName;
-		out.assetBytes = fallbackBytes;
-		return true;
-	}
-	return false;
+
+	update_asset::Asset chosen;
+	if (!update_asset::pick(list, update_asset::hostPlatform(), chosen))
+		return false;
+	out.assetUrl = chosen.url;
+	out.assetName = chosen.name;
+	out.assetBytes = chosen.size;
+	return true;
 }
 
 std::filesystem::path stagingDir()
@@ -203,6 +225,98 @@ std::filesystem::path stagingDir()
 	return std::filesystem::temp_directory_path(ec) /
 	       "obs-multireplay-update";
 }
+
+// The SHA-256 of a file, read in blocks: the archive must not be pulled into
+// memory to be checked.
+bool fileDigest(const std::filesystem::path &p, std::string &hexOut)
+{
+	std::ifstream in(p, std::ios::binary);
+	if (!in)
+		return false;
+	sha256::Hasher h;
+	std::vector<char> buf(64 * 1024);
+	while (in) {
+		in.read(buf.data(), (std::streamsize)buf.size());
+		const std::streamsize got = in.gcount();
+		if (got > 0)
+			h.update(buf.data(), (size_t)got);
+	}
+	hexOut = h.hex();
+	return true;
+}
+
+#if defined(_WIN32)
+// Where this very plugin is installed, derived from the module OBS actually
+// loaded rather than from a constant. obs_get_module_binary_path() hands back
+//   <root>/obs-multireplay/bin/64bit/obs-multireplay.dll
+// and the folder an update is unpacked over is three levels up. Hardcoding
+// C:\ProgramData\... was right on one machine and wrong on a portable install.
+std::string installedPluginDir()
+{
+	const char *bin = obs_get_module_binary_path(obs_current_module());
+	if (bin && *bin) {
+		std::filesystem::path p = utf8ToPath(bin);
+		// dll -> 64bit -> bin -> the plugin folder
+		for (int i = 0; i < 3 && p.has_parent_path(); i++)
+			p = p.parent_path();
+		if (!p.empty() && p.has_filename())
+			return pathToUtf8(p);
+	}
+	obs_log(LOG_WARNING,
+		"[update] OBS did not say where this module lives — falling "
+		"back to the default plugin folder");
+	return "C:\\ProgramData\\obs-studio\\plugins\\obs-multireplay";
+}
+
+// Detached and shell-free. std::system() would have gone through cmd.exe, where
+// '&', '^', '|' and %VAR% in a path are syntax before PowerShell sees them.
+bool startDetached(const std::string &commandLine, std::string &errorOut)
+{
+	const int need = MultiByteToWideChar(CP_UTF8, 0, commandLine.c_str(),
+					     -1, nullptr, 0);
+	if (need <= 0) {
+		errorOut = "the installer command line is not valid text";
+		return false;
+	}
+	std::wstring wide((size_t)need, L'\0');
+	MultiByteToWideChar(CP_UTF8, 0, commandLine.c_str(), -1, wide.data(),
+			    need);
+
+	STARTUPINFOW si = {};
+	si.cb = sizeof(si);
+	si.dwFlags = STARTF_USESHOWWINDOW;
+	si.wShowWindow = SW_HIDE;
+	PROCESS_INFORMATION pi = {};
+	// DETACHED_PROCESS + a new process group: it has to outlive the process
+	// it is waiting for.
+	const BOOL ok = CreateProcessW(
+		nullptr, wide.data(), nullptr, nullptr, FALSE,
+		CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS |
+			CREATE_UNICODE_ENVIRONMENT,
+		nullptr, nullptr, &si, &pi);
+	if (!ok) {
+		errorOut = "could not start the installer (error " +
+			   std::to_string((unsigned long)GetLastError()) + ")";
+		return false;
+	}
+	CloseHandle(pi.hThread);
+	CloseHandle(pi.hProcess);
+	return true;
+}
+
+// Write UTF-8 bytes, exactly as given. std::ofstream on MSVC narrows a
+// std::string path through the ANSI code page, so the PATH goes through
+// utf8ToPath and the CONTENT is written as bytes.
+bool writeUtf8File(const std::filesystem::path &p, const std::string &text)
+{
+	std::ofstream out(p, std::ios::binary | std::ios::trunc);
+	if (!out)
+		return false;
+	out.write(text.data(), (std::streamsize)text.size());
+	out.close();
+	return out.good();
+}
+#endif // _WIN32
 
 } // namespace
 
@@ -233,6 +347,11 @@ Updater::~Updater()
 std::string Updater::currentVersion()
 {
 	return PLUGIN_VERSION;
+}
+
+bool Updater::canInstallHere()
+{
+	return update_asset::isInstallableHere(update_asset::hostPlatform());
 }
 
 Updater::Status Updater::status() const
@@ -273,9 +392,14 @@ void Updater::checkAsync(UpdateChannel channel)
 	setStatus(s);
 
 	worker_ = std::thread([this, channel]() {
-		std::string body, err;
+		BodySink body;
+		std::string err;
+		// The progress callback is here only so abort_ has something to
+		// act through: a check has no percentage worth showing.
+		ProgressCtx ctx;
+		ctx.abort = &abort_;
 		if (!httpGet(kReleasesApi, kCheckTimeoutSec, &body, nullptr,
-			     nullptr, err)) {
+			     &ctx, err)) {
 			Status f;
 			f.phase = Phase::Failed;
 			f.message = err;
@@ -289,7 +413,7 @@ void Updater::checkAsync(UpdateChannel channel)
 		// The endpoint answers with an ARRAY, and obs_data parses
 		// objects. Wrapping it costs one string and saves carrying a
 		// second JSON library for a single call.
-		const std::string wrapped = "{\"releases\":" + body + "}";
+		const std::string wrapped = "{\"releases\":" + body.data + "}";
 		obs_data_t *root = obs_data_create_from_json(wrapped.c_str());
 		obs_data_array_t *arr =
 			root ? obs_data_get_array(root, "releases") : nullptr;
@@ -343,9 +467,11 @@ void Updater::checkAsync(UpdateChannel channel)
 			out.phase = Phase::Available;
 			out.release = best;
 			obs_log(LOG_INFO,
-				"[update] %s is available (running %s, channel %s)",
+				"[update] %s is available (running %s, channel "
+				"%s, asset %s)",
 				best.version.c_str(), current.c_str(),
-				updateChannelToString(channel));
+				updateChannelToString(channel),
+				best.assetName.c_str());
 		} else {
 			out.phase = Phase::UpToDate;
 			obs_log(LOG_INFO,
@@ -362,6 +488,21 @@ void Updater::downloadAsync()
 	const Status now = status();
 	if (now.phase != Phase::Available || !now.release.valid())
 		return;
+	// The name is used to build a filename. It came out of an HTTP
+	// response, so it is checked before it becomes a path and not after: a
+	// release whose asset is called `..\..\obs64.exe` writes outside the
+	// staging directory otherwise.
+	if (!update_asset::isSafeAssetName(now.release.assetName)) {
+		Status f;
+		f.phase = Phase::Failed;
+		f.release = now.release;
+		f.message = "the release names its file in a way this plugin "
+			    "will not write to disk";
+		setStatus(f);
+		obs_log(LOG_ERROR, "[update] refused asset name '%s'",
+			now.release.assetName.c_str());
+		return;
+	}
 	if (busy_.exchange(true))
 		return;
 	joinWorker();
@@ -378,7 +519,8 @@ void Updater::downloadAsync()
 		std::error_code ec;
 		const std::filesystem::path dir = stagingDir();
 		std::filesystem::create_directories(dir, ec);
-		const std::filesystem::path target = dir / rel.assetName;
+		const std::filesystem::path target =
+			dir / utf8ToPath(rel.assetName);
 
 		auto fail = [&](const std::string &why) {
 			Status f;
@@ -391,11 +533,26 @@ void Updater::downloadAsync()
 			busy_.store(false);
 		};
 
+		// WHAT IS THIS FILE SUPPOSED TO BE? Asked BEFORE a byte is
+		// fetched, because the answer decides whether fetching is worth
+		// doing at all: the release body is CHECKSUMS.txt (push.yaml
+		// publishes it as the body), so a release with no digest for its
+		// own asset is a release this plugin cannot verify — and an
+		// update it cannot verify is an update it does not install.
+		const std::string wantDigest =
+			update_asset::sha256For(rel.notes, rel.assetName);
+		if (wantDigest.empty()) {
+			fail("this release does not publish a SHA-256 for " +
+			     rel.assetName +
+			     ", so the download cannot be verified");
+			return;
+		}
+
 		{
 			std::ofstream out(target,
 					  std::ios::binary | std::ios::trunc);
 			if (!out) {
-				fail("cannot write to " + dir.string());
+				fail("cannot write to " + pathToUtf8(dir));
 				return;
 			}
 			ProgressCtx ctx;
@@ -417,10 +574,15 @@ void Updater::downloadAsync()
 			}
 		}
 
-		// WHAT ARRIVED IS WHAT WAS ANNOUNCED. The release says how many
-		// bytes the archive is; a file that is not that size is a
-		// truncated download or something else entirely, and either way
-		// it is not going to be unpacked over a working install.
+		// WHAT ARRIVED IS WHAT WAS ANNOUNCED — the bytes, not the size.
+		// The size check that used to stand alone here compared the file
+		// with the same JSON response the URL had come from, i.e. a
+		// source with itself: anyone able to alter that response (a
+		// compromised account, a corporate proxy doing TLS interception,
+		// a mirror) handed OBS an arbitrary DLL to load at the next
+		// start. It is kept, one step ahead of the real check, because a
+		// truncated download deserves a clearer message than "digest
+		// mismatch".
 		const auto got = (int64_t)std::filesystem::file_size(target, ec);
 		if (ec || (rel.assetBytes > 0 && got != rel.assetBytes)) {
 			std::filesystem::remove(target, ec);
@@ -429,15 +591,34 @@ void Updater::downloadAsync()
 			     std::to_string(rel.assetBytes));
 			return;
 		}
+		std::string gotDigest;
+		if (!fileDigest(target, gotDigest)) {
+			std::filesystem::remove(target, ec);
+			fail("the download could not be read back to be verified");
+			return;
+		}
+		if (gotDigest != wantDigest) {
+			std::filesystem::remove(target, ec);
+			obs_log(LOG_ERROR,
+				"[update] SHA-256 MISMATCH on %s: got %s, the "
+				"release says %s — deleted",
+				rel.assetName.c_str(), gotDigest.c_str(),
+				wantDigest.c_str());
+			fail("the downloaded file does not match the checksum "
+			     "the release publishes — it has been deleted");
+			return;
+		}
 
 		Status done;
 		done.phase = Phase::Staged;
 		done.release = rel;
 		done.percent = 100;
-		done.stagedPath = target.string();
+		done.stagedPath = pathToUtf8(target);
 		setStatus(done);
-		obs_log(LOG_INFO, "[update] %s staged at %s",
-			rel.version.c_str(), done.stagedPath.c_str());
+		obs_log(LOG_INFO,
+			"[update] %s staged at %s (sha256 %s, verified)",
+			rel.version.c_str(), done.stagedPath.c_str(),
+			gotDigest.c_str());
 		busy_.store(false);
 	});
 }
@@ -456,63 +637,46 @@ bool Updater::installStaged(std::string &errorOut)
 	// an update — then unpacks over the installed plugin and starts OBS
 	// again. Written as a script rather than done in-process because
 	// whatever does this has to outlive the process being replaced.
+	//
+	// NOTHING is interpolated into the script (see update-installer.hpp).
+	// It is a constant; the three paths travel in a file beside it.
 	const std::filesystem::path dir = stagingDir();
-	const std::filesystem::path script = dir / "install-update.ps1";
-	const std::string pluginDir =
-		"C:\\ProgramData\\obs-studio\\plugins\\obs-multireplay";
+	std::error_code ec;
+	std::filesystem::create_directories(dir, ec);
+	const std::filesystem::path script =
+		dir / update_installer::kScriptFileName;
+	const std::filesystem::path params =
+		dir / update_installer::kParamFileName;
 
-	std::ofstream out(script, std::ios::trunc);
-	if (!out) {
-		errorOut = "cannot write the installer to " + dir.string();
+	update_installer::Params p;
+	p.archivePath = s.stagedPath;
+	p.targetDir = installedPluginDir();
+	// A fallback only: the script prefers the path of the obs64 process it
+	// watched exit, which is right even for a portable install.
+	p.obsExePath = "C:\\Program Files\\obs-studio\\bin\\64bit\\obs64.exe";
+
+	if (!writeUtf8File(params, update_installer::paramFile(p)) ||
+	    !writeUtf8File(script, update_installer::script())) {
+		errorOut = "cannot write the installer to " + pathToUtf8(dir);
 		return false;
 	}
-	out << "$ErrorActionPreference = 'Stop'\n"
-	    << "# Written by obs-multireplay. Waits for OBS to close, unpacks the\n"
-	    << "# update over the installed plugin, then starts OBS again.\n"
-	    << "$archive = '" << s.stagedPath << "'\n"
-	    << "$target  = '" << pluginDir << "'\n"
-	    << "$proc = Get-Process obs64 -ErrorAction SilentlyContinue\n"
-	    << "$exe = if ($proc) { $proc[0].Path } else { 'C:\\Program "
-	       "Files\\obs-studio\\bin\\64bit\\obs64.exe' }\n"
-	    << "for ($i = 0; $i -lt 900; $i++) {\n"
-	    << "  if (-not (Get-Process obs64 -ErrorAction SilentlyContinue)) { "
-	       "break }\n"
-	    << "  Start-Sleep -Seconds 1\n"
-	    << "}\n"
-	    << "if (Get-Process obs64 -ErrorAction SilentlyContinue) { exit 1 }\n"
-	    << "$stage = Join-Path ([IO.Path]::GetTempPath()) "
-	       "'obs-multireplay-unpack'\n"
-	    << "if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }\n"
-	    << "Expand-Archive -LiteralPath $archive -DestinationPath $stage "
-	       "-Force\n"
-	    << "# The archive may carry the plugin folder at its root or a level\n"
-	    << "# down; take whichever actually holds the binary.\n"
-	    << "$src = $stage\n"
-	    << "$dll = Get-ChildItem $stage -Recurse -Filter "
-	       "'obs-multireplay.dll' | Select-Object -First 1\n"
-	    << "if ($dll) { $src = $dll.Directory.Parent.Parent.FullName }\n"
-	    << "Copy-Item (Join-Path $src '*') $target -Recurse -Force\n"
-	    << "Remove-Item $stage -Recurse -Force -ErrorAction SilentlyContinue\n"
-	    << "Start-Process -FilePath $exe\n";
-	out.close();
 
-	// Detached: it has to survive the process it is waiting for.
-	const std::string cmd =
-		"start \"\" /B powershell.exe -NoProfile -ExecutionPolicy Bypass "
-		"-WindowStyle Hidden -File \"" +
-		script.string() + "\"";
-	if (std::system(cmd.c_str()) != 0) {
-		errorOut = "could not start the installer";
+	const std::string cmd = update_installer::commandLine(
+		update_installer::argvFor("powershell.exe",
+					  pathToUtf8(script)));
+	if (!startDetached(cmd, errorOut))
 		return false;
-	}
 	obs_log(LOG_INFO,
-		"[update] installer armed — it unpacks %s once OBS has exited",
-		s.release.version.c_str());
+		"[update] installer armed — it unpacks %s over %s once OBS has "
+		"exited",
+		s.release.version.c_str(), p.targetDir.c_str());
 	return true;
 #else
 	// Elsewhere the archive is handed over and the operator unpacks it into
 	// his own plugin directory. Guessing at a package layout we do not
-	// control would be a worse answer than a clear instruction.
+	// control would be a worse answer than a clear instruction — and the
+	// panel is now told so BEFORE the download (canInstallHere), so this is
+	// a last resort rather than a surprise at the end.
 	errorOut = "";
 	return false;
 #endif

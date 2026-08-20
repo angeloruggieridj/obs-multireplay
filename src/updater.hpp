@@ -90,6 +90,12 @@ public:
 	// to OBS, so the panel and the log can never disagree.
 	static std::string currentVersion();
 
+	// Can this build INSTALL what it downloads, or only hand the file over?
+	// Windows has a helper; the other two do not, and pretending otherwise is
+	// how an operator ended up with a Windows zip downloaded on a Mac and an
+	// "Install" button that quietly returned false. The panel asks first.
+	static bool canInstallHere();
+
 	// Ask GitHub. Returns immediately; watch status(). A second call while one
 	// is in flight is ignored rather than queued.
 	void checkAsync(UpdateChannel channel);
