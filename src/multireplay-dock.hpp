@@ -1068,6 +1068,14 @@ private:
 	// preview (single replay channel A)
 	OBSQTDisplay *displayA_ = nullptr;
 	OBSQTDisplay *displayB_ = nullptr;
+	// EVERY display this dock owns, in one place. The destructor detached
+	// A's draw callback and every tile's, and NOT B's — leaving the graphics
+	// thread able to call drawChannelB() on a dock whose previewMutex_ had
+	// already been destroyed. Same omission, same object, same reason as the
+	// preview ref OBS complained about: B is optional and off by default, so
+	// nothing exercised it. Naming them one at a time is what made that
+	// possible, so nothing names them one at a time any more.
+	std::vector<OBSQTDisplay *> allDisplays() const;
 	QLabel *labelA_ = nullptr; // the letter under each box
 	QLabel *labelB_ = nullptr;
 	QButtonGroup *anglesA_ = nullptr; // channel A's row (kept by name)

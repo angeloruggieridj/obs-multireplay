@@ -1085,8 +1085,16 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 		c.displaysForced = OBSQTDisplay::forcedCount();
 		c.previewTilesStarved = st.starved;
 		c.worstDisplayWaitMs = st.worstBlockedMs;
-		// 1 big preview + 8 camera tiles + the replay tile.
-		c.multiviewBuilt = st.tiles == 10;
+		// 1 big preview per BAY (2) + 8 camera tiles + the replay tile.
+		//
+		// It was 10, and the missing one was bay B — the same widget the
+		// destructor forgot to detach its draw callback from (B4). A census
+		// that does not count a display cannot report it starved or
+		// stranded either, so B was invisible to three checks at once. It is
+		// counted whether or not the second bay is enabled: the widget
+		// exists, hidden, and a hidden OBSQTDisplay creates no display at
+		// all — which is what the visible/withDisplay pair below measures.
+		c.multiviewBuilt = st.tiles == 11;
 		// There must BE pictures on screen. Without that clause this is
 		// "0 == 0" on a dock nobody ever showed, which is exactly the
 		// shape of the failure it is supposed to catch.

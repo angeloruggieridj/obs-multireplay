@@ -1389,13 +1389,11 @@ MultiReplayDock::~MultiReplayDock()
 	// Detaching the callback first closes it: obs_display_remove_draw_callback
 	// takes the display's callback mutex, so it returns only once the draw in
 	// flight has finished.
-	if (displayA_)
-		displayA_->setRenderCallback(nullptr, nullptr);
-	// Same for every multiview tile, and for the same reason: each one has a
-	// draw callback pointing at a TileCtx that dies with this object.
-	for (PreviewTile &t : tiles_)
-		if (t.display)
-			t.display->setRenderCallback(nullptr, nullptr);
+	// Every one of them — the two bays and every multiview tile: each has a
+	// draw callback pointing at this object, and B's used to be left attached
+	// (see allDisplays).
+	for (OBSQTDisplay *d : allDisplays())
+		d->setRenderCallback(nullptr, nullptr);
 	if (pollTimer_)
 		pollTimer_->stop();
 	// BOTH preview refs. B's was missed, and it was the only source OBS ever
@@ -2028,6 +2026,20 @@ MultiReplayDock::MultiviewState MultiReplayDock::multiviewState() const
 	return s;
 }
 
+std::vector<OBSQTDisplay *> MultiReplayDock::allDisplays() const
+{
+	std::vector<OBSQTDisplay *> out;
+	out.reserve(2 + tiles_.size());
+	if (displayA_)
+		out.push_back(displayA_);
+	if (displayB_)
+		out.push_back(displayB_);
+	for (const PreviewTile &t : tiles_)
+		if (t.display)
+			out.push_back(t.display);
+	return out;
+}
+
 MultiReplayDock::PreviewStats MultiReplayDock::previewStats() const
 {
 	PreviewStats s;
@@ -2052,9 +2064,8 @@ MultiReplayDock::PreviewStats MultiReplayDock::previewStats() const
 		if (waited >= kStarvedMs)
 			s.starved++;
 	};
-	account(displayA_);
-	for (const PreviewTile &t : tiles_)
-		account(t.display);
+	for (const OBSQTDisplay *d : allDisplays())
+		account(d);
 	return s;
 }
 
@@ -5044,16 +5055,11 @@ void MultiReplayDock::poll()
 	// re-docked — which destroys that handle. Qt does not reliably tell the
 	// widget, so this is the only place that can notice a display left
 	// presenting into a window that no longer exists. Two integer compares.
-	if (displayA_)
-		displayA_->recheckWindow();
-	if (displayB_)
-		displayB_->recheckWindow();
-	// ...and every multiview tile, for exactly the same reason: they are
-	// re-parented by the same dock moves. Two integer compares each, and a
-	// hidden tile early-outs on isVisible().
-	for (PreviewTile &t : tiles_)
-		if (t.display)
-			t.display->recheckWindow();
+	// Every one, the multiview tiles included: they are re-parented by the
+	// same dock moves. Two integer compares each, and a hidden tile
+	// early-outs on isVisible().
+	for (OBSQTDisplay *d : allDisplays())
+		d->recheckWindow();
 
 	// The hotkeys change the angle without going through the dock.
 	const int hotAngle1 = core.currentAngle() + 1;
@@ -7741,7 +7747,11 @@ void MultiReplayDock::openSettings()
 		checkBtn->setEnabled(st.phase != Updater::Phase::Checking &&
 				     st.phase != Updater::Phase::Downloading);
 		getBtn->setEnabled(st.phase == Updater::Phase::Available);
-		installBtn->setEnabled(st.phase == Updater::Phase::Staged);
+		// A2: only where there IS a helper. An enabled "Install" that
+		// returns false is how the platforms without one used to report
+		// themselves — after the download, in a dialog.
+		installBtn->setEnabled(st.phase == Updater::Phase::Staged &&
+				       Updater::canInstallHere());
 	});
 	updTimer->start();
 
