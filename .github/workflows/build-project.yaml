@@ -71,6 +71,61 @@ jobs:
             echo "pluginName=${plugin_name}" >> $GITHUB_OUTPUT
           fi
 
+  unit-tests:
+    name: Unit Tests 🧪
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15, windows-2022]
+    runs-on: ${{ matrix.os }}
+    needs: check-event
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      # THE HIGHEST-VALUE LINES IN THIS FILE, and they were missing.
+      #
+      # The unit tests were compiled by the plugin build and run by NOTHING:
+      # dozens of checks written, none of them executed automatically, on a
+      # project whose engine correctness lives in pure headers precisely so it
+      # CAN be tested. And two of the bugs the pre-1.0 audit found are
+      # platform-shaped in opposite directions - one broke Linux, one broke
+      # Windows - which is exactly what "nothing is ever run outside Windows"
+      # looks like from the inside.
+      #
+      # tests/CMakeLists.txt is a project of its own: no obs-deps, no Qt, no
+      # FFmpeg, so this job is a couple of minutes on every push rather than a
+      # thing somebody remembers to do.
+      - name: Configure 🛠️
+        run: cmake -S tests -B build_tests -DCMAKE_BUILD_TYPE=RelWithDebInfo
+
+      - name: Build 🧱
+        run: cmake --build build_tests --config RelWithDebInfo --parallel
+
+      - name: Test ✅
+        run: ctest --test-dir build_tests -C RelWithDebInfo --output-on-failure
+
+  locale-check:
+    name: Check Locale Keys 🔤
+    runs-on: ubuntu-24.04
+    needs: check-event
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+      # A key the panel asks for and no .ini defines is not a warning: OBS hands
+      # back the KEY, so the operator reads "Dock.ZoneAngles" on a button. An
+      # invariant nobody can check by looking is an invariant that drifts.
+      - name: Every key the code asks for exists in every locale 🔤
+        run: bash scripts/check-locale-keys.sh
+
   macos-build:
     name: Build for macOS 🍏
     runs-on: macos-15

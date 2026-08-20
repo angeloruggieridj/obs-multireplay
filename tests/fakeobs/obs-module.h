@@ -38,6 +38,7 @@ extern "C" {
 
 obs_data_t *obs_data_create(void);
 obs_data_t *obs_data_create_from_json_file(const char *file);
+obs_data_t *obs_data_create_from_json(const char *json);
 void obs_data_release(obs_data_t *data);
 
 void obs_data_set_int(obs_data_t *data, const char *name, long long val);

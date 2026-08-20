@@ -19,6 +19,7 @@ extern "C" {
 
 obs_data_t *obs_data_create(void) { return (obs_data_t *)&g_dummy; }
 obs_data_t *obs_data_create_from_json_file(const char *) { return nullptr; }
+obs_data_t *obs_data_create_from_json(const char *) { return nullptr; }
 void obs_data_release(obs_data_t *) {}
 
 void obs_data_set_int(obs_data_t *, const char *, long long) {}

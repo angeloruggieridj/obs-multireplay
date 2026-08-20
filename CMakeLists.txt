@@ -89,10 +89,19 @@ target_sources(
     src/updater.cpp
     src/updater.hpp
     src/version-compare.hpp
+    # ...and the three decisions inside it that cannot be tested by running the
+    # plugin: which asset is for THIS platform, whether the bytes that arrived
+    # are the ones the release announced, and what the install helper says.
+    src/update-asset.hpp
+    src/update-installer.hpp
+    src/sha256.hpp
     # v1.3: which packets to decode, in which order, to play a range backwards
     src/reverse-plan.hpp
     # slow motion WITH SOUND: a time stretch that leaves the pitch alone
     src/audio-stretch.hpp
+    # paths are UTF-8 everywhere, and a project title is not a folder name
+    src/path-utf8.hpp
+    src/project-name.hpp
     src/segment-anchor.hpp
     # monotonic <-> wall clock: what makes a project survive an OBS restart
     src/session-clock.hpp
@@ -125,53 +134,15 @@ target_sources(
 set_target_properties_plugin(${CMAKE_PROJECT_NAME} PROPERTIES OUTPUT_NAME ${_name})
 
 # --- Unit tests (pure logic, no OBS/FFmpeg deps) -----------------------------
-# Standalone exes; run with `ctest` from the build dir. Build with the project.
+# The targets live in tests/CMakeLists.txt, which is ALSO a project in its own
+# right: the CI configures that directory directly and runs ctest on all three
+# platforms, without obs-deps, Qt or FFmpeg. Building them here as well keeps
+# "ctest --test-dir build_x64" working for local iteration.
 option(ENABLE_TESTS "Build obs-multireplay unit tests" ON)
 if(ENABLE_TESTS)
+  # At the TOP level, before the subdirectory: without it CTest writes no
+  # subdirs() entry and "ctest --test-dir build_x64" reports the tests that
+  # happened to be registered last time rather than the ones that exist.
   enable_testing()
-
-  # EventStore logic test: compiles the REAL src/event-store.cpp against a tiny
-  # fake obs surface (tests/fakeobs) + no-op stubs. No libobs/FFmpeg needed, so
-  # it runs anywhere, CI included. tests/fakeobs is PRIVATE to this target only
-  # and never reaches the plugin build.
-  add_executable(
-    obs-multireplay-eventstore-tests
-    tests/standalone/event_store_test.cpp
-    tests/standalone/obs_stub.cpp
-    src/event-store.cpp
-  )
-  target_include_directories(obs-multireplay-eventstore-tests PRIVATE tests/fakeobs src)
-  target_compile_features(obs-multireplay-eventstore-tests PRIVATE cxx_std_20)
-  add_test(NAME event_store COMMAND obs-multireplay-eventstore-tests)
-
-  # Live packet ring + master timeline + the reverse schedule. These carry the
-  # correctness of the rewrite (cross-angle marker equality, refuse-never-clamp,
-  # and "backwards loses no frame and no more RAM than budgeted"), and they are
-  # written free of OBS/FFmpeg types precisely so they can be tested here.
-  add_executable(
-    obs-multireplay-packet-tests
-    tests/standalone/packet_ring_test.cpp
-    src/packet-ring.cpp
-  )
-  target_include_directories(obs-multireplay-packet-tests PRIVATE src)
-  target_compile_features(obs-multireplay-packet-tests PRIVATE cxx_std_20)
-  add_test(NAME packet_ring COMMAND obs-multireplay-packet-tests)
-
-  # M4 health rules. Thresholds are opinions about numbers, and this is the only
-  # place they can be argued with cheaply: no OBS, no disk, no cameras, so the
-  # "disk is full" and "the angle died" cases are testable at all.
-  add_executable(obs-multireplay-health-tests tests/standalone/health_rules_test.cpp)
-  target_include_directories(obs-multireplay-health-tests PRIVATE src)
-  target_compile_features(obs-multireplay-health-tests PRIVATE cxx_std_20)
-  add_test(NAME health_rules COMMAND obs-multireplay-health-tests)
-
-  # Version comparison, for the updater. The only part of it that cannot be
-  # tested by running the plugin — testing it for real would mean publishing
-  # releases — so it is pure and it is tested here. "1.0.0 is newer than
-  # 1.0.0-beta2" and "beta10 is newer than beta2" are the two an updater gets
-  # wrong in front of an operator.
-  add_executable(obs-multireplay-version-tests tests/standalone/version_compare_test.cpp)
-  target_include_directories(obs-multireplay-version-tests PRIVATE src)
-  target_compile_features(obs-multireplay-version-tests PRIVATE cxx_std_20)
-  add_test(NAME version_compare COMMAND obs-multireplay-version-tests)
+  add_subdirectory(tests)
 endif()
