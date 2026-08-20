@@ -15,8 +15,5 @@ set(CMAKE_AUTOMOC ON)
 
 find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets)
 
-add_executable(dock-mockup
-  main.cpp
-  ../../src/dock-layout.cpp
-)
+add_executable(dock-mockup main.cpp ../../src/dock-layout.cpp)
 target_link_libraries(dock-mockup PRIVATE Qt6::Core Qt6::Gui Qt6::Widgets)
