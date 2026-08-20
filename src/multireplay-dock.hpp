@@ -445,7 +445,21 @@ public:
 		// they are showing the moment being reviewed.
 		bool followingReview = false;
 		int feeds = 0;            // preview feeds created, one per camera
-		int feedsWithPicture = 0; // ...of which have pushed a frame
+		int feedsWithPicture = 0; // ...of which have ever shown a picture
+		// Camera tiles with a source PUBLISHED for the graphics thread
+		// right now. This is the number the operator sees: a tile whose
+		// source has been withdrawn is a black rectangle, however healthy
+		// the feed behind it is — and withdrawing it at every cue, for a
+		// quarter of a second, is exactly the asymmetry that was reported
+		// from a real panel. Nothing else outside the dock can see it.
+		int tilesPublished = 0;
+		// Feeds that have pushed a frame of the clip they are on RIGHT
+		// NOW. Per-clip, so it drops back to zero at every cue — which is
+		// exactly why it must never gate the publish (see
+		// tileFeedHadPicture_), and exactly what makes it the right thing
+		// to time a cue with: "when did the boxes get this picture" is a
+		// question about this clip, not about the feed's history.
+		int feedsWithCurrentClip = 0;
 		// The range every feed was last cued to. kNoInstant = never.
 		int64_t cueInNs = kNoInstant;
 		int64_t cueOutNs = kNoInstant;
@@ -978,6 +992,20 @@ private:
 	// this is called from poll(), thirty times a second.
 	void cueTiles(int64_t inNs, int64_t outNs, int speedPct,
 		      ReplayChannel::Direction dir);
+	// Get a range ready on every feed WITHOUT showing it. Mirrors what
+	// cueSelected() already does for the bay: cueing is what an operator does
+	// immediately before playing, so the clip the play will want is fetched
+	// while he is looking at the frozen IN. Without it the feeds paid a cold
+	// fetch — an open, a seek and a demux when the range is not in the ring —
+	// at the moment poll() cued them, which is a tenth of a second AFTER the
+	// bay had already started. Nothing waits on it (see ReplayChannel::
+	// prefetch): a prefetch that has not finished changes nothing but the
+	// timing.
+	void prefetchTiles(int64_t inNs, int64_t outNs, int speedPct);
+	// Has any feed shown its FIRST picture since the last tick? Run on every
+	// poll tick, and it costs nothing once they all have: it only asks the
+	// feeds that have not answered yes yet.
+	bool pollTileFeedPictures();
 	// Stop and destroy every feed, and forget the cue. Called when the panel
 	// goes back to live and on the way out.
 	void releaseTileFeeds();
@@ -988,6 +1016,24 @@ private:
 	static constexpr int64_t kTileReviewMaxNs = 60'000'000'000LL;
 
 	std::array<std::unique_ptr<ReplayChannel>, 8> tileFeed_{};
+	// HAS THIS FEED EVER SHOWN A PICTURE? Sticky for the life of the feed, and
+	// that is the whole point of it.
+	//
+	// It used to be asked of the feed itself, as hasPosition() — which is
+	// framesPushed > 0, and play() zeroes the stats at the start of EVERY
+	// clip. So at every cue the feed answered "nothing yet",
+	// refreshTileSources() published a null source, and the tile went BLACK
+	// and stayed black until the next 4 Hz beat — a quarter of a second late,
+	// on a picture the feed already had. The big bay never did that because
+	// its gate (previewHasContent_) is about the tap having captured anything
+	// at all, not about the clip: its source stays published, so a new clip's
+	// first frame appears the moment the decoder pushes it. This is the same
+	// question asked the same way, which is what makes the two arrive
+	// together.
+	//
+	// Cleared only when a feed is created or destroyed — the two moments when
+	// there really is nothing behind it.
+	std::array<bool, 8> tileFeedHadPicture_{};
 	int64_t tileCueInNs_ = kNoInstant;
 	int64_t tileCueOutNs_ = kNoInstant;
 	int tileCueSpeedPct_ = 0;

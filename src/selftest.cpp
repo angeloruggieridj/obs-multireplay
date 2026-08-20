@@ -435,6 +435,36 @@ struct DockChecks {
 	// Eight decoders kept alive to hold a still nobody is looking at is the
 	// one way this feature could cost something while it is not in use.
 	bool multiviewReturnsToLive = false;
+	// ...and a cue does not blank them on the way. The feeds stay alive,
+	// decoding and correct through the whole thing — it is only what is
+	// PUBLISHED for the graphics thread that used to go away, for a quarter
+	// of a second, on every cue. Invisible to every other check here.
+	// MEASUREMENTS, NOT CHECKS, and the difference was established by trying
+	// to make them checks and failing.
+	//
+	// `multiviewCueGapMs` is how far apart the bay and the angle boxes get
+	// their picture on a cue; `multiviewCueDarkMs` is how long a tile's source
+	// is withdrawn while it happens. Both are the symptom reported from a real
+	// panel, and neither can be ASSERTED from here:
+	//
+	//   - the gap only exists when the clip comes from a FILE (an open, a
+	//     seek and a demux, ~100 ms per angle). Everything the gate can cue
+	//     inside a 25 s take is in the ring, where a fetch is a memcpy — so
+	//     the gap is 0 ms whether the fetches are issued in parallel or one
+	//     behind the other. Measured both ways, with the fix and with it
+	//     deliberately disabled: 10 ms and 0 ms.
+	//   - the blank is intermittent by construction. It needs the 4 Hz
+	//     refresh to land inside the few tens of milliseconds between play()
+	//     and the first frame, so one cue catches it perhaps a third of the
+	//     time. An assertion on it would be a check that fails at random,
+	//     which is worse than no check.
+	//
+	// So they are reported as numbers a regression moves, and the claim they
+	// would have made is not made. A green check that cannot fail is
+	// furniture, and furniture is what nobody looks at on the day it should
+	// have gone red.
+	int multiviewCueDarkMs = -1;
+	int multiviewCueGapMs = -1;
 	// M5: the running order is the operator's. The ▲/▼ keys must really move
 	// the ROW (not just a field nobody draws), and reordering by hand must
 	// turn the chronological auto-sort off — with both on, the row snaps back
@@ -1877,6 +1907,179 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 				row, (long long)(landed / 1000000),
 				(long long)(haveEv ? cueEv.tInNs / 1000000 : 0));
 			chan.stop();
+
+			// --- ...AND THE BOXES ARRIVE WITH THE BAY -------------
+			// Reported from a real panel: on a cue the bay and the
+			// angle boxes were not symmetric, one arriving noticeably
+			// after the other.
+			//
+			// The cause was serial: a fetch that is not in the ring
+			// is an open, a seek and a demux, and play() does it
+			// INLINE. Bay then feed then feed is three of them in a
+			// row, so somebody is a third of a second late by
+			// construction — and which somebody was decided only by
+			// call order. The feeds' reads now go out first, in
+			// parallel, and run under the bay's own.
+			//
+			// Timed on a COLD event, because that is the only kind
+			// that has the fetch in it: cueing the same row twice
+			// hits every cache and would pass with any ordering at
+			// all. So this marks one of its own, times the cue, and
+			// takes it away again.
+			{
+				const int64_t coldNewest =
+					PacketTap::instance().newestNs(firstCam);
+				const int coldId =
+					coldNewest > 0
+						? store.markInOut(
+							  coldNewest - 6'000'000'000LL,
+							  2, firstCam)
+						: 0;
+				int coldRow = -1;
+				if (coldId > 0) {
+					// Let the table rebuild carry the new row
+					// in before trying to select it.
+					std::this_thread::sleep_for(
+						std::chrono::milliseconds(300));
+					runOnUi([&]() {
+						QTableWidget *t =
+							dock->findChild<
+								QTableWidget *>();
+						if (!t)
+							return;
+						t->clearSelection();
+						for (int r = 0; r < t->rowCount();
+						     r++) {
+							QTableWidgetItem *it =
+								t->item(r, 0);
+							if (it &&
+							    it->data(Qt::UserRole)
+									    .toInt() ==
+								    coldId) {
+								coldRow = r;
+								t->selectRow(r);
+								break;
+							}
+						}
+					});
+				}
+				int bayMs = -1, tilesMs = -1, feeds = 0;
+				for (int i = 0; i < 400; i++) {
+					const auto mv = dock->multiviewState();
+					feeds = std::max(feeds, mv.feeds);
+					if (bayMs < 0 &&
+					    chan.stats().framesPushed > 0)
+						bayMs = i * 5;
+					if (tilesMs < 0 && mv.feeds > 0 &&
+					    mv.feedsWithCurrentClip == mv.feeds)
+						tilesMs = i * 5;
+					if (bayMs >= 0 && tilesMs >= 0)
+						break;
+					std::this_thread::sleep_for(
+						std::chrono::milliseconds(5));
+				}
+				const int gap = (bayMs >= 0 && tilesMs >= 0)
+							? std::abs(tilesMs - bayMs)
+							: -1;
+				c.multiviewCueGapMs = gap;
+				// A poll tick is 33 ms and the boxes are cued from
+				// this thread, not from poll(), so the two should
+				// be within a tick or two of each other. The
+				// failure this replaces was one inline file read
+				// per angle — 100 ms EACH — so nothing about it
+				// fits under this.
+				const bool cueTimed =
+					coldRow >= 0 && feeds > 0 && gap >= 0 &&
+					gap <= 80;
+				obs_log(cueTimed ? LOG_INFO
+								  : LOG_ERROR,
+					"[selftest] dock: cold cue — bay had its "
+					"picture at %d ms, %d box(es) at %d ms, "
+					"gap %d ms",
+					bayMs, feeds, tilesMs, gap);
+				if (coldId > 0)
+					store.remove(coldId);
+				chan.stop();
+				std::this_thread::sleep_for(
+					std::chrono::milliseconds(200));
+				runOnUi([&]() {
+					QTableWidget *t =
+						dock->findChild<QTableWidget *>();
+					if (t) {
+						t->clearSelection();
+						if (row >= 0 && row < t->rowCount())
+							t->selectRow(row);
+					}
+				});
+			}
+
+			// --- ...AND THE BOXES DO NOT GO DARK WHILE IT DOES ----
+			// Reported from a real panel: the bay and the angle boxes
+			// were not symmetric on a cue, one arriving noticeably
+			// after the other. The cause was a per-clip gate on the
+			// tile publish — hasPosition() is framesPushed > 0 and
+			// play() zeroes the stats on every clip, so each cue
+			// WITHDREW every tile's source and the next 4 Hz beat put
+			// it back, about a quarter of a second later. The bay
+			// never did that: its own gate is about the tap, not the
+			// clip.
+			//
+			// Nothing already in this file could see it. The feeds
+			// were alive, decoding and correct the whole time; only
+			// what was PUBLISHED for the graphics thread went away,
+			// and only for a moment. So this cues again, on a panel
+			// whose feeds are already warm, and samples fast enough
+			// to catch a gap that short.
+			if (row >= 0) {
+				MultiReplayDock::MultiviewState warm;
+				for (int i = 0; i < 60; i++) {
+					warm = dock->multiviewState();
+					if (warm.tilesPublished > 0 &&
+					    warm.feedsWithPicture == warm.feeds)
+						break;
+					std::this_thread::sleep_for(
+						std::chrono::milliseconds(50));
+				}
+				// Re-cue the same row: clearing and re-selecting
+				// is a selection change, which is the operator's
+				// gesture and the one that used to blank them.
+				runOnUi([&]() {
+					QTableWidget *t =
+						dock->findChild<QTableWidget *>();
+					if (!t)
+						return;
+					t->clearSelection();
+					t->selectRow(row);
+				});
+				int darkMs = 0, worstPublished = warm.tilesPublished;
+				for (int i = 0; i < 60; i++) {
+					const auto mv = dock->multiviewState();
+					if (mv.tilesPublished < warm.tilesPublished) {
+						darkMs += 10;
+						worstPublished = std::min(
+							worstPublished,
+							mv.tilesPublished);
+					}
+					std::this_thread::sleep_for(
+						std::chrono::milliseconds(10));
+				}
+				// Zero is what the fix produces — the publish no
+				// longer depends on the clip at all. The margin is
+				// for the sampler, not for the behaviour: the bug
+				// this replaces was ~264 ms, so nothing about it
+				// could hide under this.
+				const bool keptPicture =
+					warm.tilesPublished > 0 && darkMs <= 50;
+				obs_log(keptPicture ? LOG_INFO
+								   : LOG_ERROR,
+					"[selftest] dock: re-cue with %d tile(s) "
+					"published — dark for %d ms, worst %d "
+					"published",
+					warm.tilesPublished, darkMs,
+					worstPublished);
+				c.multiviewCueDarkMs = darkMs;
+				chan.stop();
+			}
 		}
 
 		// --- one bay or two, and the panel says which ------------------
@@ -5077,6 +5280,15 @@ void runSelfTest()
 			  dockChecks.multiviewFollowsReview);
 	obs_data_set_bool(checks, "multiview_returns_to_live",
 			  dockChecks.multiviewReturnsToLive);
+	// Measurements, deliberately NOT in `checks` — see the fields for why
+	// neither can be asserted from here. `..._gap_ms` is how far apart the bay
+	// and the boxes get their picture on a cue; `..._dark_ms` is how long a
+	// tile's source stays withdrawn while it happens. Both should be at or
+	// near zero; a run where they are not is worth reading the log over.
+	obs_data_set_int(root, "multiview_cue_dark_ms",
+			 dockChecks.multiviewCueDarkMs);
+	obs_data_set_int(root, "multiview_cue_gap_ms",
+			 dockChecks.multiviewCueGapMs);
 	obs_data_set_int(root, "multiview_feeds", dockChecks.multiviewFeeds);
 	obs_data_set_int(root, "multiview_feeds_with_picture",
 			 dockChecks.multiviewFeedsWithPicture);

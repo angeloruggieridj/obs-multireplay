@@ -1829,13 +1829,15 @@ void MultiReplayDock::refreshTileSources()
 					next = obs_get_source_by_name(nm.c_str());
 			} else if (t.cam0 < (int)tileFeed_.size() &&
 				   tileFeed_[t.cam0]) {
-				// hasPosition(), not positionNs() > 0: an instant
-				// of zero is legitimate and footage older than
-				// the machine's last boot is negative (see
-				// kNoInstant). "Has this feed ever shown a frame"
-				// is the question, and until it has, black is the
-				// honest answer.
-				if (tileFeed_[t.cam0]->hasPosition())
+				// The STICKY flag, not the feed's hasPosition().
+				// "Has this feed ever shown a picture" is the
+				// question; hasPosition() answers "has THIS clip
+				// pushed a frame yet", and play() zeroes the
+				// stats at the start of every clip — so asking it
+				// blacked the tile out at every cue and left it
+				// black until the next 4 Hz beat. See
+				// tileFeedHadPicture_.
+				if (tileFeedHadPicture_[t.cam0])
 					next = tileFeed_[t.cam0]->acquireSource();
 			}
 		}
@@ -1876,10 +1878,54 @@ void MultiReplayDock::ensureTileFeeds()
 			// Destroying it stops and joins its worker; the private
 			// input goes with it.
 			tileFeed_[cam].reset();
+			tileFeedHadPicture_[cam] = false;
 			continue;
 		}
 		tileFeed_[cam] = ReplayChannel::makePreview(
 			"MultiReplay - Angle feed " + std::to_string(cam + 1));
+		// A brand new feed really has nothing behind it, which is the one
+		// moment the tile SHOULD be black.
+		tileFeedHadPicture_[cam] = false;
+	}
+}
+
+bool MultiReplayDock::pollTileFeedPictures()
+{
+	bool changed = false;
+	for (int cam = 0; cam < (int)tileFeed_.size(); cam++) {
+		// Only the ones that have not answered yes yet, so once every feed
+		// has a picture this loop is eight bool reads and nothing else. It
+		// runs on EVERY tick on purpose: the first picture is what the
+		// operator is waiting for, and making him wait for the 4 Hz beat
+		// as well is precisely the quarter second this is fixing.
+		if (tileFeedHadPicture_[cam] || !tileFeed_[cam])
+			continue;
+		if (tileFeed_[cam]->hasPosition()) {
+			tileFeedHadPicture_[cam] = true;
+			changed = true;
+		}
+	}
+	return changed;
+}
+
+void MultiReplayDock::prefetchTiles(int64_t inNs, int64_t outNs, int speedPct)
+{
+	if (inNs == kNoInstant || outNs == kNoInstant || outNs <= inNs)
+		return;
+	// Capped exactly the way cueTiles() caps, or the two would ask for
+	// different ranges and the cache key would never match — a prefetch that
+	// cannot be hit is a file read for nothing.
+	outNs = std::min(outNs, inNs + kTileReviewMaxNs);
+	const int pct = std::clamp(speedPct > 0 ? speedPct : 100, 5, 400);
+	for (int cam = 0; cam < (int)tileFeed_.size(); cam++) {
+		if (!tileFeed_[cam])
+			continue;
+		ReplayChannel::PlayRequest req;
+		req.camIndex = cam;
+		req.inNs = inNs;
+		req.outNs = outNs;
+		req.speedPct = pct;
+		tileFeed_[cam]->prefetch(req);
 	}
 }
 
@@ -1932,6 +1978,7 @@ void MultiReplayDock::releaseTileFeeds()
 {
 	for (auto &f : tileFeed_)
 		f.reset();
+	tileFeedHadPicture_.fill(false);
 	tileCueInNs_ = kNoInstant;
 	tileCueOutNs_ = kNoInstant;
 	tileCueSpeedPct_ = 0;
@@ -1942,15 +1989,30 @@ MultiReplayDock::MultiviewState MultiReplayDock::multiviewState() const
 {
 	MultiviewState s;
 	s.followingReview = !ReplayCore::instance().followLive();
-	for (const auto &f : tileFeed_) {
-		if (!f)
+	for (int cam = 0; cam < (int)tileFeed_.size(); cam++) {
+		if (!tileFeed_[cam])
 			continue;
 		s.feeds++;
-		if (f->hasPosition())
+		// The sticky flag, which is what the tile PUBLISH keys on — so the
+		// gate asserts the property the operator can actually see, not a
+		// per-clip counter that is false for the first tens of
+		// milliseconds of every clip.
+		if (tileFeedHadPicture_[cam])
 			s.feedsWithPicture++;
+		if (tileFeed_[cam]->hasPosition())
+			s.feedsWithCurrentClip++;
 	}
 	s.cueInNs = tileCueInNs_;
 	s.cueOutNs = tileCueOutNs_;
+	{
+		// The camera tiles only: the replay tile does not exist any more,
+		// but the slot arithmetic still says so, and counting a slot that
+		// is not a camera would make the number disagree with the strip.
+		std::lock_guard<std::mutex> lk(tileMutex_);
+		for (int i = 0; i < kMaxPreviewTiles; i++)
+			if (tiles_[i].cam0 >= 0 && tileSource_[i])
+				s.tilesPublished++;
+	}
 	return s;
 }
 
@@ -4303,15 +4365,24 @@ void MultiReplayDock::cueSelected()
 	// was armed on the bar is no longer what the play keys mean.
 	clearFreeReview();
 
-	// THE ANGLE BOXES SHOW THE CUE TOO — every lens, on the in-point.
+	// START THE FEEDS' FETCHES BEFORE THE BAY'S, AND LET THEM RUN UNDER IT.
 	//
-	// This is the gesture the multiview exists for: the operator picks a row
-	// and looks along the strip to decide which camera saw it. Done here and
-	// not from poll() because a cue never reaches the coordinator — it is two
-	// frames played straight at the channel, so there is no queue for poll()
-	// to read it off.
-	cueTiles(ev.tInNs, ev.tInNs + 2 * frameNs, 100,
-		 ReplayChannel::Direction::Forward);
+	// This is what makes the bay and the boxes arrive together, and the order
+	// of these three steps IS the mechanism. A fetch that is not in the ring
+	// is an open, a seek and a demux — about a tenth of a second — and play()
+	// does it inline, on this thread. Three inline fetches in a row (bay, then
+	// each feed) means somebody is a third of a second late by construction,
+	// and which somebody depends only on who was called first: the boxes used
+	// to be, so the BAY was the one that came in late.
+	//
+	// prefetch() is asynchronous and each feed has a thread of its own, so
+	// asking them all first puts their reads in flight in PARALLEL; the bay
+	// then does its own fetch inline, and by the time cueTiles() runs below
+	// the feeds' clips are already in their caches and their play() starts at
+	// once. Nothing waits on any of it — a prefetch that has not landed just
+	// means play() fetches for itself, exactly as before.
+	ensureTileFeeds();
+	prefetchTiles(ev.tInNs, ev.tInNs + 2 * frameNs, 100);
 
 	for (Which w : targetChannels()) {
 		auto &pcw = PlaybackCoordinator::instance(w);
@@ -4358,6 +4429,30 @@ void MultiReplayDock::cueSelected()
 			ReplayChannel::instance(w).prefetch(full);
 		}
 	}
+
+	// THE ANGLE BOXES SHOW THE CUE TOO — every lens, on the in-point.
+	//
+	// This is the gesture the multiview exists for: the operator picks a row
+	// and looks along the strip to decide which camera saw it. Done here and
+	// not from poll() because a cue never reaches the coordinator — it is two
+	// frames played straight at the channel, so there is no queue for poll()
+	// to read it off.
+	//
+	// AFTER the bay, on the clips the prefetch above has been reading while
+	// the bay did its own: this play() is a cache hit, so the boxes light up
+	// with it rather than a fetch apiece behind it.
+	cueTiles(ev.tInNs, ev.tInNs + 2 * frameNs, 100,
+		 ReplayChannel::Direction::Forward);
+	// ...and the boxes get the whole clip ready too, exactly as the bay just
+	// did. Without this the feeds paid a cold fetch at the moment poll() cued
+	// them for the PLAY — after the bay had already started, which is the
+	// asymmetry that shows during a replay rather than during the cue.
+	//
+	// This JOINS each feed's previous prefetch, on this thread, which is the
+	// second reason the order matters: by now those are the two-frame reads
+	// asked for above and they have finished under the bay's own fetch, so
+	// the join costs nothing. Asked the other way round it would block here.
+	prefetchTiles(ev.tInNs, ev.tOutNs, 100);
 }
 
 void MultiReplayDock::replayCurrent()
@@ -5485,7 +5580,15 @@ void MultiReplayDock::poll()
 		// beat: a quarter of a second of eight boxes showing the wrong
 		// kind of picture is exactly the sort of thing an operator sees
 		// and cannot name.
-		if (refreshStatus || tilesLive_ != followLive)
+		//
+		// ...and immediately when a feed shows its FIRST picture, which is
+		// the other half of the same problem. The flip above fires
+		// microseconds after the feeds were started — before any of them
+		// has decoded anything — so on its own it published nothing and
+		// left the boxes waiting for the slow beat anyway. This is the
+		// tick the picture actually exists on.
+		const bool tilePictureArrived = pollTileFeedPictures();
+		if (refreshStatus || tilesLive_ != followLive || tilePictureArrived)
 			refreshTileSources();
 	}
 	// Cheap (two compares in the common case) and it has to follow the angle
