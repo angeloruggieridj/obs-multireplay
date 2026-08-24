@@ -264,6 +264,43 @@ The dependency versions are pinned in `buildspec.json` and **must match the OBS
 version** you build against; if they do not, the module fails to load with a
 bare "module not found" and nothing else.
 
+### Known issue: the OBS interface turns black (Windows 11 24H2/25H2)
+
+**This is a Windows bug, not a plugin bug**, and it happens to OBS on its own:
+it is reported by people who do not have this plugin installed, on both Intel
+and NVIDIA graphics. It is worth knowing about because it looks alarming, and
+the instinctive reaction — killing OBS — is the wrong one.
+
+**What you see:** everything Qt draws goes black — buttons, tables, borders —
+while the preview tiles keep showing pictures. On a second monitor the mouse
+pointer appears **twice**: the real one, and the one left frozen inside the last
+image that reached the dead screen. OBS is **not hung**: it is alive, still
+drawing and still answering — which is why closing it from the taskbar shuts it
+down cleanly.
+
+**What to do, in this order:**
+
+1. **`Win+Down` then `Win+Up`.** Minimising and restoring the window makes it
+   re-render. Always try this first: it touches nothing but OBS.
+2. `Ctrl+Shift+Win+B` **only if that fails**. It reinitialises the whole
+   graphics stack — a second of black on **every** display — so during a live
+   show it is worse than the problem it fixes.
+
+**To stop it happening**, on the affected machine only, from an elevated
+PowerShell, then reboot:
+
+```powershell
+New-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows\Dwm' -Name OverlayTestMode -PropertyType DWord -Value 5 -Force
+New-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows\Dwm' -Name OverlayMinFPS -PropertyType DWord -Value 0 -Force
+```
+
+That disables Multi-Plane Overlay, the presentation path the regression lives
+in. **Both** values are needed on 24H2 and later. Undo with `Remove-ItemProperty`
+on the same two names and another reboot.
+
+Background: [OBS forum thread](https://obsproject.com/forum/threads/obs-ui-turns-black-only-the-preview-and-program-showing.195339/)
+· [microsoft/Windows-Dev-Performance#136](https://github.com/microsoft/Windows-Dev-Performance/issues/136).
+
 ### Reporting a problem
 
 Beta testers are what this stage is for.
@@ -518,6 +555,43 @@ cmake --build --preset windows-x64 --config RelWithDebInfo
 Le versioni delle dipendenze sono fissate in `buildspec.json` e **devono
 corrispondere alla versione di OBS** con cui compili; se non corrispondono il
 modulo non si carica e l'unico messaggio che ottieni è "module not found".
+
+### Problema noto: l'interfaccia di OBS diventa nera (Windows 11 24H2/25H2)
+
+**È un difetto di Windows, non del plugin**, e capita a OBS da solo: lo
+segnalano persone che questo plugin non ce l'hanno installato, sia su grafica
+Intel sia su NVIDIA. Vale la pena conoscerlo perché fa impressione, e la
+reazione istintiva — chiudere OBS — è quella sbagliata.
+
+**Cosa vedi:** tutto ciò che disegna Qt diventa nero — tasti, tabelle, bordi —
+mentre i riquadri di anteprima continuano a mostrare le immagini. Su un secondo
+monitor il puntatore del mouse si vede **due volte**: quello vero, e quello
+rimasto impresso nell'ultima immagine arrivata allo schermo morto. OBS **non è
+bloccato**: è vivo, sta ancora disegnando e risponde ancora — infatti se lo
+chiudi dalla barra delle applicazioni si chiude in modo pulito.
+
+**Cosa fare, in quest'ordine:**
+
+1. **`Win+Giù` poi `Win+Su`.** Minimizzare e ripristinare la finestra la fa
+   ridisegnare. Prova sempre prima questo: tocca solo OBS.
+2. `Ctrl+Shift+Win+B` **solo se il primo non basta**. Reinizializza tutto lo
+   stack grafico — un secondo di nero su **ogni** schermo — quindi durante una
+   diretta è peggio del problema che risolve.
+
+**Per non farlo più capitare**, solo sulla macchina colpita, da PowerShell
+**come amministratore**, poi riavvia:
+
+```powershell
+New-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows\Dwm' -Name OverlayTestMode -PropertyType DWord -Value 5 -Force
+New-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows\Dwm' -Name OverlayMinFPS -PropertyType DWord -Value 0 -Force
+```
+
+Disattiva il Multi-Plane Overlay, il percorso di presentazione in cui vive la
+regressione. Su 24H2 e successivi servono **entrambi** i valori. Si annulla con
+`Remove-ItemProperty` sugli stessi due nomi e un altro riavvio.
+
+Riferimenti: [thread sul forum OBS](https://obsproject.com/forum/threads/obs-ui-turns-black-only-the-preview-and-program-showing.195339/)
+· [microsoft/Windows-Dev-Performance#136](https://github.com/microsoft/Windows-Dev-Performance/issues/136).
 
 ### Segnalare un problema
 
