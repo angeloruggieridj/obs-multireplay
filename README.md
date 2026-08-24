@@ -184,6 +184,12 @@ recording, and keeps the last minutes of them in a bounded ring in RAM.
   comes back to exactly the size it had. Docked inside OBS the key is not there
   at all: there is no window of ours to expand, and a key that does nothing is a
   key your eye has to skip past every time it reads the row.
+  A **double-click on its title bar** does the same thing (Qt's own answer to
+  one is to re-dock the panel, which inside OBS can drop it behind another
+  dock's tab — the panel you were working in simply disappears), and the
+  floating window gets the **Minimize and Maximize** its title bar and system
+  menu are normally missing. To dock it again, drag the window back onto the
+  OBS window, the same gesture that pulled it out.
 
 #### Projects and updates
 
@@ -414,6 +420,13 @@ ne tiene gli ultimi minuti in un buffer circolare in RAM.
   OBS il tasto non c'è proprio: non esiste una finestra nostra da allargare, e un
   tasto che non fa niente è un tasto che l'occhio deve scartare ogni volta che
   legge la riga.
+  Il **doppio click sulla barra del titolo** fa la stessa cosa (di suo Qt
+  risponde ri-ancorando il pannello, che dentro OBS può finire dietro il tab di
+  un altro pannello: quello su cui stavi lavorando semplicemente sparisce), e
+  la finestra sganciata riceve il **Riduci a icona e l'Ingrandisci** che
+  normalmente mancano dalla sua barra del titolo e dal suo menu di sistema. Per
+  ri-ancorarla, trascina la finestra sopra quella di OBS: lo stesso gesto con
+  cui l'hai tirata fuori.
 
 #### Progetti e aggiornamenti
 

@@ -35,6 +35,7 @@ namespace multireplay {
 class PlaybackCoordinator;
 }
 
+#include <QPointer>
 #include <QRect>
 #include <QString>
 #include <QWidget>
@@ -682,6 +683,25 @@ private:
 	// that wraps us is not ours: OBS creates it, hides it, and can hand the
 	// layout back a different one.
 	void refreshFullScreenKey();
+	// Maximised is not "a window the size of a maximised one": the moment
+	// anything moves they behave differently, so leaving full screen has to put
+	// back the state, not the rectangle.
+	bool preFullScreenMaximized_ = false;
+	// The QDockWidget we have installed an event filter on, and the two things
+	// that filter is for. See eventFilter.
+	//
+	//  - A DOUBLE CLICK ON THE TITLE BAR. Qt answers one by RE-DOCKING the
+	//    panel (QDockWidgetPrivate::nonClientAreaMouseEvent → _q_toggleTopLevel),
+	//    and OBS then puts it back wherever the layout says — which, if that
+	//    place is behind a tab, means the panel the operator was working in
+	//    simply disappears. Everywhere else a double click on a title bar makes
+	//    the window bigger, so here it does what the ⛶ key does.
+	//  - Qt does not ask for Minimize or Maximize when it floats a dock, so the
+	//    window comes up with both greyed out in its system menu. Both are put
+	//    back (see equipFloatingWindow) — reapplied on every float, because Qt
+	//    rewrites the flags each time it makes one.
+	QPointer<QDockWidget> filteredHost_;
+	void equipFloatingWindow(QDockWidget *host);
 	// THE JOIN between two clips of one sequence. The coordinator advances the
 	// queue on the finished callback, but the engine has not pushed a frame of
 	// the next clip yet — so for those few tens of milliseconds positionNs()

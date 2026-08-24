@@ -1732,8 +1732,16 @@ void MultiReplayDock::setPanelFullScreen(bool on)
 	if (on == host->isFullScreen())
 		return;
 	if (on) {
-		preFullScreenGeom_ = host->geometry();
+		// MAXIMISED IS A STATE, NOT A RECTANGLE. Saving the geometry of a
+		// maximised window and setting it back gives a window that merely
+		// looks maximised: it is not snapped to anything, and the first
+		// thing that moves it proves the difference.
+		preFullScreenMaximized_ = host->isMaximized();
+		if (!preFullScreenMaximized_)
+			preFullScreenGeom_ = host->geometry();
 		host->showFullScreen();
+	} else if (preFullScreenMaximized_) {
+		host->showMaximized();
 	} else {
 		host->showNormal();
 		// Qt keeps a pre-full-screen geometry of its own, but a dock that
@@ -1748,12 +1756,85 @@ void MultiReplayDock::setPanelFullScreen(bool on)
 		on ? "full screen" : "back to a window");
 }
 
+
+// ---------------------------------------------------------------------------
+// The floating window gets a Minimize and a Maximize
+//
+// Qt floats a dock with a title bar it asked for by name — a title and a close
+// box and nothing else — so the operator's right click on it finds Minimize and
+// Maximize greyed out, and the two things a window on its own monitor most
+// obviously wants are the two it cannot do. Reported from a real rig.
+//
+// The type matters as much as the hints. Qt floats a dock as a Qt::Tool, and a
+// tool window on Windows is drawn with the small caption that has NO minimise
+// box at all — the hint alone would change nothing there. Made a plain window it
+// gets both boxes, and two things the operator also wanted anyway: a place in
+// the taskbar and a stop in Alt+Tab, which is what a panel living on a second
+// monitor for a whole match should have.
+//
+// Reapplied on every float because Qt rewrites the flags each time it makes one
+// (QDockWidgetPrivate::setWindowState), so this cannot be done once at startup.
+// ---------------------------------------------------------------------------
+
+void MultiReplayDock::equipFloatingWindow(QDockWidget *host)
+{
+	if (!host || !host->isFloating() || host->isFullScreen())
+		return;
+	const Qt::WindowFlags flags = host->windowFlags();
+	// MID-DRAG, HANDS OFF. While the dock is being pulled out of OBS, Qt
+	// floats it frameless with the mouse grabbed; setWindowFlags there
+	// rebuilds the native window underneath the drag and the panel is dropped
+	// on the floor. Two independent tells, because either one alone has a
+	// moment where it is wrong: the frameless flag is Qt's unplugged state,
+	// and a held button is the operator still holding it.
+	if (flags.testFlag(Qt::FramelessWindowHint))
+		return;
+	if (QApplication::mouseButtons() != Qt::NoButton)
+		return;
+
+	Qt::WindowFlags want = flags | Qt::WindowMinimizeButtonHint |
+			       Qt::WindowMaximizeButtonHint;
+	if ((flags & Qt::WindowType_Mask) == Qt::Tool)
+		want = (want & ~Qt::WindowFlags(Qt::WindowType_Mask)) |
+		       Qt::Window;
+	if (want == flags)
+		return;
+
+	// setWindowFlags hides the widget and rebuilds its native handle, so the
+	// show() is not optional — and every OBSQTDisplay underneath loses its
+	// window with it. That is survivable and already handled (recheckWindow on
+	// the next tick rebuilds each display), and it costs nothing extra here:
+	// this runs once per float, at the moment Qt has just rebuilt that window
+	// anyway.
+	const QRect keep = host->geometry();
+	host->setWindowFlags(want);
+	host->setGeometry(keep);
+	host->show();
+	obs_log(LOG_INFO,
+		"[dock] floating window equipped: flags 0x%08x -> 0x%08x",
+		(unsigned)flags.toInt(), (unsigned)host->windowFlags().toInt());
+}
+
 void MultiReplayDock::refreshFullScreenKey()
 {
 	if (!fullScreenBtn_)
 		return;
-	const QDockWidget *host = hostDock();
+	QDockWidget *host = hostDock();
+	// THE FILTER GOES ON THE DOCK, NOT ON US. The double click the operator
+	// aims at the title bar never reaches this widget: with a native frame it
+	// is a non-client event delivered to the window, and Qt's own handler on
+	// the QDockWidget answers it by re-docking. Filtering the dock is the only
+	// place upstream of that. Re-hooked rather than hooked once, because OBS
+	// owns that object and a layout restore can hand the panel to another.
+	if (host && filteredHost_ != host) {
+		if (filteredHost_)
+			filteredHost_->removeEventFilter(this);
+		host->installEventFilter(this);
+		filteredHost_ = host;
+	}
 	const bool floating = host && host->isFloating();
+	if (floating)
+		equipFloatingWindow(host);
 	const int want = floating ? 1 : 0;
 	if (fullScreenKeyShown_ != want) {
 		fullScreenKeyShown_ = want;
@@ -7090,6 +7171,33 @@ void MultiReplayDock::onEventItemChanged(QTableWidgetItem *item)
 
 bool MultiReplayDock::eventFilter(QObject *watched, QEvent *event)
 {
+	// A DOUBLE CLICK ON THE FLOATING PANEL'S TITLE BAR MAKES IT BIG, it does
+	// not put it away. Qt's answer to one is _q_toggleTopLevel() — the panel
+	// re-docks — and inside OBS that means it goes back to wherever the layout
+	// last had it, which can be behind another dock's tab: from the operator's
+	// side the panel he was working in simply vanished, and came back only when
+	// something else made OBS re-lay-out. Reported from a real rig.
+	//
+	// Both spellings, because which one arrives is the platform's business: a
+	// native frame (Windows, macOS) sends the non-client one to the window, and
+	// a Qt-drawn dock title bar (Wayland, xcb) sends an ordinary one. The
+	// ordinary one is only ours ABOVE the panel — that is where the title bar
+	// is; inside our own rectangle a double click belongs to whatever was
+	// clicked.
+	if (filteredHost_ && watched == filteredHost_ &&
+	    filteredHost_->isFloating()) {
+		const QEvent::Type t = event->type();
+		bool onTitle = t == QEvent::NonClientAreaMouseButtonDblClick;
+		if (!onTitle && t == QEvent::MouseButtonDblClick) {
+			auto *me = static_cast<QMouseEvent *>(event);
+			onTitle = me->position().y() < geometry().top();
+		}
+		if (onTitle) {
+			setPanelFullScreen(!panelIsFullScreen());
+			refreshFullScreenKey();
+			return true;
+		}
+	}
 	// THE TABLE EATS THE KEYS THAT MATTER. A QTableWidget with focus takes
 	// Enter to open an editor and ←/→ to walk across columns, and the table is
 	// where the operator's focus is for most of a match — so without this the

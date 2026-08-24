@@ -37,6 +37,7 @@ extern "C" {
 
 #include <QDockWidget>
 #include <QMainWindow>
+#include <QMouseEvent>
 #include <QRect>
 #include <QScreen>
 #include <QObject>
@@ -3912,6 +3913,8 @@ void runReopenPass(const std::string &outPath)
 	bool fsKeyShownWhenFloating = false;
 	bool fsCoversTheScreen = false;
 	bool fsRestoresTheWindow = false;
+	bool fsWindowOffersMinMax = false;
+	bool fsDoubleClickToggles = false;
 	{
 		QDockWidget *host = nullptr;
 		QPushButton *fsKey = nullptr;
@@ -3920,6 +3923,7 @@ void runReopenPass(const std::string &outPath)
 		QRect windowed;
 		QRect fullGeom;
 		QRect screenGeom;
+		Qt::WindowFlags floatFlags;
 		runOnUi([&]() {
 			if (!dock)
 				return;
@@ -3995,28 +3999,85 @@ void runReopenPass(const std::string &outPath)
 						 windowed.width()) <= 8 &&
 					std::abs(back.height() -
 						 windowed.height()) <= 8;
+			});
+
+			// --- the two the floating window itself owes -----------
+			// MINIMISE AND MAXIMISE. Qt floats a dock as a Qt::Tool
+			// asking only for a title and a close box, so both come
+			// up greyed in the system menu — and a tool window has no
+			// minimise box to grey in the first place. Read off the
+			// FLAGS, because that is what the window manager draws
+			// the buttons from; the state of a click on them is the
+			// platform's affair, not ours.
+			runOnUi([&]() {
+				floatFlags = host->windowFlags();
+			});
+			fsWindowOffersMinMax =
+				floatFlags.testFlag(Qt::WindowMinimizeButtonHint) &&
+				floatFlags.testFlag(Qt::WindowMaximizeButtonHint) &&
+				(floatFlags & Qt::WindowType_Mask) != Qt::Tool;
+
+			// DOUBLE CLICK ON THE TITLE BAR. Qt answers one by
+			// re-docking, which inside OBS can hide the panel behind
+			// another dock's tab — so what is on trial is BOTH that
+			// it went full screen AND that it is still floating. A
+			// check that asked only the first would pass on a panel
+			// that had been put away and reopened as a window.
+			const auto titleDoubleClick = [&]() {
+				runOnUi([&]() {
+					const QPointF pos(
+						host->width() / 2.0, -8.0);
+					QMouseEvent ev(
+						QEvent::NonClientAreaMouseButtonDblClick,
+						pos,
+						host->mapToGlobal(pos),
+						Qt::LeftButton, Qt::LeftButton,
+						Qt::NoModifier);
+					QCoreApplication::sendEvent(host, &ev);
+				});
+				std::this_thread::sleep_for(
+					std::chrono::milliseconds(700));
+			};
+			titleDoubleClick();
+			bool wentFull = false;
+			runOnUi([&]() {
+				wentFull = host->isFullScreen() &&
+					   host->isFloating();
+			});
+			titleDoubleClick();
+			bool cameBack = false;
+			runOnUi([&]() {
+				cameBack = !host->isFullScreen() &&
+					   host->isFloating();
 				// Put the panel back exactly as it was found.
 				host->setFloating(wasFloating);
 				host->setVisible(wasVisible);
 			});
+			fsDoubleClickToggles = wentFull && cameBack;
 			std::this_thread::sleep_for(
 				std::chrono::milliseconds(400));
 		}
 		const bool fsOk = fsKeyHiddenWhenDocked && fsKeyShownWhenFloating &&
-				  fsCoversTheScreen && fsRestoresTheWindow;
+				  fsCoversTheScreen && fsRestoresTheWindow &&
+				  fsWindowOffersMinMax && fsDoubleClickToggles;
 		obs_log(fsOk ? LOG_INFO : LOG_ERROR,
 			"[selftest] reopen: full-screen key — hidden docked: %s, "
 			"shown floating: %s, covers %dx%d of a %dx%d screen: %s, "
-			"restores %dx%d: %s",
+			"restores %dx%d: %s, window flags 0x%08x offer "
+			"min+max: %s, title double click toggles: %s",
 			fsKeyHiddenWhenDocked ? "yes" : "NO",
 			fsKeyShownWhenFloating ? "yes" : "NO", fullGeom.width(),
 			fullGeom.height(), screenGeom.width(),
 			screenGeom.height(), fsCoversTheScreen ? "yes" : "NO",
 			windowed.width(), windowed.height(),
-			fsRestoresTheWindow ? "yes" : "NO");
+			fsRestoresTheWindow ? "yes" : "NO",
+			(unsigned)floatFlags.toInt(),
+			fsWindowOffersMinMax ? "yes" : "NO",
+			fsDoubleClickToggles ? "yes" : "NO");
 	}
 
 	const bool pass = sameBoot.ok && rebooted.ok && fsKeyHiddenWhenDocked &&
+			  fsWindowOffersMinMax && fsDoubleClickToggles &&
 			  fsKeyShownWhenFloating && fsCoversTheScreen &&
 			  fsRestoresTheWindow;
 
@@ -4062,6 +4123,10 @@ void runReopenPass(const std::string &outPath)
 			  fsCoversTheScreen);
 	obs_data_set_bool(checks, "fullscreen_restores_the_window",
 			  fsRestoresTheWindow);
+	obs_data_set_bool(checks, "floating_window_offers_min_and_max",
+			  fsWindowOffersMinMax);
+	obs_data_set_bool(checks, "fullscreen_double_click_toggles",
+			  fsDoubleClickToggles);
 	obs_data_set_obj(root, "checks", checks);
 	obs_data_release(checks);
 	obs_data_set_int(root, "reopen_footage_span_ms", sameBoot.footageMs);
