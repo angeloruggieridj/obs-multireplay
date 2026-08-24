@@ -62,6 +62,7 @@ class QTabBar;
 class QTableWidget;
 class QTableWidgetItem;
 class QButtonGroup;
+class QDockWidget;
 class QSplitter;
 class QTimer;
 class QVBoxLayout;
@@ -636,6 +637,51 @@ private:
 	QWidget *previewPane_ = nullptr;
 	// Applies the Monitors key to the pane and the rows inside it.
 	void applyMonitorsVisible(bool on);
+
+	// ─── ⛶ THE PANEL TO THE WHOLE SCREEN, AND ONLY WHILE IT FLOATS ───────
+	//
+	// An operator who pulls this dock out onto a second monitor wants it to
+	// fill that monitor. Dragging the four edges of a floating window to the
+	// four edges of a screen is a fiddle, and it is a fiddle he does again
+	// every time OBS restores a layout that remembered slightly different
+	// numbers.
+	//
+	// DOCKED, THE KEY IS NOT THERE AT ALL — not greyed out. Inside the main
+	// window there is nothing to make full screen (OBS owns that window), so
+	// the key would do nothing, and a key that does nothing is a key the eye
+	// has to discard every time it reads the row. Same rule as the unconfigured
+	// angle slots.
+	//
+	// It works by putting the QDockWidget OBS wrapped us in into full screen —
+	// NOT by re-parenting this widget into a window of its own. Re-parenting
+	// destroys the native window of every OBSQTDisplay underneath (the bays and
+	// every multiview tile) and strands their obs_display; a window-state change
+	// leaves every child handle exactly where it was.
+	QPushButton *fullScreenBtn_ = nullptr;
+	// Where the floating window was before it took the screen. Qt restores a
+	// geometry of its own on showNormal(), but a QDockWidget that has been
+	// floated, docked and floated again has had that memory rewritten under it
+	// more than once; this one is ours and is only ever written here.
+	QRect preFullScreenGeom_;
+	// -1 = never applied, so the first call always runs. Same idiom as
+	// channelBApplied_: isVisible() is false for a child of a closed dock too,
+	// which would make the comparison ask for a show on every single tick.
+	int fullScreenKeyShown_ = -1;
+	// The QDockWidget OBS wrapped this widget in, or null while docked in
+	// nothing. Resolved by walking up, and resolved LAZILY: at construction our
+	// parent is the main window — obs_frontend_add_dock_by_id re-parents us
+	// afterwards (see plugin-main.cpp), so there is nothing to cache in the
+	// constructor.
+	QDockWidget *hostDock() const;
+	bool panelIsFullScreen() const;
+	void setPanelFullScreen(bool on);
+	// Show the key iff we are floating, and keep its lit state in step with the
+	// window. Called on the slow beat of poll() — floating and full screen are
+	// both deliberate, rare gestures — and a no-op unless the answer changed.
+	// Polled rather than wired to QDockWidget::topLevelChanged because the dock
+	// that wraps us is not ours: OBS creates it, hides it, and can hand the
+	// layout back a different one.
+	void refreshFullScreenKey();
 	// THE JOIN between two clips of one sequence. The coordinator advances the
 	// queue on the finished callback, but the engine has not pushed a frame of
 	// the next clip yet — so for those few tens of milliseconds positionNs()

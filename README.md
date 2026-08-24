@@ -178,6 +178,12 @@ recording, and keeps the last minutes of them in a bounded ring in RAM.
   up/down walk the event list, `+`/`−` change speed, Enter plays. Typing always
   wins — the search box and the tag cells are two pixels away from these
   commands, and typing a tag must not send the panel back a frame.
+* **Pull the panel out and give it a whole monitor.** Float the dock and a **⛶**
+  key appears next to *Monitors*: one press and the panel fills the screen it is
+  on — no dragging four edges into four corners. Press it again, or `Esc`, and it
+  comes back to exactly the size it had. Docked inside OBS the key is not there
+  at all: there is no window of ours to expand, and a key that does nothing is a
+  key your eye has to skip past every time it reads the row.
 
 #### Projects and updates
 
@@ -401,6 +407,13 @@ ne tiene gli ultimi minuti in un buffer circolare in RAM.
   Invio riproduce. Mentre stai scrivendo, però, ha la precedenza la scrittura:
   la casella di ricerca e le celle dei tag sono a due pixel da questi comandi, e
   digitare un tag non deve mandare il pannello indietro di un fotogramma.
+* **Sgancia il pannello e dagli un monitor intero.** A dock sganciata compare un
+  tasto **⛶** accanto a *Monitor*: una pressione e il pannello riempie lo schermo
+  su cui si trova, senza trascinare quattro bordi in quattro angoli. Premilo di
+  nuovo, o `Esc`, e torna esattamente alla dimensione di prima. Ancorata dentro
+  OBS il tasto non c'è proprio: non esiste una finestra nostra da allargare, e un
+  tasto che non fa niente è un tasto che l'occhio deve scartare ogni volta che
+  legge la riga.
 
 #### Progetti e aggiornamenti
 

@@ -1499,6 +1499,26 @@ QWidget *MultiReplayDock::buildToolbar()
 	connect(monitorsBtn_, &QPushButton::toggled, this,
 		[this](bool on) { applyMonitorsVisible(on); });
 	h->addWidget(monitorsBtn_);
+
+	// ⛶ — the panel to the whole screen. ONLY WHEN IT FLOATS, and hidden (not
+	// disabled) otherwise: see fullScreenBtn_ in the header for why the key is
+	// absent rather than dead, and why this makes a window state change instead
+	// of a new window. refreshFullScreenKey() decides whether it is on screen;
+	// it starts hidden because a dock is docked until somebody pulls it out.
+	fullScreenBtn_ = new QPushButton(QStringLiteral("⛶"), box);
+	fullScreenBtn_->setObjectName("mrToggle");
+	fullScreenBtn_->setCheckable(true);
+	fullScreenBtn_->setCursor(Qt::PointingHandCursor);
+	fullScreenBtn_->setToolTip(obs_module_text("Dock.FullScreenHint"));
+	fullScreenBtn_->hide();
+	connect(fullScreenBtn_, &QPushButton::toggled, this, [this](bool on) {
+		setPanelFullScreen(on);
+		// The window may have refused (it was re-docked between the paint
+		// and the click), so the key is told what happened rather than
+		// trusted to have made it happen.
+		refreshFullScreenKey();
+	});
+	h->addWidget(fullScreenBtn_);
 	h->addStretch(1);
 	v->addWidget(topRow);
 
@@ -1660,6 +1680,93 @@ void MultiReplayDock::applyMonitorsVisible(bool on)
 	if (previewPane_)
 		previewPane_->setVisible(on);
 	obs_log(LOG_INFO, "[dock] monitors %s", on ? "shown" : "hidden");
+}
+
+// ---------------------------------------------------------------------------
+// ⛶  Full screen — only while the panel is floating
+//
+// The gesture this exists for: the operator pulls the dock out of OBS onto a
+// second monitor and wants it to fill that monitor. Doing that by hand means
+// dragging four edges to four screen edges, and doing it again every time a
+// restored layout comes back with slightly different numbers.
+//
+// Three decisions worth keeping:
+//
+//  1. IT IS THE QDockWidget THAT GOES FULL SCREEN, not a window of our own.
+//     Re-parenting this widget into a new top level would destroy the native
+//     window of every OBSQTDisplay under it — both bays and every multiview
+//     tile — and strand the obs_display bound to each (qt-display.hpp: the one
+//     failure mode that file exists to avoid). A window STATE change touches no
+//     child handle at all.
+//  2. THE HOST IS RESOLVED EVERY TIME, never cached. OBS owns that dock: it
+//     creates it after our constructor has run, and a layout restore can hand
+//     the panel to a different one. Walking three parents is two pointer reads.
+//  3. THE KEY IS POLLED, not wired to QDockWidget::topLevelChanged, for the
+//     same reason — there is no single dock object whose lifetime we can pin a
+//     connection to. Floating and full screen are both deliberate, rare
+//     gestures; 4 Hz is far faster than either can be repeated.
+// ---------------------------------------------------------------------------
+
+QDockWidget *MultiReplayDock::hostDock() const
+{
+	for (QWidget *w = parentWidget(); w; w = w->parentWidget())
+		if (auto *d = qobject_cast<QDockWidget *>(w))
+			return d;
+	return nullptr;
+}
+
+bool MultiReplayDock::panelIsFullScreen() const
+{
+	const QDockWidget *host = hostDock();
+	return host && host->isFloating() && host->isFullScreen();
+}
+
+void MultiReplayDock::setPanelFullScreen(bool on)
+{
+	QDockWidget *host = hostDock();
+	// Docked, there is nothing here to make full screen: the window belongs to
+	// OBS. The key is hidden in that state, so this is the race (a re-dock
+	// between the paint and the click), not the ordinary path.
+	if (!host || !host->isFloating())
+		return;
+	if (on == host->isFullScreen())
+		return;
+	if (on) {
+		preFullScreenGeom_ = host->geometry();
+		host->showFullScreen();
+	} else {
+		host->showNormal();
+		// Qt keeps a pre-full-screen geometry of its own, but a dock that
+		// has been floated, docked and floated again has had that memory
+		// rewritten under it more than once — and coming back to a window
+		// the size of a postage stamp in the corner of a monitor is worse
+		// than not having the key.
+		if (preFullScreenGeom_.isValid())
+			host->setGeometry(preFullScreenGeom_);
+	}
+	obs_log(LOG_INFO, "[dock] panel %s",
+		on ? "full screen" : "back to a window");
+}
+
+void MultiReplayDock::refreshFullScreenKey()
+{
+	if (!fullScreenBtn_)
+		return;
+	const QDockWidget *host = hostDock();
+	const bool floating = host && host->isFloating();
+	const int want = floating ? 1 : 0;
+	if (fullScreenKeyShown_ != want) {
+		fullScreenKeyShown_ = want;
+		fullScreenBtn_->setVisible(floating);
+	}
+	// Lit means "this panel owns the screen". Read off the WINDOW, not off the
+	// last click: OBS can put the dock back into the main window under us, and
+	// a key still lit after that is a key that lies about where you are.
+	const bool full = floating && host->isFullScreen();
+	if (fullScreenBtn_->isChecked() != full) {
+		QSignalBlocker block(fullScreenBtn_);
+		fullScreenBtn_->setChecked(full);
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -2104,6 +2211,13 @@ void MultiReplayDock::prepareForShutdown()
 {
 	if (!g_dock)
 		return;
+	// COME OUT OF FULL SCREEN BEFORE OBS WRITES ITS LAYOUT. OBS saves the dock
+	// geometry on the way out and restores it on the way in, so a panel left
+	// full screen here comes back next launch as a floating window the size of
+	// a whole monitor with no way to tell it was ever anything else — and the
+	// operator's own window size, the one this key was careful to remember, is
+	// gone with it.
+	g_dock->setPanelFullScreen(false);
 	// STOP POLLING FIRST, then let go. Releasing alone was not enough: the poll
 	// timer runs at 30 Hz and re-resolves these references on its slow beat, so
 	// between "OBS says it is exiting" and "OBS clears scene data" a tick could
@@ -4282,6 +4396,17 @@ bool MultiReplayDock::handleTransportKey(QKeyEvent *event)
 	case Qt::Key_Underscore:
 		nudgeSpeed(-kSpeedKeyStepPct);
 		return true;
+	// Esc leaves full screen, and ONLY that: while the panel is a window
+	// inside OBS the key is not ours, and handing it back is what lets a
+	// dialog or a popup keep it. A full-screen floating dock has no title bar
+	// and therefore no close button, so this is the escape everyone reaches
+	// for first — the ⛶ key on the row is the other one.
+	case Qt::Key_Escape:
+		if (!panelIsFullScreen())
+			return false;
+		setPanelFullScreen(false);
+		refreshFullScreenKey();
+		return true;
 	case Qt::Key_Return:
 	case Qt::Key_Enter:
 		playSelected();
@@ -5691,6 +5816,11 @@ void MultiReplayDock::poll()
 		// ...and whether there are two bays at all. Same beat, same reason:
 		// it changes when Settings is saved, and it early-outs otherwise.
 		applyChannelBVisibility();
+		// ...and whether the panel is floating, which is the only state
+		// in which there is a screen for it to take. Same beat, same
+		// reason: pulling a dock out of OBS is a deliberate gesture, and
+		// this early-outs unless the answer changed.
+		refreshFullScreenKey();
 	}
 
 	// The other prime suspect: statusJson() calls std::filesystem::space() on

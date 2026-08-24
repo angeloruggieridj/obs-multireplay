@@ -35,7 +35,10 @@ extern "C" {
 #include <util/base.h>
 #include <util/platform.h>
 
+#include <QDockWidget>
 #include <QMainWindow>
+#include <QRect>
+#include <QScreen>
 #include <QObject>
 #include <QItemSelectionModel>
 #include <QComboBox>
@@ -3886,7 +3889,136 @@ void runReopenPass(const std::string &outPath)
 	//    epoch cannot disturb anything.
 	const Measured rebooted = measure("after a reboot", 60'000'000'000LL);
 
-	const bool pass = sameBoot.ok && rebooted.ok;
+	// --- ⛶ FULL SCREEN, AND ONLY WHILE THE PANEL FLOATS -------------------
+	//
+	// Run in THIS pass on purpose. Floating a dock destroys and rebuilds the
+	// native window of every OBSQTDisplay under it — both bays and every
+	// multiview tile — and the take pass is where that churn would be measured
+	// as a stranded display or a starved preview. Here nothing is recording,
+	// nothing is playing, and nothing is being timed.
+	//
+	// THE CHECK IS THE GEOMETRY, NOT QT'S FLAG. showFullScreen() sets the state
+	// on any window; whether the window then actually grows to the monitor
+	// depends on the window flags a QDockWidget floats with, which are the
+	// platform's business and differ between them. A run that asked only
+	// isFullScreen() would go green on a panel that had not moved one pixel —
+	// which is the entire failure this key can have.
+	//
+	// And it is driven through the REAL key, with click(): the visibility rule
+	// ("hidden while docked, not greyed out") lives in the dock's slow beat,
+	// and a check that called setPanelFullScreen() directly would prove the
+	// window state and nothing about the key that reaches it.
+	bool fsKeyHiddenWhenDocked = false;
+	bool fsKeyShownWhenFloating = false;
+	bool fsCoversTheScreen = false;
+	bool fsRestoresTheWindow = false;
+	{
+		QDockWidget *host = nullptr;
+		QPushButton *fsKey = nullptr;
+		bool wasFloating = false;
+		bool wasVisible = false;
+		QRect windowed;
+		QRect fullGeom;
+		QRect screenGeom;
+		runOnUi([&]() {
+			if (!dock)
+				return;
+			for (QWidget *w = dock->parentWidget(); w;
+			     w = w->parentWidget())
+				if (auto *d = qobject_cast<QDockWidget *>(w)) {
+					host = d;
+					break;
+				}
+			// By glyph, the way the transport keys are found: exactly
+			// one button in this dock carries it.
+			for (QPushButton *b : dock->findChildren<QPushButton *>())
+				if (b->text() == QStringLiteral("⛶"))
+					fsKey = b;
+			if (!host)
+				return;
+			wasFloating = host->isFloating();
+			wasVisible = host->isVisible();
+			// START FROM A KNOWN STATE. The operator's saved layout
+			// decides how this dock comes up, and both halves of the
+			// rule are being tested — so neither may be assumed.
+			// The dock is shown because a hidden dock has no window
+			// to make full screen, and put back exactly as found.
+			if (!wasVisible)
+				host->show();
+			if (wasFloating)
+				host->setFloating(false);
+		});
+		if (host && fsKey) {
+			// The key follows the floating state on the dock's slow
+			// beat (~264 ms), so every wait here is that beat plus
+			// room for the window manager.
+			std::this_thread::sleep_for(
+				std::chrono::milliseconds(900));
+			runOnUi([&]() {
+				fsKeyHiddenWhenDocked =
+					!fsKey->isVisibleTo(fsKey->parentWidget());
+				host->setFloating(true);
+			});
+			std::this_thread::sleep_for(
+				std::chrono::milliseconds(900));
+			runOnUi([&]() {
+				fsKeyShownWhenFloating =
+					fsKey->isVisibleTo(fsKey->parentWidget());
+				windowed = host->geometry();
+				fsKey->click();
+			});
+			std::this_thread::sleep_for(
+				std::chrono::milliseconds(700));
+			runOnUi([&]() {
+				fullGeom = host->geometry();
+				if (QScreen *sc = host->screen())
+					screenGeom = sc->geometry();
+				fsCoversTheScreen =
+					host->isFullScreen() &&
+					!screenGeom.isEmpty() &&
+					fullGeom.width() >= screenGeom.width() &&
+					fullGeom.height() >=
+						screenGeom.height();
+				fsKey->click();
+			});
+			std::this_thread::sleep_for(
+				std::chrono::milliseconds(700));
+			runOnUi([&]() {
+				const QRect back = host->geometry();
+				// Back to the size it had, not to whatever Qt
+				// remembered: coming out of full screen into a
+				// postage stamp in a corner is worse than not
+				// having the key.
+				fsRestoresTheWindow =
+					!host->isFullScreen() &&
+					std::abs(back.width() -
+						 windowed.width()) <= 8 &&
+					std::abs(back.height() -
+						 windowed.height()) <= 8;
+				// Put the panel back exactly as it was found.
+				host->setFloating(wasFloating);
+				host->setVisible(wasVisible);
+			});
+			std::this_thread::sleep_for(
+				std::chrono::milliseconds(400));
+		}
+		const bool fsOk = fsKeyHiddenWhenDocked && fsKeyShownWhenFloating &&
+				  fsCoversTheScreen && fsRestoresTheWindow;
+		obs_log(fsOk ? LOG_INFO : LOG_ERROR,
+			"[selftest] reopen: full-screen key — hidden docked: %s, "
+			"shown floating: %s, covers %dx%d of a %dx%d screen: %s, "
+			"restores %dx%d: %s",
+			fsKeyHiddenWhenDocked ? "yes" : "NO",
+			fsKeyShownWhenFloating ? "yes" : "NO", fullGeom.width(),
+			fullGeom.height(), screenGeom.width(),
+			screenGeom.height(), fsCoversTheScreen ? "yes" : "NO",
+			windowed.width(), windowed.height(),
+			fsRestoresTheWindow ? "yes" : "NO");
+	}
+
+	const bool pass = sameBoot.ok && rebooted.ok && fsKeyHiddenWhenDocked &&
+			  fsKeyShownWhenFloating && fsCoversTheScreen &&
+			  fsRestoresTheWindow;
 
 	// --- Put everything back ----------------------------------------------
 	// The operator's project first (so nothing is pointing into the test one),
@@ -3919,6 +4051,17 @@ void runReopenPass(const std::string &outPath)
 	obs_data_set_bool(checks, "reopen_live_edge_is_dead", liveEdgeDead);
 	obs_data_set_bool(checks, "reopen_timeline_from_disk", sameBoot.ok);
 	obs_data_set_bool(checks, "reopen_survives_a_reboot", rebooted.ok);
+	// Four booleans, not one: "the full-screen key is broken" is four
+	// different faults with four different fixes, and a single flag would
+	// make the log the only place that says which.
+	obs_data_set_bool(checks, "fullscreen_key_hidden_when_docked",
+			  fsKeyHiddenWhenDocked);
+	obs_data_set_bool(checks, "fullscreen_key_shown_when_floating",
+			  fsKeyShownWhenFloating);
+	obs_data_set_bool(checks, "fullscreen_covers_the_screen",
+			  fsCoversTheScreen);
+	obs_data_set_bool(checks, "fullscreen_restores_the_window",
+			  fsRestoresTheWindow);
 	obs_data_set_obj(root, "checks", checks);
 	obs_data_release(checks);
 	obs_data_set_int(root, "reopen_footage_span_ms", sameBoot.footageMs);
