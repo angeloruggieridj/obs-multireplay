@@ -204,6 +204,93 @@ inline bool isHexDigest(const std::string &s)
 	return true;
 }
 
+// ---------------------------------------------------------------------------
+// The asset a person can simply RUN — for installing somebody ELSE's plugin
+//
+// This exists for Branch Output, which this plugin cannot record without. Our
+// own updater wants the ARCHIVE (pick, above) because it unpacks it over an
+// installed plugin with a helper that waits for OBS to exit. A plugin that is
+// not installed at all is a different problem, and a much easier one: the
+// vendor publishes an installer, and running it beats anything we could do
+// ourselves on all three counts that matter — it asks Windows for elevation
+// through its own manifest (the OBS plugin folder is not writable by a normal
+// user on a machine where OBS was installed by an administrator), it knows
+// where that folder is, and it is signed by whoever built it. Unpacking a zip
+// into ProgramData ourselves would fake all three, badly.
+//
+// EVERY PLATFORM, and each with the file its own system knows how to open: the
+// signed .exe on Windows, the .pkg on macOS, the .deb on Linux. Handing the
+// file to the system is the whole of "install" here — we never place a byte.
+// ---------------------------------------------------------------------------
+
+inline std::vector<std::string> installerExtensionsFor(Platform p)
+{
+	switch (p) {
+	case Platform::Windows:
+		return {".exe"};
+	case Platform::MacOS:
+		return {".pkg"};
+	case Platform::Linux:
+	default:
+		return {".deb"};
+	}
+}
+
+inline bool pickInstaller(const std::vector<Asset> &assets, Platform p,
+			  Asset &out)
+{
+	const auto exts = installerExtensionsFor(p);
+	int bestRank = -1;
+	for (const Asset &a : assets) {
+		if (a.url.empty() || !isSafeAssetName(a.name))
+			continue;
+		const std::string ln = lower(a.name);
+		if (contains(ln, "dbgsym") || contains(ln, "dsym") ||
+		    endsWith(ln, ".ddeb") || contains(ln, "source"))
+			continue;
+		bool extOk = false;
+		for (const auto &e : exts)
+			if (endsWith(ln, e)) {
+				extOk = true;
+				break;
+			}
+		if (!extOk)
+			continue;
+		// Same refusal as pick(): an installer for another platform is
+		// not a fallback, it is the wrong file.
+		if (namesAnotherPlatform(ln, p))
+			continue;
+		// A SIGNED installer beats an unsigned one, and either beats a
+		// bare .exe that only happens to end in the right letters.
+		int rank = namesPlatform(ln, p) ? 100 : 50;
+		if (contains(ln, "installer"))
+			rank += 20;
+		if (contains(ln, "signed"))
+			rank += 10;
+		if (rank > bestRank) {
+			bestRank = rank;
+			out = a;
+		}
+	}
+	return bestRank >= 0;
+}
+
+// "sha256:abcdef…" — the shape GitHub's release API reports an asset's digest
+// in — reduced to the bare hex this plugin compares against, or empty if it is
+// anything else. Empty is a REFUSAL upstream, not a shrug: a download nobody
+// can verify is a download this plugin does not run.
+inline std::string sha256FromDigest(const std::string &digest)
+{
+	constexpr const char *kPrefix = "sha256:";
+	const size_t n = 7; // strlen(kPrefix)
+	if (digest.size() <= n)
+		return {};
+	if (lower(digest.substr(0, n)) != kPrefix)
+		return {};
+	const std::string hex = lower(digest.substr(n));
+	return isHexDigest(hex) ? hex : std::string();
+}
+
 // The digest CHECKSUMS.txt gives for `assetName`, lower-case, or empty.
 // The published shape is four spaces, the file name, a colon, the digest:
 //

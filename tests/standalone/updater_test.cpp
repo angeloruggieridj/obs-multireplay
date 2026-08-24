@@ -407,6 +407,103 @@ static void test_the_command_line_is_quoted_the_way_windows_reads_it()
 	CHECK(cmd.find("/B") == std::string::npos);
 }
 
+
+// --- the installer for SOMEBODY ELSE'S plugin ------------------------------
+
+// The real 1.0.9 release of Branch Output, copied from the GitHub API. Copied
+// rather than imagined, for the same reason the list above is: a difference of
+// exactly this kind decides which binary an operator ends up running.
+static std::vector<update_asset::Asset> aBranchOutputRelease()
+{
+	return {
+		{"osi-branch-output-1.0.9-macos-universal.pkg",
+		 "https://x/bo.pkg", 2634748},
+		{"osi-branch-output-1.0.9-source.tar.xz", "https://x/bo-src.tar.xz",
+		 2508804},
+		{"osi-branch-output-1.0.9-windows-x64-Installer-signed.exe",
+		 "https://x/bo-setup.exe", 2682576},
+		{"osi-branch-output-1.0.9-windows-x64.zip", "https://x/bo.zip",
+		 1300063},
+		{"osi-branch-output-1.0.9-x86_64-linux-gnu-dbgsym.ddeb",
+		 "https://x/bo-dbg.ddeb", 22302},
+		{"osi-branch-output-1.0.9-x86_64-linux-gnu.deb", "https://x/bo.deb",
+		 174030},
+	};
+}
+
+static void test_the_installer_wins_over_the_archive()
+{
+	using namespace update_asset;
+	Asset out;
+
+	// On Windows the release carries BOTH a zip and a signed installer, and
+	// the installer is the one to run: it asks for elevation through its own
+	// manifest, it knows where OBS keeps its plugins, and it is signed. The
+	// zip is what our own updater wants for our own plugin — a different job.
+	CHECK(pickInstaller(aBranchOutputRelease(), Platform::Windows, out));
+	CHECK(out.name ==
+	      "osi-branch-output-1.0.9-windows-x64-Installer-signed.exe");
+	// ...and pick() still answers with the archive, unchanged.
+	CHECK(pick(aBranchOutputRelease(), Platform::Windows, out));
+	CHECK(out.name == "osi-branch-output-1.0.9-windows-x64.zip");
+
+	CHECK(pickInstaller(aBranchOutputRelease(), Platform::MacOS, out));
+	CHECK(out.name == "osi-branch-output-1.0.9-macos-universal.pkg");
+
+	// The .deb and not the .ddeb beside it — the same trap as pick().
+	CHECK(pickInstaller(aBranchOutputRelease(), Platform::Linux, out));
+	CHECK(out.name == "osi-branch-output-1.0.9-x86_64-linux-gnu.deb");
+}
+
+static void test_an_installer_for_another_platform_is_not_a_fallback()
+{
+	using namespace update_asset;
+	const std::vector<Asset> onlyWindows = {
+		{"osi-branch-output-1.0.9-windows-x64-Installer-signed.exe",
+		 "https://x/bo-setup.exe", 2682576}};
+	Asset out;
+	CHECK(pickInstaller(onlyWindows, Platform::Windows, out));
+	CHECK(!pickInstaller(onlyWindows, Platform::MacOS, out));
+	CHECK(!pickInstaller(onlyWindows, Platform::Linux, out));
+	// And a release that carries only one platform's installer offers
+	// nothing to the other two, which is the refusal above.
+	// Every platform has an installer in that release, and each is the one
+	// its own system knows how to open.
+
+}
+
+static void test_the_digest_github_reports_is_read_or_refused()
+{
+	using namespace update_asset;
+	// The real shape, from the API response for the release above.
+	CHECK(sha256FromDigest(
+		      "sha256:0110117cd665975fd52bc7d64bf7da3e56dfd4b41910dc6098ef474c2e15060e") ==
+	      "0110117cd665975fd52bc7d64bf7da3e56dfd4b41910dc6098ef474c2e15060e");
+	// Upper case survives the round trip as lower case, because that is what
+	// sha256::hex() produces and what it will be compared against.
+	CHECK(sha256FromDigest("SHA256:ABCDEF0123456789abcdef0123456789"
+			       "ABCDEF0123456789abcdef0123456789") ==
+	      "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789");
+
+	// EVERY refusal matters here: an empty answer means "do not run this",
+	// and a parser that shrugged would hand the operator an unverified
+	// executable.
+	CHECK(sha256FromDigest("").empty());
+	CHECK(sha256FromDigest("sha256:").empty());
+	CHECK(sha256FromDigest("sha512:0110117cd665975fd52bc7d64bf7da3e"
+			       "56dfd4b41910dc6098ef474c2e15060e")
+		      .empty());
+	// Right prefix, wrong length.
+	CHECK(sha256FromDigest("sha256:0110117c").empty());
+	// Right length, not hex.
+	CHECK(sha256FromDigest("sha256:zz10117cd665975fd52bc7d64bf7da3e"
+			       "56dfd4b41910dc6098ef474c2e15060e")
+		      .empty());
+	// No prefix at all — a bare digest is not the field GitHub sends.
+	CHECK(sha256FromDigest("0110117cd665975fd52bc7d64bf7da3e56dfd4b419"
+			       "10dc6098ef474c2e15060e")
+		      .empty());
+}
 static void test_only_windows_claims_it_can_install()
 {
 	using namespace update_asset;
@@ -432,6 +529,9 @@ int main()
 	test_the_parameters_travel_verbatim();
 	test_the_command_line_is_quoted_the_way_windows_reads_it();
 	test_only_windows_claims_it_can_install();
+	test_the_installer_wins_over_the_archive();
+	test_an_installer_for_another_platform_is_not_a_fallback();
+	test_the_digest_github_reports_is_read_or_refused();
 
 	if (g_fail) {
 		std::printf("%d check(s) FAILED\n", g_fail);

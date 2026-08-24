@@ -96,6 +96,21 @@ public:
 	// "Install" button that quietly returned false. The panel asks first.
 	static bool canInstallHere();
 
+	// ONE HTTPS DOOR FOR THE WHOLE PLUGIN, and that is the point of putting
+	// these here rather than writing curl again somewhere else. The comment
+	// on the private helper they call says it: redirects, timeouts and
+	// certificate verification are three settings it is very easy to get
+	// wrong once per call site, and getting them wrong decides what code the
+	// operator ends up running. The Branch Output installer (which is not an
+	// update of ours at all) goes through this door for exactly that reason.
+	//
+	// Both BLOCK. They are called from worker threads, never from the UI one.
+	static bool fetchText(const std::string &url, std::string &bodyOut,
+			      std::string &errorOut);
+	static bool fetchFile(const std::string &url,
+			      const std::string &destPathUtf8,
+			      std::atomic<bool> *abort, std::string &errorOut);
+
 	// Ask GitHub. Returns immediately; watch status(). A second call while one
 	// is in flight is ignored rather than queued.
 	void checkAsync(UpdateChannel channel);

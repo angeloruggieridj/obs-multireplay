@@ -196,6 +196,18 @@ recording, and keeps the last minutes of them in a bounded ring in RAM.
 
 #### Projects and updates
 
+* **It sets itself up.** On a machine where nothing is configured yet, the panel
+  offers one short dialog with the five answers it cannot work without — where
+  recordings go, the project name, which OBS sources are the cameras, which
+  scene the replay goes on air in, and how Branch Output should record. Offered,
+  not forced, and always back on the ⚙ menu under *Guided setup*.
+* **It can install Branch Output for you.** MultiReplay records through that
+  plugin and refuses at REC without it, so when it is missing the panel says so
+  on every launch instead of writing it to a log. It will fetch the right file
+  for your platform — the signed installer on Windows, the `.pkg` on macOS, the
+  `.deb` on Linux — check it against the checksum GitHub publishes for it, and
+  hand it to your system's installer. A file whose checksum does not match, or
+  that publishes none, is refused rather than run.
 * **Settings belong to the project.** A new project starts from a copy of what
   is configured now and then goes its own way, so a two-camera match cannot
   inherit the three-camera rig of the one before it. A project already on disk
@@ -437,6 +449,19 @@ ne tiene gli ultimi minuti in un buffer circolare in RAM.
 
 #### Progetti e aggiornamenti
 
+* **Si configura da solo.** Su una macchina dove non c'è ancora niente, il
+  pannello propone un dialogo corto con le cinque risposte senza cui non può
+  funzionare: dove finiscono le registrazioni, il nome del progetto, quali
+  sorgenti OBS sono le camere, in quale scena va in onda il replay e come deve
+  registrare Branch Output. Proposto, non imposto, e sempre ritrovabile nel menu
+  ⚙ alla voce *Configurazione guidata*.
+* **Può installare Branch Output al posto tuo.** MultiReplay registra attraverso
+  quel plugin e senza rifiuta di partire al REC, quindi quando manca il pannello
+  lo dice a ogni avvio invece di scriverlo in un log. Scarica il file giusto per
+  la tua piattaforma — l'installer firmato su Windows, il `.pkg` su macOS, il
+  `.deb` su Linux — lo confronta con il checksum che GitHub pubblica per quel
+  file e lo passa all'installer di sistema. Un file che non combacia, o che non
+  pubblica nessun checksum, viene rifiutato invece che eseguito.
 * **Le impostazioni appartengono al progetto.** Un progetto nuovo parte da una
   copia di ciò che è configurato adesso e poi va per la sua strada: una partita
   a due camere non può più ereditare il rig a tre di quella prima. Un progetto

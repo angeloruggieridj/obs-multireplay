@@ -412,6 +412,12 @@ public:
 	// what OBS reports to the operator as a plugin that failed to release its
 	// resources — in a dialog, on the way out, where it is least welcome.
 	int heldSourceRefs() const;
+	// Does this installation still need the guided setup? Public for the
+	// automated gate: the harness configures a rig, so the answer there must
+	// be NO — and the way this goes wrong is a wizard in the face of an
+	// operator whose panel has been set up for months.
+	bool needsSetup();
+
 
 	// Put the position bar back over the whole timeline — the zoom menu's
 	// "100%" entry, and the way back from any span. Public because the gate
@@ -845,6 +851,23 @@ private:
 	// Called from poll() when the watchdog below expires.
 	void cancelDeadRecording();
 	void openSettings();        // configuration dialog
+	// BRANCH OUTPUT IS NOT INSTALLED — asked, not logged. Once per launch,
+	// and again on the next one until it is there: without it this plugin
+	// cannot record a frame, so a warning in a log file is not telling the
+	// operator, it is telling the file. See the .cpp.
+	void promptForBranchOutput();
+	bool branchOutputAsked_ = false;
+	// FIRST RUN — the five answers without which nothing works, in one
+	// dialog instead of five pages of Settings. needsSetup() (public, above)
+	// is the question the panel asks itself once per launch; the wizard is
+	// also on the gear menu, because "Later" has to be a real button.
+	// See the .cpp.
+	void runSetupWizard();
+	bool setupAsked_ = false;
+	// True for the whole life of a first-run dialog, so the second one cannot
+	// open on top of the first. Two modal dialogs stacked on a fresh machine
+	// is worse than either of them.
+	bool modalOpen_ = false;
 	// TAGS — the operator's own marking vocabulary (Config.commentPresets, the
 	// list every per-angle comment cell offers). One tag per line in a plain
 	// TXT file, so a club's words are written once and carried to every machine

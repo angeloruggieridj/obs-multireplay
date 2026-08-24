@@ -526,6 +526,10 @@ struct DockChecks {
 	// Channel B, the swap, the trim keys and the zoom — the four things
 	// that shipped without a check and therefore without a claim.
 	int channelBFrames = 0;
+	// FIRST RUN. The harness configures a rig, so the guided setup must NOT
+	// consider itself needed — the way this goes wrong is a wizard in the face
+	// of an operator whose panel has been set up for months.
+	bool setupNotNeededWhenConfigured = false;
 	bool channelBIndependent = false;
 	bool swapMovesClip = false;
 	bool trimMovedIn = false;
@@ -2377,6 +2381,23 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 						b->click();
 			});
 		}
+
+		// --- FIRST RUN: the wizard must know it is not wanted ---------
+		// The harness has a session folder and armed cameras, which is a
+		// configured rig by any reading — so needsSetup() must say no. It
+		// fails loudly if the question is ever inverted or widened, and
+		// what that would cost is a modal dialog in front of an operator
+		// every single launch, on a panel that has been working for
+		// months. The dialogs themselves are suppressed while a self-test
+		// drives OBS (see selfTestIsDriving), because a modal exec() on
+		// this thread would park the whole run.
+		runOnUi([&]() {
+			c.setupNotNeededWhenConfigured = !dock->needsSetup();
+		});
+		obs_log(c.setupNotNeededWhenConfigured ? LOG_INFO : LOG_ERROR,
+			"[selftest] dock: guided setup considers itself %s",
+			c.setupNotNeededWhenConfigured ? "not needed (right)"
+						       : "NEEDED on a configured rig");
 
 		// --- the trim keys move the point they say they move ----------
 		// ⇤IN with the playhead parked one second later must move the
@@ -5339,6 +5360,7 @@ void runSelfTest()
 			  dockChecks.listTabCountFollowsConfig &&
 			  dockChecks.layoutOrderTopToBottom &&
 			  dockChecks.seekbarGraduated && dockChecks.channelBIndependent &&
+			  dockChecks.setupNotNeededWhenConfigured &&
 			  dockChecks.swapMovesClip && dockChecks.trimMovedIn &&
 			  dockChecks.seekbarZooms && healthChecks.bTakesItsOwnScene &&
 			  dockChecks.dragMovesMarker &&
@@ -5605,6 +5627,8 @@ void runSelfTest()
 	// Channel B, the swap, the trim keys and the zoom.
 	obs_data_set_bool(checks, "channel_b_plays_on_its_own",
 			  dockChecks.channelBIndependent);
+	obs_data_set_bool(checks, "setup_not_needed_when_configured",
+			  dockChecks.setupNotNeededWhenConfigured);
 	obs_data_set_bool(checks, "swap_moves_the_clip_across",
 			  dockChecks.swapMovesClip);
 	obs_data_set_bool(checks, "trim_moves_the_in_point", dockChecks.trimMovedIn);

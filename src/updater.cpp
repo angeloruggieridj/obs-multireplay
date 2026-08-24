@@ -354,6 +354,43 @@ bool Updater::canInstallHere()
 	return update_asset::isInstallableHere(update_asset::hostPlatform());
 }
 
+// The two doors declared in the header. They exist so that the ONE place that
+// decides about redirects, timeouts and certificate verification stays one
+// place even when the thing being fetched is not an update of ours.
+bool Updater::fetchText(const std::string &url, std::string &bodyOut,
+			std::string &errorOut)
+{
+	BodySink sink;
+	if (!httpGet(url, kCheckTimeoutSec, &sink, nullptr, nullptr, errorOut))
+		return false;
+	bodyOut = std::move(sink.data);
+	return true;
+}
+
+bool Updater::fetchFile(const std::string &url, const std::string &destPathUtf8,
+			std::atomic<bool> *abort, std::string &errorOut)
+{
+	// os_fopen wants UTF-8 and converts to wide itself; std::ofstream on
+	// MSVC takes the ANSI code page, which is the bug path-utf8.hpp exists
+	// for. The temp path this is handed comes from GetTempPathW, so it can
+	// carry a user name with an accent in it.
+	std::ofstream out(utf8ToPath(destPathUtf8), std::ios::binary);
+	if (!out) {
+		errorOut = "could not open the download for writing";
+		return false;
+	}
+	ProgressCtx ctx;
+	ctx.abort = abort;
+	const bool ok = httpGet(url, kDownloadTimeoutSec, nullptr, &out, &ctx,
+				errorOut);
+	out.close();
+	if (!ok) {
+		std::error_code ec;
+		std::filesystem::remove(utf8ToPath(destPathUtf8), ec);
+	}
+	return ok;
+}
+
 Updater::Status Updater::status() const
 {
 	std::lock_guard<std::mutex> lock(mutex_);

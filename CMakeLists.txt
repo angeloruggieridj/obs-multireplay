@@ -70,6 +70,11 @@ target_sources(
     src/plugin-main.cpp
     src/replay-core.cpp
     src/branch-output-control.cpp
+    # Fetching and verifying the Branch Output INSTALLER, which is not an update
+    # of ours: without that plugin this one cannot record at all, so a fresh
+    # machine is offered the file its own platform knows how to install.
+    src/branch-output-install.cpp
+    src/branch-output-install.hpp
     # M0: live encoded-packet tap on Branch Output's existing encoders
     src/packet-tap.cpp
     src/packet-tap.hpp

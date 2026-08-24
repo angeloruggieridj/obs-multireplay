@@ -33,6 +33,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #include "playback-coordinator.hpp"
 #include "replay-channel.hpp"
 #include "selftest.hpp"
+#include "branch-output-install.hpp"
 #include "updater.hpp"
 
 namespace {
@@ -214,7 +215,8 @@ void obs_module_post_load(void)
 //   health — its sampler calls PacketTap::stats()
 //   events — flush the last events.json write
 //   core   — hotkeys and recording state
-//   updater — a network thread that touches none of the above
+//   updater — a network thread that touches none of the above, and the Branch
+//            Output fetch beside it, which is the same kind of thread
 void obs_module_unload(void)
 {
 	obs_frontend_remove_event_callback(onFrontendEvent, nullptr);
@@ -233,5 +235,8 @@ void obs_module_unload(void)
 	// joinable thread at static destruction is std::terminate — OBS vanishing
 	// on the way out rather than closing. Bounded by one HTTP timeout.
 	multireplay::Updater::instance().shutdown();
+	// Same rule, same reason: fetching somebody else's installer is a network
+	// thread of ours, and it goes down with the rest of them.
+	multireplay::BranchOutputInstall::instance().shutdown();
 	obs_log(LOG_INFO, "plugin unloaded");
 }

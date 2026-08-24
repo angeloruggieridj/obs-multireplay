@@ -8,6 +8,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
 #include "dock-layout.hpp"
 #include "dock-style.hpp"
 #include "qt-display.hpp"
+#include "branch-output-install.hpp"
 #include "replay-core.hpp"
 #include "updater.hpp"
 #include "event-store.hpp"
@@ -56,6 +57,10 @@ SPDX-License-Identifier: GPL-2.0-or-later
 #include <QListWidget>
 #include <QStackedWidget>
 #include <QMessageBox>
+#include <QStandardPaths>
+#include <QProgressBar>
+#include <QDesktopServices>
+#include <QUrl>
 #include <QDockWidget>
 #include <QSizePolicy>
 #include <QStyle>
@@ -74,6 +79,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
 #include <algorithm>
 #include <cmath>
 #include <string>
+#include <cstdlib>
 #include <cstring>
 
 namespace multireplay {
@@ -3207,6 +3213,7 @@ KeyBlock *MultiReplayDock::buildRecBlock()
 		auto *actNew = menu->addAction(obs_module_text("Dock.NewProject"));
 		auto *actOpen = menu->addAction(obs_module_text("Dock.OpenProject"));
 		menu->addSeparator();
+		auto *actSetup = menu->addAction(obs_module_text("Setup.MenuItem"));
 		auto *actSettings = menu->addAction(obs_module_text("Dock.Settings"));
 		auto *actRename = menu->addAction(obs_module_text("Dock.RenameList"));
 		// TAGS: the words this operator marks with. Worth carrying
@@ -3223,6 +3230,8 @@ KeyBlock *MultiReplayDock::buildRecBlock()
 			[this]() { importTags(); });
 		connect(actTagsExport, &QAction::triggered, this,
 			[this]() { exportTags(); });
+		connect(actSetup, &QAction::triggered, this,
+			&MultiReplayDock::runSetupWizard);
 		connect(actRename, &QAction::triggered, this,
 			&MultiReplayDock::renameListDialog);
 		connect(actNew, &QAction::triggered, this,
@@ -5298,6 +5307,22 @@ void MultiReplayDock::cancelDeadRecording()
 // Periodic refresh
 // ---------------------------------------------------------------------------
 
+
+// Is a self-test driving this OBS? Both first-run dialogs are MODAL, and a
+// modal dialog on the gate's OBS is not a slow run, it is a dead one: exec()
+// parks the UI thread and every runOnUi() the checking thread posts after that
+// waits forever. The take goes on recording, no report is ever written, and the
+// script times out — which is exactly how a check that called playSelected()
+// once cost minutes of a run (see the notes in selftest.cpp).
+//
+// Read from the environment rather than asked of the self-test module, because
+// this must be true before anything in that module has run — poll() reaches
+// here on the fifth second, and by then the harness has long since set it.
+static bool selfTestIsDriving()
+{
+	const char *v = getenv("OBS_MULTIREPLAY_SELFTEST");
+	return v && *v && std::strcmp(v, "0") != 0;
+}
 void MultiReplayDock::poll()
 {
 	// Taken FIRST and handed to accountUiTick last, so what is measured is the
@@ -5318,6 +5343,31 @@ void MultiReplayDock::poll()
 	for (OBSQTDisplay *d : allDisplays())
 		d->recheckWindow();
 
+
+	// --- is Branch Output even installed? --------------------------------
+	// Once per launch, and not on the first tick: OBS emits FINISHED_LOADING
+	// from inside OBSBasic::OBSInit, which then spins a NESTED event loop of
+	// its own (the YouTube dock) — and a modal dialog dropped into that is the
+	// same hazard that crashes Branch Output's status dock. Four seconds of
+	// polling is well past it, and past any module still registering.
+	if (!branchOutputAsked_ && statusTick_ > 120 && !selfTestIsDriving()) {
+		branchOutputAsked_ = true;
+		if (!core.branchOutputAvailable())
+			QTimer::singleShot(0, this, [this]() {
+				promptForBranchOutput();
+			});
+	}
+	// ...and, once that is settled, whether anything is configured at all.
+	// AFTER Branch Output, deliberately: two modal dialogs racing each other
+	// on a fresh machine is worse than either, and the recording layer is the
+	// one that decides whether the rest is worth filling in.
+	if (!setupAsked_ && branchOutputAsked_ && !modalOpen_ &&
+	    statusTick_ > 150 && !selfTestIsDriving()) {
+		setupAsked_ = true;
+		if (needsSetup())
+			QTimer::singleShot(0, this,
+					   [this]() { runSetupWizard(); });
+	}
 	// The hotkeys change the angle without going through the dock.
 	const int hotAngle1 = core.currentAngle() + 1;
 	if (hotAngle1 >= 1 && hotAngle1 <= kNCams)
@@ -7355,6 +7405,380 @@ void MultiReplayDock::rememberComment(const QString &text)
 // Settings dialog
 // ---------------------------------------------------------------------------
 
+
+// ---------------------------------------------------------------------------
+// "Branch Output is not installed" — asked, not logged
+//
+// This plugin cannot record one frame without it: every camera's recording is a
+// Branch Output filter and the tap attaches to the encoders it runs. Until now
+// the only thing that said so on a fresh machine was a LOG WARNING, i.e. a
+// sentence in a file nobody opens before a match — and the panel came up
+// looking complete and refused at REC.
+//
+// So it asks, every launch, until the plugin is there. And it offers to do it,
+// because "find the right file for your platform" is the step where an operator
+// gives up: the download is fetched and CHECKSUM-VERIFIED by
+// branch-output-install.cpp, and then handed to the desktop with one call that
+// does the right, different thing on each platform — the signed installer runs
+// with its own elevation prompt on Windows, Installer.app opens the .pkg on
+// macOS, xdg-open hands the .deb to whatever the distribution installed for
+// them. We never place a byte ourselves.
+//
+// openUrl() ANSWERING FALSE IS A REAL CASE, not a formality: a minimal Linux
+// desktop with nothing registered for .deb is exactly that, and the honest
+// answer there is the path and the command, not a dialog that closes as if
+// something had happened.
+// ---------------------------------------------------------------------------
+
+void MultiReplayDock::promptForBranchOutput()
+{
+	auto &bo = BranchOutputInstall::instance();
+
+	QDialog dlg(this);
+	dlg.setWindowTitle(obs_module_text("BO.Title"));
+	dlg.setMinimumWidth(600);
+
+	auto *root = new QVBoxLayout(&dlg);
+	root->setSpacing(10);
+
+	auto *head = new QLabel(obs_module_text("BO.Blurb"), &dlg);
+	head->setWordWrap(true);
+	root->addWidget(head);
+
+	auto *state = new QLabel(&dlg);
+	state->setObjectName("mrMuted");
+	state->setWordWrap(true);
+	state->setTextInteractionFlags(Qt::TextSelectableByMouse);
+	root->addWidget(state);
+
+	auto *bar = new QProgressBar(&dlg);
+	bar->setRange(0, 100);
+	bar->hide();
+	root->addWidget(bar);
+
+	auto *row = new QHBoxLayout();
+	auto *install = new QPushButton(obs_module_text("BO.Install"), &dlg);
+	install->setObjectName("mrAccent");
+	install->setDefault(true);
+	auto *page = new QPushButton(obs_module_text("BO.OpenPage"), &dlg);
+	auto *later = new QPushButton(obs_module_text("BO.Later"), &dlg);
+	row->addWidget(install);
+	row->addWidget(page);
+	row->addStretch(1);
+	row->addWidget(later);
+	root->addLayout(row);
+
+	connect(page, &QPushButton::clicked, &dlg, []() {
+		QDesktopServices::openUrl(QUrl(kBranchOutputReleasesPage));
+	});
+	connect(later, &QPushButton::clicked, &dlg, &QDialog::reject);
+
+	// Watching a worker, not driving one. 200 ms is four times faster than a
+	// percentage can be read and slow enough to cost nothing.
+	QTimer watch(&dlg);
+	bool handedOver = false;
+	connect(&watch, &QTimer::timeout, &dlg, [&]() {
+		const auto st = bo.status();
+		switch (st.phase) {
+		case BranchOutputInstall::Phase::Asking:
+			state->setText(obs_module_text("BO.Asking"));
+			break;
+		case BranchOutputInstall::Phase::Downloading:
+			bar->setValue(st.percent);
+			state->setText(
+				QString(obs_module_text("BO.Downloading"))
+					.arg(QString::fromStdString(st.assetName))
+					.arg(QString::fromStdString(st.version)));
+			break;
+		case BranchOutputInstall::Phase::Verifying:
+			bar->setValue(100);
+			state->setText(obs_module_text("BO.Verifying"));
+			break;
+		case BranchOutputInstall::Phase::Ready: {
+			if (handedOver)
+				break;
+			handedOver = true;
+			watch.stop();
+			bar->hide();
+			const QString path =
+				QString::fromStdString(st.filePath);
+			const bool opened = QDesktopServices::openUrl(
+				QUrl::fromLocalFile(path));
+			state->setText(
+				opened ? QString(obs_module_text("BO.Handed"))
+				       : QString(obs_module_text("BO.NotHanded"))
+						 .arg(path));
+			obs_log(LOG_INFO,
+				"[dock] Branch Output installer %s: %s",
+				opened ? "handed to the desktop"
+				       : "COULD NOT be opened",
+				st.filePath.c_str());
+			install->hide();
+			page->hide();
+			later->setText(obs_module_text("BO.Close"));
+			later->setDefault(true);
+			break;
+		}
+		case BranchOutputInstall::Phase::Failed:
+			watch.stop();
+			bar->hide();
+			state->setText(QString(obs_module_text("BO.Failed"))
+					       .arg(QString::fromStdString(
+						       st.message)));
+			install->setEnabled(true);
+			break;
+		default:
+			break;
+		}
+	});
+
+	connect(install, &QPushButton::clicked, &dlg, [&]() {
+		install->setEnabled(false);
+		bar->setValue(0);
+		bar->show();
+		state->setText(obs_module_text("BO.Asking"));
+		bo.startAsync();
+		watch.start(200);
+	});
+
+	modalOpen_ = true;
+	dlg.exec();
+	modalOpen_ = false;
+}
+
+// ---------------------------------------------------------------------------
+// First run: the five answers, in one place
+//
+// A fresh install has no session folder, no cameras, no output scene and the
+// stock recording settings, and every one of those lives on a DIFFERENT page of
+// the Settings dialog. Reported from a new machine: the panel comes up looking
+// finished and the operator has to go and find five things before it can do
+// anything, without being told which five.
+//
+// ONE DIALOG, NOT A MULTI-PAGE WIZARD. Everything here fits on a screen, and
+// pages would add clicks and a sense of ceremony to what is really a short
+// form. It is also deliberately NOT the whole of Settings: these are the
+// answers without which nothing works, and the line at the bottom says where
+// the rest lives, so this never grows into a second Settings dialog that has to
+// be kept in step with the first.
+//
+// Offered, never forced — "Later" is a real button — and reachable again from
+// the gear menu, because the operator who dismisses it on a Tuesday needs a way
+// back to it on the Saturday.
+// ---------------------------------------------------------------------------
+
+bool MultiReplayDock::needsSetup()
+{
+	const Config cfg = ReplayCore::instance().getConfig();
+	if (cfg.sessionFolder.empty())
+		return true;
+	for (int i = 0; i < kMaxCameras; i++)
+		if (!cfg.cameras[i].sourceName.empty())
+			return false;
+	return true; // a folder but not one camera: nothing to record
+}
+
+void MultiReplayDock::runSetupWizard()
+{
+	auto &core = ReplayCore::instance();
+	if (core.isRecording()) {
+		QMessageBox::warning(this, "obs-multireplay",
+				     obs_module_text("Dock.StopRecFirst"));
+		return;
+	}
+	Config cfg = core.getConfig();
+
+	QDialog dlg(this);
+	dlg.setWindowTitle(obs_module_text("Setup.Title"));
+	dlg.setMinimumWidth(660);
+
+	auto *root = new QVBoxLayout(&dlg);
+	root->setSpacing(10);
+	auto *blurb = new QLabel(obs_module_text("Setup.Blurb"), &dlg);
+	blurb->setWordWrap(true);
+	root->addWidget(blurb);
+
+	auto *form = new QFormLayout();
+	form->setLabelAlignment(Qt::AlignLeft);
+	root->addLayout(form);
+
+	// --- 1. where the footage goes ----------------------------------------
+	// Pre-filled rather than blank: an empty path is a question, a suggested
+	// one is a decision the operator can accept in a second. Movies/ is where
+	// every other recorder on the machine already puts things.
+	auto *folderRow = new QHBoxLayout();
+	auto *folder = new QLineEdit(&dlg);
+	folder->setText(cfg.sessionFolder.empty()
+				? QDir::toNativeSeparators(
+					  QStandardPaths::writableLocation(
+						  QStandardPaths::MoviesLocation) +
+					  "/MultiReplay")
+				: QString::fromStdString(cfg.sessionFolder));
+	auto *browse = new QPushButton(obs_module_text("Setup.Browse"), &dlg);
+	folderRow->addWidget(folder, 1);
+	folderRow->addWidget(browse);
+	form->addRow(obs_module_text("Setup.Folder"), folderRow);
+	connect(browse, &QPushButton::clicked, &dlg, [&]() {
+		const QString p = QFileDialog::getExistingDirectory(
+			&dlg, obs_module_text("Setup.Folder"), folder->text());
+		if (!p.isEmpty())
+			folder->setText(QDir::toNativeSeparators(p));
+	});
+
+	// --- 2. the project ----------------------------------------------------
+	auto *project = new QLineEdit(&dlg);
+	project->setText(QDateTime::currentDateTime().toString("yyyyMMdd_HHmm"));
+	form->addRow(obs_module_text("Setup.Project"), project);
+
+	// --- 3. the cameras ----------------------------------------------------
+	// FOUR, not eight. This is the dialog that gets somebody recording; a rig
+	// with five cameras has an operator who will find Settings.
+	QStringList sourceNames;
+	{
+		Data sd(core.sourcesJson());
+		obs_data_array_t *arr =
+			sd ? obs_data_get_array(sd, "sources") : nullptr;
+		if (arr) {
+			const size_t n = obs_data_array_count(arr);
+			for (size_t i = 0; i < n; i++) {
+				obs_data_t *it = obs_data_array_item(arr, i);
+				sourceNames << QString::fromUtf8(
+					obs_data_get_string(it, "name"));
+				obs_data_release(it);
+			}
+			obs_data_array_release(arr);
+		}
+	}
+	constexpr int kWizardCams = 4;
+	std::vector<QComboBox *> camCombos;
+	std::vector<QLineEdit *> camNames;
+	{
+		auto *grid = new QGridLayout();
+		grid->setHorizontalSpacing(10);
+		for (int i = 0; i < kWizardCams; i++) {
+			auto *c = new QComboBox(&dlg);
+			c->addItem(obs_module_text("Dock.None"), "");
+			for (const auto &nm : sourceNames)
+				c->addItem(nm, nm);
+			const int idx = c->findData(QString::fromStdString(
+				cfg.cameras[i].sourceName));
+			if (idx >= 0)
+				c->setCurrentIndex(idx);
+			c->setMinimumWidth(150);
+
+			auto *nm = new QLineEdit(&dlg);
+			nm->setText(cfg.cameras[i].displayName.empty()
+					    ? QString("C%1").arg(i + 1)
+					    : QString::fromStdString(
+						      cfg.cameras[i].displayName));
+			nm->setFixedWidth(90);
+
+			grid->addWidget(new QLabel(QString::number(i + 1), &dlg),
+					i, 0);
+			grid->addWidget(c, i, 1);
+			grid->addWidget(nm, i, 2);
+			camCombos.push_back(c);
+			camNames.push_back(nm);
+		}
+		grid->setColumnStretch(1, 1);
+		form->addRow(obs_module_text("Setup.Cameras"), grid);
+	}
+
+	// --- 4. where the replay goes on air -----------------------------------
+	auto *outScene = new QComboBox(&dlg);
+	outScene->addItem(obs_module_text("Dock.None"), "");
+	{
+		struct obs_frontend_source_list scenes = {};
+		obs_frontend_get_scenes(&scenes);
+		for (size_t i = 0; i < scenes.sources.num; i++) {
+			const char *nm =
+				obs_source_get_name(scenes.sources.array[i]);
+			if (nm && *nm)
+				outScene->addItem(QString::fromUtf8(nm),
+						  QString::fromUtf8(nm));
+		}
+		obs_frontend_source_list_free(&scenes);
+	}
+	{
+		const int idx = outScene->findData(
+			QString::fromStdString(cfg.outputSceneName));
+		if (idx >= 0)
+			outScene->setCurrentIndex(idx);
+	}
+	form->addRow(obs_module_text("Setup.OutputScene"), outScene);
+
+	// --- 5. how Branch Output records --------------------------------------
+	auto *recRow = new QHBoxLayout();
+	auto *split = new QSpinBox(&dlg);
+	split->setRange(0, 120);
+	split->setValue(cfg.splitMinutes);
+	split->setSuffix(obs_module_text("Setup.MinutesSuffix"));
+	split->setSpecialValueText(obs_module_text("Setup.NoSplit"));
+	auto *bitrate = new QSpinBox(&dlg);
+	bitrate->setRange(500, 100000);
+	bitrate->setSingleStep(500);
+	bitrate->setValue(cfg.videoBitrateKbps);
+	bitrate->setSuffix(" kbps");
+	recRow->addWidget(new QLabel(obs_module_text("Setup.Split"), &dlg));
+	recRow->addWidget(split);
+	recRow->addSpacing(14);
+	recRow->addWidget(new QLabel(obs_module_text("Setup.Bitrate"), &dlg));
+	recRow->addWidget(bitrate);
+	recRow->addStretch(1);
+	form->addRow(obs_module_text("Setup.Recording"), recRow);
+
+	auto *rest = new QLabel(obs_module_text("Setup.TheRest"), &dlg);
+	rest->setObjectName("mrMuted");
+	rest->setWordWrap(true);
+	root->addWidget(rest);
+
+	auto *bb = new QDialogButtonBox(&dlg);
+	auto *save = bb->addButton(obs_module_text("Setup.Save"),
+				   QDialogButtonBox::AcceptRole);
+	save->setObjectName("mrAccent");
+	bb->addButton(obs_module_text("BO.Later"), QDialogButtonBox::RejectRole);
+	root->addWidget(bb);
+	connect(bb, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+	connect(bb, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+
+	if (dlg.exec() != QDialog::Accepted)
+		return;
+
+	// --- apply --------------------------------------------------------------
+	cfg.sessionFolder = folder->text().trimmed().toStdString();
+	for (int i = 0; i < kWizardCams; i++) {
+		cfg.cameras[i].sourceName =
+			camCombos[i]->currentData().toString().toStdString();
+		cfg.cameras[i].displayName =
+			camNames[i]->text().trimmed().toStdString();
+	}
+	cfg.outputSceneName = outScene->currentData().toString().toStdString();
+	cfg.splitMinutes = split->value();
+	cfg.videoBitrateKbps = bitrate->value();
+	core.setConfig(cfg);
+
+	// THE FOLDER FIRST, THE PROJECT SECOND. newProject() creates the project
+	// UNDER the session folder and re-points the segment index at it, so it has
+	// to run after setConfig has been told where that folder is — the other way
+	// round puts the project under the previous one, or under nothing.
+	const QString title = project->text().trimmed();
+	if (!title.isEmpty()) {
+		std::string err;
+		if (!core.newProject(title.toStdString(), err))
+			QMessageBox::warning(this, "obs-multireplay",
+					     QString::fromStdString(err));
+	}
+	EventStore::instance().setSessionFolder(core.recordingFolder());
+	ReplayChannel::instance().ensureSource();
+	clearBothBays();
+	refreshAngles();
+	refreshEvents();
+	poll();
+	obs_log(LOG_INFO,
+		"[dock] guided setup applied: folder %s, project %s, output scene %s",
+		cfg.sessionFolder.c_str(), title.toUtf8().constData(),
+		cfg.outputSceneName.c_str());
+}
 void MultiReplayDock::openSettings()
 {
 	auto &core = ReplayCore::instance();
