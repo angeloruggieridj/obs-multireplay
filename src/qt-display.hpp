@@ -62,6 +62,11 @@ public:
 	// it is not zero worked, but worked the long way round, and that is worth
 	// seeing in the verdict instead of only in the log.
 	static int forcedCount() { return forcedCount_.load(); }
+	// ...and how many were found still sitting on their OWN handle, alive and
+	// unchanged, while the TOP-LEVEL that handle lives in had been destroyed
+	// and rebuilt underneath them. That is the case strandedCount_ cannot
+	// see, and it is measured rather than acted on — see recheckWindow.
+	static int reparentedCount() { return reparentedCount_.load(); }
 
 	// How long this widget has been asking for a display it cannot get, in
 	// milliseconds; 0 when it is not waiting (it either has one or has not
@@ -122,6 +127,17 @@ private:
 	// The native handle `display_` was created against. Compared with the
 	// widget's current handle to detect a re-parent Qt did not announce.
 	WId createdWinId_ = 0;
+	// The TOP-LEVEL that handle belonged to at creation. Our own handle
+	// surviving is NOT the same as the window surviving: setWindowFlags() on
+	// an ancestor rebuilds that ancestor's native window and Qt re-parents
+	// the existing native children into the new one, handles untouched. So
+	// createdWinId_ still matches, IsWindow() still says yes, and the swap
+	// chain is presenting into a composition tree that was rebuilt beneath
+	// it — with nothing in this file able to say so.
+	unsigned long long createdRootWinId_ = 0;
+	// The last ancestor already reported, so a change is logged once rather
+	// than at the poll rate.
+	unsigned long long reportedRootWinId_ = 0;
 	void (*drawCb_)(void *, uint32_t, uint32_t) = nullptr;
 	void *drawData_ = nullptr;
 	bool destroying_ = false;
@@ -144,6 +160,7 @@ private:
 	static std::atomic<int> createdCount_;
 	static std::atomic<int> strandedCount_;
 	static std::atomic<int> forcedCount_;
+	static std::atomic<int> reparentedCount_;
 };
 
 } // namespace multireplay

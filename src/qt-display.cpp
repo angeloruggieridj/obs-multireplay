@@ -137,6 +137,7 @@ constexpr int64_t kBlockedLogEveryMs = 5000;
 std::atomic<int> OBSQTDisplay::createdCount_{0};
 std::atomic<int> OBSQTDisplay::strandedCount_{0};
 std::atomic<int> OBSQTDisplay::forcedCount_{0};
+std::atomic<int> OBSQTDisplay::reparentedCount_{0};
 
 OBSQTDisplay::OBSQTDisplay(QWidget *parent) : QWidget(parent)
 {
@@ -312,12 +313,18 @@ void OBSQTDisplay::createDisplay(const char *why)
 		return;
 	}
 	createdWinId_ = wid;
+	// Remembered, not just logged. Until now the top-level was printed once
+	// and then forgotten, so a display whose ancestor was rebuilt underneath
+	// it had no way of being noticed — see recheckWindow.
+	createdRootWinId_ = rootOf(wid);
+	reportedRootWinId_ = createdRootWinId_;
 	blockedSinceNs_ = 0;
 	blockedLoggedNs_ = 0;
 	createdCount_++;
 	obs_log(LOG_INFO,
 		"[display] created on winId=0x%llx (top-level 0x%llx) %ux%u — %s",
-		(unsigned long long)wid, rootOf(wid), info.cx, info.cy, why);
+		(unsigned long long)wid, createdRootWinId_, info.cx, info.cy,
+		why);
 
 	if (drawCb_)
 		obs_display_add_draw_callback(display_, drawCb_, drawData_);
@@ -334,6 +341,8 @@ void OBSQTDisplay::destroyDisplay(const char *why)
 	obs_display_destroy(display_);
 	display_ = nullptr;
 	createdWinId_ = 0;
+	createdRootWinId_ = 0;
+	reportedRootWinId_ = 0;
 	// A fresh dry spell starts here: whatever comes next (a re-parent, a
 	// re-dock) gets the full grace again rather than inheriting the clock of
 	// the display that just went away.
@@ -370,6 +379,49 @@ void OBSQTDisplay::recheckWindow(const char *why)
 			(unsigned long long)wid,
 			handleAlive(createdWinId_) ? 1 : 0);
 		destroyDisplay("stale native window");
+	}
+
+	// THE ANCESTOR CHECK — AND IT ONLY MEASURES, DELIBERATELY.
+	//
+	// The check above asks whether OUR handle is still ours and still alive.
+	// Both can be true while the window this handle lives IN has been
+	// destroyed and rebuilt: QWidget::setWindowFlags() on an ancestor — which
+	// the dock does on every float, to put a maximise box on the floating
+	// window — makes a new native window for that ancestor and re-parents the
+	// existing native children into it. Our HWND is never touched, so
+	// createdWinId_ matches and IsWindow() says yes, and this file, whose one
+	// job is to guarantee a display never outlives the window it was created
+	// against, reports nothing at all. Measured: strandedCount() is 0 in every
+	// session on record, including the ones that went black.
+	//
+	// What that leaves is a flip-model swap chain presenting into a window
+	// whose composition tree was rebuilt beneath it, which is the shape of the
+	// reported fault — the previews keep showing pictures while everything DWM
+	// composes for that output stops updating, cursor included.
+	//
+	// NOTHING IS REBUILT HERE ON PURPOSE. This is the instrument that says
+	// whether that is what actually happens on a real rig. Acting on it before
+	// knowing would be treating a symptom, and this plugin has already shipped
+	// one fix for the black screen that treated a trigger and left the cause.
+	if (display_) {
+		const unsigned long long root = rootOf(wid);
+		if (root != reportedRootWinId_) {
+			// Reported once per distinct ancestor: recheckWindow runs at
+			// the poll rate, and a permanent change would otherwise be a
+			// permanent flood. Coming back to the original is silent.
+			reportedRootWinId_ = root;
+			if (root != createdRootWinId_) {
+				reparentedCount_++;
+				obs_log(LOG_WARNING,
+					"[display] ancestor changed (%s): winId=0x%llx is "
+					"unchanged and alive, but its top-level went "
+					"0x%llx -> 0x%llx — the swap chain is presenting "
+					"into a window rebuilt under it (measuring, not "
+					"rebuilding)",
+					why, (unsigned long long)wid,
+					createdRootWinId_, root);
+			}
+		}
 	}
 
 	// A hidden widget must NOT create one: a multiview tile for a camera

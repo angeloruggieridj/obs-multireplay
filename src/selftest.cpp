@@ -515,6 +515,12 @@ struct DockChecks {
 	int previewTilesWithDisplay = 0;
 	int displaysCreated = 0;
 	int displaysStranded = 0;
+	// A NUMBER IN THE REPORT, NOT A CHECK — on purpose. Nobody knows yet what
+	// the right value is: it counts displays whose top-level was rebuilt under
+	// them (qt-display.cpp, the ancestor check), which is a hole this file
+	// could not see at all until now. Asserting on it before knowing what a
+	// healthy run produces would be inventing the answer.
+	int displaysReparented = 0;
 	int previewLiveSamples = 0; // frames of the sequence spent on the live camera
 	int queuedClips = 0;
 	int ticks = 0;
@@ -1094,6 +1100,7 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 		c.displaysCreated = OBSQTDisplay::createdCount();
 		c.displaysStranded = OBSQTDisplay::strandedCount();
 		c.displaysForced = OBSQTDisplay::forcedCount();
+		c.displaysReparented = OBSQTDisplay::reparentedCount();
 		c.previewTilesStarved = st.starved;
 		c.worstDisplayWaitMs = st.worstBlockedMs;
 		// 1 big preview per BAY (2) + 8 camera tiles + the replay tile.
@@ -1119,10 +1126,12 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 				: LOG_ERROR,
 			"[selftest] dock: %d preview widget(s), %d visible, %d with a "
 			"live display, %d starved (worst wait %lld ms); %d display(s) "
-			"created, %d forced past exposure, %d stranded",
+			"created, %d forced past exposure, %d stranded, %d left on a "
+			"rebuilt top-level",
 			st.tiles, st.visible, st.withDisplay, st.starved,
 			(long long)st.worstBlockedMs, c.displaysCreated,
-			c.displaysForced, c.displaysStranded);
+			c.displaysForced, c.displaysStranded,
+			c.displaysReparented);
 	}
 
 	// --- the zones are in the operator's order, and the bar is a scale -----
@@ -5720,6 +5729,8 @@ void runSelfTest()
 			 dockChecks.displaysForced);
 	obs_data_set_int(root, "obs_displays_stranded",
 			 dockChecks.displaysStranded);
+	obs_data_set_int(root, "obs_displays_reparented",
+			 dockChecks.displaysReparented);
 	obs_data_set_int(root, "dock_event_table_columns",
 			 dockChecks.eventTableColumns);
 

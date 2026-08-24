@@ -1857,19 +1857,39 @@ void MultiReplayDock::equipFloatingWindow(QDockWidget *host)
 	if (want == flags)
 		return;
 
-	// setWindowFlags hides the widget and rebuilds its native handle, so the
-	// show() is not optional — and every OBSQTDisplay underneath loses its
-	// window with it. That is survivable and already handled (recheckWindow on
-	// the next tick rebuilds each display), and it costs nothing extra here:
-	// this runs once per float, at the moment Qt has just rebuilt that window
-	// anyway.
+	// setWindowFlags hides the widget, so the show() is not optional.
+	//
+	// THE HANDLES ARE LOGGED BECAUSE THE CLAIM THAT USED TO BE HERE WAS NEVER
+	// MEASURED — and when it finally was, it was wrong in BOTH directions. It
+	// read: "setWindowFlags ... rebuilds its native handle ... every
+	// OBSQTDisplay underneath loses its window with it. That is survivable and
+	// already handled (recheckWindow on the next tick rebuilds each display)."
+	// Neither half happens. No display is ever destroyed or rebuilt after this
+	// line in any session on record, and the handle itself does not change:
+	// measured 0x23094c -> 0x23094c, because Qt applies these flags with
+	// SetWindowLong/SetWindowPos rather than making a new window.
+	//
+	// The two integers stay printed. This was a candidate cause of the
+	// black-screen reports — a swap chain left presenting into a window
+	// rebuilt beneath it — and it was killed by printing them (with the
+	// ancestor check in qt-display.cpp, which reports 0). Anyone who suspects
+	// it again should read the log line rather than this comment: that is the
+	// whole reason the line exists.
+	//
+	// internalWinId(), never winId(): the latter CREATES a native window when
+	// there is none, which is the whole hazard this plugin has already paid
+	// for once (qt-display.cpp).
 	const QRect keep = host->geometry();
+	const unsigned long long beforeWin =
+		(unsigned long long)host->internalWinId();
 	host->setWindowFlags(want);
 	host->setGeometry(keep);
 	host->show();
 	obs_log(LOG_INFO,
-		"[dock] floating window equipped: flags 0x%08x -> 0x%08x",
-		(unsigned)flags.toInt(), (unsigned)host->windowFlags().toInt());
+		"[dock] floating window equipped: flags 0x%08x -> 0x%08x, "
+		"top-level window 0x%llx -> 0x%llx",
+		(unsigned)flags.toInt(), (unsigned)host->windowFlags().toInt(),
+		beforeWin, (unsigned long long)host->internalWinId());
 }
 
 void MultiReplayDock::refreshFullScreenKey()
