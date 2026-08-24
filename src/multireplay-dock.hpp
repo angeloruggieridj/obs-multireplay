@@ -695,9 +695,11 @@ private:
 	//    and OBS then puts it back wherever the layout says — which, if that
 	//    place is behind a tab, means the panel the operator was working in
 	//    simply disappears. Everywhere else a double click on a title bar
-	//    MAXIMISES the window, so that is what it does here — grown to the
-	//    screen WITH its title bar, which is a different thing from the ⛶
-	//    key's full screen, and the difference is the bar he just clicked.
+	//    MAXIMISES the window, and with a native frame that is already what
+	//    the platform does behind Qt (a non-client message falls through to
+	//    DefWindowProc) — so BLOCKING Qt's handler is the whole fix, and doing
+	//    the maximise as well made the panel shrink and grow straight back.
+	//    Where the title bar is drawn by Qt (xcb, Wayland) the toggle is ours.
 	//  - Qt does not ask for Maximize when it floats a dock, so the window
 	//    comes up with it greyed out in the system menu. It is put back (see
 	//    equipFloatingWindow) — reapplied on every float, because Qt rewrites

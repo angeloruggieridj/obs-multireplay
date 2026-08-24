@@ -3917,7 +3917,7 @@ void runReopenPass(const std::string &outPath)
 	bool fsCoversTheScreen = false;
 	bool fsRestoresTheWindow = false;
 	bool fsWindowOffersMaximise = false;
-	bool fsDoubleClickMaximises = false;
+	bool fsDoubleClickIsInert = false;
 	{
 		QDockWidget *host = nullptr;
 		QPushButton *fsKey = nullptr;
@@ -4026,68 +4026,65 @@ void runReopenPass(const std::string &outPath)
 				!floatFlags.testFlag(Qt::WindowMinimizeButtonHint) &&
 				(floatFlags & Qt::WindowType_Mask) != Qt::Tool;
 
-			// DOUBLE CLICK ON THE TITLE BAR. Three things at once,
-			// and each one is a fault that has actually happened:
-			// it MAXIMISED (Qt's own answer is to re-dock), it is
-			// STILL FLOATING (a re-docked panel can be hidden behind
-			// another dock's tab, which is how this was reported),
-			// and it is NOT full screen (that is the ⛶ key's job —
-			// a double click that ate the title bar would be taking
-			// away the thing the operator just clicked on).
-			const auto titleDoubleClick = [&]() {
-				runOnUi([&]() {
-					const QPointF pos(
-						host->width() / 2.0, -8.0);
-					QMouseEvent ev(
-						QEvent::NonClientAreaMouseButtonDblClick,
-						pos,
-						host->mapToGlobal(pos),
-						Qt::LeftButton, Qt::LeftButton,
-						Qt::NoModifier);
-					QCoreApplication::sendEvent(host, &ev);
-				});
-				std::this_thread::sleep_for(
-					std::chrono::milliseconds(700));
-			};
-			titleDoubleClick();
-			bool grew = false;
+			// DOUBLE CLICK ON THE TITLE BAR — and what this can
+			// honestly assert changed, which is worth writing down.
+			//
+			// The maximise itself is now the PLATFORM's: a non-client
+			// message falls through to DefWindowProc, and Windows
+			// toggles maximise because the window has a maximise box
+			// (asserted just above). A synthetic Qt event never
+			// reaches DefWindowProc, so this check could not see that
+			// half even when it claimed to — it was measuring our own
+			// handler, and our own handler is exactly what had to
+			// stop acting. That is how the shipped fault got past a
+			// green check: the panel shrank and grew straight back,
+			// because both actors were toggling.
+			//
+			// So what is on trial is OUR contract, and both halves
+			// are faults that have actually shipped: the panel must
+			// NOT re-dock (Qt's answer, which hid it behind another
+			// dock's tab), and the state must NOT change (ours, the
+			// double toggle). The operator's own eye is the only
+			// thing that can watch Windows do its half.
+			bool stateBefore = false;
 			runOnUi([&]() {
 				maxWidth = host->width();
 				if (QScreen *sc = host->screen())
 					availWidth =
 						sc->availableGeometry().width();
-				// The STATE and the SIZE. isMaximized() alone
-				// would pass on a window that had been told to
-				// maximise and had not moved — the same lesson
-				// as full screen, one flag lower.
-				grew = host->isMaximized() &&
-				       !host->isFullScreen() &&
-				       host->isFloating() && availWidth > 0 &&
-				       maxWidth >= availWidth - 8;
+				stateBefore = host->isMaximized();
+				const QPointF pos(host->width() / 2.0, -8.0);
+				QMouseEvent ev(
+					QEvent::NonClientAreaMouseButtonDblClick,
+					pos, host->mapToGlobal(pos),
+					Qt::LeftButton, Qt::LeftButton,
+					Qt::NoModifier);
+				QCoreApplication::sendEvent(host, &ev);
 			});
-			titleDoubleClick();
-			bool cameBack = false;
+			std::this_thread::sleep_for(
+				std::chrono::milliseconds(700));
 			runOnUi([&]() {
-				cameBack = !host->isMaximized() &&
-					   !host->isFullScreen() &&
-					   host->isFloating();
+				fsDoubleClickIsInert =
+					host->isFloating() &&
+					!host->isFullScreen() &&
+					host->isMaximized() == stateBefore;
 				// Put the panel back exactly as it was found.
 				host->setFloating(wasFloating);
 				host->setVisible(wasVisible);
 			});
-			fsDoubleClickMaximises = grew && cameBack;
 			std::this_thread::sleep_for(
 				std::chrono::milliseconds(400));
 		}
 		const bool fsOk = fsKeyHiddenWhenDocked && fsKeyShownWhenFloating &&
 				  fsCoversTheScreen && fsRestoresTheWindow &&
-				  fsWindowOffersMaximise && fsDoubleClickMaximises;
+				  fsWindowOffersMaximise && fsDoubleClickIsInert;
 		obs_log(fsOk ? LOG_INFO : LOG_ERROR,
 			"[selftest] reopen: floating panel — key hidden docked: "
 			"%s, key shown floating: %s, full screen covers %dx%d of "
 			"a %dx%d screen: %s, restores %dx%d: %s, window flags "
 			"0x%08x offer maximise and no minimise: %s, title double "
-			"click maximises to %d of %d available: %s",
+			"click neither re-docks nor toggles (window %d of %d "
+			"available): %s",
 			fsKeyHiddenWhenDocked ? "yes" : "NO",
 			fsKeyShownWhenFloating ? "yes" : "NO", fullGeom.width(),
 			fullGeom.height(), screenGeom.width(),
@@ -4096,11 +4093,11 @@ void runReopenPass(const std::string &outPath)
 			fsRestoresTheWindow ? "yes" : "NO",
 			(unsigned)floatFlags.toInt(),
 			fsWindowOffersMaximise ? "yes" : "NO", maxWidth,
-			availWidth, fsDoubleClickMaximises ? "yes" : "NO");
+			availWidth, fsDoubleClickIsInert ? "yes" : "NO");
 	}
 
 	const bool pass = sameBoot.ok && rebooted.ok && fsKeyHiddenWhenDocked &&
-			  fsWindowOffersMaximise && fsDoubleClickMaximises &&
+			  fsWindowOffersMaximise && fsDoubleClickIsInert &&
 			  fsKeyShownWhenFloating && fsCoversTheScreen &&
 			  fsRestoresTheWindow;
 
@@ -4148,8 +4145,8 @@ void runReopenPass(const std::string &outPath)
 			  fsRestoresTheWindow);
 	obs_data_set_bool(checks, "floating_window_offers_maximise",
 			  fsWindowOffersMaximise);
-	obs_data_set_bool(checks, "title_double_click_maximises",
-			  fsDoubleClickMaximises);
+	obs_data_set_bool(checks, "title_double_click_leaves_the_panel_alone",
+			  fsDoubleClickIsInert);
 	obs_data_set_obj(root, "checks", checks);
 	obs_data_release(checks);
 	obs_data_set_int(root, "reopen_footage_span_ms", sameBoot.footageMs);

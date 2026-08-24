@@ -7229,42 +7229,41 @@ bool MultiReplayDock::eventFilter(QObject *watched, QEvent *event)
 	// side the panel he was working in simply vanished, and came back only when
 	// something else made OBS re-lay-out. Reported from a real rig.
 	//
-	// Both spellings, because which one arrives is the platform's business: a
-	// native frame (Windows, macOS) sends the non-client one to the window, and
-	// a Qt-drawn dock title bar (Wayland, xcb) sends an ordinary one. The
-	// ordinary one is only ours ABOVE the panel — that is where the title bar
-	// is; inside our own rectangle a double click belongs to whatever was
-	// clicked.
+	// SWALLOWING IS THE WHOLE FIX ON A NATIVE FRAME — and doing more than that
+	// was the second report. A non-client message is delivered to Qt AND then
+	// falls through to DefWindowProc (it has to: dragging, resizing and the
+	// system menu are all non-client, and Qt returning "handled" would take
+	// them away). So Windows already toggles maximise on a title-bar double
+	// click, now that the window has a maximise box at all — and a showNormal()
+	// of ours on top of it made the panel shrink and immediately grow back,
+	// because two actors were toggling the same thing. Blocking Qt's handler
+	// leaves exactly one.
+	//
+	// The Qt-DRAWN title bar (xcb, Wayland — where wmSupportsNativeWindowDeco()
+	// is false) has no DefWindowProc behind it, so there the toggle IS ours.
+	// That one arrives as an ordinary double click, and is only ours ABOVE the
+	// panel — that is where the bar is; inside our own rectangle a double click
+	// belongs to whatever was clicked.
 	if (filteredHost_ && watched == filteredHost_ &&
 	    filteredHost_->isFloating()) {
 		const QEvent::Type t = event->type();
-		bool onTitle = t == QEvent::NonClientAreaMouseButtonDblClick;
-		if (!onTitle && t == QEvent::MouseButtonDblClick) {
+		if (t == QEvent::NonClientAreaMouseButtonDblClick)
+			return true; // the platform does the rest
+		if (t == QEvent::MouseButtonDblClick) {
 			auto *me = static_cast<QMouseEvent *>(event);
-			onTitle = me->position().y() < geometry().top();
-		}
-		if (onTitle) {
-			// MAXIMISE, NOT FULL SCREEN — and the difference is the
-			// title bar. Full screen takes the whole screen and every
-			// piece of chrome with it, which is right for the ⛶ key
-			// and wrong for a double click on the very bar the
-			// operator is aiming at: he asked for the window to grow,
-			// not to lose the thing he just clicked. So the two
-			// gestures are two things now, which is also what they
-			// are everywhere else.
-			//
-			// From full screen it comes back first: a double click on
-			// a title bar that is not there cannot happen, but the ⛶
-			// key can have put us there and the frame can come back
-			// under the pointer.
-			if (filteredHost_->isFullScreen())
-				setPanelFullScreen(false);
-			else if (filteredHost_->isMaximized())
-				filteredHost_->showNormal();
-			else
-				filteredHost_->showMaximized();
-			refreshFullScreenKey();
-			return true;
+			if (me->position().y() < geometry().top()) {
+				// MAXIMISE, NOT FULL SCREEN — the difference is
+				// the title bar. Full screen takes every piece
+				// of chrome with it, which is right for the ⛶
+				// key and wrong for a double click aimed at the
+				// very bar the operator is asking to keep.
+				if (filteredHost_->isMaximized())
+					filteredHost_->showNormal();
+				else
+					filteredHost_->showMaximized();
+				refreshFullScreenKey();
+				return true;
+			}
 		}
 	}
 	// THE TABLE EATS THE KEYS THAT MATTER. A QTableWidget with focus takes
