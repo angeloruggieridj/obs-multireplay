@@ -1780,6 +1780,35 @@ void MultiReplayDock::equipFloatingWindow(QDockWidget *host)
 {
 	if (!host || !host->isFloating() || host->isFullScreen())
 		return;
+
+	// RESCUE: A WINDOW THE PREVIOUS BUILD COULD PUT BEYOND REACH.
+	// That build offered a minimise box, and pressing it was a one-way door
+	// (see below): the panel went away and the taskbar had nothing to bring it
+	// back with. The box is gone now, so a minimised floating dock can only be
+	// that leftover — nothing in this build can produce one — and leaving it
+	// there would keep the panel unreachable until OBS was restarted.
+	//
+	// Guarded on the MAIN WINDOW, because "Show desktop" minimises the owner
+	// and everything it owns: bringing only this one back would drop a replay
+	// panel onto a desktop the operator had just cleared. The state is cleared
+	// rather than showNormal()'d so a window that was maximised comes back
+	// maximised.
+	if (host->isMinimized()) {
+		auto *main = static_cast<QWidget *>(obs_frontend_get_main_window());
+		if (main && !main->isMinimized()) {
+			host->setWindowState(host->windowState() &
+					     ~Qt::WindowMinimized);
+			host->raise();
+			if (!minimizeRescueLogged_) {
+				minimizeRescueLogged_ = true;
+				obs_log(LOG_INFO,
+					"[dock] floating panel was left minimised "
+					"by an older build — brought back");
+			}
+		}
+	} else {
+		minimizeRescueLogged_ = false;
+	}
 	const Qt::WindowFlags flags = host->windowFlags();
 	// MID-DRAG, HANDS OFF. While the dock is being pulled out of OBS, Qt
 	// floats it frameless with the mouse grabbed; setWindowFlags there
@@ -1792,8 +1821,30 @@ void MultiReplayDock::equipFloatingWindow(QDockWidget *host)
 	if (QApplication::mouseButtons() != Qt::NoButton)
 		return;
 
-	Qt::WindowFlags want = flags | Qt::WindowMinimizeButtonHint |
-			       Qt::WindowMaximizeButtonHint;
+	// MAXIMISE, AND DELIBERATELY NOT MINIMISE. Reported from a real rig: with
+	// the minimise box on, one press put the panel away and there was no way
+	// back — the taskbar showed only the OBS main window and the log window.
+	//
+	// That is not a bug to chase, it is what this window IS. An OBS dock is
+	// OWNED by the OBS main window (its QWidget parent, and on Windows its
+	// owner HWND), and Windows gives an owned window no taskbar button and no
+	// Alt+Tab stop of its own — it shows the owner instead. So a minimise box
+	// here is a one-way door: the window goes somewhere with no handle on it,
+	// and on a live rig that is the worst thing a panel can do. Getting a real
+	// taskbar button would mean the dock stopping being OBS's dock, which is
+	// also the thing that makes it dockable, save with the layout and come back
+	// tomorrow. (An earlier version of this comment claimed the taskbar and
+	// Alt+Tab as benefits of the type change below. They were never true.)
+	//
+	// The MAXIMISE box is real and works, and it is the one the request was
+	// actually about: the window grown to the whole screen WITH its title bar,
+	// which is a different thing from the ⛶ key's full screen.
+	Qt::WindowFlags want = flags | Qt::WindowMaximizeButtonHint;
+	want &= ~Qt::WindowFlags(Qt::WindowMinimizeButtonHint);
+	// THE TYPE MATTERS AS MUCH AS THE HINT. Qt floats a dock as a Qt::Tool
+	// (measured: 0x0a00300b), and a tool window on Windows is drawn with the
+	// small caption that has no maximise box at all — the hint alone would
+	// change nothing there.
 	if ((flags & Qt::WindowType_Mask) == Qt::Tool)
 		want = (want & ~Qt::WindowFlags(Qt::WindowType_Mask)) |
 		       Qt::Window;
@@ -7171,7 +7222,7 @@ void MultiReplayDock::onEventItemChanged(QTableWidgetItem *item)
 
 bool MultiReplayDock::eventFilter(QObject *watched, QEvent *event)
 {
-	// A DOUBLE CLICK ON THE FLOATING PANEL'S TITLE BAR MAKES IT BIG, it does
+	// A DOUBLE CLICK ON THE FLOATING PANEL'S TITLE BAR MAXIMISES IT, it does
 	// not put it away. Qt's answer to one is _q_toggleTopLevel() — the panel
 	// re-docks — and inside OBS that means it goes back to wherever the layout
 	// last had it, which can be behind another dock's tab: from the operator's
@@ -7193,7 +7244,25 @@ bool MultiReplayDock::eventFilter(QObject *watched, QEvent *event)
 			onTitle = me->position().y() < geometry().top();
 		}
 		if (onTitle) {
-			setPanelFullScreen(!panelIsFullScreen());
+			// MAXIMISE, NOT FULL SCREEN — and the difference is the
+			// title bar. Full screen takes the whole screen and every
+			// piece of chrome with it, which is right for the ⛶ key
+			// and wrong for a double click on the very bar the
+			// operator is aiming at: he asked for the window to grow,
+			// not to lose the thing he just clicked. So the two
+			// gestures are two things now, which is also what they
+			// are everywhere else.
+			//
+			// From full screen it comes back first: a double click on
+			// a title bar that is not there cannot happen, but the ⛶
+			// key can have put us there and the frame can come back
+			// under the pointer.
+			if (filteredHost_->isFullScreen())
+				setPanelFullScreen(false);
+			else if (filteredHost_->isMaximized())
+				filteredHost_->showNormal();
+			else
+				filteredHost_->showMaximized();
 			refreshFullScreenKey();
 			return true;
 		}

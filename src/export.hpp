@@ -48,6 +48,15 @@ public:
 
 	std::string statusJson() const;
 
+	// Is the reel thread still muxing? For the automated gate, and it is not
+	// a convenience: a reel is written on a thread of its own and the LAST
+	// thing a muxer does is write the trailer (the moov atom for MP4), so a
+	// file that already exists and is already megabytes long will not open
+	// yet. Waiting on bytes on disk is waiting on the wrong thing — measured:
+	// the gate declared "reel will not open" 200 ms before the export logged
+	// that it had written it.
+	bool reelRunning() const { return reelRunning_.load(); }
+
 	// STOP EVERYTHING AND JOIN. Called from obs_module_unload, and it did not
 	// exist: this class is a function-local singleton with a std::thread as a
 	// member and no destructor, so an export still queued when OBS exits was a

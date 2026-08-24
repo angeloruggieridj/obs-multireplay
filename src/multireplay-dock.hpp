@@ -694,14 +694,20 @@ private:
 	//    panel (QDockWidgetPrivate::nonClientAreaMouseEvent → _q_toggleTopLevel),
 	//    and OBS then puts it back wherever the layout says — which, if that
 	//    place is behind a tab, means the panel the operator was working in
-	//    simply disappears. Everywhere else a double click on a title bar makes
-	//    the window bigger, so here it does what the ⛶ key does.
-	//  - Qt does not ask for Minimize or Maximize when it floats a dock, so the
-	//    window comes up with both greyed out in its system menu. Both are put
-	//    back (see equipFloatingWindow) — reapplied on every float, because Qt
-	//    rewrites the flags each time it makes one.
+	//    simply disappears. Everywhere else a double click on a title bar
+	//    MAXIMISES the window, so that is what it does here — grown to the
+	//    screen WITH its title bar, which is a different thing from the ⛶
+	//    key's full screen, and the difference is the bar he just clicked.
+	//  - Qt does not ask for Maximize when it floats a dock, so the window
+	//    comes up with it greyed out in the system menu. It is put back (see
+	//    equipFloatingWindow) — reapplied on every float, because Qt rewrites
+	//    the flags each time it makes one. Minimize deliberately is NOT: an
+	//    owned window gets no taskbar button, so that box is a one-way door.
 	QPointer<QDockWidget> filteredHost_;
 	void equipFloatingWindow(QDockWidget *host);
+	// Says the "brought a minimised panel back" line once, not four times a
+	// second for as long as the rescue keeps not sticking.
+	bool minimizeRescueLogged_ = false;
 	// THE JOIN between two clips of one sequence. The coordinator advances the
 	// queue on the finished callback, but the engine has not pushed a frame of
 	// the next clip yet — so for those few tens of milliseconds positionNs()

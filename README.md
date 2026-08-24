@@ -184,12 +184,15 @@ recording, and keeps the last minutes of them in a bounded ring in RAM.
   comes back to exactly the size it had. Docked inside OBS the key is not there
   at all: there is no window of ours to expand, and a key that does nothing is a
   key your eye has to skip past every time it reads the row.
-  A **double-click on its title bar** does the same thing (Qt's own answer to
-  one is to re-dock the panel, which inside OBS can drop it behind another
-  dock's tab — the panel you were working in simply disappears), and the
-  floating window gets the **Minimize and Maximize** its title bar and system
-  menu are normally missing. To dock it again, drag the window back onto the
-  OBS window, the same gesture that pulled it out.
+  A **double-click on its title bar maximises it** — the window grown to the
+  screen but keeping its title bar, which is the other half of the pair (Qt's
+  own answer to a double-click is to re-dock the panel, which inside OBS can
+  drop it behind another dock's tab, and then the panel you were working in has
+  simply disappeared). The floating window also gets the **Maximize** box its
+  title bar is normally missing. There is deliberately no Minimize: an OBS dock
+  is owned by the OBS main window, and Windows gives an owned window no taskbar
+  button — so that box would be a one-way door. To dock the panel again, drag
+  the window back onto the OBS window, the same gesture that pulled it out.
 
 #### Projects and updates
 
@@ -420,13 +423,17 @@ ne tiene gli ultimi minuti in un buffer circolare in RAM.
   OBS il tasto non c'è proprio: non esiste una finestra nostra da allargare, e un
   tasto che non fa niente è un tasto che l'occhio deve scartare ogni volta che
   legge la riga.
-  Il **doppio click sulla barra del titolo** fa la stessa cosa (di suo Qt
-  risponde ri-ancorando il pannello, che dentro OBS può finire dietro il tab di
-  un altro pannello: quello su cui stavi lavorando semplicemente sparisce), e
-  la finestra sganciata riceve il **Riduci a icona e l'Ingrandisci** che
-  normalmente mancano dalla sua barra del titolo e dal suo menu di sistema. Per
-  ri-ancorarla, trascina la finestra sopra quella di OBS: lo stesso gesto con
-  cui l'hai tirata fuori.
+  Il **doppio click sulla barra del titolo la massimizza** — la finestra
+  cresciuta a tutto lo schermo ma con la sua barra del titolo, che è l'altra
+  metà della coppia (di suo Qt risponde a un doppio click ri-ancorando il
+  pannello, che dentro OBS può finire dietro il tab di un altro pannello: e a
+  quel punto quello su cui stavi lavorando è semplicemente sparito). La finestra
+  sganciata riceve anche l'**Ingrandisci** che normalmente manca dalla sua barra
+  del titolo. Il Riduci a icona di proposito non c'è: un pannello di OBS è
+  posseduto dalla finestra principale, e a una finestra posseduta Windows non dà
+  un pulsante nella barra delle applicazioni — quel tasto sarebbe una porta a
+  senso unico. Per ri-ancorare il pannello, trascina la finestra sopra quella di
+  OBS: lo stesso gesto con cui l'hai tirata fuori.
 
 #### Progetti e aggiornamenti
 

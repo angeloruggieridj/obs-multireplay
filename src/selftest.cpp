@@ -24,6 +24,9 @@ extern "C" {
 #include "health.hpp"
 #include "multireplay-dock.hpp"
 #include "packet-tap.hpp"
+// pathToUtf8: a path handed to FFmpeg is UTF-8, never path::string() (which is
+// the ANSI code page on MSVC). See the rule in CLAUDE.md.
+#include "path-utf8.hpp"
 #include "playback-coordinator.hpp"
 #include "plugin-support.h"
 #include "replay-channel.hpp"
@@ -3913,8 +3916,8 @@ void runReopenPass(const std::string &outPath)
 	bool fsKeyShownWhenFloating = false;
 	bool fsCoversTheScreen = false;
 	bool fsRestoresTheWindow = false;
-	bool fsWindowOffersMinMax = false;
-	bool fsDoubleClickToggles = false;
+	bool fsWindowOffersMaximise = false;
+	bool fsDoubleClickMaximises = false;
 	{
 		QDockWidget *host = nullptr;
 		QPushButton *fsKey = nullptr;
@@ -3924,6 +3927,8 @@ void runReopenPass(const std::string &outPath)
 		QRect fullGeom;
 		QRect screenGeom;
 		Qt::WindowFlags floatFlags;
+		int maxWidth = 0;
+		int availWidth = 0;
 		runOnUi([&]() {
 			if (!dock)
 				return;
@@ -4001,28 +4006,34 @@ void runReopenPass(const std::string &outPath)
 						 windowed.height()) <= 8;
 			});
 
-			// --- the two the floating window itself owes -----------
-			// MINIMISE AND MAXIMISE. Qt floats a dock as a Qt::Tool
-			// asking only for a title and a close box, so both come
-			// up greyed in the system menu — and a tool window has no
-			// minimise box to grey in the first place. Read off the
-			// FLAGS, because that is what the window manager draws
-			// the buttons from; the state of a click on them is the
-			// platform's affair, not ours.
+			// --- what the floating window itself owes --------------
+			// MAXIMISE YES, MINIMISE NO, and the NO is the half that
+			// earns its place. A minimise box on this window is a
+			// one-way door — an OBS dock is owned by the OBS main
+			// window, so Windows gives it no taskbar button and the
+			// panel goes somewhere with no handle on it. It shipped
+			// once; this is what stops it shipping twice.
+			//
+			// Read off the FLAGS, because that is what the window
+			// manager draws the buttons from, and the type as well:
+			// Qt floats a dock as a Qt::Tool, whose small caption has
+			// no maximise box for the hint to turn on.
 			runOnUi([&]() {
 				floatFlags = host->windowFlags();
 			});
-			fsWindowOffersMinMax =
-				floatFlags.testFlag(Qt::WindowMinimizeButtonHint) &&
+			fsWindowOffersMaximise =
 				floatFlags.testFlag(Qt::WindowMaximizeButtonHint) &&
+				!floatFlags.testFlag(Qt::WindowMinimizeButtonHint) &&
 				(floatFlags & Qt::WindowType_Mask) != Qt::Tool;
 
-			// DOUBLE CLICK ON THE TITLE BAR. Qt answers one by
-			// re-docking, which inside OBS can hide the panel behind
-			// another dock's tab — so what is on trial is BOTH that
-			// it went full screen AND that it is still floating. A
-			// check that asked only the first would pass on a panel
-			// that had been put away and reopened as a window.
+			// DOUBLE CLICK ON THE TITLE BAR. Three things at once,
+			// and each one is a fault that has actually happened:
+			// it MAXIMISED (Qt's own answer is to re-dock), it is
+			// STILL FLOATING (a re-docked panel can be hidden behind
+			// another dock's tab, which is how this was reported),
+			// and it is NOT full screen (that is the ⛶ key's job —
+			// a double click that ate the title bar would be taking
+			// away the thing the operator just clicked on).
 			const auto titleDoubleClick = [&]() {
 				runOnUi([&]() {
 					const QPointF pos(
@@ -4039,32 +4050,44 @@ void runReopenPass(const std::string &outPath)
 					std::chrono::milliseconds(700));
 			};
 			titleDoubleClick();
-			bool wentFull = false;
+			bool grew = false;
 			runOnUi([&]() {
-				wentFull = host->isFullScreen() &&
-					   host->isFloating();
+				maxWidth = host->width();
+				if (QScreen *sc = host->screen())
+					availWidth =
+						sc->availableGeometry().width();
+				// The STATE and the SIZE. isMaximized() alone
+				// would pass on a window that had been told to
+				// maximise and had not moved — the same lesson
+				// as full screen, one flag lower.
+				grew = host->isMaximized() &&
+				       !host->isFullScreen() &&
+				       host->isFloating() && availWidth > 0 &&
+				       maxWidth >= availWidth - 8;
 			});
 			titleDoubleClick();
 			bool cameBack = false;
 			runOnUi([&]() {
-				cameBack = !host->isFullScreen() &&
+				cameBack = !host->isMaximized() &&
+					   !host->isFullScreen() &&
 					   host->isFloating();
 				// Put the panel back exactly as it was found.
 				host->setFloating(wasFloating);
 				host->setVisible(wasVisible);
 			});
-			fsDoubleClickToggles = wentFull && cameBack;
+			fsDoubleClickMaximises = grew && cameBack;
 			std::this_thread::sleep_for(
 				std::chrono::milliseconds(400));
 		}
 		const bool fsOk = fsKeyHiddenWhenDocked && fsKeyShownWhenFloating &&
 				  fsCoversTheScreen && fsRestoresTheWindow &&
-				  fsWindowOffersMinMax && fsDoubleClickToggles;
+				  fsWindowOffersMaximise && fsDoubleClickMaximises;
 		obs_log(fsOk ? LOG_INFO : LOG_ERROR,
-			"[selftest] reopen: full-screen key — hidden docked: %s, "
-			"shown floating: %s, covers %dx%d of a %dx%d screen: %s, "
-			"restores %dx%d: %s, window flags 0x%08x offer "
-			"min+max: %s, title double click toggles: %s",
+			"[selftest] reopen: floating panel — key hidden docked: "
+			"%s, key shown floating: %s, full screen covers %dx%d of "
+			"a %dx%d screen: %s, restores %dx%d: %s, window flags "
+			"0x%08x offer maximise and no minimise: %s, title double "
+			"click maximises to %d of %d available: %s",
 			fsKeyHiddenWhenDocked ? "yes" : "NO",
 			fsKeyShownWhenFloating ? "yes" : "NO", fullGeom.width(),
 			fullGeom.height(), screenGeom.width(),
@@ -4072,12 +4095,12 @@ void runReopenPass(const std::string &outPath)
 			windowed.width(), windowed.height(),
 			fsRestoresTheWindow ? "yes" : "NO",
 			(unsigned)floatFlags.toInt(),
-			fsWindowOffersMinMax ? "yes" : "NO",
-			fsDoubleClickToggles ? "yes" : "NO");
+			fsWindowOffersMaximise ? "yes" : "NO", maxWidth,
+			availWidth, fsDoubleClickMaximises ? "yes" : "NO");
 	}
 
 	const bool pass = sameBoot.ok && rebooted.ok && fsKeyHiddenWhenDocked &&
-			  fsWindowOffersMinMax && fsDoubleClickToggles &&
+			  fsWindowOffersMaximise && fsDoubleClickMaximises &&
 			  fsKeyShownWhenFloating && fsCoversTheScreen &&
 			  fsRestoresTheWindow;
 
@@ -4123,10 +4146,10 @@ void runReopenPass(const std::string &outPath)
 			  fsCoversTheScreen);
 	obs_data_set_bool(checks, "fullscreen_restores_the_window",
 			  fsRestoresTheWindow);
-	obs_data_set_bool(checks, "floating_window_offers_min_and_max",
-			  fsWindowOffersMinMax);
-	obs_data_set_bool(checks, "fullscreen_double_click_toggles",
-			  fsDoubleClickToggles);
+	obs_data_set_bool(checks, "floating_window_offers_maximise",
+			  fsWindowOffersMaximise);
+	obs_data_set_bool(checks, "title_double_click_maximises",
+			  fsDoubleClickMaximises);
 	obs_data_set_obj(root, "checks", checks);
 	obs_data_release(checks);
 	obs_data_set_int(root, "reopen_footage_span_ms", sameBoot.footageMs);
@@ -4978,11 +5001,19 @@ void runSelfTest()
 		if (!ids.empty() &&
 		    ExportManager::instance().exportSequence(ids, false,
 							     reelFolder, rerr)) {
-			// It writes on a thread of its own; a handful of clips of
-			// a few seconds is quick, but the disk decides.
-			for (int i = 0; i < 60 && !reelWritten; i++) {
+			// WAIT FOR THE EXPORT, NOT FOR THE BYTES. The muxer
+			// writes the trailer last — for MP4 the moov atom, which
+			// is what makes the file openable at all — so a file that
+			// is already there and already megabytes long is not yet
+			// a file. Measured: this loop called "reel will not open"
+			// 200 ms before the reel logged that it had written it,
+			// and failed a run on a reel that was perfectly good.
+			for (int i = 0; i < 120 &&
+					ExportManager::instance().reelRunning();
+			     i++)
 				std::this_thread::sleep_for(
-					std::chrono::milliseconds(500));
+					std::chrono::milliseconds(250));
+			{
 				std::error_code fec;
 				for (const auto &e : std::filesystem::directory_iterator(
 					     reelFolder, fec)) {
@@ -4992,7 +5023,7 @@ void runSelfTest()
 						e.path(), fec);
 					if (!fec && sz > 200 * 1024) {
 						reelBytes = (int64_t)sz;
-						reelPath = e.path().string();
+						reelPath = pathToUtf8(e.path());
 						reelWritten = true;
 						break;
 					}

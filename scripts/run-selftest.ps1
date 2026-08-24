@@ -193,11 +193,11 @@ function Restore-OperatorEnvironment {
     # is the mirror. Setting only the mirror is what left the operator pointed
     # at a collection this script had already deleted.
     foreach ($ini in @($globalIni, $userIni)) {
-        if ($operatorCollection -and (Test-Path $ini)) {
+        if ($operatorCollectionFile -and (Test-Path $ini)) {
             $suffix = if ($ini -eq $userIni) { '.json' } else { '' }
             (Get-Content $ini) `
                 -replace '^SceneCollection=.*$', "SceneCollection=$operatorCollection" `
-                -replace '^SceneCollectionFile=.*$', "SceneCollectionFile=$operatorCollection$suffix" |
+                -replace '^SceneCollectionFile=.*$', "SceneCollectionFile=$operatorCollectionFile$suffix" |
                 Set-Content $ini -Encoding UTF8
         }
     }
@@ -241,8 +241,45 @@ $collectionFiles = @(Get-ChildItem -Path $scenesDir -Filter '*.json' -ErrorActio
 # THAT into global.ini, and every run afterwards backed the wrong name up and
 # put it faithfully back. Restoring a file the program under test rewrites is
 # not restoring anything; the name has to be decided and re-asserted.
-$operatorCollection = if ($collectionFiles.Count -gt 0) { $collectionFiles[0].BaseName } else { '' }
-if ($operatorCollection) { Step "Operator collection is '$operatorCollection' — it will be restored at the end" }
+# WHICH COLLECTION FILE IS HIS. What user.ini said BEFORE this script launched
+# anything is literally the collection the operator was on, so that is the first
+# answer — but it is VALIDATED against the files on disk, because a run that
+# died without restoring can leave it naming one that is gone, and because OBS
+# writes that name back on exit. Most-recently-modified is the fallback, and it
+# is only a fallback now: an empty collection auto-created by OBS is newer than
+# the operator's real one and would win.
+$operatorCollectionFile = ''
+if (Test-Path $userIniBackup) {
+    $named = (Select-String -Path $userIniBackup -Pattern '^SceneCollectionFile=(.*)$' |
+              Select-Object -First 1).Matches.Groups[1].Value
+    if ($named) {
+        $named = [System.IO.Path]::GetFileNameWithoutExtension($named.Trim())
+        if ($named -and $named -ne $testCollection -and
+            ($collectionFiles | Where-Object { $_.BaseName -eq $named })) {
+            $operatorCollectionFile = $named
+        }
+    }
+}
+if (-not $operatorCollectionFile -and $collectionFiles.Count -gt 0) {
+    $operatorCollectionFile = $collectionFiles[0].BaseName
+}
+# THE DISPLAY NAME AND THE FILE NAME ARE TWO DIFFERENT STRINGS, and putting one
+# where the other belongs is what this used to do. `SceneCollection=` wants what
+# OBS shows in its menu ("Partita - def"); `SceneCollectionFile=` wants the
+# basename on disk ("Partita__def"), which OBS derives by squashing the
+# characters a file name cannot have. Asserting the basename into BOTH pointed
+# OBS at a collection called "Partita__def" that does not exist — so at the next
+# manual launch OBS CREATED one, empty, called Partita__def2, and left the
+# operator's real rig sitting there unopened. Measured on this machine.
+# The name is read out of the collection file itself, which is the only place
+# the two are stated together.
+$operatorCollection = ''
+if ($operatorCollectionFile) {
+    $ocPath = Join-Path $scenesDir "$operatorCollectionFile.json"
+    try { $operatorCollection = (Get-Content $ocPath -Raw | ConvertFrom-Json).name } catch { }
+    if (-not $operatorCollection) { $operatorCollection = $operatorCollectionFile }
+    Step "Operator collection is '$operatorCollection' ($operatorCollectionFile.json) — it will be restored at the end"
+}
 
 $wantedSources = @()
 if ($Sources) { $wantedSources = $Sources.Split(',') | ForEach-Object { $_.Trim() } }
