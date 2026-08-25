@@ -433,9 +433,19 @@ void KeyBlock::apply()
 			// THE KEY ITSELF SHRINKS WHEN THE SECTION FOLDS. Only
 			// buttons: a slider, a two-line clock or the bay selector
 			// are cells too, and they own their own heights.
-			if (auto *btn = qobject_cast<QAbstractButton *>(cell.w))
-				btn->setFixedHeight(flatActive_ ? kKeyFoldedH
-								: kKeyH);
+			//
+			// A KEY THAT SPANS ROWS IS AS TALL AS THE ROWS IT SPANS.
+			// This line used to pin EVERY button to one key height,
+			// which quietly cancelled every rowSpan a caller declared:
+			// REC and the green play key were asked for two rows and
+			// drawn at one, so the three first-function keys came out
+			// the same size as a frame step — the exact thing the
+			// spans were added to fix.
+			if (auto *btn = qobject_cast<QAbstractButton *>(cell.w)) {
+				const int h = flatActive_ ? kKeyFoldedH : kKeyH;
+				btn->setFixedHeight(cell.rowSpan * h +
+						    (cell.rowSpan - 1) * kBandVGap);
+			}
 			const bool wantVisible = !cell.w->isHidden();
 			cell.w->setParent(body_);
 			if (wantVisible)

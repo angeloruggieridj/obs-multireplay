@@ -60,6 +60,11 @@ enum class Icon {
 	// transport
 	Play,
 	Pause,
+	// ▶ and ⏸ IN ONE MARK, for the key that is both. The transport play key
+	// is a play at rest and a pause while a clip runs, and drawing it as one
+	// or the other made it look like two different keys depending on when you
+	// glanced at it.
+	PlayPause,
 	Stop,
 	Reverse,
 	PlayLast, // ↺ replay the last event
@@ -82,6 +87,12 @@ enum class Icon {
 	// bays
 	Swap,
 	// panel
+	// THE RECORD DOT IS NOT THE LIVE DOT. They were the same mark for a
+	// while and they are not the same thing: Live is a MODE the panel is in
+	// (marks land at the front), REC arms a take. A bare filled circle is
+	// what every deck ever built has used for record; the ring belongs to
+	// the tally.
+	Rec,
 	Gear,
 	Search,
 	FullScreen,

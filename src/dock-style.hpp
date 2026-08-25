@@ -456,9 +456,13 @@ QLabel#mrStatUnit { color: @textMuted@; font-size: 11px; padding-bottom: 3px; }
    angle on air, so the operator reads it off the picture instead of
    correlating it with the angle keys. Signal, therefore not the theme's. */
 QWidget#mrTile { background: #000000; }
+/* QUIET UNTIL IT HAS SOMETHING TO SAY, and the same band A and B wear. It was
+   filled with the theme's accent, so on an eight-camera rig six blue bars
+   shouted from the corner of the panel about nothing at all — and the two that
+   were carrying a tally could not be picked out of them. */
 QLabel#mrTileCap {
-	background: @accent@; color: @accentText@;
-	font-size: 9px; font-weight: 700; padding: 1px 4px;
+	background: @raise1@; color: @textMuted@;
+	font-size: 9px; font-weight: 700; padding: 0px 4px;
 }
 QLabel#mrTileCap[tally="pvw"] { background: @pvw@; color: #ffffff; }
 QLabel#mrTileCap[tally="pgm"] { background: @rec@; color: #ffffff; }
@@ -589,6 +593,14 @@ QPushButton#mrHealth[level="warn"] {
 }
 QPushButton#mrHealth[level="bad"] {
 	background: @recBg@; color: @rec@; border: 1px solid @rec@;
+}
+/* ON THE STATUS LINE, where the row is shorter than a key. A style sheet
+   min-height LARGER than the widget's own height makes the style draw a taller
+   frame than the widget owns and the BOTTOM BORDER lands outside it — which on
+   a badge with a border all the way round reads as a box someone forgot to
+   close. Same trap, same fix, as #mrSkip on the on-air band. */
+QPushButton#mrHealth[dense="true"] {
+	min-height: 0px; padding: 0px 6px; font-size: 10px;
 }
 
 /* settings gear and the two ⋯ / ▾ menu keys.

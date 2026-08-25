@@ -114,7 +114,17 @@ enum class PanelMode { Wide, Short, Tall };
 inline constexpr int kTallMaxWidth = 760;
 // Shorter than this (and wide enough not to be Tall) and the pictures cannot
 // sit above the list.
-inline constexpr int kShortMaxHeight = 470;
+//
+// IT WAS 470, AND THAT BECAME A TRAP. The threshold has to be above the WIDE
+// arrangement's own minimum height, or the panel can never get short enough to
+// be told to change: it sits at its floor, still wide, refusing to shrink. When
+// the mark keys went to three rows and the speed dial grew an export key under
+// it, that floor went from 422 to 471 and crossed the line — measured, and the
+// symptom was a 1400x340 dock that came back 1400x471 still in the wide shape.
+//
+// So this is not a taste number: it is "the wide arrangement no longer fits",
+// and it has to be kept clear of what the wide arrangement actually needs.
+inline constexpr int kShortMaxHeight = 540;
 // HYSTERESIS, and it is not politeness. Dragging a dock edge across a bare
 // threshold flips the mode back and forth, and every flip re-lays the
 // OBSQTDisplay widgets — which on Windows means re-allocating a D3D swap chain

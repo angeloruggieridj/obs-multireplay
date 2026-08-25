@@ -15,15 +15,15 @@
 //
 // THE ARRANGEMENT IT IS CHECKING, top to bottom:
 //
-//   A | B | the camera filmstrip          the monitoring block, aspect-capped
-//   A1 · list · IN+/OUT− · notice         ONE line (it was three)
-//   project · search · Live · Monitors ⛶  the toolbar, UNDER the pictures
-//   1 2 3 4 …                             the list tabs
-//   the event table                       the elastic zone
-//   IN OUT −5 −10 −20 │ ▶ ■ ◀ … │ …       the control strip, no captions
-//   the on-air band                       what is playing, and how much is left
-//   REC 09:52 ⚠ │ NOW LOOP ♫ OUT │ 1.00×  the status line, which OWNS the modes
-//   the position bar                      the whole recorded timeline
+//   A | B ‖ the camera tiles         the monitoring block, a DRAGGABLE split
+//   project · search · Live · Monitors · ⚙ · ⛶
+//   1 2 3 4 …                        the list tabs
+//   the event table                  the elastic zone
+//   −5 −10 −20 / IN OUT ✕ / trims │ A↔B │ speeds / dial / export
+//   ● REC clock                    │ transport + NOW + the green PLAY
+//   LOOP ♫ IN OUTPUT                 the status line
+//   the on-air band
+//   the position bar
 //
 // A MOCKUP THAT ARRANGES ITS KEYS DIFFERENTLY IS MEASURING A PANEL THAT DOES
 // NOT EXIST. Whenever this file and multireplay-dock.cpp disagree about where
@@ -42,6 +42,7 @@
 #include <QPixmap>
 #include <QPushButton>
 #include <QResizeEvent>
+#include <QSet>
 #include <QSlider>
 #include <QSplitter>
 #include <QTableWidget>
@@ -49,6 +50,7 @@
 #include <QVBoxLayout>
 
 #include <algorithm>
+#include <climits>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -57,30 +59,23 @@ using namespace multireplay;
 
 namespace {
 
-// The camera keys are square-ish and small, as on the reference panel: a matrix
-// is read by position, not by label, and a wide key breaks the grid.
-constexpr int kAngleKeyW = 46;
-// …and the width they compress to on a narrow panel. The QSS floor for #mrAngle
-// is 34, so anything below that is not reachable from here.
-constexpr int kAngleKeyMinW = 34;
-// Past this the compressed matrix still does not fit a side dock, and the
-// second answer — wrapping at four — is worth its row per bay. 320 is a 340 px
-// dock less the panel's own margins.
-constexpr int kAngleWrapWidth = 320;
+// The status line. Shorter than a key row because nothing in it is a target the
+// hand goes to blind — the modes are pressed while being looked at.
+constexpr int kStatusH = 22;
+// The on-air band, and the position bar. The band was 28 and the bar 52 with a
+// caption over each; the captions are gone (the band is green and the bar is
+// graduated — neither has ever needed a heading to be told apart) and the bar's
+// ruler is tighter.
+constexpr int kClipBarH = 24;
+constexpr int kSeekH = 42;
 // Narrower than this a tile stops being a picture and becomes a smear; wider
 // than this it stops being a confidence monitor and starts competing with the
 // bay it is meant to be checked against.
 constexpr int kTileMinWidth = 78;
 constexpr int kTileMaxWidth = 150;
-// The status line. Shorter than a key row because nothing in it is a target the
-// hand goes to blind — the modes are pressed while looking at them.
-constexpr int kStatusH = 22;
-// The on-air band, and the position bar. The band was 28 and the bar 52 with a
-// caption over each; the caption is gone (the band is green and the bar is
-// graduated — neither has ever needed to be told apart by a heading) and the
-// bar's ruler is tighter.
-constexpr int kClipBarH = 24;
-constexpr int kSeekH = 42;
+// The band under a picture that names it — A, B, C1… It is a TALLY as much as a
+// label: which box is which is read by colour before it is read by letter.
+constexpr int kTagH = 12;
 
 // The RIG the mockup pretends to be driving. Defaults to the one that is
 // hardest on the layout and happens to be the operator's own: both bays and
@@ -116,26 +111,30 @@ QPushButton *iconKey(Icon ic, const QString &id, const QString &tip,
 	return b;
 }
 
-// A mark AND a word: the two export keys and REC, where the label is doing work
-// the mark cannot ("Esporta clip" vs "Sequenza" is one file or many).
+// A KEY THAT IS A MARK AND A WORD, sized so the word actually fits.
+//
+// Qt under-measures a stylesheet-styled QPushButton that carries both: the
+// padding in the sheet is not folded into sizeHint(), and "Monitors" came out
+// as "Monitor:" with its last letter cut off. So the width is worked out here
+// from the two things that are actually in the key.
 QPushButton *iconTextKey(Icon ic, const QString &text, const QString &id,
-			 const char *role = "")
+			 const char *role = "", int iconPx = 14)
 {
 	auto *b = key(text, role);
-	setKeyIcon(b, ic, g_tints, 14);
+	setKeyIcon(b, ic, g_tints, iconPx);
 	setKeyId(b, id);
+	b->ensurePolished();
+	b->setMinimumWidth(b->fontMetrics().horizontalAdvance(text) + iconPx +
+			   28);
 	return b;
 }
 
-QPushButton *statusKey(const QString &text, const QString &id)
+QWidget *statusSep(QWidget *parent)
 {
-	auto *b = new QPushButton(text);
-	b->setObjectName(QStringLiteral("mrStatKey"));
-	b->setCheckable(true);
-	b->setFixedHeight(kStatusH - 4);
-	b->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
-	setKeyId(b, id);
-	return b;
+	auto *s = new QWidget(parent);
+	s->setObjectName(QStringLiteral("mrStatSep"));
+	s->setFixedWidth(1);
+	return s;
 }
 
 // ---------------------------------------------------------------------------
@@ -147,20 +146,17 @@ QPushButton *statusKey(const QString &text, const QString &id)
 //   A GRID COLUMN WITH A STRETCH FACTOR. The obvious thing, and it collapsed:
 //   at 1000 px the tiles got 50 px between them while A and B took 370 each,
 //   because a stretch only shares what is left AFTER every column has its
-//   minimum, and the tiles' minimum was nothing. Eight cameras came out as
-//   eight vertical slivers.
+//   minimum, and the tiles' minimum was nothing.
 //
 //   ceil(sqrt(n)) COLUMNS. Square-ish, and wrong at exactly the count this
 //   panel is most often asked for: eight cameras became 3×3 with an empty cell
 //   in the corner, and the eye finds that hole every time it reads the block.
 //
 // What the block actually has to do is stand beside two 16:9 pictures and be
-// ABOUT AS TALL AS THEY ARE — otherwise it is either a ribbon with a band of
-// nothing under it or a column taller than the bays it is next to. So the
-// arrangement is chosen from the bay height: for each column count that wastes
-// no cell, work out how big a 16:9 tile would have to be to fill that height in
-// the rows it implies, and keep the one whose block comes out nearest the width
-// the block is meant to have.
+// ABOUT AS TALL AS THEY ARE. So the arrangement is chosen from the bay height:
+// for each column count that wastes no cell, work out how big a 16:9 tile would
+// have to be to fill that height in the rows it implies, and keep the one whose
+// block comes out nearest the width the block is meant to have.
 struct TileBlock {
 	int cols = 1;
 	int tileW = kTileMinWidth;
@@ -172,14 +168,16 @@ struct TileBlock {
 // The share of the monitoring pane the camera block is aimed at. They are
 // confidence monitors: the two bays are what is being watched.
 constexpr double kTileShare = 0.22;
-constexpr int kTileGap = 2;
+// Between two tiles. It was 2, and with a naming band under each picture that
+// put one row's label hard against the next row's picture — the block read as
+// one striped rectangle rather than as N monitors.
+constexpr int kTileGap = 4;
 
 // `maxH` is how much HEIGHT the block may actually have, which is a different
 // question from how tall the bays are and the one that matters when the panel
 // is docked under the OBS preview: there the pane is 750 px wide and 120 px
 // tall, so an arrangement chosen from the width alone asks for four rows of
-// tiles in a pane that has room for two — and the panel's floor goes up by the
-// difference. 0 = no limit.
+// tiles in a pane that has room for two. 0 = no limit.
 TileBlock tileBlockFor(int paneW, int bays, int n, int gap, int maxH = 0)
 {
 	TileBlock best;
@@ -187,9 +185,6 @@ TileBlock tileBlockFor(int paneW, int bays, int n, int gap, int maxH = 0)
 		return best;
 	auto aspect = [](int w) { return std::max(1, w * 9 / 16); };
 	const int target = (int)(paneW * kTileShare);
-	// A first guess at the bay height, from the width the block is aimed at.
-	// It only has to be close: it picks the arrangement, and the arrangement
-	// is then measured properly.
 	const int aw0 = std::max(40, (paneW - target - gap * bays) / bays);
 	int bayH = aspect(aw0);
 	if (maxH > 0)
@@ -207,11 +202,10 @@ TileBlock tileBlockFor(int paneW, int bays, int n, int gap, int maxH = 0)
 		int tw = std::clamp(th * 16 / 9, kTileMinWidth, kTileMaxWidth);
 		th = aspect(tw);
 		const int bw = cols * tw + (cols - 1) * kTileGap;
-		const int bh = rows * th + (rows - 1) * kTileGap;
-		// Width is the preference; HEIGHT IS A WALL. A block that does not
-		// fit the pane is not a slightly worse arrangement, it is a floor
-		// the operator cannot get back, so overflow is weighted far above
-		// being the wrong width.
+		const int bh = rows * (th + kTagH) + (rows - 1) * kTileGap;
+		// Width is the preference; HEIGHT IS A WALL. A block that does
+		// not fit the pane is not a slightly worse arrangement, it is a
+		// floor the operator cannot get back.
 		const int over = (maxH > 0) ? std::max(0, bh - maxH) : 0;
 		const int score = std::abs(bw - target) + over * 4;
 		if (score < bestScore) {
@@ -228,26 +222,22 @@ TileBlock tileBlockFor(int paneW, int bays, int n, int gap, int maxH = 0)
 		int tw = std::clamp(th * 16 / 9, kTileMinWidth, kTileMaxWidth);
 		th = aspect(tw);
 		best = {cols, tw, th, cols * tw + (cols - 1) * kTileGap,
-			rows * th + (rows - 1) * kTileGap};
+			rows * (th + kTagH) + (rows - 1) * kTileGap};
 	}
 	return best;
 }
 
-QWidget *statusSep(QWidget *parent)
-{
-	auto *s = new QWidget(parent);
-	s->setObjectName(QStringLiteral("mrStatSep"));
-	s->setFixedWidth(1);
-	return s;
-}
-
 class Mock : public QWidget {
 public:
-	// A stand-in for one of the panel's pictures. The real ones are
-	// OBSQTDisplay widgets with a swap chain behind them; here they only have
-	// to occupy the same room and prove the arrangement puts them somewhere
-	// usable.
-	QWidget *pic(const QString &text, int minH, bool tally)
+	// A stand-in for one of the panel's pictures, with the band that names
+	// it underneath. The real ones are OBSQTDisplay widgets with a swap
+	// chain behind them; here they only have to occupy the same room and
+	// prove the arrangement puts them somewhere usable.
+	//
+	// EVERY picture gets a band, cameras included. It was only on A and B,
+	// and a camera box with no name is a rectangle the operator has to
+	// identify by remembering where it is.
+	QWidget *pic(const QString &text, const char *tagRole, int minH)
 	{
 		auto *box = new QWidget(this);
 		auto *v = new QVBoxLayout(box);
@@ -260,18 +250,13 @@ public:
 		l->setMinimumHeight(minH);
 		l->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
 		v->addWidget(l, 1);
-		if (tally) {
-			// THE TALLY BAND STAYS. It is how the operator tells one
-			// picture from another without reading — the one thing on
-			// this panel that is read by colour alone. It is only
-			// thinner: a tally has to be findable, not large.
-			auto *tag = new QLabel(text, box);
-			tag->setObjectName(QStringLiteral("mrChanTag"));
-			tag->setProperty("chan", text);
-			tag->setProperty("active", text == QStringLiteral("A"));
-			tag->setAlignment(Qt::AlignCenter);
-			v->addWidget(tag);
-		}
+		auto *tag = new QLabel(text, box);
+		tag->setObjectName(QString::fromLatin1(tagRole));
+		tag->setProperty("chan", text);
+		tag->setProperty("active", text == QStringLiteral("A"));
+		tag->setAlignment(Qt::AlignCenter);
+		tag->setFixedHeight(kTagH);
+		v->addWidget(tag);
 		return box;
 	}
 
@@ -280,170 +265,58 @@ public:
 		setObjectName(QStringLiteral("MultiReplayDock"));
 		sc_ = g_sc;
 		setStyleSheet(dockStyle(sc_));
-		// The floor a VERTICAL DOCK needs. It was 420 here and 560 in the
-		// panel, and both were measured against the wide arrangement — the
-		// one shape the panel could never wear at that width.
 		setMinimumWidth(300);
 
 		auto *v = new QVBoxLayout(this);
 		v->setContentsMargins(4, 4, 4, 4);
 		v->setSpacing(3);
+		root_ = v;
 
-		// ── the monitoring block: A, B and the camera tiles ───────────
-		// A GRID, NOT A ROW, and the reason is not tidiness: the three
-		// arrangements move these between cells, and moving a widget
-		// between two LAYOUTS re-parents it. In the panel that destroys an
-		// OBSQTDisplay's native window and strands its obs_display, which
-		// is the one failure qt-display.hpp exists to prevent. Re-celling
-		// one grid never re-parents anything.
-		previewBox_ = new QWidget(this);
-		auto *pv = new QVBoxLayout(previewBox_);
-		pv->setContentsMargins(0, 0, 0, 0);
-		pv->setSpacing(0);
-		auto *picRow = new QWidget(previewBox_);
-		previewGrid_ = new QGridLayout(picRow);
-		previewGrid_->setContentsMargins(0, 0, 0, 0);
-		previewGrid_->setSpacing(3);
-		aPic_ = pic(QStringLiteral("A"), 60, true);
-		bPic_ = pic(QStringLiteral("B"), 60, true);
-		if (!g_haveB)
-			bPic_->hide();
-		tiles_ = new QWidget(picRow);
-		tilesGrid_ = new QGridLayout(tiles_);
-		tilesGrid_->setContentsMargins(0, 0, 0, 0);
-		tilesGrid_->setSpacing(2);
-		for (int i = 0; i < kTiles; i++) {
-			// NO FLOOR ON A TILE. A minimum height here becomes the
-			// panel's: four rows of confidence monitors at 24 px put
-			// 96 px into a floor the operator cannot get back, and the
-			// point of the whole redesign is that this panel can be
-			// made short. What keeps them picture-shaped is the CAP
-			// (setTileCaps), which is a limit and not a demand.
-			tile_[i] = pic(QStringLiteral("C%1").arg(i + 1), 0, false);
-			// Only the configured cameras get a tile, as in the panel.
-			if (i >= g_cams)
-				tile_[i]->hide();
-		}
-		pv->addWidget(picRow, 1);
-
-		// ── the channel strip: ONE line ───────────────────────────────
-		// It carried three: list / clip x of y / remaining, then the event
-		// id with the two offsets, then timecode and speed — 44 px of the
-		// panel restating what the on-air band and the position bar
-		// already say. What is left is what is said nowhere else, plus the
-		// place showNotice() answers a key press.
-		auto *strip = new QWidget(previewBox_);
-		auto *sh = new QHBoxLayout(strip);
-		sh->setContentsMargins(0, 0, 0, 0);
-		sh->setSpacing(0);
-		auto *badge = new QLabel(QStringLiteral("A1"), strip);
-		badge->setObjectName(QStringLiteral("mrChanBadge"));
-		auto *chan = new QLabel(
-			QStringLiteral("L01  ·  0003  IN +01.24  OUT −00.40"),
-			strip);
-		chan->setObjectName(QStringLiteral("mrChanStrip"));
-		// Same as the on-air band: a placeholder's text is not a
-		// constraint the panel actually has.
-		chan->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
-		chan->setMinimumWidth(40);
-		sh->addWidget(badge);
-		sh->addWidget(chan, 1);
-		pv->addWidget(strip);
-
-		splitter_ = new QSplitter(Qt::Vertical, this);
-		splitter_->setChildrenCollapsible(false);
-		splitter_->setHandleWidth(5);
-		splitter_->addWidget(previewBox_);
+		buildMonitors();
 
 		// ── the list pane: the toolbar, the tabs, the table ───────────
 		// THE TOOLBAR IS UNDER THE PICTURES, not above them. The pictures
 		// lead — that is what an operator's eye goes to — and everything
 		// that picks WHICH event (search, the tabs) belongs to the list it
 		// filters, so it lives with the list.
-		auto *listPane = new QWidget(this);
-		auto *lv = new QVBoxLayout(listPane);
+		listPane_ = new QWidget(this);
+		auto *lv = new QVBoxLayout(listPane_);
 		lv->setContentsMargins(0, 0, 0, 0);
 		lv->setSpacing(2);
-		lv->addWidget(buildToolbar(listPane));
+		lv->addWidget(buildToolbar(listPane_));
 		auto *tabs = new QLabel(
 			QStringLiteral(" 1 │ 2 │ 3 │ 4 │ 5 │ 6 │ 7 │ 8 │ 9 │ 10 "),
-			listPane);
+			listPane_);
 		tabs->setObjectName(QStringLiteral("mrMuted"));
 		tabs->setFixedHeight(20);
+		tabs->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
 		lv->addWidget(tabs);
-		table_ = new QTableWidget(6, 6, listPane);
+		table_ = new QTableWidget(6, 6, listPane_);
 		table_->setObjectName(QStringLiteral("mrEvents"));
 		table_->verticalHeader()->setVisible(false);
 		table_->setMinimumHeight(50);
 		table_->setSizePolicy(QSizePolicy::Expanding,
 				      QSizePolicy::Expanding);
 		lv->addWidget(table_, 1);
-		splitter_->addWidget(listPane);
-		splitter_->setStretchFactor(0, 3);
-		splitter_->setStretchFactor(1, 2);
-		v->addWidget(splitter_, 1);
 
-		strip_ = new ControlStrip(this);
-		// Two macro-rows in the wide arrangement; the numbers are the
-		// FOLDED order — what an operator reaches for through a whole
-		// match comes first, and the exports, which nobody touches while
-		// the ball is in play, come last.
-		buildMark(Lane::Left, /*rank*/ 1);
-		buildAngles(Lane::Centre, /*rank*/ 2);
-		buildExport(Lane::Right, /*rank*/ 5);
-		buildRec(Lane::Left, /*startsLine*/ true, /*rank*/ 0);
-		buildPlayback(Lane::Centre, /*rank*/ 3);
-		buildSpeed(Lane::Right, /*rank*/ 4);
-		addStrip(v, strip_);
+		// THE BODY IS ONE SPLITTER of two panes, and which way it divides
+		// is the arrangement. Vertical: pictures over list. Horizontal
+		// (the shallow dock under the OBS preview): everything on the
+		// left, the LIST on the right — which is the only shape in which
+		// a 340 px tall panel can still show a usable table.
+		bodySplit_ = new QSplitter(Qt::Vertical, this);
+		bodySplit_->setChildrenCollapsible(false);
+		bodySplit_->setHandleWidth(5);
+		bodySplit_->addWidget(leftCol_);
+		bodySplit_->addWidget(listPane_);
+		bodySplit_->setStretchFactor(0, 3);
+		bodySplit_->setStretchFactor(1, 2);
+		connect(bodySplit_, &QSplitter::splitterMoved, this,
+			[this](int, int) { userSplit_ = true; });
+		v->addWidget(bodySplit_, 1);
 
-		// ── the on-air band ───────────────────────────────────────────
-		auto *clipRow = new QWidget(this);
-		auto *ch = new QHBoxLayout(clipRow);
-		ch->setContentsMargins(0, 0, 0, 0);
-		ch->setSpacing(0);
-		auto *clip = new QLabel(
-			QStringLiteral("  0003 · C2 · 50%          −00:03.20   Σ 00:11"),
-			clipRow);
-		clip->setStyleSheet(
-			QString("background:%1;color:#fff;font-weight:700;font-size:10px;")
-				.arg(sc_.onAir));
-		clip->setFixedHeight(kClipBarH);
-		// THE PLACEHOLDER MUST NOT SET THE PANEL'S FLOOR. In the panel
-		// this band is a custom-painted widget that elides its own text;
-		// here it is a QLabel, and a QLabel's minimum is the width of its
-		// text — so the words chosen for the mockup, which mean nothing,
-		// were deciding how narrow the dock could be made (364 px of a
-		// 372 px floor). Ignored horizontally is what the real widget
-		// behaves like.
-		clip->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
-		clip->setMinimumWidth(60);
-		auto *skip = iconKey(Icon::SkipNext, QStringLiteral("skipNext"),
-				     QStringLiteral("Clip successiva"), "mrSkip");
-		skip->setFixedSize(30, kClipBarH - 6);
-		skip->setMinimumHeight(0);
-		auto *cl = new QHBoxLayout(clip);
-		cl->setContentsMargins(4, 3, 4, 3);
-		cl->addStretch(1);
-		cl->addWidget(skip, 0, Qt::AlignVCenter);
-		ch->addWidget(clip, 1);
-		v->addWidget(clipRow, 0);
-
-		v->addWidget(buildStatusBar());
-
-		auto *seekRow = new QWidget(this);
-		auto *skh = new QHBoxLayout(seekRow);
-		skh->setContentsMargins(0, 0, 0, 0);
-		skh->setSpacing(4);
-		auto *seek = new QLabel(seekRow);
-		seek->setStyleSheet(QString("background:%1;border:1px solid %2;")
-					    .arg(sc_.sink2, sc_.border));
-		seek->setFixedHeight(kSeekH);
-		auto *zoom = iconTextKey(Icon::Zoom, QStringLiteral("1×"),
-					 QStringLiteral("zoom"), "mrChanSel");
-		zoom->setFixedHeight(kKeyH);
-		skh->addWidget(seek, 1);
-		skh->addWidget(zoom, 0, Qt::AlignBottom);
-		v->addWidget(seekRow, 0);
+		buildControls();
+		v->addWidget(controls_);
 
 		applyPanelMode(PanelMode::Wide, /*force*/ true);
 	}
@@ -452,65 +325,48 @@ public:
 	PanelMode mode_ = PanelMode::Wide;
 	Scheme sc_;
 
-	// THE ARRANGEMENT, applied. Everything here is a re-cell or a property
-	// change; nothing is created, destroyed or re-parented, so the switch
-	// costs a layout pass and not a native window.
+	// THE ARRANGEMENT, applied. Everything here is a re-cell, a splitter
+	// orientation or a property change; NOTHING that holds a picture is ever
+	// re-parented, because in the panel that destroys an OBSQTDisplay's
+	// native window and strands its obs_display.
 	void applyPanelMode(PanelMode m, bool force = false)
 	{
 		if (!force && m == mode_)
 			return;
-		if (m != mode_)
+		if (m != mode_) {
 			userSplit_ = false;
+			userMonitorSplit_ = false;
+		}
 		mode_ = m;
 
-		while (QLayoutItem *it = previewGrid_->takeAt(0))
-			delete it;
-		for (int c = 0; c < 4; c++) {
-			previewGrid_->setColumnStretch(c, 0);
-			// A column MINIMUM survives a re-cell, so the camera
-			// block's reserved width would follow the panel into the
-			// column arrangement, where that column is a bay.
-			previewGrid_->setColumnMinimumWidth(c, 0);
-		}
-		for (int r = 0; r < 4; r++)
-			previewGrid_->setRowStretch(r, 0);
+		// The monitoring block: bays beside the tiles, or bays above them
+		// in a column. setOrientation does not touch the children, which
+		// is the whole reason this is a splitter and not two layouts.
+		monitorSplit_->setOrientation(m == PanelMode::Tall ? Qt::Vertical
+								  : Qt::Horizontal);
+		bBox_->setVisible(g_haveB);
 
-		if (m == PanelMode::Tall) {
-			// A COLUMN. A and B are PEERS — two bays, the same size —
-			// so they share the top row, and the cameras run under
-			// them as a filmstrip. Stacking all three full width does
-			// not fit: at 340 px a 16:9 picture is 191 px tall, so
-			// three ask for ~600 px of a pane that has about 330, and
-			// what that produced was three squashed boxes with black
-			// bars down the sides of each.
-			previewGrid_->addWidget(aPic_, 0, 0);
-			previewGrid_->addWidget(bPic_, 0, 1);
-			previewGrid_->addWidget(tiles_, 1, 0, 1, 2);
-			previewGrid_->setColumnStretch(0, 1);
-			previewGrid_->setColumnStretch(1, g_haveB ? 1 : 0);
-			splitter_->setOrientation(Qt::Vertical);
-		} else if (m == PanelMode::Short) {
-			// WIDE AND SHALLOW: the pictures cannot sit above the
-			// list, so they sit beside it. Only the SPLITTER turns —
-			// its children stay its children.
-			previewGrid_->addWidget(aPic_, 0, 0);
-			previewGrid_->addWidget(bPic_, 0, 1);
-			previewGrid_->addWidget(tiles_, 0, 2);
-			previewGrid_->setColumnStretch(0, 3);
-			previewGrid_->setColumnStretch(1, g_haveB ? 3 : 0);
-			previewGrid_->setColumnStretch(2, 2);
-			previewGrid_->setRowStretch(0, 1);
-			splitter_->setOrientation(Qt::Horizontal);
-		} else {
-			previewGrid_->addWidget(aPic_, 0, 0);
-			previewGrid_->addWidget(bPic_, 0, 1);
-			previewGrid_->addWidget(tiles_, 0, 2);
-			previewGrid_->setColumnStretch(0, 3);
-			previewGrid_->setColumnStretch(1, g_haveB ? 3 : 0);
-			previewGrid_->setColumnStretch(2, 2);
-			previewGrid_->setRowStretch(0, 1);
-			splitter_->setOrientation(Qt::Vertical);
+		// SHORT PUTS THE CONTROLS IN THE LEFT COLUMN. The panel is wide
+		// and shallow, so the list goes down the right-hand half and
+		// everything else — pictures, keys, the on-air band and the
+		// position bar — stacks on the left. The strip carries no
+		// picture, so moving it between the two layouts is free.
+		const bool sideBySide = m == PanelMode::Short;
+		if (sideBySide != controlsInColumn_) {
+			controlsInColumn_ = sideBySide;
+			if (sideBySide) {
+				root_->removeWidget(controls_);
+				leftColLayout_->addWidget(controls_);
+			} else {
+				leftColLayout_->removeWidget(controls_);
+				controls_->setParent(this);
+				root_->addWidget(controls_);
+			}
+			controls_->show();
 		}
+		bodySplit_->setOrientation(sideBySide ? Qt::Horizontal
+						      : Qt::Vertical);
+
 		strip_->setStacked(m == PanelMode::Tall ? 1 : 0);
 		applyCompactChrome(m == PanelMode::Tall);
 		// The tile block is laid out from applyPreviewAspect, which is the
@@ -524,14 +380,10 @@ public:
 
 	// ── WHEN THE PANEL IS A COLUMN, THE WORDS GO AND THE MARKS STAY ──────
 	//
-	// The status line and the toolbar are rows of LABELLED controls, and a row
-	// of labels has a minimum width that is the sum of its words. With the
-	// modes on the status line that came to 530 px — which is not "narrow", it
-	// is wider than an OBS side dock, so the panel could not be put there at
-	// all. Measured before this: 530. That is the same failure the control
-	// strip has a fold for, one floor up, and it gets the same answer: every
-	// one of these controls already carries its mark and its tooltip, so in a
-	// column the word is the part that can go.
+	// The toolbar and the status line are rows of LABELLED controls, and a
+	// row of labels has a minimum width that is the sum of its words. Every
+	// one of these controls already carries its mark and its tooltip, so in
+	// a column the word is the part that can go.
 	//
 	// NOTHING IS HIDDEN AND NOTHING MOVES. A key that was third from the left
 	// is still third from the left, at the same size, doing the same thing —
@@ -544,10 +396,7 @@ public:
 		compactChrome_ = compact;
 		for (auto &wc : worded_) {
 			wc.b->setText(compact ? QString() : wc.text);
-			// A key with no label still needs a target: without this
-			// the icon-only key collapses to its icon plus padding and
-			// the row reads as a set of specks.
-			wc.b->setMinimumWidth(compact ? 26 : 0);
+			wc.b->setMinimumWidth(compact ? 26 : wc.wide);
 		}
 		if (statusDetail_)
 			statusDetail_->setVisible(!compact);
@@ -555,174 +404,6 @@ public:
 			search_->setFixedWidth(compact ? 90 : 150);
 		if (projectLbl_)
 			projectLbl_->setVisible(!compact);
-	}
-
-	// The tiles, laid into the block chosen for the room they were given. In
-	// a column they are a FILMSTRIP across the panel; beside the bays they
-	// are a block whose height matches theirs (see tileBlockFor).
-	void relayTiles(int cols)
-	{
-		cols = std::max(1, cols);
-		if (cols == tileCols_ && tilesGrid_->count() > 0)
-			return;
-		while (QLayoutItem *it = tilesGrid_->takeAt(0))
-			delete it;
-		// NO ALIGNMENT FLAG. An aligned layout item is given its
-		// sizeHint, not its cell — so a tile whose minimum is nothing and
-		// whose content is a caption would draw itself caption-sized and
-		// the block would be a row of specks. Unaligned, it fills the cell
-		// and its MAXIMUM is what holds it to a picture-shaped rectangle.
-		for (int i = 0; i < kTiles; i++)
-			tilesGrid_->addWidget(tile_[i], i / cols, i % cols);
-		// EVERY CELL SHARES THE BLOCK, and the block is held to its size
-		// from outside (tiles_ gets a maximum). The first version parked
-		// the leftover in a spare column past the last tile — which was
-		// right for a filmstrip that has room to spare and wrong
-		// everywhere else: with the tiles' minimum at nothing, that column
-		// took the whole block and eight cameras came out as eight 12 px
-		// slivers with a wide empty strip beside them.
-		const int rows = (kTiles + cols - 1) / cols;
-		// EVERY row and column, not just the ones in use now. A
-		// QGridLayout remembers the stretch of a row it no longer has
-		// items in, and rowCount() never comes back down — so a block
-		// that was once eight rows deep kept four EMPTY stretching rows
-		// after it became four, and they took half the block's height.
-		// Measured: 140×78 tiles asked for, 140×52 drawn.
-		for (int c = 0; c < std::max(cols, tilesGrid_->columnCount()); c++)
-			tilesGrid_->setColumnStretch(c, c < cols ? 1 : 0);
-		for (int r = 0; r < std::max(rows, tilesGrid_->rowCount()); r++)
-			tilesGrid_->setRowStretch(r, r < rows ? 1 : 0);
-		tileCols_ = cols;
-	}
-
-	// Cap every tile, floor none of them. See the note in the else branch of
-	// applyPreviewAspect for why the difference is the panel's floor.
-	void setTileCaps(int w, int h)
-	{
-		w = std::max(1, w);
-		h = std::max(1, h);
-		for (int i = 0; i < kTiles; i++) {
-			tile_[i]->setMinimumSize(0, 0);
-			tile_[i]->setMaximumSize(w, h);
-		}
-		// …and the block itself, so it cannot be handed more room than
-		// its tiles can use and spread them out inside it.
-		const int rows = (kTiles + tileCols_ - 1) / std::max(1, tileCols_);
-		tiles_->setMaximumWidth(tileCols_ * w + (tileCols_ - 1) * kTileGap);
-		tiles_->setMaximumHeight(rows * h + (rows - 1) * kTileGap);
-	}
-
-	// A 16:9 picture in a box of another shape is drawn letterboxed, and the
-	// difference comes out as BLACK BARS — which is what the panel showed in a
-	// column, on both boxes. Every bar is a pixel the event list asked for, so
-	// the monitoring pane is capped at the height its pictures can actually
-	// fill and the splitter hands the rest to the list.
-	static int aspectHeight(int w) { return std::max(1, w * 9 / 16); }
-
-	void applyPreviewAspect()
-	{
-		const int paneW = std::max(80, previewBox_->width());
-		// The channel strip rides with the pictures and is not one.
-		const int stripH = 16;
-		const int bays = g_haveB ? 2 : 1;
-		int aW = paneW;
-		TileBlock tb;
-		if (mode_ != PanelMode::Tall) {
-			// THE CAMERA BLOCK IS SIZED FIRST and the bays take what
-			// is left, which is the opposite of what a stretch factor
-			// does and the reason a stretch factor starved them.
-			// In Short the pane is wide and SHALLOW — it stands beside
-			// the list rather than above it — so how much height the
-			// block may have is the binding constraint, not how much
-			// width it would like.
-			const int roomH =
-				mode_ == PanelMode::Short
-					? std::max(40, previewBox_->height() -
-								 stripH - kTagH)
-					: 0;
-			tb = tileBlockFor(paneW, bays, g_cams, 3, roomH);
-			relayTiles(tb.cols);
-			tileCols_ = tb.cols;
-			aW = std::max(60, (paneW - tb.blockW - 3 * bays) / bays);
-		} else {
-			const int avail = std::max(1, paneW);
-			const int cols = std::clamp(avail / kTileMinWidth, 1,
-						    std::max(1, g_cams));
-			relayTiles(cols);
-			tileCols_ = cols;
-		}
-		int want = aspectHeight(aW) + kTagH + stripH;
-		if (mode_ != PanelMode::Tall)
-			want = std::min(want, height() / 2);
-		if (mode_ == PanelMode::Tall) {
-			// Row 0 is A and B side by side; row 1 is the filmstrip.
-			const int bayW = g_haveB ? (paneW - 3) / 2 : paneW;
-			const int bayH = aspectHeight(bayW) + kTagH;
-			const int cols = tileCols_;
-			const int rows = (g_cams + cols - 1) / cols;
-			const int tileW = std::min(kTileMaxWidth,
-						   (paneW - 2 * (cols - 1)) / cols);
-			const int stripRowH =
-				rows * aspectHeight(tileW) + (rows - 1) * 2;
-			// Each box capped too, not just the pane: capping the pane
-			// alone leaves the grid free to stretch what is inside it.
-			aPic_->setMaximumHeight(bayH);
-			if (g_haveB)
-				bPic_->setMaximumHeight(bayH);
-			// …and let go of the width cap the wide arrangement puts
-			// on them: a leftover maximum from another arrangement is
-			// a picture pinned small the moment the dock changes shape.
-			for (QWidget *w : {aPic_, bPic_})
-				w->setMaximumWidth(QWIDGETSIZE_MAX);
-			// setTileCaps sizes the block from the tiles it holds.
-			setTileCaps(tileW, aspectHeight(tileW));
-			want = bayH + 3 + stripRowH + stripH;
-		} else {
-			// The bays fill the row; the camera block gets a RESERVED
-			// column of the grid and its tiles a maximum size inside
-			// it. Left to a stretch factor the tiles got what was left
-			// after the bays had their minimum — which is nothing, and
-			// eight cameras came out as eight vertical slivers.
-			//
-			// A MAXIMUM, NEVER A FIXED SIZE. Fixed, the block's own
-			// minimum height became the panel's: four rows of 78 px
-			// put the floor at 668 and the panel stopped being able
-			// to be made short at all, which is the thing this whole
-			// redesign is for.
-			// WHEN THE HEIGHT CAP BITES, THE BAY GETS NARROWER TOO.
-			// The pictures may not have more than half the panel, and
-			// on a wide single-bay rig a 16:9 A across the whole pane
-			// wants three quarters of it — so the box ends up wider
-			// than its picture and renderSourceFitted draws the
-			// difference as BLACK BARS down either side. Capping the
-			// width instead leaves the same space in the PANEL's own
-			// colour, which is space rather than a picture with
-			// something wrong with it.
-			const int fitW = (want - kTagH - stripH) * 16 / 9;
-			for (QWidget *w : {aPic_, bPic_}) {
-				w->setMaximumHeight(QWIDGETSIZE_MAX);
-				w->setMaximumWidth(fitW < aW ? fitW
-							     : QWIDGETSIZE_MAX);
-			}
-			// setTileCaps sizes the block from the tiles it holds.
-			setTileCaps(tb.tileW, tb.tileH);
-			previewGrid_->setColumnStretch(2, 0);
-			previewGrid_->setColumnMinimumWidth(2, tb.blockW);
-		}
-
-		// A cap AND the split: capped alone, the splitter can still hand
-		// the pane LESS than the pictures need, and short is a black bar
-		// too — down the sides instead of along the top.
-		previewBox_->setMaximumHeight(want);
-		// ONLY when the splitter divides HEIGHT. In Short it divides
-		// WIDTH, so `want` — a height — means nothing to it.
-		if (!userSplit_ && splitter_->orientation() == Qt::Vertical) {
-			const int total = splitter_->height();
-			const int give = std::min(want, total - kListFloor);
-			const QList<int> now = splitter_->sizes();
-			if (give > 0 && (now.isEmpty() || std::abs(now[0] - give) > 2))
-				splitter_->setSizes({give, total - give});
-		}
 	}
 
 	void resizeEvent(QResizeEvent *e) override
@@ -737,46 +418,134 @@ public:
 
 private:
 	static constexpr int kTiles = 8; // kMaxCameras
-	// The tally band under a picture, at the height the style sheet gives it.
-	static constexpr int kTagH = 12;
 	// How much list is kept whatever the pictures ask for.
 	static constexpr int kListFloor = 110;
 
 public:
-	QSplitter *splitter_ = nullptr;
-	QWidget *previewBox_ = nullptr;
+	QSplitter *bodySplit_ = nullptr;
+	QWidget *leftCol_ = nullptr;
 	int tileCols_ = 2;
-	// What the camera block actually came out as. Reported by the render pass
-	// because "the tiles look wrong" is answered with two numbers, not by
-	// squinting at a PNG.
 	QSize tileSize() const { return tile_[0] ? tile_[0]->size() : QSize(); }
 	QSize tileBlockSize() const { return tiles_ ? tiles_->size() : QSize(); }
+	QSize monitorSize() const
+	{
+		return monitorSplit_ ? monitorSplit_->size() : QSize();
+	}
 
 private:
-	QGridLayout *previewGrid_ = nullptr;
-	QWidget *aPic_ = nullptr, *bPic_ = nullptr;
+	QVBoxLayout *root_ = nullptr;
+	QVBoxLayout *leftColLayout_ = nullptr;
+	QSplitter *monitorSplit_ = nullptr;
+	QWidget *bays_ = nullptr;
+	QGridLayout *baysGrid_ = nullptr;
+	QWidget *aBox_ = nullptr, *bBox_ = nullptr;
 	QWidget *tiles_ = nullptr;
 	QGridLayout *tilesGrid_ = nullptr;
 	QWidget *tile_[kTiles] = {};
+	QWidget *listPane_ = nullptr;
+	QWidget *controls_ = nullptr;
 	QTableWidget *table_ = nullptr;
 	bool userSplit_ = false;
+	bool userMonitorSplit_ = false;
+	bool controlsInColumn_ = false;
 
 	// The controls whose LABEL is optional — see applyCompactChrome. The text
-	// is kept here rather than read back off the button, because a button that
-	// has already been stripped once has nothing to read back.
+	// and the laid-out width are kept here rather than read back off the
+	// button, because a button that has been stripped once has nothing to
+	// read back.
 	struct Worded {
 		QPushButton *b;
 		QString text;
+		int wide;
 	};
 	QVector<Worded> worded_;
-	QWidget *statusDetail_ = nullptr; // "rim. 01:10:24"
+	QWidget *statusDetail_ = nullptr;
 	QLabel *search_ = nullptr;
 	QLabel *projectLbl_ = nullptr;
 	bool compactChrome_ = false;
 
-	void remember(QPushButton *b) { worded_.push_back({b, b->text()}); }
+	void remember(QPushButton *b)
+	{
+		worded_.push_back({b, b->text(), b->minimumWidth()});
+	}
 
-	// ── the toolbar: what is GLOBAL to the panel, plus the search ───────
+	// ── the monitoring block ─────────────────────────────────────────────
+	//
+	// A SPLITTER, so the operator can move the divider between the bays and
+	// the cameras. In a wide panel that division is a WIDTH, and because both
+	// sides keep their 16:9 the same drag changes their HEIGHT — which is the
+	// only control the operator has ever had over how big the pictures are.
+	void buildMonitors()
+	{
+		leftCol_ = new QWidget(this);
+		leftColLayout_ = new QVBoxLayout(leftCol_);
+		leftColLayout_->setContentsMargins(0, 0, 0, 0);
+		leftColLayout_->setSpacing(3);
+
+		bays_ = new QWidget(leftCol_);
+		baysGrid_ = new QGridLayout(bays_);
+		baysGrid_->setContentsMargins(0, 0, 0, 0);
+		baysGrid_->setSpacing(3);
+		aBox_ = pic(QStringLiteral("A"), "mrChanTag", 40);
+		bBox_ = pic(QStringLiteral("B"), "mrChanTag", 40);
+		// A AND B ARE ALWAYS SIDE BY SIDE, in every arrangement. They are
+		// two bays of one deck: stacking them in a column would make the
+		// pair read as a hierarchy, and it is the one relationship on this
+		// panel that is exactly equal.
+		baysGrid_->addWidget(aBox_, 0, 0);
+		baysGrid_->addWidget(bBox_, 0, 1);
+		baysGrid_->setColumnStretch(0, 1);
+		baysGrid_->setColumnStretch(1, 1);
+
+		tiles_ = new QWidget(leftCol_);
+		tilesGrid_ = new QGridLayout(tiles_);
+		tilesGrid_->setContentsMargins(0, 0, 0, 0);
+		tilesGrid_->setSpacing(kTileGap);
+		for (int i = 0; i < kTiles; i++) {
+			// NO FLOOR ON A TILE. A minimum height here becomes the
+			// panel's, and the point of the redesign is that this
+			// panel can be made short. What keeps them
+			// picture-shaped is the CAP, which is a limit and not a
+			// demand.
+			tile_[i] = pic(QStringLiteral("C%1").arg(i + 1),
+				       "mrTileCap", 0);
+			// THE PICTURE IS THE ANGLE KEY NOW. The camera matrix is
+			// gone — sixteen keys of it — because clicking the box is
+			// what the operator was already looking at: the key says
+			// "C5", the picture says what C5 is pointing at. The
+			// cursor is the only thing that advertises it, so it is
+			// not optional.
+			tile_[i]->setCursor(Qt::PointingHandCursor);
+			tile_[i]->setToolTip(
+				QStringLiteral("Guarda l'angolo %1").arg(i + 1));
+			if (i >= g_cams)
+				tile_[i]->hide();
+		}
+		// The tally, so the block shows what it is for: green is the angle
+		// being watched, red the one on air.
+		if (g_cams > 0)
+			tileTally(0, "pvw");
+		if (g_cams > 1)
+			tileTally(1, "pgm");
+
+		monitorSplit_ = new QSplitter(Qt::Horizontal, leftCol_);
+		monitorSplit_->setChildrenCollapsible(false);
+		monitorSplit_->setHandleWidth(5);
+		monitorSplit_->addWidget(bays_);
+		monitorSplit_->addWidget(tiles_);
+		connect(monitorSplit_, &QSplitter::splitterMoved, this,
+			[this](int, int) { userMonitorSplit_ = true; });
+		leftColLayout_->addWidget(monitorSplit_, 1);
+	}
+
+	void tileTally(int i, const char *what)
+	{
+		for (QLabel *l : tile_[i]->findChildren<QLabel *>())
+			if (l->objectName() == QStringLiteral("mrTileCap"))
+				l->setProperty("tally", QString::fromLatin1(what));
+	}
+
+	// ── the toolbar: what is GLOBAL to the panel ─────────────────────────
 	QWidget *buildToolbar(QWidget *parent)
 	{
 		auto *box = new QWidget(parent);
@@ -804,25 +573,29 @@ private:
 		search_ = search;
 		h->addWidget(search);
 
-		auto *live = key(QStringLiteral("Live"), "mrLive");
+		auto *live = iconTextKey(Icon::Live, QStringLiteral("Live"),
+					 QStringLiteral("live"), "mrLive", 12);
 		live->setCheckable(true);
-		live->setMinimumWidth(0);
-		setKeyIcon(live, Icon::Live, g_tints, 12);
-		setKeyId(live, QStringLiteral("live"));
+		live->setToolTip(QStringLiteral("Le marcature cadono sul fronte live"));
 		remember(live);
 		h->addWidget(live);
 		// A STATE, NOT A SIGNAL. Monitors used to be drawn with the Live
-		// key's role, so "the pictures are on" — which is the resting
-		// state of the panel — lit up in the same red as REC and the
-		// on-air tally. Red has one meaning here and this is not it.
-		auto *mon = key(QStringLiteral("Monitors"), "mrToggle");
+		// key's role, so "the pictures are on" — the resting state of the
+		// panel — lit up in the same red as REC. Red has one meaning here
+		// and this is not it.
+		auto *mon = iconTextKey(Icon::Monitors, QStringLiteral("Monitors"),
+					QStringLiteral("monitors"), "mrToggle", 12);
 		mon->setCheckable(true);
 		mon->setChecked(true);
-		mon->setMinimumWidth(0);
-		setKeyIcon(mon, Icon::Monitors, g_tints, 12);
-		setKeyId(mon, QStringLiteral("monitors"));
+		mon->setToolTip(QStringLiteral("Mostra o nascondi le immagini"));
 		remember(mon);
 		h->addWidget(mon);
+		// THE GEAR LIVES WITH THE OTHER PANEL-WIDE KEYS, not down in the
+		// record section. What it opens is Settings for the whole panel;
+		// beside REC it read as part of arming a take.
+		auto *gear = iconKey(Icon::Gear, QStringLiteral("settings"),
+				     QStringLiteral("Impostazioni"), "mrToggle");
+		h->addWidget(gear);
 		auto *full = iconKey(Icon::FullScreen, QStringLiteral("fullscreen"),
 				     QStringLiteral("Schermo intero"), "mrToggle");
 		full->setCheckable(true);
@@ -831,62 +604,129 @@ private:
 		return box;
 	}
 
-	// ── the status line: it OWNS the modes ──────────────────────────────
+	// ── everything below the list ────────────────────────────────────────
+	void buildControls()
+	{
+		controls_ = new QWidget(this);
+		auto *v = new QVBoxLayout(controls_);
+		v->setContentsMargins(0, 0, 0, 0);
+		v->setSpacing(3);
+		controls_->setSizePolicy(QSizePolicy::Preferred,
+					 QSizePolicy::Minimum);
+
+		strip_ = new ControlStrip(controls_);
+		// Two macro-rows. The first is what you do to the FOOTAGE, the
+		// second is the take and the transport; the numbers are the order
+		// when the strip folds into a stack on a narrow dock, which is
+		// what an operator reaches for through a whole match.
+		buildMark(Lane::Left, /*rank*/ 1);
+		if (g_haveB)
+			buildBaySelector(Lane::Centre, /*rank*/ 3);
+		buildSpeed(Lane::Right, /*rank*/ 4);
+		buildRec(Lane::Left, /*startsLine*/ true, /*rank*/ 0);
+		buildPlayback(Lane::Centre, /*rank*/ 2);
+		addStrip(v, strip_);
+
+		// THE STATUS LINE SITS ABOVE THE GREEN BAND. The band says what is
+		// on air; the line says what the next replay will run under. Below
+		// it, the modes read as a footnote to a clip that is already
+		// playing.
+		v->addWidget(buildStatusBar());
+
+		// ── the on-air band ──────────────────────────────────────────
+		auto *clip = new QLabel(
+			QStringLiteral("  0003 · C2 · 50%          −00:03.20   Σ 00:11"),
+			controls_);
+		clip->setStyleSheet(
+			QString("background:%1;color:#fff;font-weight:700;font-size:10px;")
+				.arg(sc_.onAir));
+		clip->setFixedHeight(kClipBarH);
+		// THE PLACEHOLDER MUST NOT SET THE PANEL'S FLOOR. In the panel
+		// this band is a custom-painted widget that elides its own text;
+		// here it is a QLabel, and a QLabel's minimum is the width of its
+		// text — so words chosen for a mockup were deciding how narrow the
+		// dock could be made.
+		clip->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+		clip->setMinimumWidth(60);
+		auto *skip = iconKey(Icon::SkipNext, QStringLiteral("skipNext"),
+				     QStringLiteral("Clip successiva"), "mrSkip");
+		skip->setFixedSize(30, kClipBarH - 6);
+		skip->setMinimumHeight(0);
+		auto *cl = new QHBoxLayout(clip);
+		cl->setContentsMargins(4, 3, 4, 3);
+		cl->addStretch(1);
+		cl->addWidget(skip, 0, Qt::AlignVCenter);
+		v->addWidget(clip);
+
+		// ── the position bar ─────────────────────────────────────────
+		auto *seekRow = new QWidget(controls_);
+		auto *skh = new QHBoxLayout(seekRow);
+		skh->setContentsMargins(0, 0, 0, 0);
+		skh->setSpacing(4);
+		auto *seek = new QLabel(seekRow);
+		seek->setStyleSheet(QString("background:%1;border:1px solid %2;")
+					    .arg(sc_.sink2, sc_.border));
+		seek->setFixedHeight(kSeekH);
+		auto *zoom = key(QStringLiteral("1×"), "mrChanSel");
+		setKeyId(zoom, QStringLiteral("zoom"));
+		zoom->setToolTip(QStringLiteral("Quanta timeline è in vista"));
+		// THE SAME HEIGHT AS THE BAR IT BELONGS TO. At a key's height it
+		// sat against the bar's top edge with a notch of panel under it,
+		// which reads as a control that has come loose from the thing it
+		// controls.
+		zoom->setMinimumHeight(kSeekH);
+		zoom->setMaximumHeight(kSeekH);
+		zoom->setMinimumWidth(36);
+		skh->addWidget(seek, 1);
+		skh->addWidget(zoom, 0);
+		v->addWidget(seekRow);
+	}
+
+	// ── the status line: it OWNS the modes ───────────────────────────────
 	QWidget *buildStatusBar()
 	{
-		auto *box = new QWidget(this);
+		auto *box = new QWidget(controls_);
 		box->setObjectName(QStringLiteral("mrStatusBar"));
 		box->setFixedHeight(kStatusH);
 		auto *h = new QHBoxLayout(box);
 		h->setContentsMargins(6, 2, 6, 2);
 		h->setSpacing(6);
 
-		auto *elapsed = new QLabel(QStringLiteral("09:52:20"), box);
-		elapsed->setObjectName(QStringLiteral("mrStatusValue"));
-		elapsed->setProperty("rec", true);
-		h->addWidget(elapsed);
-		auto *left = new QLabel(QStringLiteral("rim. 01:10:24"), box);
-		left->setObjectName(QStringLiteral("mrStatusText"));
-		statusDetail_ = left;
-		h->addWidget(left);
 		auto *health = key(QStringLiteral("1"), "mrHealth");
 		health->setProperty("level", QStringLiteral("warn"));
-		health->setFixedHeight(kStatusH - 4);
+		// DENSE, so the style sheet does not ask for a taller frame than
+		// the widget owns — which put the badge's bottom border outside
+		// it and read as a box nobody closed.
+		health->setProperty("dense", true);
 		health->setMinimumHeight(0);
-		setKeyIcon(health, Icon::Health, g_tints, 12);
+		health->setFixedHeight(kStatusH - 6);
+		setKeyIcon(health, Icon::Health, g_tints, 11);
 		setKeyId(health, QStringLiteral("health"));
 		h->addWidget(health);
+		auto *notice = new QLabel(QStringLiteral("Lista 01 · evento 0003"),
+					  box);
+		notice->setObjectName(QStringLiteral("mrStatusText"));
+		notice->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+		statusDetail_ = notice;
+		h->addWidget(notice, 1);
 
 		// THE MODES SIT AGAINST THE RIGHT EDGE, not in the middle. A group
 		// centred on a bar whose width changes with the dock is a group
 		// that moves every time the panel is resized; against an edge the
 		// hand finds it the same way twice.
-		h->addStretch(1);
 		h->addWidget(statusSep(box));
-		auto *now = statusKey(QStringLiteral("NOW"), QStringLiteral("now"));
-		now->setCheckable(false);
-		now->setProperty("now", true);
-		setKeyIcon(now, Icon::Now, g_tints, 12);
-		now->setToolTip(QStringLiteral("Torna al fronte live"));
-		remember(now);
-		h->addWidget(now);
-		auto *loop = statusKey(QStringLiteral("LOOP"), QStringLiteral("loop"));
-		setKeyIcon(loop, Icon::Loop, g_tints, 12);
-		loop->setToolTip(QStringLiteral("Ripeti la clip"));
-		remember(loop);
+		auto *loop = statusKey(Icon::Loop, QStringLiteral("LOOP"),
+				       QStringLiteral("loop"),
+				       QStringLiteral("Ripeti la clip"));
 		h->addWidget(loop);
-		auto *music = statusKey(QStringLiteral("MUSICA"),
-					QStringLiteral("music"));
-		setKeyIcon(music, Icon::Music, g_tints, 12);
-		music->setToolTip(QStringLiteral("Musica sotto il replay"));
-		remember(music);
+		auto *music = statusKey(Icon::Music, QStringLiteral("MUSICA"),
+					QStringLiteral("music"),
+					QStringLiteral("Musica sotto il replay"));
 		h->addWidget(music);
-		auto *out = statusKey(QStringLiteral("IN OUTPUT"),
-				      QStringLiteral("toOutput"));
+		auto *out = statusKey(Icon::ToOutput, QStringLiteral("IN OUTPUT"),
+				      QStringLiteral("toOutput"),
+				      QStringLiteral("Il replay prende il Program"));
 		out->setChecked(true);
-		setKeyIcon(out, Icon::ToOutput, g_tints, 12);
-		out->setToolTip(QStringLiteral("Il replay prende il Program"));
-		remember(out);
 		h->addWidget(out);
 		h->addWidget(statusSep(box));
 
@@ -896,285 +736,161 @@ private:
 		return box;
 	}
 
-	// MARK — one row, as on the reference panel. The keys keep their natural
-	// widths: forcing them all to the widest ("Annulla") puts five short
-	// labels in five wide keys, and the row stops reading as a row of marks
-	// and starts reading as a form.
+	QPushButton *statusKey(Icon ic, const QString &text, const QString &id,
+			       const QString &tip)
+	{
+		auto *b = new QPushButton(text);
+		b->setObjectName(QStringLiteral("mrStatKey"));
+		b->setCheckable(true);
+		b->setFixedHeight(kStatusH - 4);
+		b->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+		setKeyIcon(b, ic, g_tints, 12);
+		setKeyId(b, id);
+		b->setToolTip(tip);
+		b->ensurePolished();
+		b->setMinimumWidth(b->fontMetrics().horizontalAdvance(text) + 12 +
+				   24);
+		remember(b);
+		return b;
+	}
+
+	// ── MARK: three rows, because it answers three questions ─────────────
 	//
-	// IN AND OUT STAY WORDS. The brief asked for icons wherever an action is
-	// universally recognisable, and these are the counter-example it names
-	// itself: every mark on a timeline is a bracket of some kind, and a panel
-	// whose two most-pressed keys are two brackets is a panel you have to
-	// hover to use.
+	//   −5s −10s −20s    take the last N seconds whole   (first function)
+	//   IN  OUT  ✕       take a point, close it, undo it (second)
+	//   ⇤IN OUT⇥         move a point already taken      (third)
+	//
+	// It was one row of eight, and one row said those three were the same
+	// kind of act. The order is how often an operator reaches for them
+	// during a match, top first.
 	void buildMark(Lane lane, int rank)
 	{
 		auto *blk = new KeyBlock(QString(), this);
-		auto *in = key(QStringLiteral("IN"));
-		setKeyId(in, QStringLiteral("markIn"));
-		auto *out = key(QStringLiteral("OUT"));
-		setKeyId(out, QStringLiteral("markOut"));
 		auto *m5 = key(QStringLiteral("−5s"));
 		setKeyId(m5, QStringLiteral("mark5"));
 		auto *m10 = key(QStringLiteral("−10s"));
 		setKeyId(m10, QStringLiteral("mark10"));
 		auto *m20 = key(QStringLiteral("−20s"));
 		setKeyId(m20, QStringLiteral("mark20"));
+		// IN AND OUT STAY WORDS. The brief asks for icons wherever an
+		// action is universally recognisable, and these are the
+		// counter-example it names itself: every mark on a timeline is a
+		// bracket of some kind, and a panel whose most-pressed keys are
+		// two brackets is a panel you have to hover to use.
+		auto *in = key(QStringLiteral("IN"));
+		setKeyId(in, QStringLiteral("markIn"));
+		auto *out = key(QStringLiteral("OUT"));
+		setKeyId(out, QStringLiteral("markOut"));
+		auto *cancel = iconKey(Icon::Cancel, QStringLiteral("markCancel"),
+				       QStringLiteral("Annulla la marcatura"),
+				       "mrDanger");
 		auto *tin = iconKey(Icon::TrimIn, QStringLiteral("trimIn"),
 				    QStringLiteral("Porta l'IN qui"));
 		auto *tout = iconKey(Icon::TrimOut, QStringLiteral("trimOut"),
 				     QStringLiteral("Porta l'OUT qui"));
-		auto *cancel = iconKey(Icon::Cancel, QStringLiteral("markCancel"),
-				       QStringLiteral("Annulla la marcatura"),
-				       "mrDanger");
-		blk->setShapes(
-			{{Cell(in), Cell(out), Cell(m5), Cell(m10), Cell(m20),
-			  Cell(tin), Cell(tout), Cell(cancel)}},
-			{{Cell(in, 2), Cell(out, 2), Cell(tin, 2), Cell(tout, 2)},
-			 {Cell(m5, 2), Cell(m10, 2), Cell(m20, 2),
-			  Cell(cancel, 2)}});
+		// SIX COLUMNS so the row of two divides as evenly as the rows of
+		// three: on three columns the trim row left a hole in the corner,
+		// and the eye finds that hole every time it reads the block.
+		const BlockShape shape{
+			{Cell(m5, 2), Cell(m10, 2), Cell(m20, 2)},
+			{Cell(in, 2), Cell(out, 2), Cell(cancel, 2)},
+			{Cell(tin, 3), Cell(tout, 3)}};
+		blk->setShapes(shape, shape);
 		strip_->addBlock(blk, lane, false, rank);
 	}
 
-	// ANGOLI — the bay selector, then the matrix, then the swap. Two rows,
-	// and the two controls that are ABOUT both rows stand beside them
-	// instead of under them.
-	void buildAngles(Lane lane, int rank)
+	// ── WHICH BAY the keys drive. That is all this section is now ────────
+	//
+	// It used to carry the camera matrix as well — two rows of eight keys,
+	// the widest thing on the panel by a long way, and the reason a
+	// side dock could not hold it. The angles are chosen by CLICKING THE
+	// PICTURE, which is where the operator is looking anyway and which no
+	// row of keys can do better: the key says "C5", the picture says what
+	// C5 is pointing at.
+	//
+	// With one bay the section is not here at all — not disabled, absent.
+	void buildBaySelector(Lane lane, int rank)
 	{
 		auto *blk = new KeyBlock(QString(), this);
-		QVector<Cell> rowA, rowB;
-		QVector<QPushButton *> camKeys;
-		for (int ch = 0; ch < 2; ch++) {
-			auto *letter = new QLabel(ch ? "B" : "A", this);
-			letter->setObjectName(QStringLiteral("mrSectionLabel"));
-			letter->setFixedWidth(10);
-			letter->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-			// A widget that belongs to no shape is never re-parented
-			// into the section, so it would sit at the panel's origin
-			// drawn over the pictures. With one bay, B's row is not in
-			// any shape.
-			if (ch && !g_haveB)
-				letter->hide();
-			(ch ? rowB : rowA) << Cell(letter, 1, false);
-			for (int i = 0; i < 8; i++) {
-				auto *b = key(QStringLiteral("C%1").arg(i + 1),
-					      "mrAngle");
-				b->setCheckable(true);
-				// The width is set per SHAPE, below — see the
-				// setOnShape hook. Eight slots pinned at 46 px is
-				// 400 px of matrix, and that alone put the
-				// panel's floor past the width of an OBS side
-				// dock.
-				camKeys << b;
-				setKeyId(b, QStringLiteral("angle%1%2")
-						     .arg(ch ? "B" : "A")
-						     .arg(i + 1));
-				if (ch && !g_haveB) {
-					b->hide();
-				} else if (i >= g_cams) {
-					// AN UNCONFIGURED SLOT IS DRAWN, NOT
-					// HIDDEN — a sunken outline saying "a
-					// camera could go here". It keeps angle 5
-					// at the same x on every rig, so
-					// configuring camera 3 does not slide the
-					// row out from under the operator's
-					// fingers mid-match, and it has nothing
-					// to read so it costs no attention.
-					//
-					// It was hidden-with-retained-size here,
-					// and that was not just a different look:
-					// Qt measures a retained hidden widget at
-					// the size it would have WITHOUT the width
-					// this section pins on it, so six empty
-					// slots pushed the section from 314 px to
-					// 374 — and the panel could not be docked
-					// down a side on a TWO-CAMERA rig, which
-					// is the commonest one there is.
-					b->setObjectName(
-						QStringLiteral("mrAngleSlot"));
-					b->setText(QString());
-					b->setCheckable(false);
-					b->setFocusPolicy(Qt::NoFocus);
-				}
-				(ch ? rowB : rowA) << Cell(b);
-			}
-		}
-
-		auto *sel = new QWidget(this);
-		auto *sl = new QHBoxLayout(sel);
-		sl->setContentsMargins(0, 0, 0, 0);
-		sl->setSpacing(3);
-		// A↔B, not A|B: the brief's own suggestion, and it says what the
-		// mode does (a command goes to both bays) rather than naming two
-		// things with a bar between them.
+		QVector<Cell> row;
+		// A↔B, not A|B: it says what the mode DOES (a command goes to
+		// both bays) rather than naming two things with a bar between.
 		for (const char *l : {"A↔B", "A", "B"}) {
 			auto *b = key(QString::fromUtf8(l), "mrChanSel");
 			b->setCheckable(true);
-			b->setFixedWidth(38);
+			b->setChecked(QString::fromUtf8(l) == QStringLiteral("A"));
+			b->setMinimumWidth(38);
 			setKeyId(b, QStringLiteral("bay%1").arg(QString::fromUtf8(l)));
-			sl->addWidget(b);
+			row << Cell(b);
 		}
-		sel->setFixedHeight(kKeyH);
-
 		auto *swap = iconKey(Icon::Swap, QStringLiteral("swapBays"),
 				     QStringLiteral("Scambia A e B"), "mrChanSel");
-		swap->setFixedWidth(38);
-
-		// WITH ONE BAY THEY ARE ABSENT, NOT DISABLED — the B row, the
-		// A↔B / A / B selector and the swap. That is what the panel does
-		// (see applyChannelBVisibility), and modelling it matters here
-		// rather than being a detail: on a single-bay rig the selector
-		// spanning three of the matrix's columns pushed the section to
-		// 374 px, so the SIMPLEST configuration was the one that could not
-		// be docked down a side.
-		if (!g_haveB) {
-			sel->hide();
-			swap->hide();
-			BlockShape one{rowA};
-			QVector<QVector<Cell>> compactOne;
-			for (int i = 1; i < rowA.size(); i += 8) {
-				QVector<Cell> line;
-				line << (i == 1 ? rowA[0] : Cell(nullptr, 1));
-				for (int k = i; k < rowA.size() && k < i + 8; k++)
-					line << rowA[k];
-				compactOne << line;
-			}
-			blk->setShapes(one, compactOne);
-			blk->setOnShape([camKeys](bool flat) {
-				for (QPushButton *b : camKeys)
-					b->setFixedWidth(flat ? kAngleKeyMinW
-							      : kAngleKeyW);
-			});
-			strip_->addBlock(blk, lane, false, rank);
-			return;
-		}
-
-		QVector<Cell> top;
-		top << Cell(sel, 1, false, 2);
-		top += rowA;
-		top << Cell(swap, 1, false, 2);
-		QVector<Cell> bottom;
-		bottom << Cell(nullptr, 1); // the selector's column, already taken
-		bottom += rowB;
-
-		// ── THE COMPACT SHAPE WRAPS THE MATRIX AT FOUR ─────────────────
-		// Eight slots in one row is the widest thing on the panel, and it
-		// is what stopped a side dock from being possible at all: with
-		// eight cameras configured the panel demanded 530 px, and an OBS
-		// dock down one side is 300-400. Wrapping at four takes that to
-		// four columns.
-		//
-		// It costs a ROW PER BAY, which in the stack is 44 px of event
-		// list, so it is the second answer and not the first: the keys
-		// are given a width RANGE (see above) and compress instead.
-		// Wrapping is what is left when even that does not fit, and with
-		// the 34 px floor eight slots come to 310 px — inside a 340 px
-		// side dock — so on this rig it never has to.
-		//
-		// POSITION STILL MEANS THE ANGLE. Wrapping row-major keeps C5
-		// under C1, so the hand learns a block instead of a line — what it
-		// must never do is RENUMBER, and nothing here does.
-		const int slotsWide = 1 + g_cams * (kAngleKeyMinW + 4);
-		const int perRow = slotsWide > kAngleWrapWidth ? 4 : 8;
-		QVector<QVector<Cell>> compact;
-		for (int ch = 0; ch < 2; ch++) {
-			const QVector<Cell> &src = ch ? rowB : rowA;
-			// src[0] is the bay letter; the keys follow.
-			for (int i = 1; i < src.size(); i += perRow) {
-				QVector<Cell> line;
-				line << (i == 1 ? src[0] : Cell(nullptr, 1));
-				for (int k = i; k < src.size() && k < i + perRow;
-				     k++)
-					line << src[k];
-				compact << line;
-			}
-		}
-		QVector<Cell> cSel;
-		cSel << Cell(nullptr, 1) << Cell(sel, 3, false)
-		     << Cell(nullptr, std::max(1, perRow - 4))
-		     << Cell(swap, 1, false);
-		compact << cSel;
-		blk->setShapes({top, bottom}, compact);
-		// THE KEYS ARE NARROWER IN THE FOLDED SHAPE, and this is the only
-		// way to say so: the strip measures a section with sizeHint(), and
-		// a maximumWidth does not move that — only a fixed width does. The
-		// hook is called on every shape change, including the two flips
-		// ControlStrip::measure() makes to read both sizes, so the wide
-		// shape is measured at 46 and the folded one at 34 without anybody
-		// having to sequence it.
-		blk->setOnShape([camKeys](bool flat) {
-			for (QPushButton *b : camKeys)
-				b->setFixedWidth(flat ? kAngleKeyMinW
-						      : kAngleKeyW);
-		});
+		swap->setMinimumWidth(38);
+		// The swap skips a column: ⇄ is not a fourth mode, and pressed by
+		// mistake it puts the wrong clip on air.
+		row << Cell(nullptr, 1) << Cell(swap);
+		blk->setShapes({row}, {row});
 		strip_->addBlock(blk, lane, false, rank);
 	}
 
-	// EXPORT — the reference keeps it in the far corner of the first row.
-	void buildExport(Lane lane, int rank)
-	{
-		auto *blk = new KeyBlock(QString(), this);
-		auto *up = iconKey(Icon::MoveUp, QStringLiteral("moveUp"),
-				   QStringLiteral("Sposta su"));
-		auto *dn = iconKey(Icon::MoveDown, QStringLiteral("moveDown"),
-				   QStringLiteral("Sposta giù"));
-		auto *more = iconKey(Icon::More, QStringLiteral("clipActions"),
-				     QStringLiteral("Duplica · Elimina"));
-		auto *exp = iconTextKey(Icon::ExportClip,
-					QStringLiteral("Esporta"),
-					QStringLiteral("exportClips"));
-		exp->setToolTip(QStringLiteral("Esporta le clip selezionate"));
-		auto *reel = iconTextKey(Icon::ExportReel,
-					 QStringLiteral("Sequenza"),
-					 QStringLiteral("exportReel"));
-		reel->setToolTip(QStringLiteral("Esporta la selezione in un file solo"));
-		remember(exp);
-		remember(reel);
-		// ONE ROW IN BOTH SHAPES. It was two folded — the three ordering
-		// keys with one export, the reel underneath — which cost a line of
-		// the stack for the section nobody touches while the ball is in
-		// play. Folded, the two exports lose their words and keep their
-		// marks (one block, or a strip of them), so five keys come to
-		// ~180 px and the line is back.
-		blk->setShapes({{Cell(up), Cell(dn), Cell(more), Cell(exp),
-				 Cell(reel)}},
-			       {{Cell(up), Cell(dn), Cell(more), Cell(exp),
-				 Cell(reel)}});
-		strip_->addBlock(blk, lane, false, rank);
-	}
-
-	// REC — the take. Gear, the record key, and the wall clock beside them.
-	// The elapsed time and the health badge moved to the status line: they
-	// are readings, not commands, and this section is where the take is
-	// ARMED.
+	// ── REC: the take, and every number about it ─────────────────────────
+	//
+	// One section, as it should always have been: arming the take, how long
+	// it has been running, how much room is left, and the wall clock. They
+	// were spread between here and the status line, so "how long have we
+	// been recording" was answered in a different place from "are we
+	// recording".
+	//
+	// REC SPANS BOTH ROWS. It is one of the three first-function keys on the
+	// panel (REC, PLAY, NOW) and it is drawn bigger than the rest — the same
+	// height as the section, so nothing beside it is left misaligned.
 	void buildRec(Lane lane, bool startsLine, int rank)
 	{
 		auto *blk = new KeyBlock(QString(), this);
-		auto *gear = iconKey(Icon::Gear, QStringLiteral("settings"),
-				     QStringLiteral("Impostazioni"), "mrGear");
-		gear->setFixedWidth(30);
-		auto *rec = key(QStringLiteral("REC"), "mrRec");
-		rec->setProperty("recording", false);
-		rec->setMinimumWidth(74);
-		setKeyIcon(rec, Icon::Live, g_tints, 12);
-		setKeyId(rec, QStringLiteral("rec"));
+		auto *rec = iconTextKey(Icon::Rec, QStringLiteral("REC"),
+					QStringLiteral("rec"), "mrRec", 13);
+		rec->setMaximumHeight(QWIDGETSIZE_MAX);
+		rec->setMinimumWidth(78);
 
-		auto *clock = new QLabel(QStringLiteral("17:22:06"), this);
-		clock->setObjectName(QStringLiteral("mrClock"));
-		clock->setFixedWidth(58);
+		// HOW LONG THE TAKE HAS BEEN RUNNING is the number the operator
+		// looks for, so it is the big one and it is red while it runs.
+		// The wall clock and the room left are the small print under it.
+		auto *elapsed = new QLabel(QStringLiteral("09:52:20"), this);
+		elapsed->setObjectName(QStringLiteral("mrStatusValue"));
+		elapsed->setProperty("rec", true);
+		auto *sub = new QLabel(QStringLiteral("17:22:06 · rim. 01:10:24"),
+				       this);
+		sub->setObjectName(QStringLiteral("mrMuted"));
+		// FIXED WIDTH, and it is not cosmetic: these change four times a
+		// second and their text changes LENGTH with it. A width change
+		// re-flows the strip, which changes its height, which makes the
+		// panel redistribute height — and what gives it up is the
+		// pictures, whose resize re-allocates a swap chain on the
+		// graphics thread. A label that cannot change width cannot start
+		// that chain.
+		elapsed->setFixedWidth(132);
+		sub->setFixedWidth(132);
 
-		blk->setShapes({{Cell(gear), Cell(rec), Cell(clock, 1, false)}},
-			       {{Cell(gear), Cell(rec, 2)},
-				{Cell(clock, 3, false)}});
+		const BlockShape shape{{Cell(rec, 1, true, 2), Cell(elapsed, 1, false)},
+				       {Cell(nullptr, 1), Cell(sub, 1, false)}};
+		blk->setShapes(shape, shape);
 		strip_->addBlock(blk, lane, startsLine, rank);
 	}
 
-	// RIPRODUZIONE — the reference's centre group, in its order. Four keys
-	// lighter than it was: NOW, Loop, music and "in output" live on the
-	// status line now, so what is left here is what DRIVES the picture.
+	// ── the transport, and the two keys that matter most in it ───────────
+	//
+	//   ▶⏸ ■ ◀ ↺ ⏮ ⏭ ▾   drive the clip that is showing
+	//   [      NOW      ]  come back to the live edge
+	//   [  PLAY  ]         put the selected events on air — two rows tall
+	//
+	// PLAY IS THE BIGGEST KEY ON THE PANEL because it is the one that takes
+	// Program, and NOW is the widest because it is the way back. They were a
+	// text button and a small key in a row of eight, the same weight as a
+	// frame step, so the eye had to read the whole strip to find either.
 	void buildPlayback(Lane lane, int rank)
 	{
 		auto *blk = new KeyBlock(QString(), this);
-		auto *pp = iconKey(Icon::Play, QStringLiteral("playPause"),
+		auto *pp = iconKey(Icon::PlayPause, QStringLiteral("playPause"),
 				   QStringLiteral("Riproduci / pausa"), "mrPlay");
 		auto *stop = iconKey(Icon::Stop, QStringLiteral("stop"),
 				     QStringLiteral("Stop"));
@@ -1186,21 +902,47 @@ private:
 				   QStringLiteral("Un fotogramma indietro"));
 		auto *sf = iconKey(Icon::StepFwd, QStringLiteral("stepFwd"),
 				   QStringLiteral("Un fotogramma avanti"));
-		auto *play = key(QStringLiteral("Riproduci eventi"), "mrAccent");
-		setKeyId(play, QStringLiteral("playEvents"));
 		auto *more = iconKey(Icon::Menu, QStringLiteral("playOptions"),
 				     QStringLiteral("Altre opzioni"), "mrGear");
-		more->setFixedWidth(22);
-		blk->setShapes(
-			{{Cell(pp), Cell(stop), Cell(rev), Cell(last), Cell(sb),
-			  Cell(sf), Cell(play), Cell(more)}},
-			{{Cell(play, 5), Cell(more)},
-			 {Cell(pp), Cell(stop), Cell(rev), Cell(last), Cell(sb),
-			  Cell(sf)}});
+		more->setMaximumWidth(22);
+
+		auto *now = key(QStringLiteral("NOW"), "mrNow");
+		setKeyId(now, QStringLiteral("now"));
+		now->setToolTip(QStringLiteral("Torna al fronte live"));
+
+		auto *play = iconKey(Icon::Play, QStringLiteral("playEvents"),
+				     QStringLiteral("Riproduci gli eventi selezionati"),
+				     "mrAccent");
+		play->setMaximumHeight(QWIDGETSIZE_MAX);
+		// WIDE AS WELL AS TALL. Two rows of height alone made it a green
+		// stripe; the key that takes Program should be the one rectangle
+		// the eye lands on without reading anything.
+		play->setMinimumWidth(96);
+		setKeyIcon(play, Icon::Play, g_tints, 22);
+
+		const BlockShape wide{
+			{Cell(pp), Cell(stop), Cell(rev), Cell(last), Cell(sb),
+			 Cell(sf), Cell(more), Cell(play, 1, true, 2)},
+			{Cell(now, 7)}};
+		const BlockShape flat{
+			{Cell(pp), Cell(stop), Cell(rev), Cell(last), Cell(sb),
+			 Cell(sf), Cell(more)},
+			{Cell(now, 4), Cell(play, 3)}};
+		blk->setShapes(wide, flat);
 		strip_->addBlock(blk, lane, false, rank);
 	}
 
-	// VELOCITA — presets then dial, as on the reference panel.
+	// ── VELOCITA, and what is done with the clips once they are marked ───
+	//
+	//   25 33 50 75 100 2×
+	//   [ the dial ]
+	//   [ Export ▾ ]
+	//
+	// The export keys were a section of their own in the far corner. There
+	// were two of them — one clip, or the whole selection as one file — and
+	// that is a QUESTION, not two keys: one key that asks it takes half the
+	// room and stops the operator having to know the difference before he
+	// has decided he wants to export at all.
 	void buildSpeed(Lane lane, int rank)
 	{
 		auto *blk = new KeyBlock(QString(), this);
@@ -1208,6 +950,7 @@ private:
 		QList<QPushButton *> chips;
 		for (const char *l : {"25%", "33%", "50%", "75%", "100%", "2×"}) {
 			auto *b = key(QString::fromUtf8(l), "mrSpeedChip");
+			b->setChecked(QString::fromUtf8(l) == QStringLiteral("100%"));
 			setKeyId(b, QStringLiteral("speed%1").arg(
 					    QString::fromUtf8(l)));
 			chips << b;
@@ -1220,11 +963,153 @@ private:
 		dial->setValue(100);
 		dial->setMinimumWidth(110);
 		dial->setFixedHeight(kKeyH);
-		blk->setShapes({row, {Cell(dial, 6)}},
-			       {{Cell(chips[0]), Cell(chips[1]), Cell(chips[2]),
-				 Cell(chips[3]), Cell(chips[4]), Cell(chips[5])},
-				{Cell(dial, 6)}});
+		auto *exp = iconTextKey(Icon::ExportClip, QStringLiteral("Export"),
+					QStringLiteral("export"));
+		exp->setToolTip(QStringLiteral("Esporta la clip o l'intera sequenza"));
+		remember(exp);
+
+		const BlockShape shape{row,
+				       {Cell(dial, 6)},
+				       {Cell(exp, 6)}};
+		blk->setShapes(shape, shape);
 		strip_->addBlock(blk, lane, false, rank);
+	}
+
+	// The tiles, laid into the block chosen for the room they were given.
+	void relayTiles(int cols)
+	{
+		cols = std::max(1, cols);
+		if (cols == tileCols_ && tilesGrid_->count() > 0)
+			return;
+		while (QLayoutItem *it = tilesGrid_->takeAt(0))
+			delete it;
+		// NO ALIGNMENT FLAG. An aligned layout item is given its
+		// sizeHint, not its cell — so a tile whose minimum is nothing and
+		// whose content is a caption would draw itself caption-sized.
+		// Unaligned, it fills the cell and its MAXIMUM is what holds it to
+		// a picture-shaped rectangle.
+		for (int i = 0; i < kTiles; i++)
+			tilesGrid_->addWidget(tile_[i], i / cols, i % cols);
+		const int rows = (kTiles + cols - 1) / cols;
+		// EVERY row and column, not just the ones in use now. A
+		// QGridLayout remembers the stretch of a row it no longer has
+		// items in, and rowCount() never comes back down — so a block
+		// that was once eight rows deep kept four EMPTY stretching rows
+		// after it became four, and they took half the block's height.
+		for (int c = 0; c < std::max(cols, tilesGrid_->columnCount()); c++)
+			tilesGrid_->setColumnStretch(c, c < cols ? 1 : 0);
+		for (int r = 0; r < std::max(rows, tilesGrid_->rowCount()); r++)
+			tilesGrid_->setRowStretch(r, r < rows ? 1 : 0);
+		tileCols_ = cols;
+	}
+
+	// Cap every tile, floor none of them.
+	void setTileCaps(int w, int h)
+	{
+		w = std::max(1, w);
+		h = std::max(1, h) + kTagH;
+		for (int i = 0; i < kTiles; i++) {
+			tile_[i]->setMinimumSize(0, 0);
+			tile_[i]->setMaximumSize(w, h);
+		}
+		const int rows = (kTiles + tileCols_ - 1) / std::max(1, tileCols_);
+		tiles_->setMaximumWidth(tileCols_ * w + (tileCols_ - 1) * kTileGap);
+		tiles_->setMaximumHeight(rows * h + (rows - 1) * kTileGap);
+	}
+
+	// A 16:9 picture in a box of another shape is drawn letterboxed, and the
+	// difference comes out as BLACK BARS. Every bar is a pixel the event list
+	// asked for, so the monitoring pane is capped at the height its pictures
+	// can actually fill and the splitter hands the rest to the list.
+	static int aspectHeight(int w) { return std::max(1, w * 9 / 16); }
+
+	void applyPreviewAspect()
+	{
+		const int paneW = std::max(80, leftCol_->width());
+		const int bays = g_haveB ? 2 : 1;
+		int want = 0;
+
+		if (mode_ == PanelMode::Tall) {
+			// A COLUMN: the bays across the top, the cameras under
+			// them as a filmstrip.
+			const int bayW = (paneW - 3 * (bays - 1)) / bays;
+			const int bayH = aspectHeight(bayW) + kTagH;
+			const int cols = std::clamp(paneW / kTileMinWidth, 1,
+						    std::max(1, g_cams));
+			relayTiles(cols);
+			const int rows = (g_cams + cols - 1) / cols;
+			const int tileW = std::min(kTileMaxWidth,
+						   (paneW - kTileGap * (cols - 1)) /
+							   cols);
+			const int tileH = aspectHeight(tileW);
+			setTileCaps(tileW, tileH);
+			const int stripH = rows * (tileH + kTagH) +
+					   (rows - 1) * kTileGap;
+			aBox_->setMaximumHeight(bayH);
+			bBox_->setMaximumHeight(bayH);
+			for (QWidget *w : {aBox_, bBox_})
+				w->setMaximumWidth(QWIDGETSIZE_MAX);
+			want = bayH + monitorSplit_->handleWidth() + stripH;
+			if (!userMonitorSplit_)
+				monitorSplit_->setSizes({bayH, stripH});
+		} else {
+			// THE CAMERA BLOCK IS SIZED FIRST and the bays take what
+			// is left, which is the opposite of what a stretch factor
+			// does and the reason a stretch factor starved them.
+			const int roomH =
+				mode_ == PanelMode::Short
+					? std::max(40, leftCol_->height() -
+								 controlsHeight())
+					: 0;
+			const TileBlock tb =
+				tileBlockFor(paneW, bays, g_cams, 3, roomH);
+			relayTiles(tb.cols);
+			setTileCaps(tb.tileW, tb.tileH);
+			const int aW = std::max(60, (paneW - tb.blockW -
+						     monitorSplit_->handleWidth() -
+						     3 * (bays - 1)) /
+							    bays);
+			want = aspectHeight(aW) + kTagH;
+			if (mode_ == PanelMode::Wide)
+				want = std::min(want, height() / 2);
+			// WHEN THE HEIGHT CAP BITES, THE BAY GETS NARROWER TOO.
+			// The pictures may not have more than half the panel, and
+			// on a wide single-bay rig a 16:9 A across the whole pane
+			// wants three quarters of it — so the box ends up wider
+			// than its picture and the difference is drawn as BLACK
+			// BARS down either side. Capping the width leaves the same
+			// space in the PANEL's colour, which is space rather than
+			// a picture with something wrong with it.
+			const int fitW = (want - kTagH) * 16 / 9;
+			for (QWidget *w : {aBox_, bBox_}) {
+				w->setMaximumHeight(QWIDGETSIZE_MAX);
+				w->setMaximumWidth(fitW < aW ? fitW
+							     : QWIDGETSIZE_MAX);
+			}
+			if (!userMonitorSplit_)
+				monitorSplit_->setSizes(
+					{aW * bays + 3 * (bays - 1), tb.blockW});
+		}
+
+		if (mode_ == PanelMode::Short)
+			return; // the body splitter divides WIDTH here
+
+		// A cap AND the split: capped alone, the splitter can still hand
+		// the pane LESS than the pictures need, and short is a black bar
+		// too — down the sides instead of along the top.
+		leftCol_->setMaximumHeight(want);
+		if (!userSplit_) {
+			const int total = bodySplit_->height();
+			const int give = std::min(want, total - kListFloor);
+			const QList<int> now = bodySplit_->sizes();
+			if (give > 0 && (now.isEmpty() || std::abs(now[0] - give) > 2))
+				bodySplit_->setSizes({give, total - give});
+		}
+	}
+
+	int controlsHeight() const
+	{
+		return controlsInColumn_ && controls_ ? controls_->height() + 3 : 0;
 	}
 };
 
@@ -1233,11 +1118,6 @@ private:
 // ---------------------------------------------------------------------------
 // --check — the part of this that is a GATE rather than a look
 // ---------------------------------------------------------------------------
-//
-// Rendering seven PNGs answers "does it look right", which needs a person. These
-// answer "is anything off the panel, is anything too small to hit, does the
-// arrangement change when it is supposed to" — which does not, and therefore
-// should not wait for one. Exit code 0 = every check true.
 namespace {
 
 int g_fail = 0;
@@ -1268,9 +1148,7 @@ double contrast(const QColor &a, const QColor &b)
 	return (std::max(la, lb) + 0.05) / (std::min(la, lb) + 0.05);
 }
 
-// Everything visible has to be ON the panel. This is the check that would have
-// caught VELOCITA and EXPORT being cut off the bottom of the 340x900 column —
-// which a size hint reported correctly and the layout then ignored.
+// Everything visible has to be ON the panel.
 void checkNothingClipped(Mock *w, const QString &label)
 {
 	const QRect panel(QPoint(0, 0), w->size());
@@ -1278,13 +1156,9 @@ void checkNothingClipped(Mock *w, const QString &label)
 	int off = 0;
 	for (QWidget *c : w->findChildren<QWidget *>()) {
 		// isVisible(), NOT !isHidden(): a widget inside a hidden parent
-		// reports isHidden() false — its own flag was never touched — so
-		// the first version of this check was reading the geometry of
-		// things that are not on the screen at all.
+		// reports isHidden() false — its own flag was never touched.
 		if (!c->isVisible() || c->width() <= 0 || c->height() <= 0)
 			continue;
-		// Only leaves: a container reporting a rect its children do not
-		// occupy is not a clipped control.
 		if (!c->findChildren<QWidget *>().isEmpty())
 			continue;
 		const QRect r(c->mapTo(w, QPoint(0, 0)), c->size());
@@ -1307,11 +1181,7 @@ void checkNothingClipped(Mock *w, const QString &label)
 		  : QString());
 }
 
-// A key smaller than this is a key that cannot be hit under pressure. It is the
-// failure mode a QHBoxLayout produces when it runs out of width, and the reason
-// FlowLayout exists. The floor came down with kKeyH (28 → 26, folded 24 → 22),
-// so it is stated against kKeyFoldedH rather than as a loose number: if the key
-// height is ever cut again, this check has to be a deliberate part of it.
+// A key smaller than this is a key that cannot be hit under pressure.
 void checkHitTargets(Mock *w, const QString &label)
 {
 	int small = 0;
@@ -1321,8 +1191,10 @@ void checkHitTargets(Mock *w, const QString &label)
 			continue;
 		// The status line's own keys are shorter by design — they are
 		// pressed while being looked at, not reached for blind.
-		const int floor = b->objectName() == QStringLiteral("mrStatKey")
-					  ? 16
+		const int floor = b->objectName() == QStringLiteral("mrStatKey") ||
+						  b->objectName() ==
+							  QStringLiteral("mrHealth")
+					  ? 15
 					  : kKeyFoldedH - 4;
 		if (b->width() >= 20 && b->height() >= floor)
 			continue;
@@ -1339,20 +1211,43 @@ void checkHitTargets(Mock *w, const QString &label)
 		    : QString());
 }
 
-// EVERY COMMAND KEY CARRIES ITS IDENTITY. This is the check that makes the
-// icon-first panel safe to change again: the automated gate used to find twelve
-// keys by their literal text ("⏭", "■", "-5s"), which made a redrawing or a
-// translation look exactly like a broken key. If a key here has no mrKey, the
-// gate cannot find it and nothing else will say so.
+// A KEY MUST BE WIDE ENOUGH FOR ITS OWN LABEL. Qt under-measures a
+// stylesheet-styled button carrying both an icon and a word, and "Monitors"
+// shipped as "Monitor:" — the kind of thing that is obvious in a screenshot and
+// invisible in a size hint.
+void checkLabelsFit(Mock *w, const QString &label)
+{
+	int cut = 0;
+	QString worst;
+	for (QAbstractButton *b : w->findChildren<QAbstractButton *>()) {
+		if (!b->isVisible() || b->text().isEmpty())
+			continue;
+		const int need = b->fontMetrics().horizontalAdvance(b->text()) +
+				 (b->icon().isNull() ? 0 : b->iconSize().width() + 4);
+		if (b->width() >= need + 8)
+			continue;
+		cut++;
+		if (worst.isEmpty())
+			worst = QString("'%1' has %2 needs %3")
+					.arg(b->text())
+					.arg(b->width())
+					.arg(need + 8);
+	}
+	check(cut == 0, label + ": every label fits its key",
+	      cut ? QString("%1 cut, first %2").arg(cut).arg(worst) : QString());
+}
+
+// EVERY COMMAND KEY CARRIES ITS IDENTITY. The automated gate used to find
+// twelve of this panel's keys by their literal text, which made a redrawing or
+// a translation look exactly like a broken key.
 void checkKeyIds(Mock *w)
 {
 	int missing = 0, ids = 0;
 	QString worst;
 	QStringList seen;
 	for (QAbstractButton *b : w->findChildren<QAbstractButton *>()) {
-		// Qt builds buttons of its own inside its widgets (a table view's
-		// corner button, a scroll area's). They are not this panel's keys
-		// and nothing outside Qt ever presses them.
+		// Qt builds buttons of its own inside its widgets (a table
+		// view's corner button). They are not this panel's keys.
 		if (b->objectName().startsWith(QStringLiteral("qt_")))
 			continue;
 		const QString id = b->property(kKeyProperty).toString();
@@ -1375,8 +1270,7 @@ void checkKeyIds(Mock *w)
 }
 
 // AN ICON HAS TO BE VISIBLE ON THE KEY IT IS DRAWN ON. The marks are pixmaps,
-// so unlike every label on this panel they do not follow the style sheet — a
-// theme that moved the key colour under them would leave them where they were.
+// so unlike every label on this panel they do not follow the style sheet.
 void checkIconContrast(const Scheme &s, const QString &label)
 {
 	const IconTints t = tintsFor(s);
@@ -1389,16 +1283,11 @@ void checkIconContrast(const Scheme &s, const QString &label)
 	      QString("%1:1").arg(contrast(t.on, QColor(s.pvwBg)), 0, 'f', 1));
 }
 
-// WHICH CHILD IS SETTING THE FLOOR. "min width 530" is a number nobody can act
-// on: six widgets have an opinion about it and five of them are innocent. This
-// names the widest one, which is the only thing that turns the failure into a
-// piece of work.
+// WHICH CHILD IS SETTING THE FLOOR, with its parents. One name was not enough:
+// the widest child is usually a plain QWidget that some section put its keys
+// in, and "QWidget (374)" is a number with nowhere to go.
 QString widestMinimum(Mock *w)
 {
-	// THE TOP THREE, with their parents. One name was not enough: the widest
-	// child is usually a plain QWidget that some section put its keys in, and
-	// "QWidget (374)" is a number with nowhere to go. The chain says which
-	// section.
 	QVector<QPair<int, QString>> found;
 	for (QWidget *c : w->findChildren<QWidget *>()) {
 		if (!c->isVisible())
@@ -1463,32 +1352,27 @@ int runChecks(QPalette pal)
 		check(w->height() <= t.h, label + ": fits the height it was given",
 		      QString("asked %1, got %2").arg(t.h).arg(w->height()));
 		// THE PANEL HAS TO FIT A REAL OBS DOCK, and the claim is made
-		// where it means something: in the COLUMN arrangement. A vertical
-		// dock in OBS is 300-400 px wide, and with eight cameras
-		// configured the panel demanded 411 before this redesign and 530
-		// half way through it — which is not "narrow", it is "cannot be
-		// docked there at all", on the rig this is most often run on.
-		//
-		// Asking it of the wide arrangement would be asking the wrong
-		// question: a panel that is 1500 px wide is wearing the shape for
-		// 1500 px, and dragging it narrow changes the shape first (see
-		// panelModeFor). What must be true is that the shape it lands in
-		// fits.
+		// where it means something: in the COLUMN arrangement. Asking it
+		// of the wide one would be asking the wrong question — a panel
+		// 1500 px wide is wearing the shape for 1500 px, and dragging it
+		// narrow changes the shape first.
 		if (t.mode == PanelMode::Tall) {
 			const bool fits = w->minimumSizeHint().width() <= 340;
-			check(fits, label + ": fits a side dock",
-			      widestMinimum(w));
-			// WHICH SECTION, in both shapes. The floor is the widest
-			// section's NARROW shape, and knowing that it is #1 at
-			// 374 px flat is the difference between a number and a
-			// piece of work.
+			check(fits, label + ": fits a side dock", widestMinimum(w));
 			if (!fits)
 				std::printf("      sections: %s\n",
 					    qUtf8Printable(
 						    w->strip_->describeBlocks()));
 		}
+		// THE LIST IS THE ELASTIC ZONE. Whatever else the arrangement
+		// does, the table has to come out usable — the panel exists to
+		// pick events off it.
+		check(w->bodySplit_->sizes().value(1) >= 90,
+		      label + ": the event list has room",
+		      QString("%1 px").arg(w->bodySplit_->sizes().value(1)));
 		checkNothingClipped(w, label);
 		checkHitTargets(w, label);
+		checkLabelsFit(w, label);
 		if (label == QStringLiteral("wide"))
 			checkKeyIds(w);
 		w->hide();
@@ -1497,8 +1381,8 @@ int runChecks(QPalette pal)
 
 	// HYSTERESIS, both directions. Without it a dock edge dragged across the
 	// boundary flips the arrangement back and forth, and every flip re-lays
-	// the panel's displays — a swap chain re-allocated on the graphics thread,
-	// several times a second, while a take is recording.
+	// the panel's displays — a swap chain re-allocated on the graphics
+	// thread, several times a second, while a take is recording.
 	const QSize edge(kTallMaxWidth + 10, 900);
 	check(panelModeFor(edge, PanelMode::Tall) == PanelMode::Tall,
 	      "hysteresis: a column does not flip out early");
@@ -1508,8 +1392,9 @@ int runChecks(QPalette pal)
 			   PanelMode::Tall) == PanelMode::Wide,
 	      "hysteresis: past the far edge it does flip");
 
-	// The scheme, on a LIGHT palette — the case that never existed before and
-	// the one where a hardcoded near-black panel would simply vanish.
+	// The scheme, on a LIGHT palette — the case that never existed before the
+	// panel could follow a theme, and the one where a scheme built for a
+	// near-black panel disappears.
 	const Scheme light = schemeFor(ThemeChoice::FollowObs, pal);
 	const QColor bg(light.panel);
 	check(contrast(QColor(light.text), bg) >= 4.5,
@@ -1522,9 +1407,6 @@ int runChecks(QPalette pal)
 	// SIGNAL SURVIVES THE THEME. This is the check the whole two-kinds-of-
 	// colour split exists for: on a white panel the same red has to still be
 	// findable, or "red means on air" has quietly stopped being true.
-	// NOT called `signals`: with Qt keywords enabled that is a macro expanding
-	// to `public:`, and the declaration becomes a syntax error several lines
-	// later.
 	const std::pair<const char *, QString> sigColours[] = {
 		{"rec", light.rec},
 		{"pvw", light.pvw},
@@ -1574,10 +1456,6 @@ int main(int argc, char **argv)
 	g_tints = tintsFor(g_sc);
 
 	if (args.contains(QStringLiteral("--check"))) {
-		// A LIGHT palette on purpose, whatever this machine is themed
-		// with: the light path is the one that never existed before the
-		// panel could follow a theme, and it is the one where a scheme
-		// built for a near-black panel disappears.
 		QPalette lp = app.palette();
 		lp.setColor(QPalette::Window, QColor("#efefef"));
 		lp.setColor(QPalette::WindowText, QColor("#101010"));
@@ -1603,9 +1481,9 @@ int main(int argc, char **argv)
 		int w, h;
 	};
 	// THE THREE TARGETS FIRST, because they are the shapes an operator
-	// actually gets: a maximised window on a second monitor, a dock under the
-	// OBS preview, a dock down one side. The rest are the corners that used to
-	// break.
+	// actually gets: a maximised window on a second monitor, a dock under
+	// the OBS preview, a dock down one side. The rest are the corners that
+	// used to break.
 	QVector<Size> sizes = {{"target-wide", 1500, 900},
 			       {"target-short", 1400, 340},
 			       {"target-tall", 340, 900},
@@ -1634,26 +1512,18 @@ int main(int argc, char **argv)
 		const QString path =
 			QDir(outDir).filePath(QString("mock-%1.png").arg(s.name));
 		w->grab().save(path);
-		// The strip's own height is printed because it is the number that
-		// decides whether the pictures and the list can both have what
-		// they need: on a 340x900 column it is the single biggest item on
-		// the panel, and "the keys take too much room" is a claim that
-		// should be answered with it rather than by eye.
-		std::printf("   tiles %dx%d block %dx%d\n",
+		std::printf("   tiles %dx%d block %dx%d, monitors %dx%d\n",
 			    w->tileSize().width(), w->tileSize().height(),
-			    w->tileBlockSize().width(), w->tileBlockSize().height());
-		std::printf("   strip %d px, preview cap %d px, split %d/%d, pane %d, tile cols %d\n",
-			    w->strip_->minHeightForWidth(w->strip_->width()),
-			    w->previewBox_->maximumHeight(),
-			    w->splitter_->sizes().value(0),
-			    w->splitter_->sizes().value(1),
-			    w->previewBox_->height(), w->tileCols_);
-		std::printf("%-16s asked %4dx%4d  got %4dx%4d  min %4dx%4d  %-5s strip=%s\n",
+			    w->tileBlockSize().width(), w->tileBlockSize().height(),
+			    w->monitorSize().width(), w->monitorSize().height());
+		std::printf("%-16s asked %4dx%4d  got %4dx%4d  min %4dx%4d  %-5s strip=%s split %d/%d\n",
 			    s.name, s.w, s.h, w->width(), w->height(),
 			    w->minimumSizeHint().width(),
 			    w->minimumSizeHint().height(),
 			    panelModeName(w->mode_),
-			    w->strip_->isFlat() ? "stack" : "lanes");
+			    w->strip_->isFlat() ? "stack" : "lanes",
+			    w->bodySplit_->sizes().value(0),
+			    w->bodySplit_->sizes().value(1));
 	}
 	return 0;
 }

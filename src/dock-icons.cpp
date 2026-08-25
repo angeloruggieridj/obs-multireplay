@@ -109,6 +109,17 @@ void buildPaths(Icon id, QPainterPath &fill, QPainterPath &line)
 		fill.addRoundedRect(QRectF(13, 5, 3.5, 14), 1.2, 1.2);
 		break;
 
+	case Icon::PlayPause:
+		// The triangle and the two bars, side by side and smaller than
+		// either would be alone. It says "this key is both" without
+		// changing under the hand, which is what a key that toggles has
+		// to do when the operator is watching the picture and not the
+		// panel.
+		triangleRight(fill, 3.5, 6.5, 8, 11);
+		fill.addRoundedRect(QRectF(14, 6.5, 2.8, 11), 1.0, 1.0);
+		fill.addRoundedRect(QRectF(18.2, 6.5, 2.8, 11), 1.0, 1.0);
+		break;
+
 	case Icon::Stop:
 		fill.addRoundedRect(QRectF(6.5, 6.5, 11, 11), 1.6, 1.6);
 		break;
@@ -301,6 +312,14 @@ void buildPaths(Icon id, QPainterPath &fill, QPainterPath &line)
 		line.lineTo(8.5, 18.5);
 		break;
 
+	case Icon::Rec:
+		// The record dot: solid, nothing else. It is not the Live mark
+		// (that one has the tally's ring round it) and the two must not
+		// be mistaken for one another — one arms a take, the other says
+		// where a mark lands.
+		fill.addEllipse(QPointF(12, 12), 6.0, 6.0);
+		break;
+
 	case Icon::Live:
 		// The on-air dot with its ring. Solid centre so it survives being
 		// tinted red on a red key.
@@ -309,15 +328,26 @@ void buildPaths(Icon id, QPainterPath &fill, QPainterPath &line)
 		break;
 
 	case Icon::Loop:
-		// A closed circuit with a head on it, drawn square rather than
-		// round so it is not mistaken for PlayLast at 16 px.
-		line.moveTo(9, 6.5);
-		line.lineTo(16, 6.5);
-		line.arcTo(QRectF(13, 6.5, 6, 6), 90, -180);
-		line.lineTo(8, 12.5);
-		line.arcTo(QRectF(5, 12.5, 6, 6), 90, 180);
-		line.lineTo(14, 18.5);
-		arrowHead(fill, 16.5, 18.5, 1, 0, 3.8, 2.5);
+		// A RECTANGULAR CIRCUIT with a head on each straight, which is the
+		// mark every player uses for repeat. The first version was a
+		// figure drawn from two arcs and a straight, and at 16 px it came
+		// out as an ambiguous squiggle that could not be told from
+		// PlayLast — two keys in the same row reading as the same key.
+		//
+		// Top rail runs right and turns down; bottom rail runs left and
+		// turns up. The gap in each rail is where its arrowhead goes, so
+		// the two heads sit on opposite corners and the direction is
+		// readable at a glance.
+		line.moveTo(8.5, 7.0);
+		line.lineTo(16.5, 7.0);
+		line.arcTo(QRectF(13.5, 7.0, 6, 6), 90, -90);
+		line.lineTo(19.5, 13.5);
+		arrowHead(fill, 19.5, 16.0, 0, 1, 3.6, 2.4);
+		line.moveTo(15.5, 17.0);
+		line.lineTo(7.5, 17.0);
+		line.arcTo(QRectF(4.5, 11.0, 6, 6), 270, -90);
+		line.lineTo(4.5, 10.5);
+		arrowHead(fill, 4.5, 8.0, 0, -1, 3.6, 2.4);
 		break;
 
 	case Icon::Music:
