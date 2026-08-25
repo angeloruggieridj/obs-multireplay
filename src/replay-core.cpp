@@ -1271,6 +1271,14 @@ void ReplayCore::loadConfigFile(const char *path, bool projectScoped)
 	if (obs_data_has_user_value(data, "showMultiview"))
 		config_.showMultiview =
 			obs_data_get_bool(data, "showMultiview");
+	// GLOBAL, like updateChannel above: what colour an operator wants his
+	// panel is a fact about the operator, not about the match. Project-scoped
+	// it would mean opening somebody else's project re-themed your panel.
+	if (!projectScoped && obs_data_has_user_value(data, "uiTheme"))
+		config_.uiTheme = (int)obs_data_get_int(data, "uiTheme");
+	if (!projectScoped && obs_data_has_user_value(data, "tableDensity"))
+		config_.tableDensity =
+			(int)obs_data_get_int(data, "tableDensity");
 	if (obs_data_has_user_value(data, "eventListCount"))
 		config_.eventListCount =
 			(int)obs_data_get_int(data, "eventListCount");
@@ -1415,6 +1423,8 @@ void ReplayCore::saveConfigFile(const char *path) const
 	obs_data_set_int(data, "eventFadeMs", config_.eventFadeMs);
 	obs_data_set_int(data, "eventIdDigits", config_.eventIdDigits);
 	obs_data_set_bool(data, "showMultiview", config_.showMultiview);
+	obs_data_set_int(data, "uiTheme", config_.uiTheme);
+	obs_data_set_int(data, "tableDensity", config_.tableDensity);
 	obs_data_set_int(data, "eventListCount", config_.eventListCount);
 	obs_data_set_string(data, "recFormat", config_.recFormat.c_str());
 

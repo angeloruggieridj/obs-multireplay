@@ -176,6 +176,18 @@ struct Config {
 	// each tile is an obs_display on the shared graphics thread, so a rig that
 	// is short of GPU can switch the whole strip off here.
 	bool showMultiview = true;
+	// WHICH COLOURS THE PANEL WEARS — see ThemeChoice in dock-style.hpp.
+	// 0 = follow the OBS theme (default), 1 = the reference controller's own
+	// scheme, 2 = high contrast. Only the CHROME follows the theme: REC, the
+	// on-air band and the tally keep their own hues at every setting, because
+	// red means on air and that is not a preference.
+	int uiTheme = 0;
+	// HOW TALL A ROW OF THE EVENT LIST IS. 0 = comfortable (the historic 30 px),
+	// 1 = compact, 2 = dense. It is not just the row: an angle cell holds combo
+	// boxes, and the row is sized from the cell it actually built — so the
+	// setting drives the INPUT metrics in the style sheet and the row follows.
+	// Changing one without the other is what "the text looks cut" was.
+	int tableDensity = 0;
 	// the reference controller event-id digits (default 4): ids are shown zero-padded to this
 	// width, so they stay the same length all match long and can be called out
 	// loud ("play 0142") without counting characters.

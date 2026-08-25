@@ -94,6 +94,31 @@ namespace multireplay {
 
 namespace {
 
+// THE SCHEME, for the two widgets that PAINT rather than being styled.
+//
+// A style sheet cannot reach inside a QPainter, so the position bar and the
+// on-air band read their colours from here. Both their paintEvents and the one
+// thing that writes it (MultiReplayDock::applyTheme) run on the GUI thread, so
+// a plain object needs no guard.
+//
+// A FUNCTION-LOCAL STATIC, not a file-scope one: schemeFor() builds QColors and
+// touches a QPalette, and a file-scope object would do that during static
+// initialisation — before QApplication exists.
+Scheme &sc()
+{
+	static Scheme s = schemeFor(ThemeChoice::Broadcast, QPalette());
+	return s;
+}
+
+// A scheme colour at partial opacity. The hairlines and the playhead used a
+// hardcoded white with alpha, which is a line that vanishes on a light theme.
+QColor tint(const QString &hex, int alpha)
+{
+	QColor c(hex);
+	c.setAlpha(alpha);
+	return c;
+}
+
 // The live dock, so the module's frontend-event handler can reach it when OBS is
 // about to clear scene data (see releasePreviewRefs). One dock at a time: it is
 // registered by id and OBS builds exactly one.
@@ -732,16 +757,16 @@ void SeekBar::paintEvent(QPaintEvent *)
 	// empty track there gave him a scrubber that swallowed every click.
 	if (durationNs_ <= 0) {
 		p.setPen(Qt::NoPen);
-		p.setBrush(QColor(0x11, 0x13, 0x17));
+		p.setBrush(QColor(sc().sink1));
 		p.drawRect(QRect(m, y, w, h + kSeekRulerH));
 		p.setBrush(Qt::NoBrush);
-		p.setPen(QPen(QColor(0x24, 0x2a, 0x33), 1));
+		p.setPen(QPen(QColor(sc().border), 1));
 		p.drawRect(QRect(m, y, w - 1, h + kSeekRulerH - 1));
 		if (!emptyHint_.isEmpty()) {
 			QFont f = p.font();
 			f.setBold(true);
 			p.setFont(f);
-			p.setPen(QColor(0x70, 0x7e, 0x8e));
+			p.setPen(QColor(sc().textMuted));
 			p.drawText(QRect(m + 6, y, w - 12, h + kSeekRulerH),
 				   Qt::AlignCenter, emptyHint_);
 		}
@@ -750,13 +775,13 @@ void SeekBar::paintEvent(QPaintEvent *)
 
 	// Track (the part of the timeline behind/ahead of the playhead)
 	p.setPen(Qt::NoPen);
-	p.setBrush(QColor(0x16, 0x1c, 0x24));
+	p.setBrush(QColor(sc().sink2));
 	p.drawRect(QRectF(m, y, w, h));
 
 	// Anything outside the seekable region is darker still: it is not a place
 	// the operator can go, and painting it like the rest would say it is.
 	if (seekableFrac_ < 1.0) {
-		p.setBrush(QColor(0x0c, 0x0e, 0x12));
+		p.setBrush(QColor(sc().panel));
 		p.drawRect(QRectF(m + w * seekableFrac_, y,
 				  w * (1.0 - seekableFrac_), h));
 	}
@@ -768,7 +793,7 @@ void SeekBar::paintEvent(QPaintEvent *)
 	// fill is semi-transparent, so on the played side both read at once:
 	// orange event over blue ground.
 	if (pos > 0.0) {
-		p.setBrush(QColor(0x2a, 0x4a, 0x72));
+		p.setBrush(QColor(sc().seekBar));
 		p.drawRect(QRectF(m, y, w * std::clamp(pos, 0.0, 1.0), h));
 	}
 
@@ -829,7 +854,7 @@ void SeekBar::paintEvent(QPaintEvent *)
 		// Ruler ground, a shade darker than the track: the strip is part
 		// of the control, not the panel behind it.
 		p.setPen(Qt::NoPen);
-		p.setBrush(QColor(0x0d, 0x10, 0x15));
+		p.setBrush(QColor(sc().panel));
 		p.drawRect(QRect(m, rulerY, w, kSeekRulerH));
 
 		const int64_t step = tickStepNs();
@@ -887,7 +912,7 @@ void SeekBar::paintEvent(QPaintEvent *)
 			// The mark itself: a tick into the bottom of the track so
 			// the scale is tied to the thing it measures, and a taller
 			// one on the ruler.
-			p.setPen(QPen(QColor(0xff, 0xff, 0xff, 0x38), 1));
+			p.setPen(QPen(tint(sc().text, 0x38), 1));
 			p.drawLine(xi, y + h - 5, xi, y + h - 1);
 			p.setPen(QPen(kMajor, 1));
 			p.drawLine(xi, rulerY + 1, xi, rulerY + 6);
@@ -913,7 +938,7 @@ void SeekBar::paintEvent(QPaintEvent *)
 	// through the ruler too — a scale is only useful if the position can be
 	// read against it.
 	const double hx = m + w * pos;
-	p.setPen(QPen(QColor(0xff, 0xff, 0xff, dragging_ ? 0xff : 0xc0),
+	p.setPen(QPen(tint(sc().text, dragging_ ? 0xff : 0xc0),
 		      dragging_ ? 3.0 : 2.0, Qt::SolidLine, Qt::FlatCap));
 	p.drawLine(QPointF(hx, y), QPointF(hx, y + h + kSeekRulerH));
 
@@ -926,9 +951,14 @@ void SeekBar::paintEvent(QPaintEvent *)
 		f.setBold(true);
 		p.setFont(f);
 		const QRectF tr(m, y, w, h);
-		p.setPen(QColor(0x00, 0x00, 0x00, 0xb0));
+		// The drop shadow is the BAR's own colour, not black: this text is
+		// drawn over the played band and the event markers, so what it
+		// needs is separation from whatever is behind it — and on a light
+		// theme a black shadow under dark text is a dark halo rather than
+		// a shadow.
+		p.setPen(tint(sc().sink2, 0xd0));
 		p.drawText(tr.adjusted(1, 1, 1, 1), Qt::AlignCenter, overlay_);
-		p.setPen(QColor(0xd8, 0xe4, 0xf2));
+		p.setPen(QColor(sc().text));
 		p.drawText(tr, Qt::AlignCenter, overlay_);
 	}
 }
@@ -1137,11 +1167,11 @@ void ClipBar::paintEvent(QPaintEvent *)
 	// muted while the bar is only describing what would play: "is something
 	// on air" must be answerable without reading a word.
 	p.setPen(Qt::NoPen);
-	p.setBrush(QColor(0x14, 0x64, 0x33));
+	p.setBrush(QColor(sc().onAirDim));
 	p.drawRect(QRectF(m, y, w, h));
 	if (progress_ > 0.0) {
-		p.setBrush(onAir_ ? QColor(0x19, 0x98, 0x47)
-				  : QColor(0x17, 0x65, 0x33));
+		p.setBrush(onAir_ ? QColor(sc().onAir)
+				  : QColor(sc().onAirDim));
 		p.drawRect(QRectF(m, y, w * progress_, h));
 	}
 
@@ -1149,7 +1179,7 @@ void ClipBar::paintEvent(QPaintEvent *)
 	// they are a scale, not another fill, and the operator has to be able to
 	// count "three more angles to go" without reading anything.
 	if (!joins_.empty()) {
-		p.setPen(QPen(QColor(0xff, 0xff, 0xff, 0xcc), 1));
+		p.setPen(QPen(tint(sc().text, 0xcc), 1));
 		for (double j : joins_) {
 			if (j <= 0.0 || j >= 1.0)
 				continue;
@@ -1274,8 +1304,22 @@ MultiReplayDock::MultiReplayDock(QWidget *parent) : QWidget(parent)
 	// hit. With the height left to the layout (and the control bands pinned at
 	// Minimum, see buildBottomBar) the panel simply refuses to go shorter than
 	// the keys, and the picture above is what gives way instead.
-	setMinimumWidth(560);
-	setStyleSheet(QString::fromUtf8(kDockStyle));
+	// THE FLOOR OF A VERTICAL DOCK. It was 560, and an OBS dock down one side
+	// is 300-400 px wide: the panel simply could not be put there. The number
+	// was never a design decision either — it was the width of the WIDE
+	// arrangement of the widest section, demanded at every size, including the
+	// sizes at which the strip would have folded instead (see
+	// ControlStrip::minimumSizeHint).
+	setMinimumWidth(300);
+	// THE SHEET IS BUILT, NOT A CONSTANT. It carries the operator's theme choice
+	// and the colours OBS is currently themed with; applyTheme() is called again
+	// whenever either changes. A first pass here, before any child exists, so
+	// every widget is polished into the right colours as it is created.
+	{
+		const Config &c0 = ReplayCore::instance().getConfig();
+		sc() = schemeFor((ThemeChoice)c0.uiTheme, qApp->palette());
+		setStyleSheet(dockStyle(sc(), c0.tableDensity));
+	}
 
 	auto *root = new QVBoxLayout(this);
 	root->setContentsMargins(4, 4, 4, 4);
@@ -1330,6 +1374,8 @@ MultiReplayDock::MultiReplayDock(QWidget *parent) : QWidget(parent)
 		lv->addWidget(buildEvents(), 1);
 		splitter_->addWidget(listPane);
 
+		connect(splitter_, &QSplitter::splitterMoved, this,
+			[this](int, int) { userSplit_ = true; });
 		splitter_->setStretchFactor(0, 3);
 		splitter_->setStretchFactor(1, 2);
 		root->addWidget(splitter_, 1);
@@ -1371,6 +1417,15 @@ MultiReplayDock::MultiReplayDock(QWidget *parent) : QWidget(parent)
 	refreshAngleRows();
 	refreshAngles();
 	refreshEvents();
+
+	// THE ARRANGEMENT, once, now that every widget it places exists. Forced,
+	// because panelMode_ already says Wide and the point of this call is to do
+	// the celling rather than to agree with itself. resizeEvent takes over
+	// from here — including the first real resize OBS gives the dock, which is
+	// usually not Wide.
+	applyTableDensity(ReplayCore::instance().getConfig().tableDensity);
+	applyPanelMode(panelModeFor(size(), panelMode_), /*force*/ true);
+
 	poll();
 }
 
@@ -1442,7 +1497,9 @@ QWidget *MultiReplayDock::buildToolbar()
 
 	projectLbl_ = new QLabel(box);
 	projectLbl_->setObjectName("mrMuted");
-	projectLbl_->setStyleSheet("color: #487898; font-size: 9px; padding: 0 4px;");
+	projectLbl_->setStyleSheet(
+		QString("color: %1; font-size: 9px; padding: 0 4px;")
+			.arg(sc().accent));
 	projectLbl_->hide();
 	h->addWidget(projectLbl_);
 	// Search and Live sit in the MIDDLE of their row, as they do on the
@@ -1590,10 +1647,19 @@ QWidget *MultiReplayDock::buildPreview()
 	// One row, two stretches — the operator watches the big one and keeps the
 	// others in the corner of his eye, which is the whole reason the strip is
 	// here rather than behind a button.
+	//
+	// A GRID, NOT A ROW, and it is not tidiness. The three panel arrangements
+	// (see applyPanelMode) move these three boxes between cells, and moving a
+	// widget from one LAYOUT to another re-parents it — which destroys the
+	// native window of every OBSQTDisplay underneath and strands its
+	// obs_display. Re-celling ONE grid never re-parents anything, which is the
+	// same reason the multiview tiles have always been moved rather than
+	// rebuilt.
 	auto *row = new QWidget(box);
-	auto *rh = new QHBoxLayout(row);
+	auto *rh = new QGridLayout(row);
 	rh->setContentsMargins(0, 0, 0, 0);
 	rh->setSpacing(3);
+	previewGrid_ = rh;
 
 	// TWO outputs side by side, as in the reference controller: A on the left, B on the right,
 	// each under its own letter. One box for two channels would mean the
@@ -1601,6 +1667,7 @@ QWidget *MultiReplayDock::buildPreview()
 	// a second channel is having the next replay ready while the first is on
 	// air, which cannot be done if only one of them can be seen.
 	auto *aBox = new QWidget(row);
+	aBox_ = aBox;
 	{
 		auto *av = new QVBoxLayout(aBox);
 		av->setContentsMargins(0, 0, 0, 0);
@@ -1637,9 +1704,10 @@ QWidget *MultiReplayDock::buildPreview()
 		labelB_->setAlignment(Qt::AlignCenter);
 		bv->addWidget(labelB_);
 	}
-	rh->addWidget(aBox, 3);
-	rh->addWidget(bBox, 3);
-	rh->addWidget(buildMultiview(), 2);
+	// The cells are assigned by applyPanelMode(), which runs at the end of the
+	// constructor and on every resize that changes the arrangement. Building
+	// the multiview here only creates it; where it goes is the mode's business.
+	buildMultiview();
 	monitorsRow_ = row; // the Monitors key hides this whole block
 	v->addWidget(row, 1);
 
@@ -1685,7 +1753,403 @@ void MultiReplayDock::applyMonitorsVisible(bool on)
 		monitorsStrip_->setVisible(on);
 	if (previewPane_)
 		previewPane_->setVisible(on);
+	if (on)
+		applyPreviewAspect();
 	obs_log(LOG_INFO, "[dock] monitors %s", on ? "shown" : "hidden");
+}
+
+// ---------------------------------------------------------------------------
+// THE THREE ARRANGEMENTS OF THE PANEL
+//
+// See PanelMode in dock-layout.hpp for the argument. In short: a replay panel
+// is used from memory rather than read, so it gets a small number of designed
+// arrangements instead of one that reflows into a different panel at every
+// width. Nothing is dropped in any of them; what changes is rank.
+//
+// EVERY LINE HERE IS A RE-CELL OR A PROPERTY. Nothing is created, destroyed or
+// re-parented, because under these boxes are OBSQTDisplay widgets whose native
+// window a re-parent would destroy — see the note in buildPreview().
+// ---------------------------------------------------------------------------
+
+int MultiReplayDock::tileColumns(int tileCount) const
+{
+	const int n = std::max(1, tileCount);
+	// Beside a big A output the tiles are a tall narrow strip: two columns up
+	// to four tiles, three beyond. That was tuned against the picture next to
+	// it and stays.
+	if (panelMode_ != PanelMode::Tall)
+		return n <= 4 ? 2 : 3;
+	// In a COLUMN the same two columns build a block as tall as the picture
+	// above them, and the picture is what the operator is looking at. So the
+	// tiles go as wide as the panel can carry them at a size still worth
+	// looking at — a filmstrip rather than a grid.
+	//
+	// std::min(2, n) rather than 2: on a ONE-CAMERA rig the bounds would be
+	// clamp(x, 2, 1), whose behaviour is undefined when lo > hi — and one
+	// camera is the configuration this plugin is most often installed on.
+	const int avail = std::max(1, width() - 16);
+	return std::clamp(avail / kTileMinWidth, std::min(2, n), n);
+}
+
+void MultiReplayDock::applyPanelMode(PanelMode m, bool force)
+{
+	if (!previewGrid_ || !splitter_)
+		return;
+	if (!force && m == panelMode_)
+		return;
+	const PanelMode was = panelMode_;
+	panelMode_ = m;
+	if (was != m)
+		userSplit_ = false;
+
+	// B MAY NOT BE THERE AT ALL, and in a grid that matters in a way it did
+	// not in a box layout: setColumnStretch/setRowStretch are properties of the
+	// COLUMN, not of the widget in it, so a hidden B still gets its share of
+	// the room. The second bay is OFF by default, so this is the ordinary rig —
+	// three eighths of the picture area given to an invisible box. A box layout
+	// hid that for us because its stretch belongs to the item.
+	const bool haveB = ReplayCore::instance().getConfig().enableChannelB;
+	const int bStretch = haveB ? 3 : 0;
+
+	while (QLayoutItem *it = previewGrid_->takeAt(0))
+		delete it;
+	for (int c = 0; c < 4; c++)
+		previewGrid_->setColumnStretch(c, 0);
+	for (int r = 0; r < 4; r++)
+		previewGrid_->setRowStretch(r, 0);
+
+	if (m == PanelMode::Tall) {
+		// A COLUMN: A across the top at its own ratio, and B beside the
+		// camera filmstrip on ONE row underneath.
+		//
+		// Three full-width pictures stacked was the obvious arrangement
+		// and it does not fit: at 340 px wide a 16:9 picture is 191 px
+		// tall, so three of them ask for nearly 600 px of a panel that has
+		// about 330 to give. What the operator got instead was three
+		// squashed boxes with BLACK BARS down the sides of each — the
+		// picture drawn at its own ratio inside a box of another.
+		//
+		// A is the one being watched, so A gets the width. B and the
+		// tiles are confidence monitors: they share the row below.
+		previewGrid_->addWidget(aBox_, 0, 0, 1, 2);
+		previewGrid_->addWidget(bBox_, 1, 0);
+		previewGrid_->addWidget(multiviewBox_, 1, 1);
+		previewGrid_->setColumnStretch(0, bStretch ? 4 : 0);
+		previewGrid_->setColumnStretch(1, 6);
+		splitter_->setOrientation(Qt::Vertical);
+	} else {
+		// WIDE and SHORT share the pictures: A, B and the tiles in one
+		// row. What SHORT changes is the split below them — a shallow
+		// dock cannot stack the pictures on top of the list and leave
+		// either of them usable, so they go side by side. Only the
+		// splitter turns; its children stay its children.
+		previewGrid_->addWidget(aBox_, 0, 0);
+		previewGrid_->addWidget(bBox_, 0, 1);
+		previewGrid_->addWidget(multiviewBox_, 0, 2);
+		previewGrid_->setColumnStretch(0, 3);
+		previewGrid_->setColumnStretch(1, bStretch);
+		previewGrid_->setColumnStretch(2, 2);
+		previewGrid_->setRowStretch(0, 1);
+		splitter_->setOrientation(m == PanelMode::Short ? Qt::Horizontal
+							       : Qt::Vertical);
+	}
+
+	// The strip follows the panel: a column stacks, anything wider keeps its
+	// two macro-rows. Width alone cannot tell those apart — see setStacked.
+	if (strip_)
+		strip_->setStacked(m == PanelMode::Tall ? 1 : 0);
+
+	// The search box is the one control that can be asked to give width back:
+	// in a column, 90 px of it is 90 px the Live and Monitors keys do not have.
+	if (search_)
+		search_->setMinimumWidth(m == PanelMode::Tall ? 54 : 90);
+
+	// OUT COLUMN: the one column of the table that is inferable. IN and
+	// DURATA together say where the clip is and how long it runs, so OUT is
+	// arithmetic — and it is the column worth spending on a camera instead
+	// when there are 330 px to divide.
+	if (events_)
+		events_->setColumnHidden(kColOut, m == PanelMode::Tall);
+
+	rebuildMultiview();
+
+	// A NOTE ON SETTLING, because it looks like a bug and is not one.
+	// A mode change rewrites how short the panel may be, so a panel asked for
+	// a size that only the NEW arrangement can hold takes two resize events to
+	// get there: the first arrives while the old floor is still in force. The
+	// mockup's --check measures it (a top-level asked for 1400x340 lands on
+	// 404, then 340).
+	//
+	// `layout()->invalidate()` here was the obvious fix and was MEASURED TO DO
+	// NOTHING — the same two events either way — so it is not in this file. In
+	// OBS the panel is a child of a QDockWidget rather than a top-level, so
+	// there is no window manager clamping the first size at all.
+
+	applyPreviewAspect();
+
+	if (was != m)
+		obs_log(LOG_INFO, "[dock] layout %s -> %s (%dx%d)",
+			panelModeName(was), panelModeName(m), width(), height());
+}
+
+int MultiReplayDock::aspectHeight(int width)
+{
+	obs_video_info ovi{};
+	// A canvas we cannot read is 16:9, because that is what a replay rig is
+	// nine times in ten — and because a wrong ratio here costs a few pixels of
+	// bar, not a picture.
+	double ratio = 9.0 / 16.0;
+	if (obs_get_video_info(&ovi) && ovi.base_width > 0 && ovi.base_height > 0)
+		ratio = (double)ovi.base_height / (double)ovi.base_width;
+	return std::max(1, (int)std::lround(width * ratio));
+}
+
+void MultiReplayDock::applyPreviewAspect()
+{
+	if (!previewPane_ || !monitorsRow_)
+		return;
+
+	// How wide the BIGGEST picture in the row is, which is what sets the
+	// pane's height: in a column that is the full width, side by side it is
+	// A's share of it.
+	const int paneW = std::max(80, monitorsRow_->width());
+	int aW = paneW;
+	if (panelMode_ != PanelMode::Tall) {
+		// A and B take 3 parts each and the tiles 2, with two 3 px gaps —
+		// asked of the grid rather than assumed, so a stretch change here
+		// cannot leave this arithmetic behind.
+		const int cols = previewGrid_ ? previewGrid_->columnCount() : 3;
+		int total = 0;
+		for (int c = 0; c < cols; c++)
+			total += std::max(1, previewGrid_->columnStretch(c));
+		const int mine = previewGrid_ ? std::max(1, previewGrid_->columnStretch(0))
+					      : 3;
+		aW = (paneW - 3 * (cols - 1)) * mine / std::max(1, total);
+	}
+
+	// The letter under a box and the caption under a tile are MEASURED, not
+	// assumed: both are styled from the sheet, and the sheet is now built per
+	// theme. A number written here would be right until somebody changed a
+	// padding.
+	const int tagH = labelA_ ? labelA_->sizeHint().height() : 14;
+
+	int want = aspectHeight(aW) + tagH;
+	if (panelMode_ == PanelMode::Tall) {
+		// A is row 0 at the full width; row 1 holds B and the filmstrip
+		// side by side, so the row costs the TALLER of the two, not both.
+		const bool haveB = bBox_ && bBox_->isVisible();
+		int visibleTiles = 0;
+		const QLabel *aCaption = nullptr;
+		for (const PreviewTile &t : tiles_)
+			if (t.box && t.box->isVisible()) {
+				visibleTiles++;
+				if (!aCaption)
+					aCaption = t.caption;
+			}
+		const bool haveTiles = visibleTiles > 0 && multiviewBox_ &&
+				       multiviewBox_->isVisible();
+		const int tilesW = haveB ? (paneW - 3) * 6 / 10 : paneW;
+		int rowH = 0;
+		if (haveB)
+			rowH = aspectHeight((paneW - 3) * 4 / 10) + tagH;
+		if (haveTiles) {
+			const int cols = std::max(1, tileColumns(visibleTiles));
+			const int rows = (visibleTiles + cols - 1) / cols;
+			const int tileW = std::min(kTileMaxWidth,
+						   (tilesW - 2 * (cols - 1)) / cols);
+			const int capH = aCaption ? aCaption->sizeHint().height() : 13;
+			rowH = std::max(rowH, rows * (aspectHeight(tileW) + capH) +
+						      (rows - 1) * 2);
+		}
+		// EACH BOX IS CAPPED TOO, not just the pane. Capping only the pane
+		// leaves the grid free to stretch whatever is inside it: with one
+		// camera the filmstrip row was handed 140 px for a tile 150 px
+		// wide, so the tile came out as a tall narrow rectangle with the
+		// picture letterboxed inside — the same black bars one level down.
+		if (aBox_)
+			aBox_->setMaximumHeight(aspectHeight(aW) + tagH);
+		if (haveB && bBox_)
+			bBox_->setMaximumHeight(
+				aspectHeight((paneW - 3) * 4 / 10) + tagH);
+		if (haveTiles && multiviewBox_) {
+			multiviewBox_->setMaximumHeight(rowH);
+			// A FIXED WIDTH, not a maximum. A maximum is a ceiling and
+			// a tile has no floor of its own worth the name, so with a
+			// stretch column beside it the grid gave each tile the width
+			// of its caption — a 20 px sliver of picture. The tiles are
+			// the one thing on this panel whose size is chosen rather
+			// than derived: they are confidence monitors, and 150 px is
+			// what one is worth in a column.
+			const int cols = std::max(1, tileColumns(visibleTiles));
+			const int tileW = std::min(
+				kTileMaxWidth, (tilesW - 2 * (cols - 1)) / cols);
+			const int capH = aCaption ? aCaption->sizeHint().height() : 13;
+			for (const PreviewTile &t : tiles_)
+				if (t.box && t.box->isVisible()) {
+					t.box->setFixedWidth(tileW);
+					t.box->setMaximumHeight(
+						aspectHeight(tileW) + capH);
+				}
+		}
+
+		if (rowH > 0)
+			want += rowH + 3;
+	} else {
+		// Side by side the row is one picture tall and the grid has no
+		// spare to stretch into, so the caps come off — a leftover
+		// maximum from the column arrangement would pin the pictures small
+		// the moment the dock was widened.
+		for (QWidget *w : {aBox_, bBox_, multiviewBox_})
+			if (w)
+				w->setMaximumHeight(QWIDGETSIZE_MAX);
+		for (const PreviewTile &t : tiles_)
+			if (t.box) {
+				t.box->setMinimumWidth(0);
+				t.box->setMaximumWidth(QWIDGETSIZE_MAX);
+				t.box->setMaximumHeight(QWIDGETSIZE_MAX);
+			}
+	}
+	// Plus the green channel strip, which is not a picture and has its own
+	// height whatever the ratio is.
+	if (monitorsStrip_ && monitorsStrip_->isVisible())
+		want += monitorsStrip_->sizeHint().height();
+
+	// …AND NEVER MORE THAN HALF THE PANEL. Side by side, A is most of the
+	// width, so its aspect height is most of the panel: on 1500x900 an exact
+	// picture is 506 px and the event list is left with about 150. The
+	// pictures being right is not worth the list being useless — that is the
+	// trade this whole pass is about — so the aspect is the ceiling and this
+	// is the ceiling on the ceiling. Where it bites, A letterboxes a little
+	// and the operator has the splitter handle, which from then on wins.
+	if (panelMode_ != PanelMode::Tall)
+		want = std::min(want, height() / 2);
+
+	// A CAP, so the pane can never be GIVEN more room than its pictures can
+	// fill — every pixel over is a black bar, and the list wanted it.
+	if (previewPane_->maximumHeight() != want)
+		previewPane_->setMaximumHeight(want);
+
+	// …AND THE SPLITTER HAS TO BE TOLD, which the cap alone does not do. A
+	// QSplitter hands out height by stretch factor: capped at the top it can
+	// still give the pane LESS than the pictures need, and short is a black
+	// bar too — down the sides instead of along the top, which is exactly the
+	// pair of bars an operator saw on A and on the camera tile beneath it.
+	//
+	// Only when the cap has actually moved. Calling this on every resize would
+	// undo the operator's own drag of the handle a frame after he made it.
+	// UNTIL THE OPERATOR SAYS OTHERWISE. The panel sizes the pictures to their
+	// own ratio; the moment he drags the handle he has stated a preference and
+	// it is not overruled until the arrangement changes under him.
+	//
+	// This replaced a memo on `want`, which looked equivalent and was not: the
+	// first call happens during construction, when the splitter has almost no
+	// height, so the split it computed was a few pixels — and having recorded
+	// `want` it never tried again. The panel then kept that ratio for the rest
+	// of the session, which is the squashed picture with black bars the
+	// operator reported. A guard has to key on the thing it is guarding.
+	//
+	// ONLY WHEN THE SPLITTER DIVIDES HEIGHT. In the Short arrangement it
+	// divides WIDTH — pictures beside the list — so `want`, which is a height,
+	// means nothing to it. Handing it over anyway gave the monitoring pane 38
+	// px of WIDTH on a 1400 px panel. There the height cap is the whole story:
+	// the pane is as tall as the splitter and no taller than its pictures.
+	if (!userSplit_ && splitter_->orientation() == Qt::Vertical) {
+		const int total = splitter_->height();
+		// AS MUCH AS THE PICTURES NEED, OR AS MUCH AS IS LEFT AFTER THE
+		// LIST HAS ITS FLOOR — whichever is smaller.
+		//
+		// The first version refused to split at all unless both fitted,
+		// which on a 340x900 column is never: the pictures want 300 px and
+		// the strip has already taken 408 of the 900. So it always took
+		// the early-out and left the pane on its stretch factor, which is
+		// the squashed picture the operator reported. Giving the list its
+		// floor and the pictures the rest is worse than perfect and much
+		// better than that — and an operator who wants the pictures whole
+		// has the Monitors key, which is what it is for.
+		//
+		// THE MEMO IS ONLY WRITTEN WHEN THE SPLIT HAPPENED: written either
+		// way, the first call — during construction, before the splitter
+		// has any height — would take the early-out for ever after.
+		const int give = std::min(want, total - kListPaneFloor);
+		const QList<int> now = splitter_->sizes();
+		if (give > 0 && (now.isEmpty() || std::abs(now[0] - give) > 2))
+			splitter_->setSizes({give, total - give});
+	}
+}
+
+void MultiReplayDock::resizeEvent(QResizeEvent *event)
+{
+	QWidget::resizeEvent(event);
+	applyPanelMode(panelModeFor(size(), panelMode_));
+	// AFTER THE LAYOUT PASS, not during it. A resizeEvent arrives before the
+	// children have been re-laid, so the splitter still reports its OLD height
+	// here — and a split computed from a stale total is then rescaled
+	// proportionally by the layout that follows. Measured: asking for 286/110
+	// produced 91/305, which is the squashed picture again by a different
+	// route. A zero-delay timer runs once the layout has settled.
+	QTimer::singleShot(0, this, [this]() { applyPreviewAspect(); });
+}
+
+// ---------------------------------------------------------------------------
+// THE PANEL'S COLOURS
+// ---------------------------------------------------------------------------
+
+void MultiReplayDock::applyTheme()
+{
+	const Config cfg = ReplayCore::instance().getConfig();
+	const int choice = cfg.uiTheme;
+	// qApp->palette() rather than this->palette(): OBS applies the theme's
+	// palette to the APPLICATION, and a widget's own palette is a copy that
+	// may have been resolved before the theme changed.
+	sc() = schemeFor((ThemeChoice)choice, qApp->palette());
+	setStyleSheet(dockStyle(sc(), cfg.tableDensity));
+	applyTableDensity(cfg.tableDensity);
+
+	// The two painted widgets read sc() directly and are not restyled by the
+	// sheet, so they have to be told to redraw. Everything else Qt repolishes
+	// for us when the style sheet is replaced.
+	if (seek_)
+		seek_->update();
+	if (clipBar_)
+		clipBar_->update();
+	if (projectLbl_)
+		projectLbl_->setStyleSheet(
+			QString("color: %1; font-size: 9px; padding: 0 4px;")
+				.arg(sc().accent));
+	obs_log(LOG_INFO, "[dock] theme %d applied (panel %s, text %s)", choice,
+		qUtf8Printable(sc().panel), qUtf8Printable(sc().text));
+}
+
+// How tight the event list is drawn. The style sheet has already been given the
+// matching input metrics (see dockStyle); this is the half of the pair that
+// lives on the widgets.
+void MultiReplayDock::applyTableDensity(int level)
+{
+	if (!events_)
+		return;
+	const Density d = densityFor(level);
+
+	// DOWN as well as up. refreshEvents() raises the row height to whatever
+	// the tallest cell it built needs and never lowers it, which is right while
+	// the metrics are fixed and wrong the moment they can change: without this
+	// reset, picking "compact" would rebuild shorter cells inside rows that
+	// were still 30 px tall, and nothing would look any denser.
+	events_->verticalHeader()->setDefaultSectionSize(d.rowFloor);
+
+	// The headings, which are not cells and so are not raised by anything.
+	QHeaderView *hh = events_->horizontalHeader();
+	hh->setFixedHeight(d.headerH);
+
+	// The cells carry their own built-in size hints, so they have to be built
+	// again to pick up the new metrics. version() has not moved, so ask
+	// directly rather than waiting for a mark.
+	eventsDirty_ = true;
+}
+
+void MultiReplayDock::restyleDock()
+{
+	if (g_dock)
+		g_dock->applyTheme();
 }
 
 // ---------------------------------------------------------------------------
@@ -2020,20 +2484,22 @@ void MultiReplayDock::rebuildMultiview()
 	// shared graphics thread for nothing.
 
 	const bool show = cfg.showMultiview;
+	// THE COLUMN COUNT IS PART OF THE SIGNATURE. Without it the early-out
+	// below is a re-layout that never happens: the panel switches to a column,
+	// asks for a filmstrip, and gets the two-column block back because the
+	// cameras and their names did not change.
+	const int cols = tileColumns((int)tileSlots.size());
 	QStringList sigParts;
 	for (int s : tileSlots)
 		sigParts << QString::number(s);
 	const QString sig = QString::number(show ? 1 : 0) + '|' +
-			    sigParts.join(',') + '|' + captions.join(',');
+			    QString::number(cols) + '|' + sigParts.join(',') +
+			    '|' + captions.join(',');
 	if (sig == multiviewSig_)
 		return;
 	multiviewSig_ = sig;
 
 	multiviewBox_->setVisible(show);
-
-	// Columns: two up to four tiles, three beyond. A tile narrower than about
-	// a sixth of the dock stops being a picture and becomes a smear.
-	const int cols = tileSlots.size() <= 4 ? 2 : 3;
 	for (int i = 0; i < kMaxPreviewTiles; i++)
 		if (tiles_[i].box)
 			tiles_[i].box->setVisible(false);
@@ -2051,12 +2517,28 @@ void MultiReplayDock::rebuildMultiview()
 		// not re-parent it (QLayout::addChildWidget only calls setParent
 		// when the parent differs), so the native window — and the display
 		// bound to it — survives.
+		// CAPPED IN A COLUMN, free beside a big A. Without a cap the grid
+		// hands a lone tile the whole row and it draws itself as big as
+		// the picture being watched — the same angle, twice, and the event
+		// list paying for the second copy.
+		t.box->setMaximumWidth(panelMode_ == PanelMode::Tall
+					       ? kTileMaxWidth
+					       : QWIDGETSIZE_MAX);
 		multiviewGrid_->addWidget(t.box, (int)k / cols, (int)k % cols);
 		t.box->setVisible(show);
 	}
+	// The leftover goes to a column past the last tile rather than into the
+	// tiles, so a filmstrip of two on a rig of two starts at the left edge
+	// instead of floating in the middle of the row.
+	for (int c = 0; c <= cols; c++)
+		multiviewGrid_->setColumnStretch(
+			c, (panelMode_ == PanelMode::Tall && c == cols) ? 1 : 0);
 	tileTallyPvw_ = -2; // captions were just rewritten
 	tileTallyPgm_ = -2;
 	updateMultiviewTally();
+	// A tile appeared or went away, so the pane needs a different height: its
+	// cap is the sum of the pictures actually in it.
+	applyPreviewAspect();
 }
 
 void MultiReplayDock::refreshTileSources()
@@ -2559,7 +3041,15 @@ KeyBlock *MultiReplayDock::buildAngleMatrix()
 	QVector<Cell> bottom;
 	bottom << Cell(nullptr, 1); // the selector's column, already taken
 	bottom += rowB;
-	blk->setShapes({top, bottom}, {});
+	// COMPACT: the bay selector drops UNDER the matrix. Standing beside it, as
+	// it does in the wide shape, it costs a column the eight camera slots need
+	// — and on a narrow panel the slots are the section. The swap keeps its
+	// distance from the three selector keys: ⇄ is not a fourth mode, and
+	// pressed by mistake it puts the wrong clip on air.
+	QVector<Cell> cSel;
+	cSel << Cell(nullptr, 1) << Cell(sel, 3, false) << Cell(nullptr, 2)
+	     << Cell(swapBtn_, 1, false);
+	blk->setShapes({top, bottom}, {rowA, rowB, cSel});
 	angleBlock_ = blk;
 	return blk;
 }
@@ -2657,6 +3147,11 @@ void MultiReplayDock::applyChannelBVisibility()
 	// and a question the operator has to answer every time he looks at it.
 	if (bBox_)
 		bBox_->setVisible(on);
+	// …and the picture grid has to be told, because B's share of the room is a
+	// property of its ROW or COLUMN rather than of the box in it: hiding the
+	// box alone leaves the space it had. Re-applying the arrangement re-reads
+	// the flag and sets that share to zero.
+	applyPanelMode(panelMode_, /*force*/ true);
 	// The B row and the selector row are made to COLLAPSE, not to hold their
 	// place: an unconfigured camera keeps its slot because the slot is coming
 	// back (see refreshAngleRows), while a bay the operator has switched off
@@ -2920,6 +3415,13 @@ KeyBlock *MultiReplayDock::buildTransport()
 	// whole GOP (that is what makes reverse possible at all), which is ~100 ms on
 	// an iGPU, and asking for the next one before the last has been served just
 	// queues work the machine is already behind on.
+	// AND THEY ARE DRAWN AS TEXT, not as colour emoji: these two glyphs carry
+	// Emoji_Presentation=Yes, so Windows was painting the two least
+	// consequential keys in the row in bright Segoe UI Emoji blue. See
+	// useTextGlyph — the fix is the font, because the gate finds these keys by
+	// their text.
+	useTextGlyph(stepBackBtn, stepBackBtn->text());
+	useTextGlyph(stepBtn, stepBtn->text());
 	for (QPushButton *b : {stepBackBtn, stepBtn}) {
 		b->setAutoRepeat(true);
 		b->setAutoRepeatDelay(400);
@@ -2931,8 +3433,14 @@ KeyBlock *MultiReplayDock::buildTransport()
 	connect(loopBtn_, &QPushButton::toggled, this,
 		[this](bool on) { pc().setLoop(on); });
 
-	musicBtn_ = toggleBtn(QStringLiteral("♫"), this,
-			      obs_module_text("Dock.Music"));
+	// THE WORD, not the note. These three keys are one group — the modes a
+	// replay runs under — and it read as two words and a symbol, which makes
+	// the symbol look like a different kind of control than the two beside it.
+	// A glyph earns its place when it is standard and shorter than its name
+	// (▶, ■, ⏭); ♫ is neither: "musica" is one word, and nothing else on this
+	// panel uses a note for it.
+	musicBtn_ = toggleBtn(obs_module_text("Dock.Music"), this,
+			      obs_module_text("Dock.MusicHint"));
 	connect(musicBtn_, &QPushButton::toggled, this, [this](bool on) {
 		for (Which w : targetChannels())
 			PlaybackCoordinator::instance(w).setMusicEnabled(on);
@@ -2972,13 +3480,35 @@ KeyBlock *MultiReplayDock::buildTransport()
 			       musicBtn_, toOutputBtn_})
 		b->setFixedHeight(kKeyH);
 	playSel->setFixedHeight(kKeyH);
+	// THREE CLUSTERS, in one row, and this is the arrangement the comment at
+	// the top of this function has described all along without the code ever
+	// doing it:
+	//
+	//   ▶ ■ ◀ ↺ ⏮ ⏭        drive the clip that is showing
+	//   [Riproduci eventi] ▾ NOW   put a replay on air / come back to live
+	//   Loop  ♫  In output         the modes the other two run under
+	//
+	// Two keys moved and nothing else did, because the rest of this row IS the
+	// reference panel's order and an operator who has used one finds it there.
+	// NOW came out from between the frame steps and the modes — it is the
+	// partner of "Riproduci eventi", not a transport key — and the two frame
+	// steps closed up with the other glyph keys, which is where the eye looks
+	// for them.
+	//
 	// Stop stands next to Play, in that order, because that is the pair: one
 	// starts the picture and the other gives Program back.
 	blk->setShapes({{Cell(playPauseBtn_), Cell(stopBtn_), Cell(revBtn),
-			 Cell(lastBtn), Cell(playSel), Cell(more),
-			 Cell(stepBackBtn), Cell(stepBtn), Cell(nowBtn_),
+			 Cell(lastBtn), Cell(stepBackBtn), Cell(stepBtn),
+			 Cell(playSel), Cell(more), Cell(nowBtn_),
 			 Cell(loopBtn_), Cell(musicBtn_), Cell(toOutputBtn_)}},
-		       {});
+		       // compact: what you press first on top, what drives the
+		       // clip under it, the modes last — the order an operator
+		       // reaches for them in, which is what a stack should be.
+		       {{Cell(playSel, 3), Cell(more), Cell(nowBtn_, 2)},
+			{Cell(playPauseBtn_), Cell(stopBtn_), Cell(revBtn),
+			 Cell(lastBtn), Cell(stepBackBtn), Cell(stepBtn)},
+			{Cell(loopBtn_, 2), Cell(musicBtn_),
+			 Cell(toOutputBtn_, 3)}});
 
 	// There WAS a big "position / length" readout under these keys. It is gone:
 	// the position bar prints the same two numbers on itself (setOverlayText),
@@ -3083,12 +3613,12 @@ QWidget *MultiReplayDock::buildBottomBar()
 	// operator reaches for through a whole match comes first, and the
 	// exports - which nobody touches while the ball is in play - come last.
 	strip_ = new ControlStrip(box);
-	strip_->addBlock(buildMarkers(), false, 1);
-	strip_->addBlock(buildAngleMatrix(), false, 2);
-	strip_->addBlock(buildExportBlock(), false, 5);
-	strip_->addBlock(buildRecBlock(), /*startsLine*/ true, 0);
-	strip_->addBlock(buildTransport(), false, 3);
-	strip_->addBlock(buildSpeedBlock(), false, 4);
+	strip_->addBlock(buildMarkers(), Lane::Left, false, 1);
+	strip_->addBlock(buildAngleMatrix(), Lane::Centre, false, 2);
+	strip_->addBlock(buildExportBlock(), Lane::Right, false, 5);
+	strip_->addBlock(buildRecBlock(), Lane::Left, /*startsLine*/ true, 0);
+	strip_->addBlock(buildTransport(), Lane::Centre, false, 3);
+	strip_->addBlock(buildSpeedBlock(), Lane::Right, false, 4);
 	addStrip(v, strip_);
 
 	// ── Row 3: the green ON-AIR band, and the key that skips past it ──
@@ -3384,9 +3914,13 @@ KeyBlock *MultiReplayDock::buildSpeedBlock()
 	blk->setShapes({{Cell(chips[0]), Cell(chips[1]), Cell(chips[2]),
 			 Cell(chips[3]), Cell(chips[4]), Cell(chips[5])},
 			{Cell(speed_, 5), Cell(speedLbl_, 1, false)}},
-		       {{Cell(chips[0]), Cell(chips[1]), Cell(chips[2])},
-			{Cell(chips[3]), Cell(chips[4]), Cell(chips[5])},
-			{Cell(speed_, 2), Cell(speedLbl_, 1, false)}});
+		       // The six presets stay on ONE row folded as well. They are
+		       // the narrowest keys on the panel and splitting them
+		       // across two rows bought nothing but a line — and it broke
+		       // the run of values an operator reads left to right.
+		       {{Cell(chips[0]), Cell(chips[1]), Cell(chips[2]),
+			 Cell(chips[3]), Cell(chips[4]), Cell(chips[5])},
+			{Cell(speed_, 5), Cell(speedLbl_, 1, false)}});
 	return blk;
 }
 
@@ -3507,11 +4041,13 @@ KeyBlock *MultiReplayDock::buildExportBlock()
 
 	blk->setShapes({{Cell(order[0]), Cell(order[1]), Cell(edit), Cell(exp),
 			 Cell(reel)}},
-		       // compact: the three small keys share the width of the two
-		       // wide ones, and nothing in the block is a hole
-		       {{Cell(order[0]), Cell(order[1]), Cell(edit)},
-			{Cell(exp, 3)},
-			{Cell(reel, 3)}});
+		       // compact: the three ordering keys beside the first export,
+		       // the reel under them. Six columns, two rows — it was
+		       // three, one per wide key, on a panel whose scarce axis is
+		       // exactly that.
+		       {{Cell(order[0]), Cell(order[1]), Cell(edit),
+			 Cell(exp, 3)},
+			{Cell(reel, 6)}});
 	return blk;
 }
 
@@ -3609,10 +4145,27 @@ KeyBlock *MultiReplayDock::buildMarkers()
 	// keep their natural widths - forcing them all to the widest ("Annulla")
 	// puts five short labels in five wide keys, and the row stops reading as
 	// a row of marks and starts reading as a form.
+	// …and the COMPACT shape, which is the three questions above, one per row.
+	// It was `{}` — "this section has only one shape" — which meant that on a
+	// narrow panel these eight keys stayed one 360 px row and were cut off at
+	// the edge. That is most of why the panel could not be docked down a side:
+	// the section with no fold is the section that sets the floor.
+	//
+	// SIX COLUMNS, not three, so the row of two fills the section just as the
+	// rows of three do; on three columns the trim row left an empty cell in the
+	// corner and the eye finds that hole every time it reads the block.
 	blk->setShapes({{Cell(in), Cell(out), Cell(presets[0]), Cell(presets[1]),
 			 Cell(presets[2]), Cell(trimIn), Cell(trimOut),
 			 Cell(cancel)}},
-		       {});
+		       // EIGHT columns, two rows: taking a point and moving one on
+		       // top, taking the last N seconds and throwing it away
+		       // underneath. It was three rows of six, which is the same
+		       // eight keys and one more line of a panel that is short of
+		       // lines — and on eight columns nothing is a hole.
+		       {{Cell(in, 2), Cell(out, 2), Cell(trimIn, 2),
+			 Cell(trimOut, 2)},
+			{Cell(presets[0], 2), Cell(presets[1], 2),
+			 Cell(presets[2], 2), Cell(cancel, 2)}});
 	return blk;
 }
 
@@ -3642,7 +4195,8 @@ QWidget *MultiReplayDock::buildEvents()
 	// min-height of 20 with 3px of padding above and below and a 1px border —
 	// 28 px before anything is drawn in it. At the 22 it used to be, every row
 	// clipped its own contents, which is what "the text looks cut" was.
-	// Whoever changes the input rule in kDockStyle has to change this with it.
+	// Whoever changes the input rule in the dock style sheet has to change this
+	// with it (see kDockStyleTemplate in dock-style.hpp).
 	events_->verticalHeader()->setDefaultSectionSize(30);
 	events_->setAlternatingRowColors(true);
 	events_->setShowGrid(false);
@@ -3835,6 +4389,14 @@ void MultiReplayDock::rebuildEventColumns()
 			hh->setSectionResizeMode(c, QHeaderView::Stretch);
 		hh->setMinimumSectionSize(34);
 	}
+	// AND THE ARRANGEMENT AGAIN. setColumnCount() re-initialises the header's
+	// sections, which takes the hidden state of OUT with it — so on a narrow
+	// panel the column the column arrangement had put away came back the first
+	// time a camera was added or renamed, and the table went back to needing a
+	// horizontal scroll. The mode is the authority on which columns fit; it has
+	// to be asked again whenever the columns are rebuilt.
+	events_->setColumnHidden(kColOut, panelMode_ == PanelMode::Tall);
+
 	itemsProgrammatic_ = wasProgrammatic;
 	updateCamHeaderHighlight();
 }
@@ -7153,7 +7715,7 @@ QWidget *MultiReplayDock::buildAngleCell(int eventId, int cam0, bool on,
 	// widget makes Qt build a style context of its own for it and re-polish
 	// its subtree; done once per angle cell it is a measurable part of a
 	// rebuild that was taking over a tenth of a second. The rule that reads
-	// this lives with the rest of them in kDockStyle.
+	// this lives with the rest of them in the dock style sheet.
 	sp->setProperty("mrNoOverride", pct <= 0);
 	// Centred, like every other cell in this table. A non-editable QComboBox
 	// draws its label left-aligned and no stylesheet moves it, so the display is
@@ -8364,6 +8926,43 @@ void MultiReplayDock::openSettings()
 	multiview->setToolTip(obs_module_text("Dock.ShowMultiviewHint"));
 	uiPage->addRow(obs_module_text("Dock.ShowMultiview"), multiview);
 
+	// WHICH COLOURS THE PANEL WEARS. "Follow OBS" is the default because a
+	// plugin panel should look like it belongs to the program it is docked in
+	// — and because OBS's theme is already the operator's stated preference,
+	// asked once.
+	//
+	// Only the CHROME follows. REC, the on-air band and the tally on an angle
+	// key keep their own hues under every option here: an operator reads tally
+	// by colour, from across a gallery, and a theme whose accent happens to be
+	// green must not be able to say that green now means something else.
+	auto *theme = new QComboBox(&dlg);
+	theme->addItem(obs_module_text("Dock.ThemeFollowObs"), 0);
+	theme->addItem(obs_module_text("Dock.ThemeBroadcast"), 1);
+	theme->addItem(obs_module_text("Dock.ThemeContrast"), 2);
+	{
+		const int idx = theme->findData(cfg.uiTheme);
+		theme->setCurrentIndex(idx >= 0 ? idx : 0);
+	}
+	theme->setToolTip(obs_module_text("Dock.ThemeHint"));
+	uiPage->addRow(obs_module_text("Dock.Theme"), theme);
+
+	// HOW MUCH LIST FITS ON THE SCREEN. On a panel docked down one side the
+	// event list is the thing the operator reads, and at the comfortable row
+	// height it showed about eight events. Three steps rather than a pixel box:
+	// the row is sized from the cells it holds, so each step is a set of
+	// metrics that agree with each other rather than a number that can be set
+	// shorter than the text in it.
+	auto *density = new QComboBox(&dlg);
+	density->addItem(obs_module_text("Dock.RowsComfortable"), 0);
+	density->addItem(obs_module_text("Dock.RowsCompact"), 1);
+	density->addItem(obs_module_text("Dock.RowsDense"), 2);
+	{
+		const int idx = density->findData(cfg.tableDensity);
+		density->setCurrentIndex(idx >= 0 ? idx : 0);
+	}
+	density->setToolTip(obs_module_text("Dock.RowsHint"));
+	uiPage->addRow(obs_module_text("Dock.Rows"), density);
+
 	// ── Advanced ──────────────────────────────────────────────────────
 	QFormLayout *advPage = addPage("Dock.SetAdvanced", "Dock.SetAdvancedBlurb");
 
@@ -8585,6 +9184,8 @@ void MultiReplayDock::openSettings()
 	cfg.autoSwitchScene = autoSwitch->isChecked();
 	cfg.fitReplayToCanvas = fitCanvas->isChecked();
 	cfg.showMultiview = multiview->isChecked();
+	cfg.uiTheme = theme->currentData().toInt();
+	cfg.tableDensity = density->currentData().toInt();
 	for (int i = 0; i < kMaxCameras; i++) {
 		cfg.cameras[i].sourceName =
 			camCombos[i]->currentData().toString().toStdString();
@@ -8600,6 +9201,9 @@ void MultiReplayDock::openSettings()
 	// Applies immediately, so the operator sees the answer to the checkbox he
 	// just ticked without waiting for the next replay.
 	ReplayChannel::instance().applyCanvasFit(cfg.fitReplayToCanvas);
+	// The colours, immediately: a theme picked in a dialog and applied on the
+	// next restart is a setting the operator cannot judge.
+	applyTheme();
 	refreshAngles();
 	refreshEvents();
 }

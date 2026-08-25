@@ -1,73 +1,342 @@
-// dock-style.hpp — the panel's style sheet, in one place.
+// dock-style.hpp — the panel's colours and its style sheet, in one place.
 //
 // It lives in a header of its own so that the DOCK and the LAYOUT MOCKUP are
 // styled by the same bytes. A mockup with its own copy of the sheet measures a
 // panel that does not exist: every height rule here (see the 28 px arithmetic
 // below) is part of the layout, not decoration, and a second copy would drift
 // from this one the first time a padding changed.
+//
+// ---------------------------------------------------------------------------
+// TWO KINDS OF COLOUR, AND ONLY ONE OF THEM IS THE OPERATOR'S TO CHOOSE
+// ---------------------------------------------------------------------------
+//
+// CHROME — the panel's background, its keys, borders, text, table rows, tabs,
+// scrollbars. This is taste, and it belongs to whoever is looking at it. It is
+// derived from the Qt palette OBS builds from the user's theme, so the panel
+// sits inside Yami, Yami Grey, Rachni or a light theme without looking stuck on.
+//
+// SIGNAL — REC, the on-air band, the tally on an angle key, the health badge.
+// This is NOT taste. Red means on air. An operator reads tally by colour, from
+// across a gallery, without reading anything, and a theme whose accent happens
+// to be green must not be able to redefine it. The signal hues are constants
+// here; what the theme changes is only their LUMINANCE, so they stay legible on
+// a light background as well as a dark one.
+//
+// That distinction is the whole reason this is a struct and a function rather
+// than one string: there is no single "accent" for this panel.
+//
+// ---------------------------------------------------------------------------
+// THE 26 px ARITHMETIC
+// ---------------------------------------------------------------------------
+//
+// ONE HEIGHT FOR EVERY KEY: 26 px, and it is arithmetic, not a wish. In Qt a
+// style sheet min-height is the CONTENT box — padding and border are added to
+// it. So min-height 24 with 3 px of padding and a 1 px border is a 32 px key,
+// while a rule with min-height 24 and no padding is a 26 px one. Three heights
+// on one row, from a number that looked identical in all three rules.
+//
+// Every rule below therefore states min-height = 26 - 2*padding - 2*border.
+// CHANGING A PADDING HERE MEANS CHANGING ITS min-height.
+//
+// IT WAS 28. The redesign took two pixels off every key row — with five or six
+// of them between the two macro-rows and the folded stack that is 10-14 px of
+// event list bought back — and 26 is still comfortably above the size at which
+// a key stops being easy to hit in a hurry. The FOLDED key (kKeyFoldedH in
+// dock-layout.hpp) went 24 → 22 with it.
 #pragma once
+
+#include <QColor>
+#include <QPalette>
+#include <QString>
 
 namespace multireplay {
 
-// is copied from the reference controller itself — these are hex values in our own stylesheet.
+// Which set of colours the panel wears. Offered in Settings ▸ Interfaccia.
+enum class ThemeChoice {
+	// Chrome from the OBS theme's Qt palette. The default: a plugin panel
+	// should look like it belongs to the program it is docked in.
+	FollowObs = 0,
+	// The reference controller's own scheme, fixed, whatever OBS is wearing:
+	// near-black chrome, navy list, orange selection. For the operator who
+	// wants the panel to look like the panel.
+	Broadcast = 1,
+	// Same layout, harder edges and brighter text, for a gallery with the
+	// lights up.
+	HighContrast = 2,
+};
+
+// ---------------------------------------------------------------------------
+// Scheme — every colour the sheet uses, and nothing else
+// ---------------------------------------------------------------------------
 //
-// Palette (sampled):
-//   #1D3D74  table header blue      #176533  active-angle header green
-//   #DB5026  selected row orange    #199847  position bar, played
-//   #00121C  row odd (navy black)   #146433  position bar, remaining
-//   #002A42  row even               #116B35  angle enabled (checkbox)
-//   #A81C1C  Live / REC red         #0c0c0c  dock background
-inline const char *const kDockStyle =
+// 129 distinct hex values used to be written into the sheet by hand. Most were
+// near-duplicates of each other (#1e1e1e, #181818, #141414, #101010 …), which
+// is what made the panel impossible to re-colour: there was no scale, only a
+// list. These are a scale, derived from two colours the theme actually gives us.
+struct Scheme {
+	// chrome
+	QString panel;      // the dock's own background
+	QString raise1;     // a key at rest, an input
+	QString raise2;     // hovered
+	QString sink1;      // pressed, and the well behind the table
+	QString sink2;      // the event table's own background
+	QString sinkAlt;    // its alternating row
+	QString border;
+	QString borderHi;   // hovered
+	QString text;       // a heading, a hovered key, a value
+	QString textKey;    // a key's label at rest — see the note in schemeFor
+	QString textMuted;  // captions, the clock, the "--" of no override
+	QString textDim;    // disabled, and an empty slot
+	QString accent;     // the theme's highlight: selection, current tab
+	QString accentText;
+	QString rowSel;     // the selected event row
+	QString rowSelText;
+
+	// signal — constants in hue, adjusted in luminance; never the theme's
+	QString rec;        // REC armed, and the on-air tally
+	QString recBg;      // the same, as a fill behind text
+	QString pvw;        // the angle being watched, the play key while playing
+	QString pvwBg;
+	QString onAir;      // the clip band
+	QString onAirDim;   // its unplayed remainder
+	QString warn;
+	QString warnBg;
+	QString danger;     // Annulla, and the health badge at its worst
+	QString action;     // THE ONE FILLED KEY: "Riproduci eventi"
+	QString actionHi;
+
+	// two structural colours that are neither chrome nor signal
+	QString tabBar;     // the list tabs' selected fill
+	QString seekBar;    // the position bar's played portion
+};
+
+namespace detail {
+
+inline QString hex(const QColor &c)
+{
+	return c.name(QColor::HexRgb);
+}
+
+// t in [0,1]: 0 is a, 1 is b.
+inline QColor mix(const QColor &a, const QColor &b, double t)
+{
+	return QColor::fromRgbF(a.redF() + (b.redF() - a.redF()) * t,
+				a.greenF() + (b.greenF() - a.greenF()) * t,
+				a.blueF() + (b.blueF() - a.blueF()) * t);
+}
+
+// A signal colour, kept at its own hue and saturation but pushed to a lightness
+// that reads against this background. THIS IS THE WHOLE LIGHT-THEME STORY: the
+// red of REC on a white panel is the same red, darker.
+inline QColor signalOn(const QColor &hue, const QColor &bg, bool dark)
+{
+	QColor c = hue.toHsl();
+	const int l = c.lightness();
+	// On a dark panel a signal wants to be brighter than the mid point; on a
+	// light one it wants to be darker, or it disappears into the paper.
+	const int want = dark ? qMax(l, 120) : qMin(l, 110);
+	c.setHsl(c.hslHue(), c.hslSaturation(), want, 255);
+	// …and if it still does not separate from the background, push it away.
+	if (qAbs(c.lightness() - bg.lightness()) < 60)
+		c.setHsl(c.hslHue(), c.hslSaturation(),
+			 dark ? qMin(255, bg.lightness() + 90)
+			      : qMax(0, bg.lightness() - 90),
+			 255);
+	return c;
+}
+
+} // namespace detail
+
+// The scheme the panel should wear, given what the operator asked for and what
+// OBS is currently themed with.
+//
+// `pal` is the application palette — OBS builds it from the theme's `palette_*`
+// variables and calls setPalette() on the QApplication (OBSApp_Themes.cpp), and
+// it is the ONLY route a plugin has to a theme's colours: the frontend API
+// exposes obs_frontend_is_theme_dark() and nothing else. Parsing the .obt files
+// was the alternative and was rejected — they need var() and calc() resolved,
+// they live in two places, and a third-party theme is arbitrary.
+//
+// THERE IS NO `dark` PARAMETER, deliberately. There was, fed from
+// obs_frontend_is_theme_dark(), and the mockup passed the wrong one on its very
+// first run: the whole signal scale inverted and "Riproduci eventi" came out
+// BLACK on a dark panel. Whether a background is dark is not something a caller
+// should be trusted to assert when it is sitting right there in the colour. It
+// is measured.
+inline Scheme schemeFor(ThemeChoice choice, const QPalette &pal)
+{
+	using namespace detail;
+
+	QColor bg, fg, hl, hlText, base;
+	switch (choice) {
+	case ThemeChoice::Broadcast:
+		// The reference controller's own, sampled from its screenshots.
+		bg = QColor("#0c0c0c");
+		fg = QColor("#d0d0d0");
+		hl = QColor("#1D3D74");
+		hlText = QColor("#ffffff");
+		base = QColor("#00121C");
+		break;
+	case ThemeChoice::HighContrast:
+		bg = QColor("#000000");
+		fg = QColor("#ffffff");
+		hl = QColor("#2f6fd0");
+		hlText = QColor("#ffffff");
+		base = QColor("#000814");
+		break;
+	case ThemeChoice::FollowObs:
+	default:
+		bg = pal.color(QPalette::Window);
+		fg = pal.color(QPalette::WindowText);
+		hl = pal.color(QPalette::Highlight);
+		hlText = pal.color(QPalette::HighlightedText);
+		base = pal.color(QPalette::Base);
+		// A theme that leaves Base and Window the same colour gives the
+		// table no well to sit in; sink it a step rather than drawing a
+		// flat panel with an invisible list on it.
+		if (qAbs(base.lightness() - bg.lightness()) < 6)
+			base = mix(bg, fg, 0.05);
+		break;
+	}
+
+	const bool dark = bg.lightness() < 128;
+	Scheme s;
+	// ELEVATION, derived rather than listed. Every surface is a step from the
+	// background towards the text colour, so the same numbers work on a light
+	// theme — where "towards the text" happens to mean darker.
+	s.panel = hex(bg);
+	s.raise1 = hex(mix(bg, fg, 0.07));
+	s.raise2 = hex(mix(bg, fg, 0.14));
+	s.sink1 = hex(mix(bg, dark ? QColor(Qt::black) : QColor(Qt::white), 0.35));
+	s.sink2 = hex(base);
+	s.sinkAlt = hex(mix(base, fg, 0.06));
+	s.border = hex(mix(bg, fg, 0.20));
+	s.borderHi = hex(mix(bg, fg, 0.34));
+	// FOUR STEPS OF TEXT, and the middle one is the one that matters: a KEY AT
+	// REST is not a caption. Collapsing the two put every button label at the
+	// weight of a section heading — legible in a screenshot, thin in a gallery
+	// where the panel is two feet away and lit from the side.
+	s.text = hex(mix(bg, fg, 0.95));
+	s.textKey = hex(mix(bg, fg, 0.70));
+	s.textMuted = hex(mix(bg, fg, 0.50));
+	s.textDim = hex(mix(bg, fg, 0.26));
+	s.accent = hex(hl);
+	s.accentText = hex(hlText);
+	s.tabBar = hex(hl);
+
+	// SIGNAL. Fixed hues; only their lightness is answerable to the theme.
+	const QColor recHue("#C0202A");
+	const QColor pvwHue("#1C8A38");
+	const QColor airHue("#199847");
+	const QColor warnHue("#E0A020");
+	const QColor actHue("#1b8a44");
+
+	const QColor rec = signalOn(recHue, bg, dark);
+	const QColor pvw = signalOn(pvwHue, bg, dark);
+	const QColor air = signalOn(airHue, bg, dark);
+	const QColor wrn = signalOn(warnHue, bg, dark);
+	const QColor act = signalOn(actHue, bg, dark);
+
+	// THE LIT-KEY WASH IS WEAKER ON A LIGHT PANEL, and it is not taste.
+	// A lit toggle is drawn as its signal colour ON a wash of the same colour
+	// (@pvw@ on @pvwBg@). Mixing the background towards the signal moves it
+	// AWAY from the paper and TOWARDS the very colour being written on it — on
+	// a dark panel that raises the background from near-black and the bright
+	// signal still stands off it, but on a light one it drags the background
+	// down towards the ink. Measured: 2.9:1 for a checked key's label on the
+	// light theme, under the 3.0 a working panel needs, and the icon drawn on
+	// that key had exactly the same problem.
+	const double wash = dark ? 1.0 : 0.45;
+	s.rec = hex(rec);
+	s.recBg = hex(mix(bg, rec, 0.30 * wash));
+	s.pvw = hex(pvw);
+	s.pvwBg = hex(mix(bg, pvw, 0.24 * wash));
+	s.onAir = hex(air);
+	// The on-air band is FILLED and carries white text, so it is not a wash and
+	// does not follow the rule above: it has to stay a solid green on any theme.
+	s.onAirDim = hex(mix(bg, air, 0.45));
+	s.warn = hex(wrn);
+	s.warnBg = hex(mix(bg, wrn, 0.22 * wash));
+	s.danger = hex(rec);
+	s.action = hex(act);
+	s.actionHi = hex(mix(act, QColor(Qt::white), 0.18));
+	s.seekBar = hex(mix(hl, fg, 0.10));
+
+	// The selected row. In Broadcast it is the reference controller's orange,
+	// which is part of what that scheme IS; anywhere else it is the theme's own
+	// highlight, because a row selected in one colour in the table and another
+	// in every OBS list is a panel that looks bolted on.
+	if (choice == ThemeChoice::Broadcast) {
+		s.sink2 = "#00121C";
+		s.sinkAlt = "#002A42";
+		s.rowSel = "#DB5026";
+		s.rowSelText = "#ffffff";
+	} else {
+		s.rowSel = hex(hl);
+		s.rowSelText = hex(hlText);
+	}
+	return s;
+}
+
+// The sheet itself. Written with @tokens@ rather than %1 placeholders: a
+// stylesheet is read far more often than it is edited, and forty positional
+// arguments is a file nobody can check by eye.
+//
+// SPLIT INTO TWO LITERALS, and it is the compiler's rule rather than a section
+// boundary: MSVC refuses a single string literal over 16380 bytes (C2026,
+// "trailing characters will be truncated" — a stylesheet silently missing its
+// second half). Adjacent literals are concatenated at translation, so the sheet
+// is still one string; it just arrives in two pieces.
+inline const char *const kDockStyleTemplate =
 R"QSS(
 /* ── base ─────────────────────────────────────────────── */
-#MultiReplayDock { background: #0c0c0c; }
-#MultiReplayDock QLabel { color: #d0d0d0; background: transparent; }
+#MultiReplayDock { background: @panel@; }
+#MultiReplayDock QLabel { color: @text@; background: transparent; }
 
 /* labels */
-QLabel#mrMuted      { color: #787878; font-size: 10px; }
-QLabel#mrTimecode   { color: #c8c8c8; font-size: 12px; font-weight: 700;
+QLabel#mrMuted      { color: @textMuted@; font-size: 10px; }
+QLabel#mrTimecode   { color: @text@; font-size: 12px; font-weight: 700;
                       letter-spacing: 0.3px; }
-QLabel#mrSectionLabel { color: #686868; font-size: 9px; font-weight: 700;
+QLabel#mrSectionLabel { color: @textMuted@; font-size: 9px; font-weight: 700;
                         letter-spacing: 1.4px; text-transform: uppercase; }
-/* wall clock over the "remaining" line, the reference controller-red while a take is running */
-QLabel#mrClock      { color: #6a6a6a; font-size: 10px; }
-QLabel#mrClock[rec="true"] { color: #e03030; font-weight: 700; }
+/* wall clock over the "remaining" line, signal-red while a take is running */
+QLabel#mrClock      { color: @textMuted@; font-size: 10px; }
+QLabel#mrClock[rec="true"] { color: @rec@; font-weight: 700; }
 
-/* ── generic buttons ───────────────────────────────────── */
-/* ONE HEIGHT for every key in the control rows: 26 px. A row mixing 22, 24, 26
-   and 28 px keys reads as several rows badly aligned — the eye follows the line
-   of the bottom borders, and four lines are four groups where there is one.
-   Widths stay free (they follow the label, which is what tells the keys apart),
-   heights do not.
-   Unified DOWNWARDS, to the middle of the old spread, because every pixel of
-   chrome here is a pixel the splitter takes off the PREVIEW, and the preview is
-   what the operator is actually looking at. */
+/* ── THE KEY TAXONOMY ──────────────────────────────────────
+   THREE CLASSES, not fifteen treatments. The panel had one visual role per
+   kind of key — mrPlay, mrTransport, mrNow, mrLive, mrToggle, mrRec, mrHealth,
+   mrGear, mrAngle, mrSpeedChip, mrChanSel, mrAccent, mrDanger and the default —
+   which is fifteen cases to learn rather than a system to read. They are now
+   three, and the axis is CONSEQUENCE rather than importance:
+
+     COMMAND   outlined, neutral. Marks, trims, transport, exports, angle keys,
+               speed presets. It does something; it does not reach Program.
+     ACTION    FILLED. Exactly two on the whole panel: "Riproduci eventi" and
+               REC once armed. These are the keys that take the Program.
+     STATE     lit but HOLLOW. Loop, music, In output, Live, the current angle,
+               the active speed chip. Unmistakably on, and clearly not the
+               thing that starts a replay.
+
+   The rule that made this necessary: In and Out were drawn in the same filled
+   green as "Riproduci eventi", so the loudest keys on the panel were two that
+   mark a point and do not put anything on air. */
 #MultiReplayDock QPushButton {
-	background: #1e1e1e; color: #b0b0b0;
-	border: 1px solid #2c2c2c; border-radius: 4px;
-	padding: 3px 9px; font-size: 11px; min-height: 20px;
+	background: @raise1@; color: @textKey@;
+	border: 1px solid @border@; border-radius: 4px;
+	padding: 3px 9px; font-size: 11px; min-height: 18px;
 }
-/* ONE HEIGHT FOR EVERY KEY: 28 px, and it is arithmetic, not a wish.
-   In Qt, a style sheet min-height is the CONTENT box — padding and border are
-   added to it. So min-height 26 with 3 px of padding and a 1 px border is a
-   34 px key, while the transport rule (min-height 26, padding 0) is a 28 px
-   one, and the toggles (padding 2) are 32. Three heights on one row, from a
-   number that looked identical in all three rules.
-   Every rule below therefore states min-height = 28 - 2*padding - 2, and the
-   inputs already land on the same 28 (min-height 20 + 3 + 3 + 1 + 1), so a
-   combo in a row of keys lines up with them instead of nearly lining up.
-   CHANGING A PADDING HERE MEANS CHANGING ITS min-height. */
-#MultiReplayDock QPushButton:hover  { background: #282828; border-color: #424242; }
-#MultiReplayDock QPushButton:pressed { background: #141414; }
-#MultiReplayDock QPushButton:disabled { color: #303030; border-color: #1e1e1e; }
+#MultiReplayDock QPushButton:hover  { background: @raise2@; border-color: @borderHi@; color: @text@; }
+#MultiReplayDock QPushButton:pressed { background: @sink1@; }
+#MultiReplayDock QPushButton:disabled { color: @textDim@; border-color: @raise1@; }
 
 /* ── transport step / icon buttons ────────────────────── */
 QPushButton#mrTransport {
-	background: #181818; border: 1px solid #2c2c2c; border-radius: 5px;
-	color: #c8c8c8; font-size: 14px;
-	min-width: 30px; min-height: 26px; padding: 0;
+	background: @raise1@; border: 1px solid @border@; border-radius: 5px;
+	color: @text@; font-size: 14px;
+	min-width: 30px; min-height: 24px; padding: 0;
 }
-QPushButton#mrTransport:hover { background: #222222; border-color: #424242; color: #f0f0f0; }
+QPushButton#mrTransport:hover { background: @raise2@; border-color: @borderHi@; }
 
 /* >> lives ON the green band, which is 28 px tall with 2 px of margin, so it
    cannot ask for the 28 px of height a transport key asks for: a stylesheet
@@ -75,275 +344,343 @@ QPushButton#mrTransport:hover { background: #222222; border-color: #424242; colo
    taller frame than the widget owns, and the bottom border lands outside it.
    Hence its own role, with the height it can actually have. */
 QPushButton#mrSkip {
-	background: #0f3d22; border: 1px solid #2b7a45; border-radius: 4px;
-	color: #d6f0e0; font-size: 11px; font-weight: 700;
+	background: @onAirDim@; border: 1px solid @onAir@; border-radius: 4px;
+	color: #ffffff; font-size: 11px; font-weight: 700;
 	min-width: 30px; min-height: 0px; padding: 0px 4px;
 }
-QPushButton#mrSkip:hover { background: #14512c; border-color: #3fa060; color: #ffffff; }
+QPushButton#mrSkip:hover { background: @onAir@; color: #ffffff; }
 
-/* play/pause */
+/* play/pause — a COMMAND at rest, a STATE while it runs */
 QPushButton#mrPlay {
-	background: #181818; border: 1px solid #2c2c2c; border-radius: 5px;
-	color: #c8c8c8; font-size: 16px;
-	min-width: 38px; min-height: 26px; padding: 0;
+	background: @raise1@; border: 1px solid @border@; border-radius: 5px;
+	color: @text@; font-size: 16px;
+	min-width: 38px; min-height: 24px; padding: 0;
 }
-QPushButton#mrPlay:hover { background: #222222; border-color: #424242; color: #f0f0f0; }
-QPushButton#mrPlay[playing="true"] { background: #0c2212; border-color: #1c8a38; color: #28b050; }
-QPushButton#mrPlay[playing="true"]:hover { background: #102818; border-color: #22a040; }
+QPushButton#mrPlay:hover { background: @raise2@; border-color: @borderHi@; }
+QPushButton#mrPlay[playing="true"] { background: @pvwBg@; border-color: @pvw@; color: @pvw@; }
+QPushButton#mrPlay[playing="true"]:hover { background: @pvwBg@; border-color: @pvw@; }
 
-/* NOW / live-edge */
+/* NOW / live-edge. RED AT REST TOO: NOW is where the operator goes to get out
+   of a replay and back on the live edge, and drawn in the panel's ordinary grey
+   it was the least visible key in the row that matters most. */
 QPushButton#mrNow {
-	background: #181818; border: 1px solid #2c2c2c; border-radius: 5px;
+	background: @raise1@; border: 1px solid @border@; border-radius: 5px;
 	font-weight: 700; font-size: 10px; letter-spacing: 0.8px;
-	min-height: 26px; min-width: 36px; padding: 0; color: #484848;
+	min-height: 24px; min-width: 36px; padding: 0;
+	color: @rec@; border-color: @recBg@;
 }
-/* RED AT REST TOO. NOW is where the operator goes to get out of a replay and
-   back on the live edge; drawn in the panel's ordinary grey it was the least
-   visible key in the row that matters most. */
-QPushButton#mrNow { color: #a03030; border-color: #4a1c1c; }
-QPushButton#mrNow:hover { color: #e05050; border-color: #7a2a2a; }
-QPushButton#mrNow[live="true"] { background: #280808; border-color: #c02020; color: #e03030; }
+QPushButton#mrNow:hover { color: @rec@; border-color: @rec@; background: @recBg@; }
+QPushButton#mrNow[live="true"] { background: @recBg@; border-color: @rec@; color: @rec@; }
 
-/* ── the reference controller "Live" mode toggle — red when marks are taken as they happen ── */
+/* ── "Live" mode toggle — red when marks are taken as they happen ── */
 QPushButton#mrLive {
-	background: #181818; color: #6a6a6a;
-	border: 1px solid #2c2c2c; border-radius: 3px;
+	background: @raise1@; color: @textKey@;
+	border: 1px solid @border@; border-radius: 3px;
 	font-weight: 700; font-size: 11px; letter-spacing: 0.6px;
-	min-height: 22px; /* + 2px padding + 2px border = 28 */ min-width: 54px; padding: 2px 14px;
+	/* min-width is the ICON-ONLY floor, not the labelled one: in a column
+	   these two lose their words and keep their marks (see
+	   applyCompactChrome), and a 54 px floor stated here would have kept the
+	   width the word needed long after the word was gone. */
+	min-height: 20px; /* + 2px padding + 2px border = 26 */ min-width: 22px; padding: 2px 10px;
 }
-QPushButton#mrLive:hover { border-color: #424242; color: #9a9a9a; }
+QPushButton#mrLive:hover { border-color: @borderHi@; color: @text@; }
 QPushButton#mrLive:checked {
-	background: #A81C1C; color: #ffffff; border-color: #d03030;
+	background: @rec@; color: #ffffff; border-color: @rec@;
 }
 
-/* ── latching toggles (Loop · music · to output) ─────────── */
-QPushButton#mrToggle {
-	background: #181818; color: #6a6a6a;
-	border: 1px solid #2c2c2c; border-radius: 3px;
-	font-size: 10px; min-height: 22px; padding: 2px 9px;
-}
-QPushButton#mrToggle:hover { border-color: #424242; color: #9a9a9a; }
-/* A LIT TOGGLE IS A STATE, NOT AN INVITATION. It used to be the same filled
+/* ── latching toggles (Loop · music · to output) = STATE ────
+   A LIT TOGGLE IS A STATE, NOT AN INVITATION. It used to be the same filled
    green as the play key, so "Loop is on" and "press this to play" carried the
    same weight — and on a panel read at a glance under pressure, two meanings in
-   one colour is one meaning too many. Lit but hollow: unmistakably on, clearly
-   not the thing that starts a replay. */
+   one colour is one meaning too many. */
+QPushButton#mrToggle {
+	background: @raise1@; color: @textKey@;
+	border: 1px solid @border@; border-radius: 3px;
+	font-size: 10px; min-height: 20px; padding: 2px 9px;
+}
+QPushButton#mrToggle:hover { border-color: @borderHi@; color: @text@; }
 QPushButton#mrToggle:checked {
-	background: #14351f; color: #4fd07d; border-color: #22a04a;
+	background: @pvwBg@; color: @pvw@; border-color: @pvw@;
 	font-weight: 700;
 }
-QPushButton#mrToggle:checked:hover { background: #1a4227; color: #6fe098; }
+QPushButton#mrToggle:checked:hover { background: @pvwBg@; color: @pvw@; }
 
-/* ── list tabs (the reference controller: one tab per event list) ─────────────── */
+/* ── list tabs (one tab per event list) ─────────────────────── */
 QTabBar#mrListTabs { background: transparent; }
 /* No font-size here on purpose: the tab font is set on the WIDGET (see
    buildToolbar). A size that lives only in the stylesheet is a size nothing
    outside the painter can measure, and "is this tab wide enough for its own
    name" is exactly the question the gate has to answer. */
 QTabBar#mrListTabs::tab {
-	background: #141414; color: #8a8a8a;
-	border: 1px solid #232323; border-bottom: 0;
+	background: @raise1@; color: @textMuted@;
+	border: 1px solid @border@; border-bottom: 0;
 	padding: 3px 9px; margin-right: 1px; min-width: 16px;
 }
-QTabBar#mrListTabs::tab:hover { background: #1e1e1e; color: #c0c0c0; }
+QTabBar#mrListTabs::tab:hover { background: @raise2@; color: @text@; }
 QTabBar#mrListTabs::tab:selected {
-	background: #1D3D74; color: #ffffff; border-color: #2a5296;
+	background: @tabBar@; color: @accentText@; border-color: @tabBar@;
 }
 
 /* ── settings dialog: side menu + pages ─────────────────────────────── */
 QListWidget#mrSettingsNav {
-	background: #121212; color: #9a9a9a;
-	border: 0; border-right: 1px solid #232323;
+	background: @sink1@; color: @textMuted@;
+	border: 0; border-right: 1px solid @border@;
 	outline: 0; font-size: 11px;
 }
 QListWidget#mrSettingsNav::item { padding: 8px 12px; border: 0; }
-QListWidget#mrSettingsNav::item:hover { background: #1c1c1c; color: #d0d0d0; }
+QListWidget#mrSettingsNav::item:hover { background: @raise2@; color: @text@; }
 QListWidget#mrSettingsNav::item:selected {
-	background: #1D3D74; color: #ffffff;
+	background: @accent@; color: @accentText@;
 }
 QLabel#mrSettingsTitle {
-	color: #e0e6ee; font-size: 14px; font-weight: 700;
+	color: @text@; font-size: 14px; font-weight: 700;
 }
-QLabel#mrSettingsBlurb { color: #7a8490; font-size: 10px; }
+QLabel#mrSettingsBlurb { color: @textMuted@; font-size: 10px; }
 
 /* The two numbers an operator opens Settings to read before kick-off: how much
    disk is left, and how much recording that is. A card each — as one line of
    text the second number had no caption at all, and "09:12" with no word in
    front of it reads as a clock. */
 QFrame#mrStatCard {
-	background: #121212; border: 1px solid #262626; border-radius: 3px;
+	background: @raise1@; border: 1px solid @border@; border-radius: 3px;
 }
 QLabel#mrStatCaption {
-	color: #7a8490; font-size: 10px; font-weight: 600;
+	color: @textMuted@; font-size: 10px; font-weight: 600;
 	letter-spacing: 0.6px; text-transform: uppercase;
 }
-QLabel#mrStatValue { color: #e6ecf4; font-size: 19px; font-weight: 700; }
-QLabel#mrStatUnit { color: #7a8490; font-size: 11px; padding-bottom: 3px; }
+QLabel#mrStatValue { color: @text@; font-size: 19px; font-weight: 700; }
+QLabel#mrStatUnit { color: @textMuted@; font-size: 11px; padding-bottom: 3px; }
 
-/* ── multiview tiles (the reference controller's camera thumbnails beside the A output) ── */
+/* ── multiview tiles ────────────────────────────────────────────────
+   The caption band IS the tally: green = the angle being watched, red = the
+   angle on air, so the operator reads it off the picture instead of
+   correlating it with the angle keys. Signal, therefore not the theme's. */
 QWidget#mrTile { background: #000000; }
-/* the reference controller captions its thumbnails with a blue band; the angle being watched turns
-   green and the one on air red, so the operator reads tally from the picture
-   itself instead of correlating it with the angle buttons. */
 QLabel#mrTileCap {
-	background: #1D3D74; color: #dfe8f6;
+	background: @accent@; color: @accentText@;
 	font-size: 9px; font-weight: 700; padding: 1px 4px;
 }
-QLabel#mrTileCap[tally="pvw"] { background: #176533; color: #ffffff; }
-QLabel#mrTileCap[tally="pgm"] { background: #A81C1C; color: #ffffff; }
-QLabel#mrTileCap[tally="replay"] { background: #3a2d10; color: #ffd07a; }
+QLabel#mrTileCap[tally="pvw"] { background: @pvw@; color: #ffffff; }
+QLabel#mrTileCap[tally="pgm"] { background: @rec@; color: #ffffff; }
+QLabel#mrTileCap[tally="replay"] { background: @warnBg@; color: @warn@; }
 
-/* ── channel strip under the preview (the reference controller green info band) ─ */
+/* ── channel strip under the preview ─────────────────────── */
 QLabel#mrChanBadge {
-	background: #0e4523; color: #ffffff;
+	background: @onAirDim@; color: #ffffff;
 	font-weight: 700; font-size: 11px; padding: 2px 7px;
 }
-/* The letter under each output box. the reference controller puts A on a green bar and B on a
-   blue one, and that colour is how the operator tells the two boxes apart
-   from across the room — faster than reading a letter. The one being driven
-   by the keys is the bright one. */
-QLabel#mrChanTag {
-	background: #12161c; color: #6b7787;
-	font-weight: 700; font-size: 10px; padding: 1px 0;
-}
-QLabel#mrChanTag[chan="A"][active="true"] { background: #146433; color: #ffffff; }
-QLabel#mrChanTag[chan="B"][active="true"] { background: #1d3d74; color: #ffffff; }
-QLabel#mrChanStrip {
-	background: #146433; color: #dff3e2;
-	font-size: 10px; padding: 2px 7px;
-}
+/* The letter under each output box: A on a green bar, B on a blue one, and that
+   colour is how the operator tells the two boxes apart from across the room —
+   faster than reading a letter. The one being driven by the keys is the bright
+   one.
 
-/* REC button */
+   THE BAND IS THINNER THAN IT WAS. It is a tally, not a caption: it has to be
+   findable in the corner of the eye and read in one glance, and neither of
+   those improves past a few pixels. 10 px of coloured band under a picture is
+   10 px the event list does not get, on every box, on every rig. */
+QLabel#mrChanTag {
+	background: @raise1@; color: @textMuted@;
+	font-weight: 700; font-size: 9px; padding: 0px 0px;
+}
+QLabel#mrChanTag[chan="A"][active="true"] { background: @onAirDim@; color: #ffffff; }
+QLabel#mrChanTag[chan="B"][active="true"] { background: @accent@; color: @accentText@; }
+/* ONE LINE, not three. It used to stack list / clip / remaining, then id and
+   the two offsets, then timecode and speed — 44 px under the pictures, most of
+   which the on-air band and the position bar were already saying. What is left
+   here is what is said NOWHERE else: which list, how far the playhead is past
+   IN and short of OUT, and whatever showNotice() has to tell the operator about
+   the key he just pressed.
+
+   AND IT IS NO LONGER GREEN. It was a full-width green band directly above the
+   on-air band, which is also a full-width green band — so the panel had two of
+   them, one saying what is playing and one saying what the playhead is near,
+   and telling them apart meant reading both. Green is reserved for on air. This
+   is a reading, so it is drawn like one; the BADGE keeps its colour, because
+   that is the channel's identity and it matches the tally under the picture. */
+QLabel#mrChanStrip {
+	background: @sink1@; color: @textMuted@;
+	font-size: 10px; padding: 1px 7px;
+}
+/* A notice owns the line for a few seconds — it is the answer to a key the
+   operator just pressed, so it is allowed to be brighter than the reading it
+   replaces. */
+QLabel#mrChanStrip[notice="true"] { color: @warn@; font-weight: 700; }
+
+)QSS"
+/* MSVC caps a single string literal at 16380 bytes, so the sheet is written in
+   chunks and the compiler concatenates them. Adding to it means watching for
+   C2026 and breaking here rather than making the last chunk longer. */
+R"QSS(
+/* ── THE STATUS LINE ────────────────────────────────────────────────
+   One row, and it OWNS the modes rather than mirroring them: Loop, music, "in
+   output" and the return to the live edge are buttons here and nowhere else.
+   That is the whole reason it can exist at all — a status bar that repeated
+   four toggles which are also keys in the strip would be four states with two
+   homes, which is exactly how a toggle ends up left in the wrong position.
+   Beside them it carries the numbers about the take that are pure readings:
+   how long it has been running, what the health monitor found, what speed the
+   next replay will run at. */
+QWidget#mrStatusBar { background: @sink1@; border-top: 1px solid @border@; }
+QLabel#mrStatusText  { color: @textMuted@; font-size: 10px; }
+QLabel#mrStatusValue { color: @text@; font-size: 10px; font-weight: 700;
+                       letter-spacing: 0.3px; }
+QLabel#mrStatusValue[rec="true"] { color: @rec@; }
+/* A vertical hairline between two groups of the status line, and between two
+   sections of the control strip. It is what replaced the six captions: a rule
+   costs one pixel of width and says the same thing a heading said in a whole
+   line of height. */
+QWidget#mrStatSep { background: @border@; }
+/* The toggles that live on this line. Shorter than a key in the strip because
+   the line is shorter; still a STATE when lit — hollow, not filled. */
+QPushButton#mrStatKey {
+	background: transparent; color: @textMuted@;
+	border: 1px solid transparent; border-radius: 3px;
+	font-size: 10px; font-weight: 700; letter-spacing: 0.4px;
+	min-height: 14px; padding: 1px 7px;
+}
+QPushButton#mrStatKey:hover { color: @text@; border-color: @borderHi@; }
+QPushButton#mrStatKey:checked {
+	background: @pvwBg@; color: @pvw@; border-color: @pvw@;
+}
+QPushButton#mrStatKey:checked:hover { background: @pvwBg@; color: @pvw@; }
+/* NOW is not a mode and is not drawn as one: it is where the operator goes to
+   get out of a replay, so it keeps the red it has at rest in the strip. */
+QPushButton#mrStatKey[now="true"] {
+	color: @rec@; border-color: @recBg@;
+}
+QPushButton#mrStatKey[now="true"]:hover { background: @recBg@; border-color: @rec@; }
+
+/* REC — one of the two keys allowed to be FILLED, and only once it is armed.
+   At rest it is a command like any other, in the danger colour. */
 QPushButton#mrRec {
 	font-weight: 700; font-size: 12px; letter-spacing: 0.6px;
-	border-radius: 4px; min-height: 20px; padding: 3px 14px;
+	border-radius: 4px; min-height: 18px; padding: 3px 14px;
 }
 QPushButton#mrRec[recording="false"] {
-	background: #181010; color: #b03030; border: 1px solid #2c1818;
+	background: @raise1@; color: @rec@; border: 1px solid @recBg@;
 }
-QPushButton#mrRec[recording="false"]:hover { background: #1e1010; border-color: #4a2020; }
+QPushButton#mrRec[recording="false"]:hover { background: @recBg@; border-color: @rec@; }
 QPushButton#mrRec[recording="true"] {
-	background: #640808; color: #ffffff; border: 1px solid #c02020;
+	background: @rec@; color: #ffffff; border: 1px solid @rec@;
 }
-QPushButton#mrRec[recording="true"]:hover { background: #740e0e; }
+QPushButton#mrRec[recording="true"]:hover { background: @rec@; }
 
 /* Channel selector A|B / A / B and the swap. Small, square and always visible:
    it is the answer to "where is this key going", and an operator who has to
    look for it has already pressed something on the wrong channel. */
 QPushButton#mrChanSel {
-	background: #14161a; color: #7a879a; border: 1px solid #262b33;
+	background: @raise1@; color: @textKey@; border: 1px solid @border@;
 	border-radius: 3px; padding: 2px 6px; font-weight: 700; font-size: 11px;
-	min-height: 22px; /* + 2px padding + 2px border = 28 */
+	min-height: 20px; /* + 2px padding + 2px border = 26 */
 }
-QPushButton#mrChanSel:hover { background: #1b1f26; color: #c8d2de; }
+QPushButton#mrChanSel:hover { background: @raise2@; color: @text@; }
 QPushButton#mrChanSel:checked {
-	background: #1d3d74; color: #ffffff; border-color: #2f5da8;
+	background: @accent@; color: @accentText@; border-color: @accent@;
 }
 
 /* M4 health badge: amber = degraded, red = this take is not usable. It sits
    beside REC and is hidden entirely while there is nothing to report. */
 QPushButton#mrHealth {
 	font-weight: 700; font-size: 12px; border-radius: 4px;
-	min-height: 20px; padding: 3px 8px;
+	min-height: 18px; padding: 3px 8px;
 }
 QPushButton#mrHealth[level="warn"] {
-	background: #2a2008; color: #e0a020; border: 1px solid #6a5010;
+	background: @warnBg@; color: @warn@; border: 1px solid @warn@;
 }
 QPushButton#mrHealth[level="bad"] {
-	background: #3a0c0c; color: #ff6a4a; border: 1px solid #8a1c1c;
+	background: @recBg@; color: @rec@; border: 1px solid @rec@;
 }
 
-/* settings gear */
+/* settings gear and the two ⋯ / ▾ menu keys.
+   READABLE. They were drawn at #484848 on #181818 — the faintest things on the
+   panel — and behind them are Stop, Play-to-output, Duplicate and Delete. A
+   menu nobody can see is a menu nobody opens. */
 QToolButton#mrGear {
-	background: #181818; border: 1px solid #2c2c2c; border-radius: 4px;
-	padding: 3px 7px; color: #484848; font-size: 14px;
+	background: @raise1@; border: 1px solid @border@; border-radius: 4px;
+	padding: 3px 7px; color: @textKey@; font-size: 14px;
 }
-QToolButton#mrGear:hover { background: #222222; color: #c0c0c0; border-color: #424242; }
+QToolButton#mrGear:hover { background: @raise2@; color: @text@; border-color: @borderHi@; }
 
-/* ── angle selector — state drives color, not :checked ───── */
+/* ── angle selector — STATE drives colour, not :checked ───── */
 QPushButton#mrAngle {
-	background: #181818; border: 1px solid #2c2c2c; border-radius: 3px;
-	color: #383838; font-weight: 700; font-size: 10px;
-	min-width: 34px; min-height: 26px; padding: 0 4px;
+	background: @raise1@; border: 1px solid @border@; border-radius: 3px;
+	color: @textKey@; font-weight: 700; font-size: 10px;
+	min-width: 34px; min-height: 24px; padding: 0 4px;
 }
-QPushButton#mrAngle:hover { background: #202020; color: #585858; border-color: #424242; }
-/* AN EMPTY SLOT IS DRAWN, NOT LEFT AS A HOLE. The matrix reserves all eight
-   places so that angle 5 is at the same x on every rig; reserving them by
-   leaving nothing there made the section read as a gap somebody forgot to
-   fill. A sunken outline says "a camera could go here" and costs no attention:
-   it is darker than the panel, and it has nothing to read. */
+QPushButton#mrAngle:hover { background: @raise2@; color: @text@; border-color: @borderHi@; }
+/* AN EMPTY SLOT IS DRAWN, NOT LEFT AS A HOLE. The matrix reserves the places up
+   to the last configured camera so that angle 5 is at the same x on every rig;
+   reserving them by leaving nothing there made the section read as a gap
+   somebody forgot to fill. A sunken outline says "a camera could go here" and
+   costs no attention: it is darker than the panel, and it has nothing to read. */
 QPushButton#mrAngleSlot {
-	background: #101010; border: 1px solid #191919; border-radius: 3px;
-	color: transparent; min-width: 34px; min-height: 26px; padding: 0 4px;
+	background: @sink1@; border: 1px solid @panel@; border-radius: 3px;
+	color: transparent; min-width: 34px; min-height: 24px; padding: 0 4px;
 }
 QPushButton#mrAngle[state="preview"] {
-	background: #081a0e; border-color: #1c8a38; color: #28b050;
+	background: @pvwBg@; border-color: @pvw@; color: @pvw@;
 }
-QPushButton#mrAngle[state="preview"]:hover { background: #0c2014; border-color: #22a040; }
+QPushButton#mrAngle[state="preview"]:hover { background: @pvwBg@; border-color: @pvw@; }
 QPushButton#mrAngle[state="program"] {
-	background: #200808; border-color: #be2020; color: #de3838;
+	background: @recBg@; border-color: @rec@; color: @rec@;
 }
-QPushButton#mrAngle[state="program"]:hover { background: #280c0c; border-color: #cc2828; }
+QPushButton#mrAngle[state="program"]:hover { background: @recBg@; border-color: @rec@; }
 
 /* ── speed preset chips ─────────────────────────────────── */
 QPushButton#mrSpeedChip {
-	background: #181818; border: 1px solid #2c2c2c; border-radius: 3px;
-	color: #484848; font-size: 9px; font-weight: 700;
-	min-width: 28px; min-height: 24px; padding: 1px 4px;
+	background: @raise1@; border: 1px solid @border@; border-radius: 3px;
+	color: @textKey@; font-size: 9px; font-weight: 700;
+	min-width: 28px; min-height: 22px; padding: 1px 4px;
 }
-QPushButton#mrSpeedChip:hover { background: #222222; color: #b0b0b0; border-color: #424242; }
-QPushButton#mrSpeedChip:pressed { background: #0c2212; border-color: #1c8a38; color: #28b050; }
-/* the reference controller fills the chip that matches the current speed (100% by default). */
+QPushButton#mrSpeedChip:hover { background: @raise2@; color: @text@; border-color: @borderHi@; }
+QPushButton#mrSpeedChip:pressed { background: @sink1@; }
+/* The chip that matches the current speed is a STATE: lit, hollow. */
 QPushButton#mrSpeedChip[active="true"] {
-	background: #176533; border-color: #22a04a; color: #ffffff;
+	background: @pvwBg@; border-color: @pvw@; color: @pvw@;
 }
 
 /* ── section separator line ─────────────────────────────── */
-QWidget#mrSepLine { background: #1c1c1c; }
+QWidget#mrSepLine { background: @border@; }
 
-/* ── accent / danger buttons ─────────────────────────────── */
-/* THE ONE FILLED KEY IN THE PANEL. "Play the selected events" is the action the
-   operator reaches for more than any other, and it was an outlined key with a
-   green tint — the same weight as Mark, as Export, as ⋯, so the eye had to READ
-   the row to find it. Filled, it is found without reading, and nothing else on
-   the panel is filled except the two states that are allowed to shout (the REC
-   key when armed, the on-air band). An action and a state look different here
-   on purpose: this one asks to be pressed, those two report. */
+/* ── ACTION: the one filled key in the panel ──────────────────
+   "Play the selected events" is the action the operator reaches for more than
+   any other, and it was an outlined key with a green tint — the same weight as
+   Mark, as Export, as ⋯, so the eye had to READ the row to find it. Filled, it
+   is found without reading, and nothing else on the panel is filled except REC
+   when armed and the on-air band. An action and a state look different here on
+   purpose: this one asks to be pressed, those two report. */
 QPushButton#mrAccent {
-	background: #1b8a44; border: 1px solid #22a352; color: #ffffff;
+	background: @action@; border: 1px solid @action@; color: #ffffff;
 	font-weight: 700;
 }
-QPushButton#mrAccent:hover { background: #21a151; border-color: #2cbb63; }
-QPushButton#mrAccent:pressed { background: #146633; }
+QPushButton#mrAccent:hover { background: @actionHi@; border-color: @actionHi@; }
+QPushButton#mrAccent:pressed { background: @action@; }
 QPushButton#mrAccent:disabled {
-	background: #16281c; border-color: #1e3a26; color: #4a5a50;
+	background: @raise1@; border-color: @border@; color: @textDim@;
 }
-QPushButton#mrDanger { color: #b03030; border-color: #2c1818; }
-QPushButton#mrDanger:hover { background: #1e1010; border-color: #442020; }
+/* Annulla. A BORDER, not just red text: with the panel's own background and a
+   border a shade off it, the one destructive key on the mark row was drawn as a
+   hyperlink. */
+QPushButton#mrDanger { color: @danger@; border-color: @recBg@; }
+QPushButton#mrDanger:hover { background: @recBg@; border-color: @danger@; color: @danger@; }
 
 /* ── checkboxes ──────────────────────────────────────────── */
-#MultiReplayDock QCheckBox { color: #888888; spacing: 5px; font-size: 11px; }
+#MultiReplayDock QCheckBox { color: @textMuted@; spacing: 5px; font-size: 11px; }
 #MultiReplayDock QCheckBox::indicator {
 	width: 13px; height: 13px; border-radius: 3px;
-	border: 1px solid #2c2c2c; background: #181818;
+	border: 1px solid @border@; background: @raise1@;
 }
-#MultiReplayDock QCheckBox::indicator:checked { background: #1c8a38; border-color: #22a040; }
+#MultiReplayDock QCheckBox::indicator:checked { background: @pvw@; border-color: @pvw@; }
 
 )QSS"
-// SPLIT HERE, and it is the compiler's rule rather than a section boundary:
-// MSVC refuses a single string literal over 16380 bytes (C2026, "trailing
-// characters will be truncated" — a stylesheet silently missing its second
-// half). Adjacent literals are concatenated at translation, so the sheet is
-// still one string; it just arrives in two pieces. Any section boundary will do
-// when the next rule pushes it over again.
 R"QSS(
 /* ── inputs ──────────────────────────────────────────────── */
 #MultiReplayDock QComboBox, #MultiReplayDock QLineEdit {
-	background: #181818; color: #c0c0c0;
-	border: 1px solid #2c2c2c; border-radius: 3px;
-	padding: 3px 7px; min-height: 20px; font-size: 11px;
+	background: @raise1@; color: @text@;
+	border: 1px solid @border@; border-radius: 3px;
+	padding: 3px 7px; min-height: 18px; font-size: 11px;
 }
-#MultiReplayDock QComboBox:hover, #MultiReplayDock QLineEdit:hover { border-color: #424242; }
+#MultiReplayDock QComboBox:hover, #MultiReplayDock QLineEdit:hover { border-color: @borderHi@; }
 #MultiReplayDock QComboBox::drop-down { border: 0; width: 16px; }
 /* AN EDITABLE COMBO IS A COMBO WITH A LINE EDIT INSIDE IT, and the rule above
    matches BOTH. So the per-angle speed and tag cells were paying for the box
@@ -355,18 +692,18 @@ R"QSS(
 #MultiReplayDock QComboBox QLineEdit {
 	background: transparent; border: 0; padding: 0; min-height: 0;
 }
-/* "--" in an angle cell: no per-angle speed, the slider decides. Grey, because
+/* "--" in an angle cell: no per-angle speed, the slider decides. Muted, because
    it is an absence and not a choice. It lives here rather than in a
    setStyleSheet() on the combo itself: a style sheet set on one widget makes Qt
    build a separate style context for it and re-polish its subtree, and that was
    a measurable part of a table rebuild that took over a tenth of a second. */
 #MultiReplayDock QComboBox[mrNoOverride="true"],
 #MultiReplayDock QComboBox[mrNoOverride="true"] QLineEdit {
-	color: #707070;
+	color: @textMuted@;
 }
 #MultiReplayDock QComboBox QAbstractItemView {
-	background: #181818; color: #c0c0c0; border: 1px solid #2c2c2c;
-	selection-background-color: #1a2e52; selection-color: #d0d8f0; outline: 0;
+	background: @raise1@; color: @text@; border: 1px solid @border@;
+	selection-background-color: @accent@; selection-color: @accentText@; outline: 0;
 }
 /* The rows of an open list. Without an explicit item rule the view inherits the
    padding of the CLOSED box above (3px 7px plus its min-height), which leaves
@@ -375,61 +712,79 @@ R"QSS(
    stated here and the horizontal centring is set per item, in code, because
    Qt draws item text through the delegate and no stylesheet reaches it. */
 #MultiReplayDock QComboBox QAbstractItemView::item {
-	min-height: 20px; padding: 0px; border: 0;
+	min-height: 18px; padding: 0px; border: 0;
 }
 
-/* ── zones: a captioned frame round each group of controls ───────
-   Quiet on purpose. The border is there to say "these keys belong together",
-   which needs one pixel and no colour — a loud box would compete with the
-   green band and the red REC key, which are the two things on this panel that
-   are allowed to shout. */
-/* A caption over a hairline, not a box. Five bordered groups drew five frames
-   competing for attention with the green band and the REC key; a rule under a
-   title says "this group" just as well and disappears when it is not being
-   looked for. */
+/* ── HOW TALL A ROW OF THE EVENT LIST IS ───────────────────────────
+   The row is sized from the CELL the table actually built (see refreshEvents),
+   and an angle cell is two combo boxes — so the row height is decided here,
+   not by a number next to setDefaultSectionSize. Those two used to be set
+   independently and drifted apart, which is what "the text looks cut" was.
+   Scoped to #mrEvents so the Settings dialog keeps inputs at a size a mouse
+   can hit: a dense LIST is a reading surface, a dense FORM is a hazard. */
+QTableWidget#mrEvents QComboBox, QTableWidget#mrEvents QLineEdit {
+	min-height: @cellInput@px; padding: @cellPad@px 5px;
+	font-size: @cellFont@px;
+}
+QTableWidget#mrEvents QComboBox QAbstractItemView::item {
+	min-height: @cellInput@px;
+}
+
+/* ── zones: a caption over a hairline, not a box ───────
+   Quiet on purpose. Five bordered groups drew five frames competing for
+   attention with the green band and the REC key; a rule under a title says
+   "this group" just as well and disappears when it is not being looked for. */
 QFrame#mrZone {
-	border: 0; border-top: 1px solid #22262c; background: transparent;
+	border: 0; border-top: 1px solid @border@; background: transparent;
 }
 QLabel#mrZoneTitle {
-	color: #6a7686; font-size: 9px; font-weight: 700; letter-spacing: 1.1px;
+	color: @textMuted@; font-size: 9px; font-weight: 700; letter-spacing: 1.1px;
 	padding: 1px 0px 0px 1px; margin: 0px;
 }
-
-/* ── speed slider — steel blue ───────────────────────────── */
-QSlider#mrSpeed::groove:horizontal {
-	height: 3px; background: #1e1e1e; border-radius: 2px;
+/* FOLDED: the same caption in a narrow column, where there is one per group
+   down the panel instead of one per group across it. Smaller type, tighter
+   tracking - it still names the group, it just stops taking a full line of
+   text to do it. Stated HERE and not on the widget: a style-sheet font-size
+   beats a widget font, so a font set in code would simply be ignored. */
+QLabel#mrZoneTitle[folded="true"] {
+	font-size: 8px; letter-spacing: 0.8px;
 }
-QSlider#mrSpeed::sub-page:horizontal { background: #365e8a; border-radius: 2px; }
+
+/* ── speed slider ────────────────────────────────────────── */
+QSlider#mrSpeed::groove:horizontal {
+	height: 3px; background: @raise2@; border-radius: 2px;
+}
+QSlider#mrSpeed::sub-page:horizontal { background: @seekBar@; border-radius: 2px; }
 QSlider#mrSpeed::handle:horizontal {
 	width: 10px; height: 10px; margin: -4px 0;
-	background: #7aabc8; border-radius: 5px; border: 1px solid #284860;
+	background: @text@; border-radius: 5px; border: 1px solid @border@;
 }
-QSlider#mrSpeed::handle:horizontal:hover { background: #e0e0e0; }
+QSlider#mrSpeed::handle:horizontal:hover { background: @accentText@; }
 
-/* ── event table (the reference controller: navy rows, orange selection) ─────── */
+/* ── event table ───────────────────────────────────────────── */
 QTableWidget#mrEvents {
-	background: #00121C; alternate-background-color: #002A42;
-	gridline-color: transparent; border: 1px solid #10243a;
-	border-radius: 0; color: #d6dde6; outline: 0;
+	background: @sink2@; alternate-background-color: @sinkAlt@;
+	gridline-color: transparent; border: 1px solid @border@;
+	border-radius: 0; color: @text@; outline: 0;
 }
 QTableWidget#mrEvents::item { padding: 2px 5px; border: 0; }
-QTableWidget#mrEvents::item:selected { background: #DB5026; color: #ffffff; }
+QTableWidget#mrEvents::item:selected { background: @rowSel@; color: @rowSelText@; }
 /* The per-angle enable box, which in the reference controller IS the cell */
 QTableWidget#mrEvents::indicator {
 	width: 11px; height: 11px;
-	border: 1px solid #9aa4ae; background: #05131c;
+	border: 1px solid @textMuted@; background: @sink2@;
 }
 QTableWidget#mrEvents::indicator:checked {
-	background: #116B35; border-color: #d8dde2;
+	background: @pvw@; border-color: @text@;
 }
 /* The section BACKGROUND is not ours to set: OBS's own theme styles
    QHeaderView::section (Yami.obt: background-color: var(--button_bg)) and wins
    whatever we put here — measured on screen, #272A33 either way. That is why
    the "angle I am watching" cue is a ▶ in the header TEXT (see
-   updateCamHeaderHighlight) and not the reference controller's green fill: a colour we cannot
-   guarantee is worse than a glyph we can. */
+   updateCamHeaderHighlight) and not a green fill: a colour we cannot guarantee
+   is worse than a glyph we can. */
 QHeaderView::section {
-	color: #cfd8e4; padding: 3px 5px;
+	color: @text@; padding: 3px 5px;
 	font-size: 9px; font-weight: 700; letter-spacing: 0.6px;
 }
 
@@ -438,18 +793,84 @@ QHeaderView::section {
 	background: transparent; width: 6px; margin: 0;
 }
 #MultiReplayDock QScrollBar::handle:vertical {
-	background: #2a2a2a; border-radius: 3px; min-height: 20px;
+	background: @border@; border-radius: 3px; min-height: 20px;
 }
-#MultiReplayDock QScrollBar::handle:vertical:hover { background: #424242; }
+#MultiReplayDock QScrollBar::handle:vertical:hover { background: @borderHi@; }
 #MultiReplayDock QScrollBar::add-line, #MultiReplayDock QScrollBar::sub-line {
 	height: 0; width: 0;
 }
+#MultiReplayDock QScrollBar:horizontal {
+	background: transparent; height: 6px; margin: 0;
+}
+#MultiReplayDock QScrollBar::handle:horizontal {
+	background: @border@; border-radius: 3px; min-width: 20px;
+}
+#MultiReplayDock QScrollBar::handle:horizontal:hover { background: @borderHi@; }
 
 QSplitter::handle:vertical {
-	background: #1e1e1e; height: 5px;
+	background: @raise1@; height: 5px;
 }
-QSplitter::handle:vertical:hover { background: #2e2e2e; }
-QSplitter::handle:horizontal { background: #1e1e1e; width: 5px; }
+QSplitter::handle:vertical:hover { background: @raise2@; }
+QSplitter::handle:horizontal { background: @raise1@; width: 5px; }
+QSplitter::handle:horizontal:hover { background: @raise2@; }
 )QSS";
+
+// How tight the event list is drawn. Three steps rather than a free number:
+// each one is a set of metrics that agree with each other, and a spin box of
+// pixels would let an operator pick a row shorter than the text in it.
+struct Density {
+	int cellInput; // a table combo's content height
+	int cellPad;   // its vertical padding
+	int cellFont;  // and its type size
+	int headerH;   // the column headings above it
+	int rowFloor;  // where the row height starts before the cells raise it
+};
+
+inline Density densityFor(int level)
+{
+	switch (level) {
+	case 1: // compact — about a fifth off, still comfortably clickable
+		return {14, 2, 10, 18, 22};
+	case 2: // dense — for an operator working from the list on a big screen
+		return {10, 1, 9, 15, 18};
+	default: // comfortable, and the historic 30 px row
+		return {20, 3, 11, 22, 28};
+	}
+}
+
+// The sheet with this scheme's colours and this density's metrics in it.
+inline QString dockStyle(const Scheme &s, int densityLevel = 0)
+{
+	const Density d = densityFor(densityLevel);
+	QString out = QString::fromUtf8(kDockStyleTemplate);
+	out.replace(QLatin1String("@cellInput@"), QString::number(d.cellInput));
+	out.replace(QLatin1String("@cellPad@"), QString::number(d.cellPad));
+	out.replace(QLatin1String("@cellFont@"), QString::number(d.cellFont));
+	const std::pair<const char *, const QString *> tokens[] = {
+		{"@panel@", &s.panel},         {"@raise1@", &s.raise1},
+		{"@raise2@", &s.raise2},       {"@sink1@", &s.sink1},
+		{"@sink2@", &s.sink2},         {"@sinkAlt@", &s.sinkAlt},
+		{"@borderHi@", &s.borderHi},   {"@border@", &s.border},
+		{"@textMuted@", &s.textMuted}, {"@textDim@", &s.textDim},
+		{"@textKey@", &s.textKey},
+		{"@text@", &s.text},           {"@accentText@", &s.accentText},
+		{"@accent@", &s.accent},       {"@rowSelText@", &s.rowSelText},
+		{"@rowSel@", &s.rowSel},       {"@recBg@", &s.recBg},
+		{"@rec@", &s.rec},             {"@pvwBg@", &s.pvwBg},
+		{"@pvw@", &s.pvw},             {"@onAirDim@", &s.onAirDim},
+		{"@onAir@", &s.onAir},         {"@warnBg@", &s.warnBg},
+		{"@warn@", &s.warn},           {"@danger@", &s.danger},
+		{"@actionHi@", &s.actionHi},   {"@action@", &s.action},
+		{"@tabBar@", &s.tabBar},       {"@seekBar@", &s.seekBar},
+	};
+	// LONGEST PREFIX FIRST, which is why @borderHi@ is listed above @border@
+	// and @text@ below @textMuted@: these are delimited by @ at both ends, so
+	// the order only matters if a token is a prefix of another AND the closing
+	// @ is forgotten. Keeping the order right anyway costs nothing and means
+	// the next token added cannot introduce a silent mis-substitution.
+	for (const auto &[name, value] : tokens)
+		out.replace(QLatin1String(name), *value);
+	return out;
+}
 
 } // namespace multireplay

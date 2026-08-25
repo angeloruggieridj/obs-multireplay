@@ -23,7 +23,7 @@
 //     sections, which is the only honest answer when there are 60 px of height
 //     to put a control strip in.
 //
-//  3. NOTHING STRETCHES BY ACCIDENT. A key is 28 px tall, always (the style
+//  3. NOTHING STRETCHES BY ACCIDENT. A key is 26 px tall, always (the style
 //     sheet's rules add up to it, deliberately). A section is fixed in height,
 //     so spare height goes to the picture and the event list, which can use it.
 //     Spare WIDTH goes to the one section per line that says it wants it, so the
@@ -39,6 +39,8 @@
 #include <QVector>
 #include <QWidget>
 
+#include <functional>
+
 class QGridLayout;
 class QLabel;
 class QPushButton;
@@ -46,12 +48,34 @@ class QPushButton;
 namespace multireplay {
 
 // ONE HEIGHT FOR EVERY KEY, and it is arithmetic rather than taste: the style
-// sheet states each key's min-height as 28 - 2*padding - 2*border, so every rule
-// lands on the same 28. A row pitch built on it lines the sections up with each
+// sheet states each key's min-height as 26 - 2*padding - 2*border, so every rule
+// lands on the same 26. A row pitch built on it lines the sections up with each
 // other.
-inline constexpr int kKeyH = 28;
+//
+// IT WAS 28. The two pixels were bought back for the event list: five or six key
+// rows stand between the two macro-rows and the folded stack, so this is 10-14
+// px of table on every arrangement, and 26 is still well above the size at which
+// a key stops being easy to hit in a hurry.
+inline constexpr int kKeyH = 26;
+// …and 22 STACKED. In a column the strip is six groups one under another, so
+// every key row is charged to the event list — which on that panel is the thing
+// the operator is actually reading. 22 px is still a comfortable target and
+// across the eleven rows of the folded stack it is the difference between the
+// pictures getting the height their aspect asks for and being squashed into
+// black bars.
+// SIDE BY SIDE THE KEYS STAY 26: there the strip is two lines and the height
+// costs the list almost nothing, so there is nothing to buy.
+inline constexpr int kKeyFoldedH = 22;
 // Between two rows of one section.
 inline constexpr int kBandVGap = 4;
+// A SECTION'S CAPTION, and it has two heights because it is worth two different
+// amounts. Side by side, a caption is how the eye tells six groups apart at a
+// glance and it is cheap — one line across the whole strip. STACKED, there is
+// one per group down a narrow column, and six of them are six times the cost
+// for a job the gap between the groups is already doing most of. So it stays
+// (the grouping is the point) and it stops taking a full line of text to say so.
+inline constexpr int kCaptionH = 13;
+inline constexpr int kCaptionFoldedH = 11;
 // Between two sections, against the 4-6 px between two keys inside one. A gap
 // the size of the gap inside a group makes two groups look like one group, and
 // then the caption is the only thing saying otherwise — a label doing work the
@@ -65,6 +89,61 @@ inline constexpr int kZoneGapMax = 56;
 // wider than the dock is a dock that cannot be narrowed. Sections that hold more
 // than this (the camera matrix, eight slots wide) shrink their keys instead.
 inline constexpr int kMinBlockWidth = 220;
+
+// ---------------------------------------------------------------------------
+// PanelMode — THREE DECLARED ARRANGEMENTS OF THE WHOLE PANEL
+// ---------------------------------------------------------------------------
+//
+// The same argument as the two shapes of a KeyBlock, one floor up. A replay
+// panel is not read, it is used from memory: the hand goes where the key was
+// last time. A fluid layout is a panel with a different memory at every width,
+// so the answer is not reflow — it is a small number of arrangements, each one
+// designed, chosen by the shape of the room the panel was given.
+//
+//   Wide   undocked, full screen, or a big dock: pictures across the top, list
+//          under them, the control strip in two macro-rows.
+//   Short  docked UNDER the OBS preview — wide and shallow. Stacking pictures
+//          on top of the list cannot afford both, so they go side by side.
+//   Tall   docked down one SIDE — a single narrow column. The multiview becomes
+//          a filmstrip and the control strip becomes a stack.
+//
+// Nothing is dropped in any of them; what changes is rank.
+enum class PanelMode { Wide, Short, Tall };
+
+// Narrower than this and the panel is a column, whatever its height.
+inline constexpr int kTallMaxWidth = 760;
+// Shorter than this (and wide enough not to be Tall) and the pictures cannot
+// sit above the list.
+inline constexpr int kShortMaxHeight = 470;
+// HYSTERESIS, and it is not politeness. Dragging a dock edge across a bare
+// threshold flips the mode back and forth, and every flip re-lays the
+// OBSQTDisplay widgets — which on Windows means re-allocating a D3D swap chain
+// on the graphics thread, several times a second, while a take is recording.
+inline constexpr int kModeHysteresis = 40;
+
+// Which arrangement a panel of this size wants. `current` is what it is wearing
+// now, and it is an argument rather than a fresh decision because a threshold
+// crossed on the way in is not the same threshold on the way out.
+PanelMode panelModeFor(const QSize &size, PanelMode current);
+const char *panelModeName(PanelMode m);
+
+// ---------------------------------------------------------------------------
+// Lane — WHERE A SECTION LIVES ON ITS LINE
+// ---------------------------------------------------------------------------
+//
+// The wide arrangement is two macro-rows of three groups, and the whole point is
+// that the groups are in the SAME PLACE on both rows: marks over the record key
+// at the left, angles over the transport in the middle, exports over the speed
+// dial at the right. Flowing them and spreading the leftover into the gaps put
+// the two middle groups 48 px apart — near-alignment, which reads worse than
+// either alignment or a deliberate offset, and is most of what "the keys are
+// scattered" was.
+//
+// A lane is declared, so it cannot drift. Lane widths are taken across ALL the
+// lines, so the left lane starts at the same x on every row, the right lane ends
+// at the same x on every row, and the centre lane is centred once for all of
+// them.
+enum class Lane { Left, Centre, Right };
 
 // ---------------------------------------------------------------------------
 // FlowLayout — a row of controls that WRAPS instead of squeezing
@@ -126,6 +205,28 @@ QGridLayout *bandGrid(QWidget *host);
 void equaliseKeyWidths(const QList<QPushButton *> &keys);
 
 // ---------------------------------------------------------------------------
+// useTextGlyph — draw a glyph as TEXT, not as a colour emoji
+// ---------------------------------------------------------------------------
+//
+// U+23EE ⏮ and U+23ED ⏭ carry Emoji_Presentation=Yes, so a platform that has a
+// colour emoji font draws them from it: on Windows the two frame-step keys came
+// out in full-colour Segoe UI Emoji BLUE, on a panel where every other key is a
+// grey glyph on a grey key. They were the loudest things in the transport row
+// and they are the two least consequential keys in it. ▶ U+25B6, ◀ U+25C0,
+// ■ U+25A0 and ↺ U+21BA default to text presentation, which is why only these
+// two ever looked wrong.
+//
+// THE FIX IS THE FONT, NOT THE GLYPH. Appending U+FE0E (VARIATION SELECTOR-15)
+// would be the tidy answer and it changes text(), and the gate finds Stop,
+// reverse and both frame steps BY THEIR GLYPH (selftest.cpp). A font swap is
+// invisible to that and to every other reader of the label.
+//
+// Falls back to the widget's current font when no candidate family has the
+// glyph, which is the honest answer on a platform we have not thought about:
+// a coloured key beats a missing one.
+void useTextGlyph(QWidget *w, const QString &glyph);
+
+// ---------------------------------------------------------------------------
 // KeyBlock — one captioned section, in two declared shapes
 // ---------------------------------------------------------------------------
 
@@ -169,6 +270,25 @@ public:
 	// hidden cell that is not retained changes the row structure.
 	void refresh();
 
+	// ── A SECTION MAY SIZE ITS OWN KEYS PER SHAPE ────────────────────────
+	// Called at the top of every apply(), with the shape about to be worn.
+	//
+	// It exists for the camera matrix and it is not a special case: eight
+	// slots at their comfortable 46 px is 400 px of section, which on its own
+	// put the panel's floor past the width of an OBS side dock. The keys have
+	// to be narrower in the folded shape — and a maximumWidth cannot do it,
+	// because what the strip MEASURES with is sizeHint(), and a maximum does
+	// not move that. Only a fixed width does, and a fixed width has to change
+	// when the shape does.
+	//
+	// The hook rather than a width argument, because "what my keys look like
+	// in each of my two shapes" is the section's business — the same reason
+	// the two shapes are declared by hand at the call site instead of being
+	// reflowed by an algorithm. ControlStrip::measure() flips the shape twice
+	// to read both sizes, so a section wired up this way is measured correctly
+	// in both without anybody sequencing it.
+	void setOnShape(std::function<void(bool flat)> fn);
+
 private:
 	void apply();
 
@@ -177,6 +297,7 @@ private:
 	QWidget *body_ = nullptr;
 	QGridLayout *grid_ = nullptr;
 	BlockShape tall_, flat_;
+	std::function<void(bool)> onShape_;
 	bool flatActive_ = false;
 	bool applied_ = false;
 	int stretchFrom_ = -1, stretchTo_ = -1;
@@ -219,8 +340,17 @@ public:
 	// the wide arrangement the declared order is used instead, because there
 	// the sections read left to right and that order is the reference
 	// panel's own.
-	void addBlock(KeyBlock *b, bool startsLine = false, int rank = 0);
+	void addBlock(KeyBlock *b, Lane lane, bool startsLine = false,
+		      int rank = 0);
 	bool isFlat() const { return flat_; }
+
+	// THE PANEL'S MODE DRIVES THE STRIP, because width alone cannot tell the
+	// two narrow cases apart: 520 px of a side dock wants a stack, and 1000 px
+	// of a floating window wants the wide rows even though its three lanes no
+	// longer fit side by side. Left alone (-1) the strip decides for itself
+	// from its width, which is what the mockup's strip-only sizes rely on.
+	// A section that would be CUT OFF still folds whatever this says.
+	void setStacked(int on); // -1 auto, 0 lanes, 1 stack
 
 	// The two numbers a parent layout needs, and they are DIFFERENT numbers
 	// at the same width — which is the reason this class exists and the reason
@@ -245,16 +375,56 @@ public:
 	// bay was switched off) and lay the strip out again.
 	void blockChanged(KeyBlock *b);
 
+	// WHICH SECTION IS SETTING THE FLOOR, in both of its shapes. "The panel
+	// will not go below 374 px" is a number with nowhere to go: six sections
+	// have an opinion about it and five of them are innocent, and the one that
+	// is not is usually innocent in the shape you are looking at. Used by the
+	// mockup's --check and --report, which is where a floor gets argued about.
+	QString describeBlocks() const;
+
 	QSize sizeHint() const override;
 	QSize minimumSizeHint() const override;
 
 protected:
 	void resizeEvent(QResizeEvent *e) override;
+	// ── THE SEPARATORS THAT REPLACED THE CAPTIONS ────────────────────
+	// Six sections used to be told apart by six headings: MARK, ANGOLI,
+	// RIPRODUZIONE… Side by side that is one line of text for all six and it
+	// is cheap; STACKED it is one line EACH, down a narrow column, which is
+	// six lines of a panel whose scarce axis is height — and each of those
+	// groups is already named by its own keys (● REC, In/Out, C1/C2, the
+	// transport marks, the percentages).
+	//
+	// So the grouping is drawn instead of written: a hairline down the
+	// middle of the gap between two adjacent sections of the same line. It
+	// says the same thing in one pixel of WIDTH, which the panel has, rather
+	// than a line of HEIGHT, which it does not.
+	//
+	// Painted rather than built out of widgets: the gaps move on every
+	// relayout (lanes are re-centred, sections wrap), and a widget per gap
+	// would be a set of children to keep in step with a geometry that is
+	// already computed here.
+	void paintEvent(QPaintEvent *e) override;
 
 private:
+	// WHERE THE RULES GO, collected BY the layout rather than deduced from
+	// block geometry afterwards. The first version read the blocks' rects and
+	// put a rule in the middle of each gap, and in the lane arrangement that
+	// came out STAGGERED: the left lane's width is the widest left section
+	// across every line, so a narrower one (REC, under the wider MARK) ends
+	// early and its gap starts somewhere else. Two rules 80 px apart on two
+	// stacked rows read as a mistake, which is the opposite of what a divider
+	// is for.
+	//
+	// The layout knows the lane boundaries — that is the whole point of lanes
+	// — so it says where the rules are and this only draws them.
+	mutable QVector<QRect> sepRects_;
+	void addSeparator(int x, int top, int height) const;
+
 	struct Entry {
 		KeyBlock *block = nullptr;
 		bool startsLine = false;
+		Lane lane = Lane::Left;
 		int rank = 0;     // order when folded; see addBlock
 		QSize tall, flat; // measured once, per shape
 	};
@@ -264,11 +434,23 @@ private:
 
 	// Runs the same wrapping in both roles: `apply` false only measures.
 	int layoutLines(int width, bool flat, bool apply) const;
+	// The wide arrangement: lines of three lanes, the lanes aligned across
+	// every line. Returns -1 when the lanes cannot be told apart at this
+	// width, which is the caller's cue to pack instead.
+	int layoutLanes(int width, bool apply) const;
+	// The folded arrangement: a stack, in rank order, on a LEFT SPINE. A
+	// column of sections each centred on its own width is a column with no
+	// edge to read down, which is the narrow-dock version of "scattered".
+	int layoutStack(int width, bool apply) const;
+	// What the old flow did: gather, then spread the leftover into the gaps.
+	// Still the honest answer when the lanes do not fit.
+	int layoutPacked(int width, bool flat, bool apply) const;
 	void measure(Entry &e);
 	void applyShape(bool flat);
 
 	mutable QVector<Entry> blocks_;
 	bool flat_ = false;
+	int forcedStack_ = -1;
 };
 
 // The layout item that carries a ControlStrip into a parent layout, and the

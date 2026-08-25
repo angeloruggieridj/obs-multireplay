@@ -987,6 +987,68 @@ private:
 	// --- event filter: double-click on note labels ---
 	bool eventFilter(QObject *watched, QEvent *event) override;
 
+	// --- THE THREE ARRANGEMENTS OF THE PANEL --------------------------------
+	// See PanelMode in dock-layout.hpp for what they are and why there are
+	// three of them rather than a fluid layout. Everything applyPanelMode()
+	// does is a re-cell or a property change:
+	//
+	//   NOTHING HERE MAY RE-PARENT AN OBSQTDisplay. Qt answers a re-parent by
+	//   destroying the widget's native window, which leaves its obs_display
+	//   presenting into nothing — the one failure qt-display.hpp exists to
+	//   prevent, and the reason the multiview tiles have always been moved
+	//   between cells of one grid instead of being rebuilt. So the pictures
+	//   live in a QGridLayout that is re-celled, and the preview/list split is
+	//   ONE QSplitter whose orientation is turned (setOrientation does not
+	//   touch its children).
+	void resizeEvent(QResizeEvent *event) override;
+	void applyPanelMode(PanelMode m, bool force = false);
+
+public:
+	// --- THE PANEL'S COLOURS ------------------------------------------------
+	// Rebuilds the style sheet from Config.uiTheme and the application palette
+	// — which is where OBS puts the current theme's colours (see schemeFor in
+	// dock-style.hpp). Public because the module's frontend handler calls it on
+	// OBS_FRONTEND_EVENT_THEME_CHANGED: a panel that keeps yesterday's chrome
+	// after the operator switches to a light theme is worse than one that never
+	// followed at all.
+	void applyTheme();
+	void applyTableDensity(int level);
+	static void restyleDock(); // reaches the live dock from the module
+
+private:
+	// How many columns the camera tiles get. Two were cabled in, which is
+	// right beside a big A output and wrong in a column.
+	int tileColumns(int tileCount) const;
+
+	// --- THE PICTURES GET THE HEIGHT THEIR ASPECT ASKS FOR -------------------
+	// A preview box was given whatever height the splitter had spare, and
+	// renderSourceFitted() then drew the canvas inside it letterboxed — so the
+	// difference between the box and the picture came out as BLACK BARS. In a
+	// column that was most of the difference between a usable event list and a
+	// cramped one: every pixel of bar is a pixel the table asked for.
+	//
+	// So the monitoring pane is CAPPED at the height its widest picture
+	// actually needs, and the splitter hands the remainder to the list. The
+	// ratio comes from the OBS canvas (obs_get_video_info), not from a
+	// hardcoded 16:9: a vertical canvas is a real thing an operator streams.
+	void applyPreviewAspect();
+	// Height of a picture that wide, in the canvas's own ratio.
+	static int aspectHeight(int width);
+	PanelMode panelMode() const { return panelMode_; }
+	PanelMode panelMode_ = PanelMode::Wide;
+	QWidget *aBox_ = nullptr;         // A's preview box; re-celled per mode
+	QGridLayout *previewGrid_ = nullptr;
+	// The last height applyPreviewAspect() asked the splitter for. Only a CHANGE
+	// The operator has dragged the splitter handle, so the panel stops sizing
+	// the pictures for him. Cleared on a mode change: a new arrangement is a
+	// new question, and the answer he gave was about the old one.
+	bool userSplit_ = false;
+	// How much list is kept whatever the pictures ask for. The pictures get
+	// their aspect height or what is left after this, whichever is smaller —
+	// a perfect picture over two visible rows of events is the wrong trade on
+	// a panel whose point is the list.
+	static constexpr int kListPaneFloor = 110;
+
 	// --- THE KEYBOARD: one layer, not a second set of commands -------------
 	// Arrows on the timeline, ↑/↓ between events, +/− on the speed, Enter to
 	// play. Every one of them CALLS the button of the same name, so there is
@@ -1045,6 +1107,13 @@ private:
 	// The draw callback itself does what drawChannelA does and no more: copy an
 	// already-resolved pointer and take a ref. No lookup, no libobs mutex.
 	static constexpr int kMaxPreviewTiles = 9; // kMaxCameras + the replay tile
+	// Narrower than this a tile stops being a picture and becomes a smear.
+	static constexpr int kTileMinWidth = 78;
+	// …and no WIDER than this in a column. A tile is a confidence monitor, not
+	// the picture being watched: left to fill the row, a single configured
+	// camera drew itself 340 px wide and 191 px tall, taking as much of the
+	// panel as A and telling the operator nothing A was not already telling him.
+	static constexpr int kTileMaxWidth = 150;
 
 	// What the graphics thread is handed for a tile: it may not dereference
 	// anything but this (see drawTile).

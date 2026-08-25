@@ -49,6 +49,17 @@ namespace {
 // scene collection.
 void onFrontendEvent(enum obs_frontend_event event, void *)
 {
+	// THE OPERATOR CHANGED THE OBS THEME. The panel's chrome is derived from
+	// the application palette OBS rebuilds for the new theme, so it has to be
+	// rebuilt too — a panel still wearing yesterday's near-black inside a light
+	// theme looks more broken than one that never followed the theme at all.
+	// Only chrome moves: REC, the on-air band and the tally are signal and keep
+	// their hues (see dock-style.hpp).
+	if (event == OBS_FRONTEND_EVENT_THEME_CHANGED) {
+		multireplay::MultiReplayDock::restyleDock();
+		return;
+	}
+
 	if (event == OBS_FRONTEND_EVENT_FINISHED_LOADING ||
 	    event == OBS_FRONTEND_EVENT_SCENE_COLLECTION_CHANGED) {
 		if (!multireplay::ReplayCore::instance().isRecording())

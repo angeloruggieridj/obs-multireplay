@@ -1,15 +1,57 @@
 #include "dock-layout.hpp"
 
 #include <QGridLayout>
+#include <QFont>
+#include <QFontMetrics>
 #include <QLabel>
+#include <QAbstractButton>
+#include <QStyle>
 #include <QPushButton>
 #include <QSizePolicy>
+#include <QPainter>
+#include <QStringList>
+#include <QPaintEvent>
 #include <QResizeEvent>
 #include <QVBoxLayout>
 
 #include <algorithm>
 
 namespace multireplay {
+
+// ---------------------------------------------------------------------------
+// PanelMode
+// ---------------------------------------------------------------------------
+
+PanelMode panelModeFor(const QSize &size, PanelMode current)
+{
+	// Each threshold is widened in the direction that would UNDO the current
+	// mode, so a panel sitting on a boundary keeps what it has until the drag
+	// is meant. Coming out of Tall costs 40 px more width than going in did.
+	const int wLimit = kTallMaxWidth +
+			   (current == PanelMode::Tall ? kModeHysteresis : 0);
+	if (size.width() < wLimit)
+		return PanelMode::Tall;
+
+	const int hLimit = kShortMaxHeight +
+			   (current == PanelMode::Short ? kModeHysteresis : 0);
+	if (size.height() < hLimit)
+		return PanelMode::Short;
+
+	return PanelMode::Wide;
+}
+
+const char *panelModeName(PanelMode m)
+{
+	switch (m) {
+	case PanelMode::Wide:
+		return "wide";
+	case PanelMode::Short:
+		return "short";
+	case PanelMode::Tall:
+		return "tall";
+	}
+	return "?";
+}
 
 // ---------------------------------------------------------------------------
 // FlowLayout
@@ -202,6 +244,38 @@ void equaliseKeyWidths(const QList<QPushButton *> &keys)
 			b->setMinimumWidth(w);
 }
 
+void useTextGlyph(QWidget *w, const QString &glyph)
+{
+	if (!w || glyph.isEmpty())
+		return;
+	// Monochrome symbol faces, most specific first. Only the FAMILY is set:
+	// the style sheet owns the size (mrTransport asks for 14px), and a font
+	// set here that also carried a size would silently win nothing — a style
+	// sheet property beats a widget font — while a family it does not mention
+	// is ours.
+	static const char *const kFamilies[] = {
+		"Segoe UI Symbol", // Windows: has U+23EE/U+23ED, monochrome
+		"DejaVu Sans",     // most Linux desktops
+		"Arial Unicode MS",
+		"Apple Symbols",   // macOS
+	};
+	for (const char *family : kFamilies) {
+		QFont f = w->font();
+		f.setFamily(QString::fromLatin1(family));
+		const QFontMetrics fm(f);
+		bool all = true;
+		for (const QChar &ch : glyph)
+			if (!fm.inFont(ch)) {
+				all = false;
+				break;
+			}
+		if (!all)
+			continue;
+		w->setFont(f);
+		return;
+	}
+}
+
 // ---------------------------------------------------------------------------
 // KeyBlock
 // ---------------------------------------------------------------------------
@@ -277,8 +351,12 @@ int KeyBlock::shapeHeight(bool flat) const
 {
 	const BlockShape &s = (flat && !flat_.isEmpty()) ? flat_ : tall_;
 	const int rows = std::max(1, (int)s.size());
-	const int capH = cap_ ? cap_->sizeHint().height() + 2 : 0;
-	return capH + rows * kKeyH + (rows - 1) * kBandVGap;
+	// The caption height is a CONSTANT, not the label's own sizeHint: this
+	// function is what the strip measures with, and apply() is what draws it.
+	// Two ways of asking the same question is two answers waiting to differ.
+	const int capH = (cap_ && !flat) ? kCaptionH + 2 : 0;
+	const int keyH = flat ? kKeyFoldedH : kKeyH;
+	return capH + rows * keyH + (rows - 1) * kBandVGap;
 }
 
 void KeyBlock::setStretchColumns(int firstCol, int lastCol)
@@ -289,11 +367,41 @@ void KeyBlock::setStretchColumns(int firstCol, int lastCol)
 	apply();
 }
 
+void KeyBlock::setOnShape(std::function<void(bool flat)> fn)
+{
+	onShape_ = std::move(fn);
+	applied_ = false;
+	apply();
+}
+
 void KeyBlock::apply()
 {
 	if (applied_)
 		return;
 	applied_ = true;
+
+	// FIRST, before a single cell is placed: a section that sizes its own keys
+	// per shape (the camera matrix) has to have done it by the time the grid
+	// asks them how big they are. See setOnShape in the header.
+	if (onShape_)
+		onShape_(flatActive_);
+
+	if (cap_) {
+		// STACKED, THE CAPTION GOES. Side by side it is what tells six
+		// groups apart in one glance across the strip, and it costs one
+		// line for all of them. In a column it costs a line EACH — six
+		// captions were 90 px of a 900 px panel, a fifth of the control
+		// strip — and it is buying much less: a group standing on its own
+		// above the next one is already divided from it, and every one of
+		// these groups is named by its own keys (● REC, In/Out, C1/C2, the
+		// transport glyphs, the percentages, Esporta clip).
+		//
+		// Six labelled boxes down a narrow panel is also what "too
+		// fragmented" looks like from the operator's chair: the labels were
+		// part of the fragmentation, not the cure for it.
+		cap_->setVisible(!flatActive_);
+		cap_->setFixedHeight(kCaptionH);
+	}
 
 	const BlockShape &s = (flatActive_ && !flat_.isEmpty()) ? flat_ : tall_;
 
@@ -322,6 +430,12 @@ void KeyBlock::apply()
 			// camera slots the panel deliberately keeps empty —
 			// which is exactly what the mockup drew the first time
 			// it ran.
+			// THE KEY ITSELF SHRINKS WHEN THE SECTION FOLDS. Only
+			// buttons: a slider, a two-line clock or the bay selector
+			// are cells too, and they own their own heights.
+			if (auto *btn = qobject_cast<QAbstractButton *>(cell.w))
+				btn->setFixedHeight(flatActive_ ? kKeyFoldedH
+								: kKeyH);
 			const bool wantVisible = !cell.w->isHidden();
 			cell.w->setParent(body_);
 			if (wantVisible)
@@ -364,20 +478,32 @@ void ControlStrip::measure(Entry &e)
 	// applying, and applying re-parents widgets, so this is done here rather
 	// than during a layout pass — a size hint that lays widgets out is a size
 	// hint that recurses.
+	// ACTIVATE BEFORE READING. A shape change moves widgets between cells and
+	// now also changes their HEIGHT, and Qt invalidates a layout lazily: the
+	// sizeHint read on the next line is the one from before the change unless
+	// the layout is made to recompute. Measured: shortening the folded keys by
+	// 4 px moved the strip's height by 4 px in total rather than by 4 px per
+	// row, because eleven of the twelve rows were still being measured tall.
 	const bool was = e.block->isFlat();
+	auto measured = [](KeyBlock *b) {
+		if (b->layout())
+			b->layout()->activate();
+		return b->sizeHint();
+	};
 	e.block->setFlat(true);
-	e.flat = e.block->sizeHint();
+	e.flat = measured(e.block);
 	e.block->setFlat(false);
-	e.tall = e.block->sizeHint();
+	e.tall = measured(e.block);
 	e.block->setFlat(was);
 }
 
-void ControlStrip::addBlock(KeyBlock *b, bool startsLine, int rank)
+void ControlStrip::addBlock(KeyBlock *b, Lane lane, bool startsLine, int rank)
 {
 	b->setParent(this);
 	Entry e;
 	e.block = b;
 	e.startsLine = startsLine;
+	e.lane = lane;
 	e.rank = rank;
 	measure(e);
 	blocks_ << e;
@@ -410,13 +536,36 @@ QSize ControlStrip::minimumSizeHint() const
 	// the TALL shape, which is the narrow one: a flat section is a long row,
 	// and asking the panel to be as wide as one would be asking it to be as
 	// wide as the whole strip.
+	// The NARROWER of the two shapes, not the wide one. Measuring the floor
+	// against the wide row is what pinned the panel at 560 px and made a
+	// vertical dock impossible: the strip demanded the width of MARK's eight
+	// keys in a row, at every size, including the sizes where it would have
+	// worn the compact shape instead. A floor has to be measured in the shape
+	// worn at the floor.
 	int w = 0;
-	for (const Entry &e : blocks_)
-		w = std::max(w, std::max(e.tall.width(), kMinBlockWidth));
+	for (const Entry &e : blocks_) {
+		const int narrow = std::min(e.tall.width(), e.flat.width());
+		w = std::max(w, std::max(narrow, kMinBlockWidth));
+	}
 	// Height: one line's worth. The real floor is width-dependent and is
 	// answered by minHeightForWidth() through ControlStripItem; a widget's
 	// minimumSizeHint cannot ask about width, so it must not pretend to.
 	return QSize(w, blocks_.isEmpty() ? 0 : blocks_.first().flat.height());
+}
+
+QString ControlStrip::describeBlocks() const
+{
+	QStringList parts;
+	for (int i = 0; i < blocks_.size(); i++) {
+		const Entry &e = blocks_[i];
+		parts << QString("#%1 tall %2x%3 flat %4x%5")
+				 .arg(i)
+				 .arg(e.tall.width())
+				 .arg(e.tall.height())
+				 .arg(e.flat.width())
+				 .arg(e.flat.height());
+	}
+	return parts.join(QStringLiteral("; "));
 }
 
 bool ControlStrip::flatFits(int w) const
@@ -434,19 +583,26 @@ bool ControlStrip::flatFits(int w) const
 
 int ControlStrip::minHeightForWidth(int w) const
 {
-	// The BETTER of the two shapes at this width, because the strip is free
-	// to wear either. Flat is the short one under a wide dock, where its
-	// sections sit on one line; under a narrow dock its long rows wrap into
-	// more lines than the compact blocks do, and there it is the taller of the
-	// two. Assuming flat is always the shorter one cost the panel 90 px of
-	// floor it did not need — the mockup measured it.
-	const int tall = layoutLines(w, false, false);
-	return flatFits(w) ? std::min(layoutLines(w, true, false), tall) : tall;
+	// THE HEIGHT OF THE ARRANGEMENT IT WILL ACTUALLY WEAR — the same decision
+	// resizeEvent makes, asked in advance. It used to report the BETTER of the
+	// two shapes, which was true while the strip was free to choose either;
+	// now that the panel's mode can pin it, "better" is a shape it may not be
+	// allowed to take. The mockup drew the consequence at 340x900: the floor
+	// came back as the packed wide rows (~276 px), the strip was wearing the
+	// stack (~450), and the last two sections — VELOCITA and EXPORT — were
+	// simply cut off the bottom of the panel.
+	bool stack = !flatFits(w);
+	if (!stack && forcedStack_ >= 0)
+		stack = forcedStack_ != 0;
+	return layoutLines(w, stack, false);
 }
 
 int ControlStrip::tallHeightForWidth(int w) const
 {
-	return layoutLines(w, false, false);
+	// The floor and the preference are the SAME number: a control strip is
+	// fixed in height by design (spare height belongs to the picture and the
+	// list), so once the arrangement is decided there is nothing to prefer.
+	return minHeightForWidth(w);
 }
 
 void ControlStrip::resizeEvent(QResizeEvent *e)
@@ -462,7 +618,14 @@ void ControlStrip::resizeEvent(QResizeEvent *e)
 	// WIDTH decides, not height: height is what the fold COSTS, and a rule
 	// that read the height could never reach the arrangement that would have
 	// freed it (see minimumSizeHint in the header).
-	const bool want = !flatFits(width());
+	// A section that would be CUT OFF folds whatever anyone says — that is the
+	// one case where the wide arrangement is not an arrangement at all. Short
+	// of that, the panel's mode decides (see setStacked): a side dock stacks,
+	// a floating window keeps its wide rows even at a width where the three
+	// lanes no longer stand side by side.
+	bool want = !flatFits(width());
+	if (!want && forcedStack_ >= 0)
+		want = forcedStack_ != 0;
 	if (want != flat_)
 		applyShape(want);
 	layoutLines(width(), flat_, true);
@@ -472,6 +635,55 @@ void ControlStrip::resizeEvent(QResizeEvent *e)
 	// by side need two lines, folded and stacked they need four.
 	if (e->oldSize().width() != width())
 		updateGeometry();
+}
+
+// ---------------------------------------------------------------------------
+// The hairlines between sections — see the note in the header
+// ---------------------------------------------------------------------------
+//
+// Read off the geometry the layout has ALREADY computed, so there is no second
+// copy of where a section is. Two sections belong to the same line when their
+// tops agree; the rule goes down the middle of the gap between them and is
+// inset top and bottom so it reads as a divider rather than as a border on
+// either neighbour.
+void ControlStrip::paintEvent(QPaintEvent *e)
+{
+	QWidget::paintEvent(e);
+	if (sepRects_.isEmpty())
+		return;
+	QPainter p(this);
+	// From the palette rather than a constant: this file has no Scheme in it,
+	// and the panel's own text colour at low opacity is the same hairline the
+	// style sheet draws for @border@ on any theme, light or dark.
+	QColor line = palette().color(QPalette::WindowText);
+	line.setAlpha(46);
+	for (const QRect &r : sepRects_)
+		p.fillRect(r, line);
+}
+
+// A rule between two sections of one line. Collected during the layout that
+// already knows where everything is, rather than derived from block geometry
+// afterwards — see the note on sepRects_.
+void ControlStrip::addSeparator(int x, int top, int height) const
+{
+	// Inset so it reads as a divider between two groups rather than as a
+	// border belonging to one of them.
+	const int inset = std::max(2, height / 6);
+	sepRects_ << QRect(x, top + inset, 1, std::max(1, height - 2 * inset));
+}
+
+void ControlStrip::setStacked(int on)
+{
+	if (forcedStack_ == on)
+		return;
+	forcedStack_ = on;
+	bool want = !flatFits(width());
+	if (!want && forcedStack_ >= 0)
+		want = forcedStack_ != 0;
+	if (want != flat_)
+		applyShape(want);
+	layoutLines(width(), flat_, true);
+	updateGeometry();
 }
 
 void ControlStrip::applyShape(bool flat)
@@ -502,6 +714,160 @@ int ControlStrip::layoutLines(int width, bool flat, bool apply) const
 {
 	if (blocks_.isEmpty())
 		return 0;
+	// FOLDED IS A STACK, WIDE IS LANES, and only the wide one can fail: the
+	// three lanes need room to be told apart, and when they do not have it
+	// packing them is more honest than pretending the alignment is there.
+	if (apply)
+		sepRects_.clear();
+	if (flat)
+		return layoutStack(width, apply);
+	const int laned = layoutLanes(width, apply);
+	if (laned >= 0)
+		return laned;
+	return layoutPacked(width, flat, apply);
+}
+
+// The wide arrangement: two macro-rows, three lanes, the lanes aligned across
+// both rows. See the note on Lane in the header for why this is declared rather
+// than flowed.
+int ControlStrip::layoutLanes(int width, bool apply) const
+{
+	struct Line {
+		int first = 0, last = 0; // [first, last)
+		int laneW[3] = {0, 0, 0};
+		int height = 0;
+	};
+	QVector<Line> lines;
+
+	// Gather the lines first, in the DECLARED order — left to right is the
+	// reference panel's own reading order, and it is what an operator learned.
+	int i = 0;
+	while (i < blocks_.size()) {
+		Line ln;
+		ln.first = i;
+		int used = 0;
+		while (i < blocks_.size()) {
+			const Entry &e = blocks_[i];
+			const int w = e.tall.width();
+			if (i > ln.first && (e.startsLine || used + kZoneGap + w > width))
+				break;
+			const int lane = (int)e.lane;
+			ln.laneW[lane] += (ln.laneW[lane] ? kZoneGap : 0) + w;
+			ln.height = std::max(ln.height, e.tall.height());
+			used += (used ? kZoneGap : 0) + w;
+			i++;
+		}
+		ln.last = i;
+		lines << ln;
+	}
+
+	// ONE set of lane widths for every line — that is the whole mechanism.
+	// Taking each line's own widths would put the middle group of row one at a
+	// different x from the middle group of row two, which is the 48 px of
+	// near-alignment this replaced.
+	int LW = 0, CW = 0, RW = 0;
+	for (const Line &ln : lines) {
+		LW = std::max(LW, ln.laneW[(int)Lane::Left]);
+		CW = std::max(CW, ln.laneW[(int)Lane::Centre]);
+		RW = std::max(RW, ln.laneW[(int)Lane::Right]);
+	}
+	const int need = LW + CW + RW + (CW ? kZoneGap : 0) + (RW ? kZoneGap : 0);
+	if (need > width)
+		return -1; // no room to tell the lanes apart; pack instead
+
+	// The centre lane is centred in the PANEL and then pushed clear of its
+	// neighbours, so it reads as the middle of the strip rather than as the
+	// leftover between two groups.
+	int centreX = (width - CW) / 2;
+	centreX = std::max(centreX, LW + (LW ? kZoneGap : 0));
+	centreX = std::min(centreX, width - RW - (RW ? kZoneGap : 0) - CW);
+
+	int y = 0;
+	const int vgap = kBandVGap + 2;
+	for (const Line &ln : lines) {
+		if (apply) {
+			int x[3];
+			x[(int)Lane::Left] = 0;
+			x[(int)Lane::Centre] = centreX;
+			// The right lane ENDS flush, so its sections' right edges
+			// line up across the rows even when the lanes hold
+			// different keys — which is what puts the speed dial
+			// under the exports instead of near them.
+			x[(int)Lane::Right] =
+				width - ln.laneW[(int)Lane::Right];
+			// THE RULES SIT ON THE LANE BOUNDARIES, so the one between
+			// marks and angles is at the same x as the one between
+			// REC and the transport on the row below. Derived from
+			// the block edges instead they staggered by 80 px, which
+			// reads as a mistake rather than as a division.
+			if (ln.laneW[(int)Lane::Centre] > 0 && LW > 0)
+				addSeparator((LW + centreX) / 2, y, ln.height);
+			if (ln.laneW[(int)Lane::Right] > 0 && CW > 0)
+				addSeparator((centreX + CW + width - RW) / 2, y,
+					     ln.height);
+			for (int k = ln.first; k < ln.last; k++) {
+				const Entry &e = blocks_[k];
+				const int lane = (int)e.lane;
+				const QSize sz = e.tall;
+				// Every section on a line gets the LINE's height,
+				// so their captions line up; each is fixed inside
+				// itself, so the slack lands under its keys and
+				// nothing within it stretches.
+				e.block->setGeometry(x[lane], y, sz.width(),
+						     ln.height);
+				x[lane] += sz.width() + kZoneGap;
+			}
+		}
+		y += ln.height + vgap;
+	}
+	return y - vgap;
+}
+
+// The folded arrangement. Sections in rank order, packed onto as few lines as
+// the width allows, every line starting at x = 0.
+int ControlStrip::layoutStack(int width, bool apply) const
+{
+	const QVector<int> idx = orderFor(true);
+	// WIDER THAN THE GAP INSIDE A SECTION, and it is now the only thing
+	// dividing one group from the next: the captions are gone in this shape
+	// (see KeyBlock::apply). A gap the size of the gap between two key rows
+	// would make six groups read as one long list of keys.
+	const int vgap = kZoneGap - 2;
+	int y = 0, i = 0;
+	while (i < idx.size()) {
+		int lineW = 0, lineH = 0;
+		const int first = i;
+		while (i < idx.size()) {
+			const QSize sz = blocks_[idx[i]].flat;
+			const int next = lineW + (i > first ? kZoneGap : 0) +
+					 sz.width();
+			if (i > first && next > width)
+				break;
+			lineW = next;
+			lineH = std::max(lineH, sz.height());
+			i++;
+		}
+		if (apply) {
+			// LEFT SPINE, no spreading. A narrow panel is read down
+			// its left edge; sections centred each on their own width
+			// give it nothing to be read down, and that is what a
+			// stack of "scattered" keys actually is.
+			int x = 0;
+			for (int k = first; k < i; k++) {
+				const Entry &e = blocks_[idx[k]];
+				if (k > first)
+					addSeparator(x - kZoneGap / 2, y, lineH);
+				e.block->setGeometry(x, y, e.flat.width(), lineH);
+				x += e.flat.width() + kZoneGap;
+			}
+		}
+		y += lineH + vgap;
+	}
+	return y - vgap;
+}
+
+int ControlStrip::layoutPacked(int width, bool flat, bool apply) const
+{
 	const QVector<int> idx = orderFor(flat);
 	const int vgap = kBandVGap + 2;
 	int y = 0;
