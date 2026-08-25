@@ -124,8 +124,18 @@ QPushButton *iconTextKey(Icon ic, const QString &text, const QString &id,
 	setKeyIcon(b, ic, g_tints, iconPx);
 	setKeyId(b, id);
 	b->ensurePolished();
-	b->setMinimumWidth(b->fontMetrics().horizontalAdvance(text) + iconPx +
-			   28);
+	// A LABELLED KEY IS ITS OWN SIZE, and this is the only way to say so that
+	// actually holds. Two others were tried: a width computed from the font
+	// metrics (20 px short — the metrics of a widget that has not been shown
+	// are not the ones it is painted with, and the style sheet's padding is
+	// in neither), and setMinimumWidth from the size hint, which the style
+	// sheet's own minimum then overrode. Fixed leaves the layout no room to
+	// squeeze it, which is how "Monitors" came to ship as "Monitor:".
+	//
+	// Inside a KeyBlock this is promoted back to Preferred for any cell that
+	// declared grow (see KeyBlock::apply), so a key that is meant to fill its
+	// row still does.
+	b->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
 	return b;
 }
 
@@ -622,9 +632,10 @@ private:
 		buildMark(Lane::Left, /*rank*/ 1);
 		if (g_haveB)
 			buildBaySelector(Lane::Centre, /*rank*/ 3);
-		buildSpeed(Lane::Right, /*rank*/ 4);
+		buildSpeed(Lane::Right, /*rank*/ 5);
 		buildRec(Lane::Left, /*startsLine*/ true, /*rank*/ 0);
 		buildPlayback(Lane::Centre, /*rank*/ 2);
+		buildClips(Lane::Right, /*rank*/ 4);
 		addStrip(v, strip_);
 
 		// THE STATUS LINE SITS ABOVE THE GREEN BAND. The band says what is
@@ -748,8 +759,7 @@ private:
 		setKeyId(b, id);
 		b->setToolTip(tip);
 		b->ensurePolished();
-		b->setMinimumWidth(b->fontMetrics().horizontalAdvance(text) + 12 +
-				   24);
+		b->setMinimumWidth(b->sizeHint().width() + 4);
 		remember(b);
 		return b;
 	}
@@ -791,11 +801,20 @@ private:
 		// SIX COLUMNS so the row of two divides as evenly as the rows of
 		// three: on three columns the trim row left a hole in the corner,
 		// and the eye finds that hole every time it reads the block.
-		const BlockShape shape{
-			{Cell(m5, 2), Cell(m10, 2), Cell(m20, 2)},
-			{Cell(in, 2), Cell(out, 2), Cell(cancel, 2)},
-			{Cell(tin, 3), Cell(tout, 3)}};
-		blk->setShapes(shape, shape);
+		//
+		// FOLDED IT IS TWO ROWS, and that is a deliberate trade rather
+		// than a compromise. In a column every key row is charged to the
+		// event list, and a third row here put the panel's floor at 668 px
+		// — which is fine in an OBS side dock (they are as tall as the
+		// screen) and impossible in a small floating window. The hierarchy
+		// stands where there is room to draw it; where there is not, the
+		// durations keep their own row and the points and the trims share
+		// the next one.
+		blk->setShapes({{Cell(m5, 2), Cell(m10, 2), Cell(m20, 2)},
+				{Cell(in, 2), Cell(out, 2), Cell(cancel, 2)},
+				{Cell(tin, 3), Cell(tout, 3)}},
+			       {{Cell(m5), Cell(m10), Cell(m20), Cell(cancel)},
+				{Cell(in), Cell(out), Cell(tin), Cell(tout)}});
 		strip_->addBlock(blk, lane, false, rank);
 	}
 
@@ -929,6 +948,36 @@ private:
 			 Cell(sf), Cell(more)},
 			{Cell(now, 4), Cell(play, 3)}};
 		blk->setShapes(wide, flat);
+		strip_->addBlock(blk, lane, false, rank);
+	}
+
+	// ── THE RUNNING ORDER, and the actions that have no key of their own ─
+	//
+	// ▲ ▼ move the selected event in its list's running order — which is the
+	// order the sequence export writes and the order a queue plays, so it is
+	// not a tidying-up gesture, it is the edit. They were lost in the first
+	// pass of this redesign, which is exactly the kind of thing a mockup is
+	// for.
+	//
+	// TWO KEYS RATHER THAN DRAG AND DROP: a drag inside a table whose cells
+	// are all editable is one slip away from starting an edit instead, and
+	// during a match that is the wrong thing to risk.
+	//
+	// They sit in the RIGHT lane of the second macro-row, under the speed
+	// dial and the export key — which is where the rest of "what is done with
+	// the clips once they are marked" already lives, and which fills the one
+	// lane the arrangement had left empty.
+	void buildClips(Lane lane, int rank)
+	{
+		auto *blk = new KeyBlock(QString(), this);
+		auto *up = iconKey(Icon::MoveUp, QStringLiteral("moveUp"),
+				   QStringLiteral("Sposta l'evento su"));
+		auto *dn = iconKey(Icon::MoveDown, QStringLiteral("moveDown"),
+				   QStringLiteral("Sposta l'evento giù"));
+		auto *more = iconKey(Icon::More, QStringLiteral("clipActions"),
+				     QStringLiteral("Duplica · Elimina"), "mrGear");
+		const BlockShape shape{{Cell(up), Cell(dn), Cell(more)}};
+		blk->setShapes(shape, shape);
 		strip_->addBlock(blk, lane, false, rank);
 	}
 
@@ -1228,10 +1277,12 @@ void checkLabelsFit(Mock *w, const QString &label)
 			continue;
 		cut++;
 		if (worst.isEmpty())
-			worst = QString("'%1' has %2 needs %3")
+			worst = QString("'%1' has %2 needs %3 (min %4, hint %5)")
 					.arg(b->text())
 					.arg(b->width())
-					.arg(need + 8);
+					.arg(need + 8)
+					.arg(b->minimumWidth())
+					.arg(b->sizeHint().width());
 	}
 	check(cut == 0, label + ": every label fits its key",
 	      cut ? QString("%1 cut, first %2").arg(cut).arg(worst) : QString());
