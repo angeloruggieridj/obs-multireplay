@@ -237,6 +237,81 @@ TileBlock tileBlockFor(int paneW, int bays, int n, int gap, int maxH = 0)
 	return best;
 }
 
+// ---------------------------------------------------------------------------
+// PictureBox — a monitor that is 16:9 whatever it is put in
+// ---------------------------------------------------------------------------
+//
+// A box of any other shape draws the video letterboxed inside itself, and from
+// the operator's chair a black edge is indistinguishable from the framing. So
+// the shape is not negotiated with the layout: the box takes whatever cell it
+// is given and places the LARGEST 16:9 picture that fits, centred, with its
+// naming band tucked under it at the picture's own width.
+//
+// IT WAS DONE THE OTHER WAY FIRST — a maximum size computed from the parent's
+// current width — and the automated check caught it on a two-camera rig: the
+// maximum was worked out from a pane that had not been laid out yet, so the box
+// was sized for one cell and then handed another. A widget that maintains its
+// own geometry has nothing to be out of step with, and it converges in one
+// pass rather than in however many the splitters take to settle.
+//
+// The children are placed by hand rather than by a layout for the same reason:
+// a layout would negotiate, and there is nothing here to negotiate about.
+class PictureBox : public QWidget {
+public:
+	PictureBox(const QString &text, const char *tagRole, const Scheme &sc,
+		   QWidget *parent)
+		: QWidget(parent)
+	{
+		pic_ = new QLabel(text, this);
+		pic_->setAlignment(Qt::AlignCenter);
+		pic_->setStyleSheet(
+			QString("background:#000;color:%1;font-size:10px;")
+				.arg(sc.textDim));
+		tag_ = new QLabel(text, this);
+		tag_->setObjectName(QString::fromLatin1(tagRole));
+		tag_->setProperty("chan", text);
+		tag_->setProperty("active", text == QStringLiteral("A"));
+		tag_->setAlignment(Qt::AlignCenter);
+		// NO FLOOR. A minimum here becomes the panel's, and the point of
+		// the redesign is that this panel can be made short.
+		setMinimumSize(0, 0);
+	}
+
+	QWidget *picture() const { return pic_; }
+	void setTally(const char *what) { tag_->setProperty("tally", QString::fromLatin1(what)); }
+
+protected:
+	void resizeEvent(QResizeEvent *) override
+	{
+		// THE BAND GOES BEFORE THE SHAPE DOES. Squeezed under the OBS
+		// preview a tile can end up shorter than its own naming band, and
+		// the first version answered that by giving the picture the whole
+		// box — which is the one thing this class exists to prevent. A
+		// 12 px band on an 11 px box was not telling anybody anything
+		// anyway; 16:9 still is.
+		int availH = height();
+		const bool room = availH >= kTagH + 10;
+		if (room)
+			availH -= kTagH;
+		tag_->setVisible(room);
+		if (availH < 2 || width() < 4) {
+			pic_->setGeometry(0, 0, std::max(0, width()),
+					  std::max(0, height()));
+			return;
+		}
+		const int w = std::max(1, std::min(width(), availH * 16 / 9));
+		const int h = std::max(1, w * 9 / 16);
+		const int x = (width() - w) / 2;
+		const int y = (availH - h) / 2;
+		pic_->setGeometry(x, y, w, h);
+		tag_->setGeometry(x, y + h, w, kTagH);
+	}
+
+private:
+	QLabel *pic_ = nullptr;
+	QLabel *tag_ = nullptr;
+};
+
 class Mock : public QWidget {
 public:
 	// A stand-in for one of the panel's pictures, with the band that names
@@ -247,27 +322,9 @@ public:
 	// EVERY picture gets a band, cameras included. It was only on A and B,
 	// and a camera box with no name is a rectangle the operator has to
 	// identify by remembering where it is.
-	QWidget *pic(const QString &text, const char *tagRole, int minH)
+	PictureBox *pic(const QString &text, const char *tagRole)
 	{
-		auto *box = new QWidget(this);
-		auto *v = new QVBoxLayout(box);
-		v->setContentsMargins(0, 0, 0, 0);
-		v->setSpacing(0);
-		auto *l = new QLabel(text, box);
-		l->setAlignment(Qt::AlignCenter);
-		l->setStyleSheet(QString("background:#000;color:%1;font-size:10px;")
-					 .arg(g_sc.textDim));
-		l->setMinimumHeight(minH);
-		l->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-		v->addWidget(l, 1);
-		auto *tag = new QLabel(text, box);
-		tag->setObjectName(QString::fromLatin1(tagRole));
-		tag->setProperty("chan", text);
-		tag->setProperty("active", text == QStringLiteral("A"));
-		tag->setAlignment(Qt::AlignCenter);
-		tag->setFixedHeight(kTagH);
-		v->addWidget(tag);
-		return box;
+		return new PictureBox(text, tagRole, g_sc, this);
 	}
 
 	Mock()
@@ -322,7 +379,10 @@ public:
 		bodySplit_->setStretchFactor(0, 3);
 		bodySplit_->setStretchFactor(1, 2);
 		connect(bodySplit_, &QSplitter::splitterMoved, this,
-			[this](int, int) { userSplit_ = true; });
+			[this](int, int) {
+				userSplit_[modeIdx()] = true;
+				savedBody_[modeIdx()] = bodySplit_->saveState();
+			});
 		v->addWidget(bodySplit_, 1);
 
 		buildControls();
@@ -343,10 +403,7 @@ public:
 	{
 		if (!force && m == mode_)
 			return;
-		if (m != mode_) {
-			userSplit_ = false;
-			userMonitorSplit_ = false;
-		}
+		const PanelMode was = mode_;
 		mode_ = m;
 
 		// The monitoring block: bays beside the tiles, or bays above them
@@ -379,6 +436,18 @@ public:
 
 		strip_->setStacked(m == PanelMode::Tall ? 1 : 0);
 		applyCompactChrome(m == PanelMode::Tall);
+
+		// THE DIVIDERS THE OPERATOR CHOSE FOR *THIS* ARRANGEMENT, put
+		// back. A restore has to happen after the orientations are set,
+		// or the saved state is applied to a splitter that is still
+		// dividing the other way round.
+		if (was != m) {
+			if (bodyChosen())
+				bodySplit_->restoreState(savedBody_[modeIdx()]);
+			if (monitorChosen())
+				monitorSplit_->restoreState(
+					savedMonitor_[modeIdx()]);
+		}
 		// The tile block is laid out from applyPreviewAspect, which is the
 		// only place that knows how wide the pane really is. Doing it here
 		// computed the column count from a pane that had not been given a
@@ -441,6 +510,23 @@ public:
 	{
 		return monitorSplit_ ? monitorSplit_->size() : QSize();
 	}
+	// The picture boxes, for the aspect check. Published rather than found by
+	// class from outside: a QWidget with a black QLabel in it is not
+	// identifiable, and guessing would make the check pass by finding nothing.
+	// THE PICTURES THEMSELVES, not the boxes that hold them: the box takes
+	// whatever cell the layout gives it and the picture is the 16:9 rectangle
+	// centred inside. Asking the box would be asking the wrong widget and the
+	// check would report a failure on every panel that is not exactly the
+	// right shape — which is all of them.
+	QVector<const QWidget *> pictureBoxes() const
+	{
+		QVector<const QWidget *> v{aBox_->picture(), bBox_->picture()};
+		for (int i = 0; i < kTiles; i++)
+			if (tile_[i]->isVisible())
+				v << tile_[i]->picture();
+		return v;
+	}
+	static int tagHeight() { return 0; }
 
 private:
 	QVBoxLayout *root_ = nullptr;
@@ -448,16 +534,32 @@ private:
 	QSplitter *monitorSplit_ = nullptr;
 	QWidget *bays_ = nullptr;
 	QGridLayout *baysGrid_ = nullptr;
-	QWidget *aBox_ = nullptr, *bBox_ = nullptr;
+	PictureBox *aBox_ = nullptr, *bBox_ = nullptr;
 	QWidget *tiles_ = nullptr;
 	QGridLayout *tilesGrid_ = nullptr;
-	QWidget *tile_[kTiles] = {};
+	PictureBox *tile_[kTiles] = {};
 	QWidget *listPane_ = nullptr;
 	QWidget *controls_ = nullptr;
 	QTableWidget *table_ = nullptr;
-	bool userSplit_ = false;
-	bool userMonitorSplit_ = false;
+	// ── WHERE THE OPERATOR PUT THE DIVIDERS, PER ARRANGEMENT ─────────────
+	//
+	// A drag is a decision and it has to survive; but it is a decision about
+	// ONE arrangement. The split that is right for a wide floating window
+	// means nothing in a narrow column where the same divider runs the other
+	// way, so carrying it across would hand the operator back a layout he
+	// never chose. One remembered state per mode: choose once in each shape,
+	// and each shape keeps its answer.
+	//
+	// (In the panel these are written to the project's settings. Here they
+	// live as long as the process, which is as long as anything else does.)
+	QByteArray savedBody_[3], savedMonitor_[3];
+	bool userSplit_[3] = {false, false, false};
+	bool userMonitorSplit_[3] = {false, false, false};
 	bool controlsInColumn_ = false;
+
+	int modeIdx() const { return (int)mode_; }
+	bool bodyChosen() const { return userSplit_[modeIdx()]; }
+	bool monitorChosen() const { return userMonitorSplit_[modeIdx()]; }
 
 	// The controls whose LABEL is optional — see applyCompactChrome. The text
 	// and the laid-out width are kept here rather than read back off the
@@ -496,8 +598,8 @@ private:
 		baysGrid_ = new QGridLayout(bays_);
 		baysGrid_->setContentsMargins(0, 0, 0, 0);
 		baysGrid_->setSpacing(3);
-		aBox_ = pic(QStringLiteral("A"), "mrChanTag", 40);
-		bBox_ = pic(QStringLiteral("B"), "mrChanTag", 40);
+		aBox_ = pic(QStringLiteral("A"), "mrChanTag");
+		bBox_ = pic(QStringLiteral("B"), "mrChanTag");
 		// A AND B ARE ALWAYS SIDE BY SIDE, in every arrangement. They are
 		// two bays of one deck: stacking them in a column would make the
 		// pair read as a hierarchy, and it is the one relationship on this
@@ -518,7 +620,7 @@ private:
 			// picture-shaped is the CAP, which is a limit and not a
 			// demand.
 			tile_[i] = pic(QStringLiteral("C%1").arg(i + 1),
-				       "mrTileCap", 0);
+				       "mrTileCap");
 			// THE PICTURE IS THE ANGLE KEY NOW. The camera matrix is
 			// gone — sixteen keys of it — because clicking the box is
 			// what the operator was already looking at: the key says
@@ -544,16 +646,15 @@ private:
 		monitorSplit_->addWidget(bays_);
 		monitorSplit_->addWidget(tiles_);
 		connect(monitorSplit_, &QSplitter::splitterMoved, this,
-			[this](int, int) { userMonitorSplit_ = true; });
+			[this](int, int) {
+				userMonitorSplit_[modeIdx()] = true;
+				savedMonitor_[modeIdx()] =
+					monitorSplit_->saveState();
+			});
 		leftColLayout_->addWidget(monitorSplit_, 1);
 	}
 
-	void tileTally(int i, const char *what)
-	{
-		for (QLabel *l : tile_[i]->findChildren<QLabel *>())
-			if (l->objectName() == QStringLiteral("mrTileCap"))
-				l->setProperty("tally", QString::fromLatin1(what));
-	}
+	void tileTally(int i, const char *what) { tile_[i]->setTally(what); }
 
 	// ── the toolbar: what is GLOBAL to the panel ─────────────────────────
 	QWidget *buildToolbar(QWidget *parent)
@@ -1052,19 +1153,6 @@ private:
 		tileCols_ = cols;
 	}
 
-	// Cap every tile, floor none of them.
-	void setTileCaps(int w, int h)
-	{
-		w = std::max(1, w);
-		h = std::max(1, h) + kTagH;
-		for (int i = 0; i < kTiles; i++) {
-			tile_[i]->setMinimumSize(0, 0);
-			tile_[i]->setMaximumSize(w, h);
-		}
-		const int rows = (kTiles + tileCols_ - 1) / std::max(1, tileCols_);
-		tiles_->setMaximumWidth(tileCols_ * w + (tileCols_ - 1) * kTileGap);
-		tiles_->setMaximumHeight(rows * h + (rows - 1) * kTileGap);
-	}
 
 	// A 16:9 picture in a box of another shape is drawn letterboxed, and the
 	// difference comes out as BLACK BARS. Every bar is a pixel the event list
@@ -1072,93 +1160,109 @@ private:
 	// can actually fill and the splitter hands the rest to the list.
 	static int aspectHeight(int w) { return std::max(1, w * 9 / 16); }
 
-	void applyPreviewAspect()
+	// How many columns the camera block wears in the arrangement it is in.
+	int tileColsFor(int paneW, int bays, int paneH) const
 	{
-		const int paneW = std::max(80, leftCol_->width());
-		const int bays = g_haveB ? 2 : 1;
-		int want = 0;
-
-		if (mode_ == PanelMode::Tall) {
-			// A COLUMN: the bays across the top, the cameras under
-			// them as a filmstrip.
-			const int bayW = (paneW - 3 * (bays - 1)) / bays;
-			const int bayH = aspectHeight(bayW) + kTagH;
-			const int cols = std::clamp(paneW / kTileMinWidth, 1,
-						    std::max(1, g_cams));
-			relayTiles(cols);
-			const int rows = (g_cams + cols - 1) / cols;
-			const int tileW = std::min(kTileMaxWidth,
-						   (paneW - kTileGap * (cols - 1)) /
-							   cols);
-			const int tileH = aspectHeight(tileW);
-			setTileCaps(tileW, tileH);
-			const int stripH = rows * (tileH + kTagH) +
-					   (rows - 1) * kTileGap;
-			aBox_->setMaximumHeight(bayH);
-			bBox_->setMaximumHeight(bayH);
-			for (QWidget *w : {aBox_, bBox_})
-				w->setMaximumWidth(QWIDGETSIZE_MAX);
-			want = bayH + monitorSplit_->handleWidth() + stripH;
-			if (!userMonitorSplit_)
-				monitorSplit_->setSizes({bayH, stripH});
-		} else {
-			// THE CAMERA BLOCK IS SIZED FIRST and the bays take what
-			// is left, which is the opposite of what a stretch factor
-			// does and the reason a stretch factor starved them.
-			const int roomH =
-				mode_ == PanelMode::Short
-					? std::max(40, leftCol_->height() -
-								 controlsHeight())
-					: 0;
-			const TileBlock tb =
-				tileBlockFor(paneW, bays, g_cams, 3, roomH);
-			relayTiles(tb.cols);
-			setTileCaps(tb.tileW, tb.tileH);
-			const int aW = std::max(60, (paneW - tb.blockW -
-						     monitorSplit_->handleWidth() -
-						     3 * (bays - 1)) /
-							    bays);
-			want = aspectHeight(aW) + kTagH;
-			if (mode_ == PanelMode::Wide)
-				want = std::min(want, height() / 2);
-			// WHEN THE HEIGHT CAP BITES, THE BAY GETS NARROWER TOO.
-			// The pictures may not have more than half the panel, and
-			// on a wide single-bay rig a 16:9 A across the whole pane
-			// wants three quarters of it — so the box ends up wider
-			// than its picture and the difference is drawn as BLACK
-			// BARS down either side. Capping the width leaves the same
-			// space in the PANEL's colour, which is space rather than
-			// a picture with something wrong with it.
-			const int fitW = (want - kTagH) * 16 / 9;
-			for (QWidget *w : {aBox_, bBox_}) {
-				w->setMaximumHeight(QWIDGETSIZE_MAX);
-				w->setMaximumWidth(fitW < aW ? fitW
-							     : QWIDGETSIZE_MAX);
-			}
-			if (!userMonitorSplit_)
-				monitorSplit_->setSizes(
-					{aW * bays + 3 * (bays - 1), tb.blockW});
-		}
-
-		if (mode_ == PanelMode::Short)
-			return; // the body splitter divides WIDTH here
-
-		// A cap AND the split: capped alone, the splitter can still hand
-		// the pane LESS than the pictures need, and short is a black bar
-		// too — down the sides instead of along the top.
-		leftCol_->setMaximumHeight(want);
-		if (!userSplit_) {
-			const int total = bodySplit_->height();
-			const int give = std::min(want, total - kListFloor);
-			const QList<int> now = bodySplit_->sizes();
-			if (give > 0 && (now.isEmpty() || std::abs(now[0] - give) > 2))
-				bodySplit_->setSizes({give, total - give});
-		}
+		if (mode_ == PanelMode::Tall)
+			return std::clamp(paneW / kTileMinWidth, 1,
+					  std::max(1, g_cams));
+		const int roomH = mode_ == PanelMode::Short ? std::max(40, paneH)
+							    : 0;
+		return tileBlockFor(paneW, bays, g_cams, 3, roomH).cols;
 	}
 
 	int controlsHeight() const
 	{
 		return controlsInColumn_ && controls_ ? controls_->height() + 3 : 0;
+	}
+
+	// ── THE MONITORING BLOCK, in three steps ─────────────────────────────
+	//
+	//  1. pick the camera block's shape for the room there is;
+	//  2. unless the OPERATOR has moved a divider, put the dividers where
+	//     the pictures want them;
+	//  3. fit every box to the cell it actually got, at 16:9.
+	//
+	// Step 3 is last on purpose: it reads the geometry the splitters ended
+	// up with rather than the geometry they were asked for, so a divider the
+	// operator dragged is honoured by the pictures instead of being argued
+	// with on the next tick.
+	void applyPreviewAspect()
+	{
+		const int paneW = std::max(80, leftCol_->width());
+		const int bays = g_haveB ? 2 : 1;
+		const int gap = monitorSplit_->handleWidth();
+
+		const int cols = tileColsFor(paneW, bays, leftCol_->height() -
+							       controlsHeight());
+		relayTiles(cols);
+		const int rows = (std::max(1, g_cams) + cols - 1) / cols;
+
+		// --- 1. what the two halves would like -----------------------
+		int baysW, tilesW, want;
+		if (mode_ == PanelMode::Tall) {
+			// A COLUMN: the bays across the top, the cameras under
+			// them. Both halves have the whole width; the divider
+			// between them is a HEIGHT.
+			baysW = tilesW = paneW;
+			const int bayH = aspectHeight((paneW - 3 * (bays - 1)) /
+						      bays) +
+					 kTagH;
+			const int tileW =
+				std::min(kTileMaxWidth,
+					 (paneW - kTileGap * (cols - 1)) / cols);
+			const int stripH = rows * (aspectHeight(tileW) + kTagH) +
+					   (rows - 1) * kTileGap;
+			want = bayH + gap + stripH;
+			if (!monitorChosen())
+				monitorSplit_->setSizes({bayH, stripH});
+		} else {
+			const TileBlock tb = tileBlockFor(
+				paneW, bays, g_cams, 3,
+				mode_ == PanelMode::Short
+					? std::max(40, leftCol_->height() -
+								 controlsHeight())
+					: 0);
+			tilesW = tb.blockW;
+			baysW = std::max(60, paneW - tilesW - gap);
+			const int bayH =
+				aspectHeight((baysW - 3 * (bays - 1)) / bays) +
+				kTagH;
+			want = std::max(bayH, tb.blockH);
+			if (mode_ == PanelMode::Wide)
+				// The pictures may not have more than half the
+				// panel. Past that the list stops being a list.
+				want = std::min(want, height() / 2);
+			if (!monitorChosen())
+				monitorSplit_->setSizes({baysW, tilesW});
+		}
+
+		// --- 2. the divider between the pictures and the list --------
+		// In Short that divider is a WIDTH and `want` — a height — means
+		// nothing to it.
+		if (mode_ != PanelMode::Short) {
+			leftCol_->setMaximumHeight(want);
+			if (!bodyChosen()) {
+				const int total = bodySplit_->height();
+				const int give = std::min(want, total - kListFloor);
+				const QList<int> now = bodySplit_->sizes();
+				if (give > 0 &&
+				    (now.isEmpty() || std::abs(now[0] - give) > 2))
+					bodySplit_->setSizes({give, total - give});
+			}
+		} else {
+			leftCol_->setMaximumHeight(QWIDGETSIZE_MAX);
+		}
+
+		// --- 3. the only size the boxes are told ---------------------
+		// A TILE IS A CONFIDENCE MONITOR, so it has a ceiling: left to
+		// fill the row, a single configured camera drew itself as big as
+		// the picture being watched — the same angle twice, with the
+		// event list paying for the second copy. Everything else about
+		// their shape the boxes work out themselves (see PictureBox).
+		for (int i = 0; i < kTiles; i++)
+			tile_[i]->setMaximumWidth(kTileMaxWidth);
+		(void)rows;
 	}
 };
 
@@ -1286,6 +1390,65 @@ void checkLabelsFit(Mock *w, const QString &label)
 	}
 	check(cut == 0, label + ": every label fits its key",
 	      cut ? QString("%1 cut, first %2").arg(cut).arg(worst) : QString());
+}
+
+// A KEY WITH NO WORD ON IT MUST SAY WHAT IT IS SOMEHOW.
+//
+// This is the one rule an icon-first panel cannot be allowed to break, and it
+// is the rule that is easiest to break by accident: a mark is obvious to
+// whoever drew it and to nobody else. The brief asks for it in so many words,
+// and a tooltip is the only place the answer can live once the label is gone.
+void checkTooltips(Mock *w, const QString &label)
+{
+	int mute = 0;
+	QString worst;
+	for (QAbstractButton *b : w->findChildren<QAbstractButton *>()) {
+		if (b->objectName().startsWith(QStringLiteral("qt_")))
+			continue;
+		// A key with a word on it says what it is by saying it.
+		if (!b->text().isEmpty() || !b->toolTip().isEmpty())
+			continue;
+		mute++;
+		if (worst.isEmpty())
+			worst = b->property(kKeyProperty).toString() + " (" +
+				b->objectName() + ")";
+	}
+	check(mute == 0, label + ": every icon-only key has a tooltip",
+	      mute ? QString("%1 mute, first %2").arg(mute).arg(worst)
+		   : QString());
+}
+
+// THE PICTURES ARE 16:9, TO THE PIXEL.
+//
+// Not "roughly", and not "capped so it does not letterbox too badly": a box of
+// any other shape draws the video letterboxed inside itself, and the operator
+// cannot tell whether the black edge is the framing or the panel. It is also
+// the thing that silently comes back — every arrangement change is a chance for
+// one box to be given a cell of the wrong shape.
+void checkAspect(Mock *w, const QString &label)
+{
+	int bad = 0;
+	QString worst;
+	for (const QWidget *box : w->pictureBoxes()) {
+		if (!box->isVisible())
+			continue;
+		const int picH = box->height() - w->tagHeight();
+		if (picH <= 0 || box->width() <= 0)
+			continue;
+		const double want = box->width() * 9.0 / 16.0;
+		// One pixel of slack: the fit is integer arithmetic and a cell
+		// an odd number of pixels tall cannot be halved exactly.
+		if (std::abs(picH - want) <= 1.5)
+			continue;
+		bad++;
+		if (worst.isEmpty())
+			worst = QString("%1x%2 wants %3 tall")
+					.arg(box->width())
+					.arg(picH)
+					.arg((int)want);
+	}
+	check(bad == 0, label + ": every picture is 16:9",
+	      bad ? QString("%1 wrong, first %2").arg(bad).arg(worst) : QString());
 }
 
 // EVERY COMMAND KEY CARRIES ITS IDENTITY. The automated gate used to find
@@ -1424,6 +1587,8 @@ int runChecks(QPalette pal)
 		checkNothingClipped(w, label);
 		checkHitTargets(w, label);
 		checkLabelsFit(w, label);
+		checkTooltips(w, label);
+		checkAspect(w, label);
 		if (label == QStringLiteral("wide"))
 			checkKeyIds(w);
 		w->hide();

@@ -306,10 +306,21 @@ KeyBlock::KeyBlock(const QString &caption, QWidget *parent)
 
 	body_ = new QWidget(this);
 	grid_ = bandGrid(body_);
+	// CENTRED IN THE LINE, not hung from the top of it.
+	//
+	// Every section on a line is given the LINE's height, which is the
+	// height of the deepest section on it. A one-row group beside a
+	// three-row one therefore has two rows of slack, and where that slack
+	// goes is the whole difference between a strip that reads as a row of
+	// groups and one that reads as things that fell to one side. It used to
+	// all go UNDER the keys — so the bay selector sat on the top edge of its
+	// line with sixty pixels of nothing beneath it, and the eye read the gap
+	// as a missing row rather than as a shorter group.
+	//
+	// Split evenly, the group sits on the line's optical centre, which is
+	// where a shorter group belongs beside a taller one.
+	v->addStretch(1);
 	v->addWidget(body_, 0);
-	// The keys take the height their rows need and not a pixel more; if the
-	// line this section sits on is taller (a neighbour has more rows), the
-	// slack goes here, under the keys, instead of between them.
 	v->addStretch(1);
 	setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Preferred);
 }
@@ -798,7 +809,16 @@ int ControlStrip::layoutLanes(int width, bool apply) const
 		if (apply) {
 			int x[3];
 			x[(int)Lane::Left] = 0;
-			x[(int)Lane::Centre] = centreX;
+			// THE CENTRE LANE IS CENTRED IN ITSELF TOO. Its width is
+			// the widest centre group across every line — the
+			// transport — so a narrower one on another line (the bay
+			// selector) was laid from the lane's LEFT EDGE and came
+			// out sitting off to one side of the panel's middle,
+			// which is the one place on this strip where being in
+			// the middle is the whole point. Left and right lanes
+			// keep their edges: those are read as edges.
+			x[(int)Lane::Centre] =
+				centreX + (CW - ln.laneW[(int)Lane::Centre]) / 2;
 			// The right lane ENDS flush, so its sections' right edges
 			// line up across the rows even when the lanes hold
 			// different keys — which is what puts the speed dial

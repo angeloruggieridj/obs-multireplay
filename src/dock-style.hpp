@@ -825,6 +825,25 @@ QSplitter::handle:vertical {
 QSplitter::handle:vertical:hover { background: @raise2@; }
 QSplitter::handle:horizontal { background: @raise1@; width: 5px; }
 QSplitter::handle:horizontal:hover { background: @raise2@; }
+
+/* ── WHERE THE KEYBOARD IS ──────────────────────────────────────────
+   LAST IN THE SHEET, and that is the whole point of where it sits: Qt follows
+   CSS specificity, and every role's own :hover and :checked rule scores the
+   same as this one — so anywhere earlier and a lit toggle or a hovered key
+   would quietly drop the focus ring, which is exactly when an operator is most
+   likely to want it.
+
+   This panel has a whole keyboard layer over it: arrows step frames, Enter
+   plays, +/- move the speed. The focus can be on a key, on the table or in the
+   search box, and the same keypress does different things in each — so which
+   one has it is not decoration.
+
+   The ACCENT, not a signal colour: having focus is a state of the panel, not a
+   state of the take, and red and green already mean something here. */
+#MultiReplayDock QAbstractButton:focus { border-color: @accent@; }
+#MultiReplayDock QLineEdit:focus, #MultiReplayDock QComboBox:focus {
+	border-color: @accent@;
+}
 )QSS";
 
 // How tight the event list is drawn. Three steps rather than a free number:
