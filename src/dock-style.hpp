@@ -295,7 +295,15 @@ inline Scheme schemeFor(ThemeChoice choice, const QPalette &pal)
 	s.onAir = hex(air);
 	// The on-air band is FILLED and carries white text, so it is not a wash and
 	// does not follow the rule above: it has to stay a solid green on any theme.
-	s.onAirDim = hex(mix(bg, air, 0.45));
+	//
+	// AND ON A LIGHT PANEL IT IS MIXED TOWARDS BLACK, not towards the
+	// background. Mixing towards the background is what "dim" means on a dark
+	// panel - it walks the green down to near-black - but from WHITE the same
+	// sum walks it up to a pale mint, and the band came out washed out with
+	// white text on it that could barely be read. Dim means darker; on paper
+	// the background is the wrong direction to look for darker.
+	s.onAirDim = hex(dark ? mix(bg, air, 0.45)
+			      : mix(air, QColor(Qt::black), 0.22));
 	s.warn = hex(wrn);
 	s.warnBg = hex(mix(bg, wrn, 0.22 * wash));
 	s.danger = hex(rec);
@@ -916,7 +924,7 @@ QTableWidget#mrEvents::indicator:checked {
 #MultiReplayDock QHeaderView::section {
 	background: @raise1@; color: @text@; padding: 3px 5px;
 	border: 0; border-bottom: 1px solid @border@;
-	font-size: 9px; font-weight: 700; letter-spacing: 0.6px;
+	font-size: @headerFont@px; font-weight: 700; letter-spacing: 0.6px;
 }
 #MultiReplayDock QHeaderView { background: @panel@; }
 #MultiReplayDock QTableCornerButton::section {
@@ -992,7 +1000,8 @@ struct Density {
 	int cellInput; // a table combo's content height
 	int cellPad;   // its vertical padding
 	int cellFont;  // and its type size
-	int headerH;   // the column headings above it
+	int headerH;   // the column headings above it, at least
+	int headerFont; // ...and the type they are drawn in, which decides it
 	int rowFloor;  // where the row height starts before the cells raise it
 };
 
@@ -1000,11 +1009,11 @@ inline Density densityFor(int level)
 {
 	switch (level) {
 	case 1: // compact — about a fifth off, still comfortably clickable
-		return {14, 2, 10, 18, 22};
+		return {14, 2, 10, 18, 9, 22};
 	case 2: // dense — for an operator working from the list on a big screen
-		return {10, 1, 9, 15, 18};
+		return {10, 1, 9, 15, 9, 18};
 	default: // comfortable, and the historic 30 px row
-		return {20, 3, 11, 22, 28};
+		return {20, 3, 11, 22, 10, 28};
 	}
 }
 
@@ -1015,6 +1024,7 @@ inline QString dockStyle(const Scheme &s, int densityLevel = 0)
 	QString out = QString::fromUtf8(kDockStyleTemplate);
 	out.replace(QLatin1String("@cellInput@"), QString::number(d.cellInput));
 	out.replace(QLatin1String("@cellPad@"), QString::number(d.cellPad));
+	out.replace(QLatin1String("@headerFont@"), QString::number(d.headerFont));
 	out.replace(QLatin1String("@cellFont@"), QString::number(d.cellFont));
 	const std::pair<const char *, const QString *> tokens[] = {
 		{"@panel@", &s.panel},         {"@raise1@", &s.raise1},

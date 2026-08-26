@@ -1392,14 +1392,14 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 					    idIt->data(Qt::UserRole).toInt() !=
 						    evId)
 						continue;
-					if (QWidget *nc = t->cellWidget(
+					// The comment is an ITEM now, text at rest,
+					// with the editor arriving on a double click
+					// (NoteDelegate). So it is read the way the
+					// operator reads it: off the cell.
+					if (QTableWidgetItem *nt = t->item(
 						    r, MultiReplayDock::kColNote))
-						if (auto *cm =
-							    nc->findChild<QLineEdit *>(
-								    "mrAngleNote"))
-							c.searchCellNote =
-								cm->text()
-									.toStdString();
+						c.searchCellNote =
+							nt->text().toStdString();
 					QWidget *cell = t->cellWidget(
 						r,
 						MultiReplayDock::kColFirstCam);

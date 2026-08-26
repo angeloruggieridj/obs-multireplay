@@ -752,7 +752,6 @@ private:
 	// A comment typed on one event, offered on all of them for the rest of the
 	// session. Not persisted — see rememberComment() for why a comment must
 	// not be able to reach setConfig().
-	void rememberComment(const QString &text);
 	QStringList sessionComments_;
 	static constexpr int kMaxSessionComments = 24;
 	// Set when the comment list grew, or when a rebuild had to be deferred
@@ -800,16 +799,11 @@ private:
 	// core mutex per cell — per event, per camera — and that was the longest
 	// thing the dock's poll did on a real session. See buildAngleCell.
 	QWidget *buildAngleCell(int eventId, int cam0, bool on, double speed);
-	// THE EVENT ~ COMMENT CELL, one per row and to the right of the duration.
-	// Free text plus the operator vocabulary; see the note in the .cpp.
-	QWidget *buildNoteCell(int eventId, const std::string &note,
-			       const std::vector<std::string> &presets);
 	// The fast path: write the three values into a cell that already belongs
 	// to this event and angle. False = it does not, and the caller must build
 	// a new one. See the note on the function.
 	bool updateAngleCell(QWidget *cell, int eventId, int cam0, bool on,
 			     double speed);
-	bool updateNoteCell(QWidget *cell, int eventId, const std::string &note);
 	// Bumped whenever the list of comments a cell would offer changes — a word
 	// typed on any event, or the presets edited in Settings. A cell records the
 	// version it was built with; a newer one means it cannot be reused, because
@@ -1041,6 +1035,10 @@ public:
 	// between a red line and an afternoon.
 	PanelMode panelMode() const { return panelMode_; }
 	void applyTableDensity(int level);
+	// The comment editor is a delegate, and it lives outside this class: it
+	// needs the session vocabulary and the place a chosen word is remembered.
+	QStringList sessionComments() const { return sessionComments_; }
+	void rememberComment(const QString &text);
 	static void restyleDock(); // reaches the live dock from the module
 
 private:
