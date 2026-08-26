@@ -61,7 +61,7 @@ namespace {
 
 // The status line. Shorter than a key row because nothing in it is a target the
 // hand goes to blind — the modes are pressed while being looked at.
-constexpr int kStatusH = 22;
+constexpr int kStatusH = 26;
 // The on-air band, and the position bar. The band was 28 and the bar 52 with a
 // caption over each; the captions are gone (the band is green and the bar is
 // graduated — neither has ever needed a heading to be told apart) and the bar's
@@ -1053,7 +1053,11 @@ private:
 		// past the end GROWS the grid, so a loop that walks to rowCount()
 		// adds one row every time it runs - and this runs on every resize.
 		for (int r = 0; r < std::max(rows + 1, tilesGrid_->rowCount()); r++)
-			tilesGrid_->setRowStretch(r, r < rows ? 1 : 0);
+			tilesGrid_->setRowStretch(
+				r, (r < rows || (r == rows &&
+						 mode_ != PanelMode::Tall))
+					   ? 1
+					   : 0);
 		tileCols_ = cols;
 	}
 

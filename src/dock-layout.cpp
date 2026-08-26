@@ -390,48 +390,40 @@ TileBlock tileBlockFor(int paneW, int bays, int n, int gap, int maxH)
 	const int target = std::max(kTileMinWidth,
 				    paneW - bays * bayW - gap * bays);
 
-	int bestScore = INT_MAX;
-	for (int cols = 1; cols <= n; cols++) {
-		const int rows = (n + cols - 1) / cols;
-		// NO HOLES. A ragged last row is the thing the eye keeps
-		// returning to; if nothing divides evenly the fallback below
-		// takes the least ragged.
-		if (cols * rows != n)
-			continue;
-		int th = (bayH - (rows - 1) * kTileGap) / rows - tagH;
-		// ...AND NO WIDER THAN ITS SHARE OF THE TARGET, or an arrangement
-		// that fills the height overflows the pane: two cameras as tall as
-		// A are two more A's, and the three of them do not fit.
-		const int share = (target - (cols - 1) * kTileGap) / cols;
-		int tw = std::clamp(th * 16 / 9, kTileMinWidth,
-				    std::min(ceiling, std::max(kTileMinWidth, share)));
-		th = aspect(tw);
-		const int bw = cols * tw + (cols - 1) * kTileGap;
-		const int bh = rows * (th + tagH) + (rows - 1) * kTileGap;
-		// Width is the preference; HEIGHT IS A WALL. A block that does
-		// not fit the pane is not a slightly worse arrangement, it is a
-		// floor the operator cannot get back.
-		const int over = (maxH > 0) ? std::max(0, bh - maxH) : 0;
-		const int score = std::abs(bw - target) + over * 4;
-		if (score < bestScore) {
-			bestScore = score;
-			best = {cols, tw, th, bw, bh};
-		}
+	// ONE ROW UP TO THREE, TWO ROWS BEYOND — DECLARED, NOT SCORED.
+	//
+	// The column count used to be chosen by scoring every arrangement that
+	// wasted no cell against a target width. It is a table instead now,
+	// because the operator has one and it is not the one a score produces:
+	//
+	//     1..3 cameras   one row,  n columns    A | C1 | C2 | C3
+	//     4              two rows, 2 columns
+	//     5, 6           two rows, 3 columns
+	//     7, 8           two rows, 4 columns
+	//
+	// which is ceil(n/2) columns past three. NEVER MORE THAN TWO ROWS: the
+	// cameras stand beside the bays, and a third row makes each of them
+	// smaller than the glance they exist for.
+	//
+	// Declared beats derived here for the same reason a section's two shapes
+	// are declared: "three across, then four" is a decision about how a rig
+	// is read, and a score agrees with it only by accident.
+	const int cols = (n <= 3) ? n : (n + 1) / 2;
+	const int rows = (n + cols - 1) / cols;
+
+	// The size is still arithmetic: as wide as its share of the leftover, and
+	// never so tall that the rows overflow the room the block has.
+	int tw = std::clamp((target - (cols - 1) * kTileGap) / cols,
+			    kTileMinWidth, ceiling);
+	if (maxH > 0) {
+		const int byH = std::max(
+			kTileMinWidth,
+			((maxH - (rows - 1) * kTileGap) / rows - tagH) * 16 / 9);
+		tw = std::min(tw, byH);
 	}
-	if (bestScore == INT_MAX) {
-		// Nothing divided evenly (a prime count of cameras). Take the
-		// squarest arrangement and live with the one empty cell.
-		const int cols =
-			std::max(1, (int)std::ceil(std::sqrt((double)n)));
-		const int rows = (n + cols - 1) / cols;
-		int th = std::max(1, (bayH - (rows - 1) * kTileGap) / rows - tagH);
-		const int share = (target - (cols - 1) * kTileGap) / cols;
-		int tw = std::clamp(th * 16 / 9, kTileMinWidth,
-				    std::min(ceiling, std::max(kTileMinWidth, share)));
-		th = aspect(tw);
-		best = {cols, tw, th, cols * tw + (cols - 1) * kTileGap,
-			rows * (th + tagH) + (rows - 1) * kTileGap};
-	}
+	const int th = aspect(tw);
+	best = {cols, tw, th, cols * tw + (cols - 1) * kTileGap,
+		rows * (th + tagH) + (rows - 1) * kTileGap};
 	return best;
 }
 
@@ -977,26 +969,25 @@ int ControlStrip::layoutLanes(int width, bool apply) const
 	if (need > width)
 		return -1; // no room to tell the lanes apart; pack instead
 
-	// THE LANES SPREAD, BUT ONLY SO FAR, AND THEN THE BLOCK IS CENTRED.
+	// THE CENTRE LANE IS CENTRED IN THE PANEL, AND THE TWO GAPS MAY DIFFER.
 	//
-	// Justification - marks at one end, the speed dial at the other - is the
-	// reference panel's shape and it is right up to a point. Past it the
-	// leftover was still going into the gaps, so a maximised panel drew three
-	// cramped groups with 400-500 px of nothing between them.
+	// Centring the whole block instead puts the transport off the panel's
+	// middle by exactly half the difference between the outer lanes — and
+	// they are not the same width, marks and record being wider than the
+	// exports and the speed dial. Fifteen pixels, every time, on the group
+	// the operator's hand goes to first.
 	//
-	// So the gap between two lanes has a ceiling (kLaneGapMax) and whatever is
-	// left over goes OUTSIDE the block, which is then centred: the keys keep
-	// their own size, the middle of the strip stays the middle of the panel,
-	// and the centre lane is centred in the cell its two hairlines draw rather
-	// than in a panel whose outer lanes are different widths.
-	const int lanesW = LW + CW + RW;
-	const int spare = std::max(0, width - lanesW);
-	const int laneGap = std::min(spare / 2, kLaneGapMax);
-	const int blockW = lanesW + 2 * laneGap;
-	const int x0 = std::max(0, (width - blockW) / 2);
-	const int leftX = x0;
-	const int centreX = x0 + LW + laneGap;
-	const int rightX = centreX + CW + laneGap;
+	// So the transport is placed dead centre and its neighbours are hung off
+	// it, each at most kLaneGapMax away. A side that will not fit gives up
+	// its gap rather than pushing the middle off centre: the panel has one
+	// middle, and this is the group that belongs in it.
+	const int centreX = (width - CW) / 2;
+	int leftX = centreX - kLaneGapMax - LW;
+	if (leftX < 0)
+		leftX = 0;
+	int rightX = centreX + CW + kLaneGapMax;
+	if (rightX + RW > width)
+		rightX = std::max(centreX + CW, width - RW);
 
 	// A LANE USED ON ONE LINE ONLY GETS THE HEIGHT OF ALL OF THEM.
 	//

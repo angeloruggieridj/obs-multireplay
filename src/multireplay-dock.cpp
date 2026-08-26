@@ -2766,7 +2766,16 @@ void MultiReplayDock::rebuildMultiview()
 	// one in use are also where the hidden tiles were left sitting.
 	const int usedRows =
 		((int)tileSlots.size() + cols - 1) / std::max(1, cols);
-	// NO SPARE ROW. One was added here to keep the pictures at the top of a
+	// ONE SPARE ROW BESIDE THE BAYS, and this only works because every tile
+	// now has a HEIGHT ceiling that actually binds (its own picture height,
+	// derived from the width the block was given). Without that the spare row
+	// is just a third row at stretch 1 and it takes a third of the block -
+	// measured, 137 px where the tiles were entitled to 206. With it, the rows
+	// in use stop at their ceiling, the leftover lands in the spare, and the
+	// camera block starts level with the top of A instead of floating in the
+	// middle of its own column. In a column the block is already exactly as
+	// tall as its pictures, so there is nothing to park.
+	// (Was: no spare row at all, which left the rows sharing the slack and a
 	// block taller than they are, and it took a THIRD of the block: with
 	// three rows all at stretch 1 and the tiles' own ceiling never reached,
 	// QGridLayout simply divided the height three ways and the cameras came
@@ -2780,7 +2789,11 @@ void MultiReplayDock::rebuildMultiview()
 	// row every time it runs - and this runs whenever the cameras change.
 	for (int r = 0;
 	     r < std::max(usedRows + 1, multiviewGrid_->rowCount()); r++)
-		multiviewGrid_->setRowStretch(r, r < usedRows ? 1 : 0);
+		multiviewGrid_->setRowStretch(
+			r, (r < usedRows ||
+			    (r == usedRows && panelMode_ != PanelMode::Tall))
+				   ? 1
+				   : 0);
 	tileTallyPvw_ = -2; // captions were just rewritten
 	tileTallyPgm_ = -2;
 	updateMultiviewTally();

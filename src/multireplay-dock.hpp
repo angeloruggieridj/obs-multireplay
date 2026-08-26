@@ -609,7 +609,11 @@ private:
 	QWidget *buildStatusBar(QWidget *parent);
 	// How tall it is. Shorter than a key row because nothing in it is reached
 	// for blind: these are pressed while being looked at.
-	static constexpr int kStatusBarH = 22;
+	// 26, NOT 22. The three toggles on this line are pinned to four less
+	// than it, and at 18 px the frame the style draws is exactly 18 too - so
+	// the bottom border sat on the widget edge and any rounding put it past.
+	// Four more pixels is a border that can be seen rather than deduced.
+	static constexpr int kStatusBarH = 26;
 
 	// --- engine interaction ---
 	void poll();             // periodic transport/status refresh
