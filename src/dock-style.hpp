@@ -839,6 +839,30 @@ QTableWidget#mrEvents QComboBox:hover, QTableWidget#mrEvents QLineEdit:hover {
 QTableWidget#mrEvents QComboBox:focus, QTableWidget#mrEvents QLineEdit:focus {
 	background: @raise1@; border-color: @accent@;
 }
+/* THE COMMENT CELL. Text at rest and a chooser beside it, and both take the
+   FIRST click - which is not a nicety here: a double click on a row of this
+   table means "put this event on air", so an editor that opened on one could
+   reach the Program from a cell whose whole job is a word.
+
+   The frame belongs to the CELL and appears when the pointer is over it, so a
+   list of sixty comments is sixty words rather than sixty boxes. */
+QTableWidget#mrEvents QWidget#mrNoteCell { background: transparent; }
+QTableWidget#mrEvents QWidget#mrNoteCell:hover {
+	background: @raise1@;
+}
+QTableWidget#mrEvents QLineEdit#mrAngleNote {
+	background: transparent; border: 0; padding: 0px 2px;
+	min-height: @cellInput@px; font-size: @cellFont@px;
+	color: @text@;
+}
+QTableWidget#mrEvents QPushButton#mrNotePick {
+	background: transparent; border: 0; padding: 0;
+	min-height: @cellInput@px;
+}
+QTableWidget#mrEvents QPushButton#mrNotePick:hover {
+	background: @raise2@; border-radius: 2px;
+}
+
 /* THE SPEED IS A LABEL, which is what it was before it became a drop-down and
    then a chip - and the operator has now asked for it back twice over.
 
@@ -950,12 +974,56 @@ QTableWidget#mrEvents::indicator:checked {
 }
 #MultiReplayDock QScrollBar::handle:horizontal:hover { background: @borderHi@; }
 
-QSplitter::handle:vertical {
+#MultiReplayDock QSplitter { background: @panel@; }
+#MultiReplayDock QSplitter::handle:vertical {
 	background: @raise1@; height: 5px;
 }
-QSplitter::handle:vertical:hover { background: @raise2@; }
-QSplitter::handle:horizontal { background: @raise1@; width: 5px; }
-QSplitter::handle:horizontal:hover { background: @raise2@; }
+#MultiReplayDock QSplitter::handle:vertical:hover { background: @raise2@; }
+#MultiReplayDock QSplitter::handle:horizontal { background: @raise1@; width: 5px; }
+#MultiReplayDock QSplitter::handle:horizontal:hover { background: @raise2@; }
+
+)QSS"
+			   R"QSS(
+/* ── WHAT OBS WOULD OTHERWISE PAINT FOR US ─────────────────
+
+   A widget kind this panel uses and does NOT have a rule for is not unstyled:
+   it is styled by OBS, whose sheet is the whole application's and whose colours
+   are its theme's. While the panel and OBS are both dark that is invisible and
+   even convenient; the day the panel is LIGHT and OBS is not, every one of them
+   is a dark patch in a white panel — a spin box in Settings, the pane behind a
+   tab, the well of a list.
+
+   THE MOCKUP CANNOT SHOW THIS. It has no application style sheet at all, so it
+   renders these correctly and always has. Same class as the sections it simply
+   does not build: the tool lies by omission, and only the panel can be asked.
+
+   Every rule below is scoped by id, so ours out-ranks a bare type selector
+   wherever the panel is the ancestor — the settings dialog included, a QDialog
+   parented to the dock being a descendant in the object tree. */
+#MultiReplayDock QSpinBox, #MultiReplayDock QDoubleSpinBox,
+#MultiReplayDock QPlainTextEdit, #MultiReplayDock QTextEdit {
+	background: @sink2@; color: @text@;
+	border: 1px solid @border@; border-radius: 3px;
+	padding: 3px 6px; min-height: 18px;
+}
+#MultiReplayDock QSpinBox:focus, #MultiReplayDock QDoubleSpinBox:focus,
+#MultiReplayDock QPlainTextEdit:focus, #MultiReplayDock QTextEdit:focus {
+	border-color: @accent@;
+}
+#MultiReplayDock QCheckBox, #MultiReplayDock QRadioButton,
+#MultiReplayDock QGroupBox {
+	color: @text@; background: transparent;
+}
+#MultiReplayDock QTabWidget::pane {
+	background: @panel@; border: 1px solid @border@;
+}
+#MultiReplayDock QListView, #MultiReplayDock QTreeView,
+#MultiReplayDock QAbstractItemView {
+	background: @sink2@; color: @text@;
+	border: 1px solid @border@;
+	selection-background-color: @rowSel@;
+	selection-color: @rowSelText@;
+}
 
 /* A KEY WHOSE HEIGHT BELONGS TO THE LAYOUT.
    Every key inside a section of the control strip is pinned by KeyBlock::apply

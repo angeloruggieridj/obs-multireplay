@@ -4506,85 +4506,6 @@ KeyBlock *MultiReplayDock::buildMarkers()
 // Event list (searchable) + playback controls
 // ---------------------------------------------------------------------------
 
-// ---------------------------------------------------------------------------
-// NoteDelegate — the event's comment, edited the way a table cell is edited
-// ---------------------------------------------------------------------------
-//
-// AT REST THE CELL IS TEXT. That is the whole point, and it is the third
-// arrangement this column has had: a combo in every camera cell, then one
-// frameless combo of its own, then a plain line edit. Each of them drew a
-// control sixty times over to say what a word says once, and each of them set
-// the row height for the whole list.
-//
-// A DELEGATE COSTS THE CLICK THAT THE ANGLE CELLS REFUSE TO PAY, and the
-// difference is what the cell is FOR. Ticking an angle or dropping its speed is
-// done while the picture is being watched, with one hand, mid-match — that is
-// why those are real widgets. Writing what an event was is done while looking
-// at the list, and a double click is what a table cell has meant since tables
-// existed. So this one is an item, and the editor arrives when it is asked for.
-//
-// The editor is an editable combo: TYPE a new word, or take one off the list.
-// Both, in one control, on one gesture — which is what was asked for, and it
-// retires the right-button menu that was standing in for the missing dropdown.
-class NoteDelegate : public QStyledItemDelegate {
-public:
-	NoteDelegate(MultiReplayDock *dock, QObject *parent)
-		: QStyledItemDelegate(parent), dock_(dock)
-	{
-	}
-
-	QWidget *createEditor(QWidget *parent, const QStyleOptionViewItem &,
-			      const QModelIndex &) const override
-	{
-		auto *cb = new QComboBox(parent);
-		cb->setObjectName(QStringLiteral("mrAngleNote"));
-		cb->setEditable(true);
-		cb->setInsertPolicy(QComboBox::NoInsert);
-		cb->addItem(QString()); // "no comment" is a choice, not a gap
-		for (const auto &p :
-		     ReplayCore::instance().getConfig().commentPresets)
-			cb->addItem(QString::fromStdString(p));
-		// ...and everything typed during this session, on any event: the
-		// word invented at the first goal is the one wanted at the second.
-		if (dock_)
-			for (const QString &s : dock_->sessionComments())
-				if (cb->findText(s) < 0)
-					cb->addItem(s);
-		cb->lineEdit()->setAlignment(Qt::AlignCenter);
-		return cb;
-	}
-
-	void setEditorData(QWidget *editor,
-			   const QModelIndex &index) const override
-	{
-		if (auto *cb = qobject_cast<QComboBox *>(editor)) {
-			// THE TEXT GOES IN AFTER THE MODEL IS FINISHED WITH.
-			// A comment is free text, so it is usually not an item;
-			// anything that touches the item list afterwards re-syncs
-			// the line edit from the current index and wipes it.
-			cb->setCurrentText(index.data(Qt::EditRole).toString());
-			cb->lineEdit()->selectAll();
-		}
-	}
-
-	void setModelData(QWidget *editor, QAbstractItemModel *model,
-			  const QModelIndex &index) const override
-	{
-		auto *cb = qobject_cast<QComboBox *>(editor);
-		if (!cb)
-			return;
-		const QString text = cb->currentText().trimmed();
-		model->setData(index, text, Qt::EditRole);
-		// Finishing the edit is what promotes a word to this session's
-		// list: it is the point at which the operator decided on it.
-		if (dock_)
-			dock_->rememberComment(text);
-	}
-
-private:
-	MultiReplayDock *dock_ = nullptr;
-};
-
 QWidget *MultiReplayDock::buildEvents()
 {
 	auto *box = new QWidget(this);
@@ -4594,10 +4515,6 @@ QWidget *MultiReplayDock::buildEvents()
 	v->setSpacing(2);
 
 	events_ = new QTableWidget(this);
-	// The comment column is edited by a delegate: text at rest, an editable
-	// combo on a double click - type a new word or take one off the list.
-	events_->setItemDelegateForColumn(kColNote,
-					  new NoteDelegate(this, events_));
 	events_->setObjectName("mrEvents");
 	events_->setSelectionBehavior(QAbstractItemView::SelectRows);
 	events_->setSelectionMode(QAbstractItemView::ExtendedSelection);
@@ -7630,15 +7547,19 @@ void MultiReplayDock::refreshEvents()
 			  closed ? relTc(r.tout) : QStringLiteral("--"), mid);
 		setRoCell(row, kColDur, dur, mid);
 
-		// THE COMMENT, once, in a column of its own — and as an ITEM, so at
-		// rest it is text like the four columns to its left. The editor is a
-		// delegate and arrives on a double click (see NoteDelegate).
+		// THE COMMENT, once, in a column of its own. A WIDGET and not an
+		// item: a double click on a row of this table already means "put
+		// this event on air", so an editor that opens on one would reach
+		// the Program from a cell whose whole job is a word.
 		{
-			QTableWidgetItem *nt = setRoCell(
-				row, kColNote,
-				QString::fromStdString(r.note), Qt::AlignCenter);
-			nt->setFlags(Qt::ItemIsSelectable | Qt::ItemIsEnabled |
-				     Qt::ItemIsEditable);
+			QWidget *nc = events_->cellWidget(row, kColNote);
+			if (!updateNoteCell(nc, r.id, r.note)) {
+				nc = buildNoteCell(r.id, r.note, commentPresets);
+				events_->setCellWidget(row, kColNote, nc);
+				const int want = nc->sizeHint().height() + 2;
+				if (want > tallestCell)
+					tallestCell = want;
+			}
 		}
 
 		// ONE cell per camera, holding the three things an operator says
@@ -8023,6 +7944,135 @@ bool MultiReplayDock::updateAngleCell(QWidget *cell, int eventId, int cam0,
 // with eight cameras and a match's worth of marks it is that multiplied by
 // forty. The list is the same for every cell on the panel, so it is read once
 // and handed down.
+// ---------------------------------------------------------------------------
+// The event's comment — one cell, one click, two ways in
+// ---------------------------------------------------------------------------
+//
+// THIS IS THE FOURTH ARRANGEMENT OF THIS COLUMN, so the constraints are worth
+// stating once, together, because each previous version satisfied some of them
+// and broke another:
+//
+//   1. AT REST IT IS TEXT. Sixty rows of framed control say what sixty words
+//      say, and set the row height for the whole list while they do it.
+//   2. ONE CLICK. Both to type and to choose — a delegate on a double click
+//      looked right and was WRONG here, because a double click on a row of this
+//      table already means "put this event on air", and with "in output" on
+//      that reaches the Program. Editing a comment must never be able to do
+//      that, and a widget in the cell is what guarantees it: the table never
+//      sees the click at all.
+//   3. THE VOCABULARY IS VISIBLE. Hiding it behind the right button, as the
+//      previous version did, is hiding it: nobody right-clicks a word to find
+//      out that a list of words exists.
+//
+// So: a flat line edit that takes a caret on the first click, and beside it a
+// chooser that opens the list on ITS first click. Neither has a frame until the
+// pointer is over the cell, which is where a frame says something.
+QWidget *MultiReplayDock::buildNoteCell(int eventId, const std::string &note,
+					const std::vector<std::string> &presets)
+{
+	// PARENTLESS until setCellWidget takes it: the dock's style sheet is
+	// resolved for a widget the moment it is given a parent inside the dock,
+	// so building the pair detached polishes the subtree once.
+	auto *w = new QWidget;
+	w->setObjectName(QStringLiteral("mrNoteCell"));
+	auto *h = new QHBoxLayout(w);
+	h->setContentsMargins(2, 0, 0, 0);
+	h->setSpacing(0);
+
+	auto *cm = new QLineEdit(w);
+	cm->setObjectName(QStringLiteral("mrAngleNote"));
+	cm->setToolTip(obs_module_text("Dock.CamNoteHint"));
+	cm->setPlaceholderText(kNoNote);
+	cm->setAlignment(Qt::AlignCenter);
+	cm->setFrame(false);
+	h->addWidget(cm, 1);
+
+	// The chooser. A glyph rather than a word: it is 14 px wide and the words
+	// it offers are in the list it opens.
+	auto *pick = new QPushButton(w);
+	pick->setObjectName(QStringLiteral("mrNotePick"));
+	pick->setToolTip(obs_module_text("Dock.CamNoteHint"));
+	pick->setCursor(Qt::PointingHandCursor);
+	pick->setFocusPolicy(Qt::NoFocus);
+	pick->setFixedWidth(14);
+	setKeyIcon(pick, Icon::More, tintsFor(sc()), 10);
+	h->addWidget(pick, 0);
+
+	w->setProperty("mrEventId", eventId);
+	// A cell records the vocabulary it was built with: a word typed on another
+	// event makes this one stale, because its list would be missing it.
+	w->setProperty("mrVocab", (qulonglong)commentVocabVersion_);
+
+	connect(pick, &QPushButton::clicked, this, [this, cm, presets, pick]() {
+		if (refreshing_)
+			return;
+		QMenu m(pick);
+		QStringList words;
+		for (const auto &p : presets)
+			words << QString::fromStdString(p);
+		for (const QString &s : sessionComments_)
+			if (!words.contains(s))
+				words << s;
+		// "No comment" is a choice and not a gap: an operator who marked
+		// the wrong thing needs a way back to blank that is not select-all
+		// and delete.
+		QAction *none = m.addAction(kNoNote);
+		connect(none, &QAction::triggered, cm,
+			[cm]() { cm->setText(QString()); });
+		if (!words.isEmpty())
+			m.addSeparator();
+		for (const QString &t : words) {
+			QAction *a = m.addAction(t);
+			connect(a, &QAction::triggered, cm,
+				[cm, t]() { cm->setText(t); });
+		}
+		m.exec(pick->mapToGlobal(QPoint(0, pick->height())));
+	});
+
+	// A TAG REACHES THE STORE THE MOMENT IT IS ON SCREEN, whichever way it got
+	// there — typed or taken off the list. It fires per keystroke, and that is
+	// affordable because the table refuses to rebuild while a line edit inside
+	// it has focus (see refreshEvents). The comparison keeps even that honest:
+	// re-writing the same text would bump the store's version for nothing.
+	connect(cm, &QLineEdit::textChanged, this,
+		[this, eventId](const QString &text) {
+			if (refreshing_)
+				return;
+			const std::string want = text.trimmed().toStdString();
+			auto &store = EventStore::instance();
+			if (store.description(eventId) == want)
+				return;
+			store.setDescription(eventId, want);
+		});
+	// Finishing the edit is what promotes a word to this session's list: it is
+	// the point at which the operator has decided on it. Doing it per keystroke
+	// would offer "G", "Go" and "Gol" on every other row.
+	connect(cm, &QLineEdit::editingFinished, this, [this, cm]() {
+		if (refreshing_)
+			return;
+		rememberComment(cm->text().trimmed());
+	});
+
+	cm->setText(QString::fromStdString(note));
+	return w;
+}
+
+// The fast path for a comment cell that already belongs to this event.
+bool MultiReplayDock::updateNoteCell(QWidget *cell, int eventId,
+				     const std::string &note)
+{
+	if (!cell || cell->property("mrEventId").toInt() != eventId ||
+	    cell->property("mrVocab").toULongLong() != commentVocabVersion_)
+		return false;
+	auto *cm = cell->findChild<QLineEdit *>(QStringLiteral("mrAngleNote"));
+	if (!cm)
+		return false;
+	const QString noteQ = QString::fromStdString(note);
+	if (cm->text() != noteQ)
+		cm->setText(noteQ);
+	return true;
+}
+
 QWidget *MultiReplayDock::buildAngleCell(int eventId, int cam0, bool on,
 					 double speed)
 {

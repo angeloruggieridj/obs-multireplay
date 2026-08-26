@@ -799,6 +799,11 @@ private:
 	// core mutex per cell — per event, per camera — and that was the longest
 	// thing the dock's poll did on a real session. See buildAngleCell.
 	QWidget *buildAngleCell(int eventId, int cam0, bool on, double speed);
+	// THE EVENT COMMENT, one per row, right of the duration: text at rest, a
+	// caret on the first click and the vocabulary on a chooser beside it.
+	QWidget *buildNoteCell(int eventId, const std::string &note,
+			       const std::vector<std::string> &presets);
+	bool updateNoteCell(QWidget *cell, int eventId, const std::string &note);
 	// The fast path: write the three values into a cell that already belongs
 	// to this event and angle. False = it does not, and the caller must build
 	// a new one. See the note on the function.
