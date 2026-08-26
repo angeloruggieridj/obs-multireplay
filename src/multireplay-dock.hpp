@@ -1101,6 +1101,9 @@ private:
 	QByteArray savedSplit_[3], savedMonitorSplit_[3];
 	bool userSplit_[3] = {false, false, false};
 	bool userMonitorSplit_[3] = {false, false, false};
+	// How many cameras the divider above was chosen for. A different number is
+	// a different question, so the choice is dropped (see rebuildMultiview).
+	int lastTileCount_ = -1;
 	bool splitChosen() const { return userSplit_[(int)panelMode_]; }
 	bool monitorSplitChosen() const
 	{

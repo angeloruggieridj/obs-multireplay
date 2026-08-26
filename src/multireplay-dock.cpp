@@ -2734,6 +2734,19 @@ void MultiReplayDock::rebuildMultiview()
 		return;
 	multiviewSig_ = sig;
 
+	// HOW MANY CAMERAS THERE ARE INVALIDATES THE OPERATOR'S DIVIDER, exactly
+	// as changing the arrangement does, and for the same reason. "This much
+	// for the bays, that much for the cameras" is an answer about a rig of
+	// eight; on a rig of four the camera block needs a third of that width
+	// and the bays should have the rest. Kept, the panel came back from
+	// Settings with A still the size it was for eight and nothing on screen
+	// explaining why. The split is re-derived once; he may drag it again.
+	if ((int)tileSlots.size() != lastTileCount_) {
+		lastTileCount_ = (int)tileSlots.size();
+		for (bool &chosen : userMonitorSplit_)
+			chosen = false;
+	}
+
 	multiviewBox_->setVisible(show);
 	for (int i = 0; i < kMaxPreviewTiles; i++)
 		if (tiles_[i].box)
@@ -7910,6 +7923,32 @@ QWidget *MultiReplayDock::buildNoteCell(int eventId, const std::string &note,
 	// empty entry. The word was wiped a line after it was set.
 	cm->setCurrentText(QString::fromStdString(note));
 	h->addWidget(cm, 1);
+
+	// ...AND THE VOCABULARY IS ALSO ON THE RIGHT BUTTON. With the drop-down
+	// arrow gone the list is still one click away on the text, but a right
+	// click is where a list of words is looked for — and it goes ABOVE the
+	// ordinary cut/copy/paste rather than instead of it.
+	cm->lineEdit()->setContextMenuPolicy(Qt::CustomContextMenu);
+	connect(cm->lineEdit(), &QLineEdit::customContextMenuRequested, this,
+		[cm](const QPoint &at) {
+			QMenu *m = cm->lineEdit()->createStandardContextMenu();
+			QAction *first = m->actions().isEmpty()
+						 ? nullptr
+						 : m->actions().first();
+			for (int i = 0; i < cm->count(); i++) {
+				const QString t = cm->itemText(i);
+				if (t.isEmpty())
+					continue;
+				auto *a = new QAction(t, m);
+				connect(a, &QAction::triggered, cm,
+					[cm, t]() { cm->setCurrentText(t); });
+				m->insertAction(first, a);
+			}
+			if (first)
+				m->insertSeparator(first);
+			m->exec(cm->lineEdit()->mapToGlobal(at));
+			delete m;
+		});
 
 	w->setProperty("mrEventId", eventId);
 	// A cell records the vocabulary it was built with: a word typed on another

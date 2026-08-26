@@ -128,13 +128,21 @@ inline QColor mix(const QColor &a, const QColor &b, double t)
 // A signal colour, kept at its own hue and saturation but pushed to a lightness
 // that reads against this background. THIS IS THE WHOLE LIGHT-THEME STORY: the
 // red of REC on a white panel is the same red, darker.
-inline QColor signalOn(const QColor &hue, const QColor &bg, bool dark)
+// `darkFloor` is how bright a signal is pushed to on a DARK panel. 120 for
+// most of them: a signal wants to be brighter than the mid point or it reads as
+// a dead key. The GREENS pass 0 and keep their own lightness instead, and that
+// is the whole of "the green is too light" - #199847 is the colour the on-air
+// band is painted, and lifting it to 120 made every other green on the panel a
+// perceptibly paler version of the one it was being compared against. A hue
+// that already separates from the background does not need lifting.
+inline QColor signalOn(const QColor &hue, const QColor &bg, bool dark,
+		       int darkFloor = 120)
 {
 	QColor c = hue.toHsl();
 	const int l = c.lightness();
 	// On a dark panel a signal wants to be brighter than the mid point; on a
 	// light one it wants to be darker, or it disappears into the paper.
-	const int want = dark ? qMax(l, 120) : qMin(l, 110);
+	const int want = dark ? qMax(l, darkFloor) : qMin(l, 110);
 	c.setHsl(c.hslHue(), c.hslSaturation(), want, 255);
 	// …and if it still does not separate from the background, push it away.
 	if (qAbs(c.lightness() - bg.lightness()) < 60)
@@ -238,10 +246,11 @@ inline Scheme schemeFor(ThemeChoice choice, const QPalette &pal)
 	const QColor actHue = airHue;
 
 	const QColor rec = signalOn(recHue, bg, dark);
-	const QColor pvw = signalOn(pvwHue, bg, dark);
-	const QColor air = signalOn(airHue, bg, dark);
+	const QColor pvw = signalOn(pvwHue, bg, dark, 0);
+	// THE GREEN IS THE BAND'S, unlifted: see signalOn's darkFloor.
+	const QColor air = signalOn(airHue, bg, dark, 0);
 	const QColor wrn = signalOn(warnHue, bg, dark);
-	const QColor act = signalOn(actHue, bg, dark);
+	const QColor act = signalOn(actHue, bg, dark, 0);
 
 	// THE LIT-KEY WASH IS WEAKER ON A LIGHT PANEL, and it is not taste.
 	// A lit toggle is drawn as its signal colour ON a wash of the same colour
@@ -757,9 +766,30 @@ R"QSS(
    independently and drifted apart, which is what "the text looks cut" was.
    Scoped to #mrEvents so the Settings dialog keeps inputs at a size a mouse
    can hit: a dense LIST is a reading surface, a dense FORM is a hazard. */
+/* ...AND IN THE TABLE THEY ARE DRAWN AS TEXT, not as controls.
+
+   A framed combo with a drop-down arrow is three chrome elements around one
+   word: the frame and its padding set the row height for the whole list, the
+   arrow takes width the comment needed, and the type had to shrink to fit
+   inside what was left. Sixty rows of that is a list that is harder to read
+   than the same words plainly written.
+
+   So in this table a combo has no frame, no arrow and no padding of its own -
+   it looks like the cell's text and behaves exactly as before: one click opens
+   the list, typing goes straight into the comment. The frame appears on hover
+   and focus, which is where it says something ("this is editable") instead of
+   saying it sixty times at once. */
 QTableWidget#mrEvents QComboBox, QTableWidget#mrEvents QLineEdit {
-	min-height: @cellInput@px; padding: @cellPad@px 5px;
+	background: transparent; border: 1px solid transparent;
+	min-height: @cellInput@px; padding: 0px 4px;
 	font-size: @cellFont@px;
+}
+QTableWidget#mrEvents QComboBox::drop-down { width: 0px; border: 0; }
+QTableWidget#mrEvents QComboBox:hover, QTableWidget#mrEvents QLineEdit:hover {
+	background: @raise1@; border-color: @borderHi@;
+}
+QTableWidget#mrEvents QComboBox:focus, QTableWidget#mrEvents QLineEdit:focus {
+	background: @raise1@; border-color: @accent@;
 }
 QTableWidget#mrEvents QComboBox QAbstractItemView::item {
 	min-height: @cellInput@px;
