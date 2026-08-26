@@ -3958,6 +3958,12 @@ void runReopenPass(const std::string &outPath)
 	bool fsKeyHiddenWhenDocked = false;
 	// Read below, inside the floating-panel block, and reported outside it.
 	bool tilesWideOk = false, tilesTallOk = false;
+	// SHORT HAS TO BE REACHABLE, and "it was never chosen" and "it cannot be
+	// held" look identical from the operator's chair: the panel flicks into it
+	// and is pushed straight back out by its own minimum height. The only way
+	// to tell them apart is to ask for a wide, shallow window and read back
+	// both the arrangement AND the height that was actually granted.
+	bool shortReachable = false;
 	bool fsKeyShownWhenFloating = false;
 	bool fsCoversTheScreen = false;
 	bool fsRestoresTheWindow = false;
@@ -4174,6 +4180,25 @@ void runReopenPass(const std::string &outPath)
 			};
 			measure(1100, 700, tilesWideOk, wideTileW, wideTiles, wideMode);
 			measure(340, 900, tilesTallOk, tallTileW, tallTiles, tallMode);
+			{
+				bool ignored = false;
+				int iw = 0, it = 0;
+				const char *shortMode = "?";
+				measure(1400, 340, ignored, iw, it, shortMode);
+				int gotH = 0, floorH = 0;
+				runOnUi([&]() {
+					gotH = host->height();
+					floorH = dock->minimumSizeHint().height();
+					shortReachable = dock->panelMode() ==
+							 PanelMode::Short;
+				});
+				obs_log(shortReachable ? LOG_INFO : LOG_ERROR,
+					"[selftest] reopen: asked for a 1400x340 "
+					"panel, got %d px of height in '%s' (the "
+					"panel's own floor is %d): %s",
+					gotH, shortMode, floorH,
+					shortReachable ? "short" : "NOT SHORT");
+			}
 			runOnUi([&]() {
 				host->setFloating(wasFloating);
 				host->setVisible(wasVisible);
@@ -4210,7 +4235,8 @@ void runReopenPass(const std::string &outPath)
 	const bool pass = sameBoot.ok && rebooted.ok && fsKeyHiddenWhenDocked &&
 			  fsWindowOffersMaximise && fsDoubleClickIsInert &&
 			  fsKeyShownWhenFloating && fsCoversTheScreen &&
-			  fsRestoresTheWindow && tilesWideOk && tilesTallOk;
+			  fsRestoresTheWindow && tilesWideOk && tilesTallOk &&
+			  shortReachable;
 
 	// --- Put everything back ----------------------------------------------
 	// The operator's project first (so nothing is pointing into the test one),
@@ -4260,6 +4286,7 @@ void runReopenPass(const std::string &outPath)
 			  fsDoubleClickIsInert);
 	obs_data_set_bool(checks, "camera_tiles_have_width_when_wide", tilesWideOk);
 	obs_data_set_bool(checks, "camera_tiles_have_width_in_a_column", tilesTallOk);
+	obs_data_set_bool(checks, "short_arrangement_is_reachable", shortReachable);
 	obs_data_set_obj(root, "checks", checks);
 	obs_data_release(checks);
 	obs_data_set_int(root, "reopen_footage_span_ms", sameBoot.footageMs);

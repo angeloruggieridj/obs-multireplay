@@ -1513,7 +1513,8 @@ MultiReplayDock::MultiReplayDock(QWidget *parent) : QWidget(parent)
 	// from here — including the first real resize OBS gives the dock, which is
 	// usually not Wide.
 	applyTableDensity(ReplayCore::instance().getConfig().tableDensity);
-	applyPanelMode(panelModeFor(size(), panelMode_), /*force*/ true);
+	applyPanelMode(panelModeFor(size(), panelMode_, wideFloorH_),
+		       /*force*/ true);
 
 	poll();
 }
@@ -1973,9 +1974,30 @@ void MultiReplayDock::applyPanelMode(PanelMode m, bool force)
 
 	applyPreviewAspect();
 
-	if (was != m)
-		obs_log(LOG_INFO, "[dock] layout %s -> %s (%dx%d)",
-			panelModeName(was), panelModeName(m), width(), height());
+	// THE FLOOR IS IN THE LOG, because a mode that cannot be reached looks
+	// exactly like a mode that was not chosen. Short is picked below a height
+	// the panel must also be ABLE to be, and the arrangement it switches to
+	// rewrites that floor - so when the two disagree the panel flicks into
+	// Short and is pushed straight back out by its own minimum. The numbers
+	// that settle it are this line's.
+	if (was != m) {
+		obs_log(LOG_INFO,
+			"[dock] layout %s -> %s (%dx%d, floor %dx%d)",
+			panelModeName(was), panelModeName(m), width(), height(),
+			minimumSizeHint().width(), minimumSizeHint().height());
+		// ...AND WHO IS ASKING FOR IT. A floor is a sum, and a sum is
+		// exactly the thing you cannot argue with until it is broken into
+		// the parts that made it. Every zone that can put a number in.
+		const auto floorOf = [](QWidget *w) {
+			return w ? w->minimumSizeHint().height() : 0;
+		};
+		obs_log(LOG_INFO,
+			"[dock] floor parts: pictures %d, list %d, keys %d "
+			"(strip %d, status %d, band %d, bar %d)",
+			floorOf(previewPane_), floorOf(events_),
+			floorOf(bottomBar_), floorOf(strip_),
+			floorOf(statusBar_), floorOf(clipBar_), floorOf(seek_));
+	}
 }
 
 int MultiReplayDock::aspectHeight(int width)
@@ -2061,10 +2083,26 @@ void MultiReplayDock::applyPreviewAspect()
 	} else {
 		int tilesW = 0;
 		if (haveTiles) {
-			const int tileW = std::min(
-				kTileMaxWidth,
-				std::max(kTileMinWidth, (int)(paneW * 0.22) / cols));
+			// THE DIVIDER IS THE OPERATOR'S ANSWER, once he has moved
+			// it. The 150 px ceiling is a DEFAULT - what a confidence
+			// monitor should be when nobody has said otherwise - and
+			// holding it after he has dragged the handle means the
+			// cameras stay small while the space he just gave them
+			// shows as empty panel. Dragging A narrower has to make
+			// them bigger, or the handle does not do the one thing it
+			// looks like it does.
+			const QList<int> have = monitorSplit_->sizes();
+			const bool chosen = monitorSplitChosen() &&
+					    have.size() > 1 && have[1] > 0;
+			const int tileW =
+				chosen ? std::max(kTileMinWidth,
+						  (have[1] - (cols - 1) * 2) / cols)
+				       : std::min(kTileMaxWidth,
+						  std::max(kTileMinWidth,
+							   (int)(paneW * 0.22) /
+								   cols));
 			tilesW = cols * tileW + (cols - 1) * 2;
+			tileCap_ = tileW;
 		}
 		const int baysW = std::max(60, paneW - tilesW - (haveTiles ? gap : 0));
 		const int bayH =
@@ -2098,7 +2136,7 @@ void MultiReplayDock::applyPreviewAspect()
 	// it was killed. Beside a big A the ceiling is a CONSTANT.
 	const int tileCapH = panelMode_ == PanelMode::Tall
 				     ? QWIDGETSIZE_MAX
-				     : aspectHeight(kTileMaxWidth) + tagH;
+				     : aspectHeight(tileCap_) + tagH;
 	for (const PreviewTile &t : tiles_)
 		if (t.box) {
 			// Only when it CHANGED. Setting a maximum invalidates
@@ -2178,10 +2216,25 @@ void MultiReplayDock::applyPreviewSplit(int want)
 }
 
 
+// THE WIDE ARRANGEMENT'S FLOOR IS SAMPLED AFTER THE PASS, NEVER DURING ONE.
+//
+// Asking a widget for its minimumSizeHint ACTIVATES its layout, and doing that
+// anywhere inside the resize cascade - in here, or in applyPanelMode - does not
+// merely read a number: the pass it forces is the one that stays on screen.
+// Measured on the mockup, which has the same layer under it: the six speed
+// presets came out 38x16 instead of 38x22, in every arrangement, and its own
+// hit-target check is what caught it.
+//
+// One pass late costs nothing. The floor moves only with the WIDTH, and the
+// hysteresis in panelModeFor covers the tick it takes to catch up.
 void MultiReplayDock::resizeEvent(QResizeEvent *event)
 {
 	QWidget::resizeEvent(event);
-	applyPanelMode(panelModeFor(size(), panelMode_));
+	applyPanelMode(panelModeFor(size(), panelMode_, wideFloorH_));
+	QTimer::singleShot(0, this, [this]() {
+		if (panelMode_ == PanelMode::Wide)
+			wideFloorH_ = minimumSizeHint().height();
+	});
 	// AFTER THE LAYOUT PASS, not during it. A resizeEvent arrives before the
 	// children have been re-laid, so the splitter still reports its OLD height
 	// here — and a split computed from a stale total is then rescaled
@@ -3649,6 +3702,14 @@ QWidget *MultiReplayDock::buildStatusBar(QWidget *parent)
 	for (QPushButton *b : {loopBtn_, musicBtn_, toOutputBtn_}) {
 		b->setParent(statusBar_);
 		b->setFixedHeight(kStatusBarH - 4);
+		// THE LAYOUT OWNS THE HEIGHT, so the style sheet must not also have
+		// an opinion about it: the rule for these asks for exactly the 18 px
+		// they are given, and exactly is not a margin - any rounding, at any
+		// display scale, puts the frame one pixel past the widget and the
+		// bottom border outside it. Unlit that is invisible (the border is
+		// transparent); lit it is a box somebody forgot to close, which is
+		// why only "in output" was ever reported.
+		b->setProperty("mrPinned", true);
 		h->addWidget(b);
 	}
 	auto *sep2 = new QWidget(statusBar_);
@@ -5715,36 +5776,26 @@ void MultiReplayDock::updateChannelStrip()
 	// what the on-air band and the position bar were already saying, in a
 	// second green that the eye had to tell apart from the first.
 	//
-	// What is left here is the part that was said NOWHERE else: which list and
-	// which event the transport keys are about, where the playhead is, and —
-	// the reason this has to exist at all — the answer to a key the operator
-	// just pressed. A notice OWNS the line while it lasts, because a refusal
-	// nobody sees is a panel that ignored him.
+	// What is left here is the one thing that is said NOWHERE else: the answer
+	// to a key the operator just pressed. A notice OWNS the line while it
+	// lasts, because a refusal nobody sees is a panel that ignored him.
 	const bool reverseOnAir = ps.active && ps.reverse;
 	QString line;
 	const bool notice = noticeUntilNs_ > 0 &&
 			    (int64_t)os_gettime_ns() < noticeUntilNs_;
 	if (notice) {
 		line = noticeText_;
-	} else {
-		line = listText;
-		if (haveEv)
-			line += QString("   %1")
-					.arg(evId, idDigits, 10, QLatin1Char('0'));
-		else
-			line += QString("   %1").arg(obs_module_text("Dock.NoEvent"));
-		if (ps.active && ps.queued > 0)
-			line += QString("   %1/%2")
-					.arg(ps.queuePos, 2, 10, QLatin1Char('0'))
-					.arg(ps.queued, 2, 10, QLatin1Char('0'));
-		const bool haveTc = eventOriginNs_ != kNoInstant &&
-				    playheadNs_ != kNoInstant &&
-				    playheadNs_ > eventOriginNs_;
-		line += QString("   %1").arg(
-			eventOriginNs_ != kNoInstant
-				? shortTc(haveTc ? playheadNs_ - eventOriginNs_ : 0)
-				: QStringLiteral("--:--.--"));
 	}
+	// AND NOTHING ELSE. The line used to carry the list, the event id, the
+	// clip counter and the playhead when there was no notice - and every one
+	// of those is said somewhere the eye is already going: the list and the
+	// id on the on-air band right under it, the counter there too, the
+	// playhead on the position bar in the panel's own timecode. Four values
+	// repeated one line apart are four glances that answer nothing, and they
+	// were what made a notice hard to notice.
+	//
+	// So the line is the notice's, and empty the rest of the time. That is
+	// not waste: it is the difference between a message and a caption.
 	if (statusNotice_) {
 		statusNotice_->setText(line);
 		statusNotice_->setProperty("notice", notice);
@@ -5849,9 +5900,15 @@ void MultiReplayDock::updateChannelStrip()
 			// and 8 s is how long the operator will be looking at it.
 			// The ◀ is not decoration: backwards at 50% and forwards at
 			// 50% are the same three numbers and not the same picture.
-			text = QString("%1   A%2   %3   %4%5%")
+			// THE LIST, THEN THE EVENT. The band used to open with
+			// "A<angle>", which on a rig worked from one camera is the
+			// same two characters all match - and the angle is already
+			// on the pictures, in colour, as the tally. Which LIST the
+			// clip came from was said on the line above instead, where
+			// it was one of four things competing for a glance.
+			text = QString("%1   %2   %3   %4%5%")
+				       .arg(listText)
 				       .arg(evId, idDigits, 10, QLatin1Char('0'))
-				       .arg(onAir ? ps.angle1 : currentAngle1())
 				       .arg(shortTc(remNs * 100 / (barPct > 0
 									   ? barPct
 									   : 100)))

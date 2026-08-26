@@ -351,6 +351,9 @@ public:
 
 	ControlStrip *strip_ = nullptr;
 	PanelMode mode_ = PanelMode::Wide;
+	// What the wide arrangement asks for, measured while it is worn: Short is
+	// chosen when the panel cannot be that tall, and that moves with the width.
+	int wideFloorH_ = 0;
 	Scheme sc_;
 
 	// THE ARRANGEMENT, applied. Everything here is a re-cell, a splitter
@@ -413,6 +416,7 @@ public:
 		// taller than the panel.
 		tileCols_ = 0;
 		applyPreviewAspect();
+
 	}
 
 	// ── WHEN THE PANEL IS A COLUMN, THE WORDS GO AND THE MARKS STAY ──────
@@ -446,7 +450,18 @@ public:
 	void resizeEvent(QResizeEvent *e) override
 	{
 		QWidget::resizeEvent(e);
-		applyPanelMode(panelModeFor(size(), mode_));
+		applyPanelMode(panelModeFor(size(), mode_, wideFloorH_));
+		// THE FLOOR IS SAMPLED AFTER THE PASS, never during one. Asking a
+		// widget for its minimumSizeHint ACTIVATES its layout, and doing
+		// that anywhere inside the resize cascade does not merely read a
+		// number - the pass it forces is the one that stays on screen.
+		// Measured: the six speed presets came out 38x16 instead of 38x22.
+		// One pass late is harmless; the floor only moves with the width,
+		// and the hysteresis covers the tick it takes to catch up.
+		QTimer::singleShot(0, this, [this]() {
+			if (mode_ == PanelMode::Wide)
+				wideFloorH_ = minimumSizeHint().height();
+		});
 		// AFTER the layout pass: a resizeEvent arrives before the children
 		// are re-laid, so the splitter still reports its OLD height and a
 		// split computed from it gets rescaled by the layout that follows.

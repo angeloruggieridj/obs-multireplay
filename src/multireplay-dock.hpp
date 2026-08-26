@@ -1065,6 +1065,10 @@ private:
 	// Height of a picture that wide, in the canvas's own ratio.
 	static int aspectHeight(int width);
 	PanelMode panelMode_ = PanelMode::Wide;
+	// The height the WIDE arrangement last declared as its own minimum. Short
+	// is chosen when the panel cannot be that tall, and "that tall" moves with
+	// the width - see panelModeFor and kShortMaxHeight.
+	int wideFloorH_ = 0;
 	// The two bays, each keeping the canvas's ratio whatever cell it is given
 	// (see AspectBox). They live in one grid, side by side, in every
 	// arrangement — nothing here is ever re-parented.

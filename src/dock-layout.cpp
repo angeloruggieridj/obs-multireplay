@@ -22,7 +22,7 @@ namespace multireplay {
 // PanelMode
 // ---------------------------------------------------------------------------
 
-PanelMode panelModeFor(const QSize &size, PanelMode current)
+PanelMode panelModeFor(const QSize &size, PanelMode current, int wideFloorH)
 {
 	// Each threshold is widened in the direction that would UNDO the current
 	// mode, so a panel sitting on a boundary keeps what it has until the drag
@@ -32,8 +32,14 @@ PanelMode panelModeFor(const QSize &size, PanelMode current)
 	if (size.width() < wLimit)
 		return PanelMode::Tall;
 
-	const int hLimit = kShortMaxHeight +
-			   (current == PanelMode::Short ? kModeHysteresis : 0);
+	// SHORT IS "THE WIDE ARRANGEMENT NO LONGER FITS", and the honest way to
+	// ask that is to compare against what it actually needs rather than
+	// against a number written down once. A panel dragged as short as it will
+	// go comes to rest exactly ON its floor, so the test has to fire AT that
+	// height, not below it - the hysteresis is what gives it room to.
+	const int need = std::max(kShortMaxHeight, wideFloorH + kModeHysteresis);
+	const int hLimit = need + (current == PanelMode::Short ? kModeHysteresis
+								 : 0);
 	if (size.height() < hLimit)
 		return PanelMode::Short;
 
@@ -887,6 +893,32 @@ int ControlStrip::layoutLanes(int width, bool apply) const
 	centreX = std::max(centreX, LW + (LW ? kZoneGap : 0));
 	centreX = std::min(centreX, width - RW - (RW ? kZoneGap : 0) - CW);
 
+	// A LANE USED ON ONE LINE ONLY GETS THE HEIGHT OF ALL OF THEM.
+	//
+	// The wide arrangement is two macro-rows, and each lane normally has a
+	// section on both: marks over record, bays over transport, exports over
+	// the speed dial. Switch the second bay off and the centre lane loses its
+	// top section entirely - so the transport stayed on the lower row with the
+	// whole of the upper one empty above it, which is a rectangle of nothing
+	// in the middle of the panel and reads as a row that failed to draw.
+	//
+	// Given both rows the section centres itself in them (see KeyBlock), so
+	// the keys sit on the strip's own middle instead of hanging under a void.
+	// Nothing moves in the two-bay case, which is the point: this fires only
+	// where a lane is genuinely half empty.
+	int laneLines[3] = {0, 0, 0};
+	for (const Line &ln : lines) {
+		bool used[3] = {false, false, false};
+		for (int k = ln.first; k < ln.last; k++)
+			used[(int)blocks_[k].lane] = true;
+		for (int l = 0; l < 3; l++)
+			laneLines[l] += used[l] ? 1 : 0;
+	}
+	int totalH = 0;
+	for (const Line &ln : lines)
+		totalH += ln.height;
+	totalH += (lines.size() - 1) * (kBandVGap + 2);
+
 	int y = 0;
 	const int vgap = kBandVGap + 2;
 	for (const Line &ln : lines) {
@@ -927,8 +959,11 @@ int ControlStrip::layoutLanes(int width, bool apply) const
 				// so their captions line up; each is fixed inside
 				// itself, so the slack lands under its keys and
 				// nothing within it stretches.
-				e.block->setGeometry(x[lane], y, sz.width(),
-						     ln.height);
+				const bool alone = lines.size() > 1 &&
+						   laneLines[lane] == 1;
+				e.block->setGeometry(x[lane], alone ? 0 : y,
+						     sz.width(),
+						     alone ? totalH : ln.height);
 				x[lane] += sz.width() + kZoneGap;
 			}
 		}
@@ -947,6 +982,32 @@ int ControlStrip::layoutStack(int width, bool apply) const
 	// (see KeyBlock::apply). A gap the size of the gap between two key rows
 	// would make six groups read as one long list of keys.
 	const int vgap = kZoneGap - 2;
+	// THE SPINE IS CENTRED, THE SECTIONS ARE NOT. Two different things, and
+	// the difference is the whole reason this is two passes: a column of
+	// sections each centred on its own width has no edge to be read down, and
+	// that is what a stack of "scattered" keys actually is. One left edge for
+	// all of them, placed so the block as a whole sits in the middle of the
+	// panel, keeps the edge AND stops the keys hugging one side of a dock
+	// that is wider than they are.
+	int spine = 0;
+	if (apply) {
+		int widest = 0, w = 0, j = 0;
+		while (j < idx.size()) {
+			const int start = j;
+			w = 0;
+			while (j < idx.size()) {
+				const QSize sz = blocks_[idx[j]].flat;
+				const int next = w + (j > start ? kZoneGap : 0) +
+						 sz.width();
+				if (j > start && next > width)
+					break;
+				w = next;
+				j++;
+			}
+			widest = std::max(widest, w);
+		}
+		spine = std::max(0, (width - widest) / 2);
+	}
 	int y = 0, i = 0;
 	while (i < idx.size()) {
 		int lineW = 0, lineH = 0;
@@ -962,11 +1023,11 @@ int ControlStrip::layoutStack(int width, bool apply) const
 			i++;
 		}
 		if (apply) {
-			// LEFT SPINE, no spreading. A narrow panel is read down
-			// its left edge; sections centred each on their own width
-			// give it nothing to be read down, and that is what a
-			// stack of "scattered" keys actually is.
-			int x = 0;
+			// ONE left edge for every line, at the centred spine
+			// worked out above. Not one centring per section: that
+			// leaves the column with no edge to be read down, which
+			// is what a stack of "scattered" keys actually is.
+			int x = spine;
 			for (int k = first; k < i; k++) {
 				const Entry &e = blocks_[idx[k]];
 				if (k > first)

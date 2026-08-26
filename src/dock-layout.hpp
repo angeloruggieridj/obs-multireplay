@@ -122,8 +122,21 @@ inline constexpr int kTallMaxWidth = 760;
 // it, that floor went from 422 to 471 and crossed the line — measured, and the
 // symptom was a 1400x340 dock that came back 1400x471 still in the wide shape.
 //
-// So this is not a taste number: it is "the wide arrangement no longer fits",
-// and it has to be kept clear of what the wide arrangement actually needs.
+// So this is not a taste number: it is "the wide arrangement no longer fits".
+//
+// AND A CONSTANT CANNOT SAY THAT, which is the second time this trap was
+// sprung and the reason it is now measured instead. The wide arrangement's
+// floor is not one number: it depends on the WIDTH, because below a certain
+// one the strip's six sections stop fitting across three lanes and fold onto
+// more lines. Measured on the panel this was written for: 553 px at 1920 wide,
+// 651 px at 1400. A threshold of 540 is under BOTH, so a docked panel dragged
+// as short as it will go stops at its floor, still wide, and the arrangement
+// that would have fitted is never reached. From the operator's chair the short
+// arrangement simply does not exist.
+//
+// So this constant is only the LOWER BOUND now — shorter than this and the
+// panel is Short whatever else is true — and the real test is the floor the
+// panel reports while it is wearing the wide arrangement. See panelModeFor.
 inline constexpr int kShortMaxHeight = 540;
 // HYSTERESIS, and it is not politeness. Dragging a dock edge across a bare
 // threshold flips the mode back and forth, and every flip re-lays the
@@ -134,7 +147,12 @@ inline constexpr int kModeHysteresis = 40;
 // Which arrangement a panel of this size wants. `current` is what it is wearing
 // now, and it is an argument rather than a fresh decision because a threshold
 // crossed on the way in is not the same threshold on the way out.
-PanelMode panelModeFor(const QSize &size, PanelMode current);
+// `wideFloorH` is the height the WIDE arrangement last reported as its own
+// minimum, or 0 if it has never worn one. It is measured rather than assumed
+// because it moves with the width (see kShortMaxHeight), and passing it in
+// keeps this function pure — the panel measures, this decides.
+PanelMode panelModeFor(const QSize &size, PanelMode current,
+		       int wideFloorH = 0);
 const char *panelModeName(PanelMode m);
 
 // ---------------------------------------------------------------------------
