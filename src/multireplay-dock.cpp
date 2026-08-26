@@ -2642,12 +2642,22 @@ void MultiReplayDock::rebuildMultiview()
 		multiviewGrid_->addWidget(t.box, (int)k / cols, (int)k % cols);
 		t.box->setVisible(show);
 	}
-	// The leftover goes to a column past the last tile rather than into the
-	// tiles, so a filmstrip of two on a rig of two starts at the left edge
-	// instead of floating in the middle of the row.
+	// THE COLUMNS IN USE SHARE THE ROW, and a box in this grid has no size
+	// of its own to fall back on: AspectBox declares no floor and no hint
+	// deliberately (a floor here becomes the panel's). A column left at
+	// stretch 0 beside one that has it is therefore not "narrow", it is
+	// ZERO — which is how the column arrangement came to show an empty box
+	// where the cameras are. It was drawn correctly only by accident: the
+	// early-out above kept the wide arrangement's stretches in place on a rig
+	// whose column count did not change when the panel was turned, and the
+	// column rule below was never actually reached.
+	//
+	// The leftover cannot land in the tiles either way, because each one is
+	// capped at the width its own picture may have (see applyPreviewAspect):
+	// it stays as trailing space, so a filmstrip of two on a rig of two still
+	// starts at the left edge instead of floating in the middle of the row.
 	for (int c = 0; c <= cols; c++)
-		multiviewGrid_->setColumnStretch(
-			c, (panelMode_ == PanelMode::Tall && c == cols) ? 1 : 0);
+		multiviewGrid_->setColumnStretch(c, c < cols ? 1 : 0);
 	// THE ROWS IN USE SHARE THE BLOCK; the rest hold nothing. A
 	// QGridLayout remembers the stretch of a row it no longer has anything
 	// in and rowCount() never comes back down, so a rig that once wanted

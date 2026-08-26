@@ -1024,6 +1024,11 @@ public:
 	// after the operator switches to a light theme is worse than one that never
 	// followed at all.
 	void applyTheme();
+	// Which of the three arrangements the panel is wearing. Public for the
+	// gate: "the cameras have no width in a column" is a fault only a check
+	// that knows the arrangement can name, and naming it is the difference
+	// between a red line and an afternoon.
+	PanelMode panelMode() const { return panelMode_; }
 	void applyTableDensity(int level);
 	static void restyleDock(); // reaches the live dock from the module
 
@@ -1059,7 +1064,6 @@ private:
 	QWidget *bottomSep_ = nullptr;
 	// Height of a picture that wide, in the canvas's own ratio.
 	static int aspectHeight(int width);
-	PanelMode panelMode() const { return panelMode_; }
 	PanelMode panelMode_ = PanelMode::Wide;
 	// The two bays, each keeping the canvas's ratio whatever cell it is given
 	// (see AspectBox). They live in one grid, side by side, in every

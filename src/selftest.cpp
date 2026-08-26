@@ -3956,6 +3956,8 @@ void runReopenPass(const std::string &outPath)
 	// and a check that called setPanelFullScreen() directly would prove the
 	// window state and nothing about the key that reaches it.
 	bool fsKeyHiddenWhenDocked = false;
+	// Read below, inside the floating-panel block, and reported outside it.
+	bool tilesWideOk = false, tilesTallOk = false;
 	bool fsKeyShownWhenFloating = false;
 	bool fsCoversTheScreen = false;
 	bool fsRestoresTheWindow = false;
@@ -4119,6 +4121,71 @@ void runReopenPass(const std::string &outPath)
 			std::this_thread::sleep_for(
 				std::chrono::milliseconds(400));
 		}
+		// ── THE CAMERAS ARE ON SCREEN IN BOTH ARRANGEMENTS ────────────────────
+		// A tile has NO SIZE OF ITS OWN — AspectBox declares neither a floor nor
+		// a hint, deliberately, because a floor there becomes the whole panel's —
+		// so its width comes entirely from the grid column it sits in. A column
+		// rule that hands the row's stretch somewhere else therefore does not
+		// make the strip narrow, it makes it ZERO: the panel shows an empty box
+		// where the cameras should be.
+		//
+		// That shipped. The column arrangement's rule had been wrong from the
+		// day it was written and an early-out kept it from ever running, so the
+		// fault only appeared when the early-out was corrected — which is the
+		// shape of bug this check exists for: nothing else here can tell a tile
+		// that is not there from a tile that is there and has no width.
+		//
+		// Measured on the FLOATING window, because its size is the only one this
+		// process may set: a docked panel's size belongs to OBS.
+		int wideTileW = 0, tallTileW = 0, wideTiles = 0, tallTiles = 0;
+		const char *wideMode = "?", *tallMode = "?";
+		if (host && dock) {
+			auto measure = [&](int w, int h, bool &ok, int &narrowest,
+					   int &seen, const char *&modeName) {
+				runOnUi([&]() {
+					host->setFloating(true);
+					host->resize(w, h);
+				});
+				std::this_thread::sleep_for(
+					std::chrono::milliseconds(700));
+				// TWICE. A mode change rewrites how small the panel may
+				// be, so a size only the NEW arrangement can hold is
+				// reached on the second resize (see applyPanelMode).
+				runOnUi([&]() { host->resize(w, h); });
+				std::this_thread::sleep_for(
+					std::chrono::milliseconds(700));
+				runOnUi([&]() {
+					modeName = panelModeName(dock->panelMode());
+					int nw = 1 << 20, n = 0;
+					for (QWidget *t : dock->findChildren<QWidget *>(
+						     QStringLiteral("mrTile"))) {
+						if (!t->isVisible())
+							continue;
+						n++;
+						nw = std::min(nw, t->width());
+					}
+					seen = n;
+					narrowest = n ? nw : 0;
+					// 40 px is not a taste: below that a picture is
+					// not a confidence monitor any more, and zero —
+					// the fault this catches — is far below it.
+					ok = n > 0 && narrowest >= 40;
+				});
+			};
+			measure(1100, 700, tilesWideOk, wideTileW, wideTiles, wideMode);
+			measure(340, 900, tilesTallOk, tallTileW, tallTiles, tallMode);
+			runOnUi([&]() {
+				host->setFloating(wasFloating);
+				host->setVisible(wasVisible);
+			});
+			std::this_thread::sleep_for(std::chrono::milliseconds(400));
+		}
+		obs_log((tilesWideOk && tilesTallOk) ? LOG_INFO : LOG_ERROR,
+			"[selftest] reopen: camera tiles — %s: %d on screen, narrowest "
+			"%d px: %s; %s: %d on screen, narrowest %d px: %s",
+			wideMode, wideTiles, wideTileW, tilesWideOk ? "yes" : "NO",
+			tallMode, tallTiles, tallTileW, tilesTallOk ? "yes" : "NO");
+
 		const bool fsOk = fsKeyHiddenWhenDocked && fsKeyShownWhenFloating &&
 				  fsCoversTheScreen && fsRestoresTheWindow &&
 				  fsWindowOffersMaximise && fsDoubleClickIsInert;
@@ -4143,7 +4210,7 @@ void runReopenPass(const std::string &outPath)
 	const bool pass = sameBoot.ok && rebooted.ok && fsKeyHiddenWhenDocked &&
 			  fsWindowOffersMaximise && fsDoubleClickIsInert &&
 			  fsKeyShownWhenFloating && fsCoversTheScreen &&
-			  fsRestoresTheWindow;
+			  fsRestoresTheWindow && tilesWideOk && tilesTallOk;
 
 	// --- Put everything back ----------------------------------------------
 	// The operator's project first (so nothing is pointing into the test one),
@@ -4191,6 +4258,8 @@ void runReopenPass(const std::string &outPath)
 			  fsWindowOffersMaximise);
 	obs_data_set_bool(checks, "title_double_click_leaves_the_panel_alone",
 			  fsDoubleClickIsInert);
+	obs_data_set_bool(checks, "camera_tiles_have_width_when_wide", tilesWideOk);
+	obs_data_set_bool(checks, "camera_tiles_have_width_in_a_column", tilesTallOk);
 	obs_data_set_obj(root, "checks", checks);
 	obs_data_release(checks);
 	obs_data_set_int(root, "reopen_footage_span_ms", sameBoot.footageMs);
