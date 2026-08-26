@@ -548,7 +548,11 @@ public:
 		kColIn,
 		kColOut,
 		kColDur,
-		kColFirstCam // first per-camera pair
+		// WHAT THE EVENT IS, once. It used to be asked once per camera, and
+		// in practice was answered on one of them and left blank on the rest
+		// - a goal is a goal on every lens that saw it.
+		kColNote,
+		kColFirstCam // first per-camera cell
 	};
 	// ONE column per configured camera, holding the three things an operator
 	// says about that angle — plays / how fast / what it is — in a single
@@ -795,14 +799,17 @@ private:
 	// and handed down. Reading it here meant a whole-Config copy under the
 	// core mutex per cell — per event, per camera — and that was the longest
 	// thing the dock's poll did on a real session. See buildAngleCell.
-	QWidget *buildAngleCell(int eventId, int cam0, bool on, double speed,
-				const std::string &note,
-				const std::vector<std::string> &presets);
+	QWidget *buildAngleCell(int eventId, int cam0, bool on, double speed);
+	// THE EVENT ~ COMMENT CELL, one per row and to the right of the duration.
+	// Free text plus the operator vocabulary; see the note in the .cpp.
+	QWidget *buildNoteCell(int eventId, const std::string &note,
+			       const std::vector<std::string> &presets);
 	// The fast path: write the three values into a cell that already belongs
 	// to this event and angle. False = it does not, and the caller must build
 	// a new one. See the note on the function.
 	bool updateAngleCell(QWidget *cell, int eventId, int cam0, bool on,
-			     double speed, const std::string &note);
+			     double speed);
+	bool updateNoteCell(QWidget *cell, int eventId, const std::string &note);
 	// Bumped whenever the list of comments a cell would offer changes — a word
 	// typed on any event, or the presets edited in Settings. A cell records the
 	// version it was built with; a newer one means it cannot be reused, because

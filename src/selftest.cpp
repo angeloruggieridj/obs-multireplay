@@ -1367,7 +1367,9 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 		if (editedCam0 >= 0) {
 			const std::string wantNote = "GateTag";
 			const double wantSpeed = 0.75;
-			store.setAngleNote(evId, editedCam0 + 1, wantNote);
+			// THE COMMENT IS THE EVENT'S, not the angle's: one
+			// column of its own, right of the duration.
+			store.setDescription(evId, wantNote);
 			store.setAngleSpeed(evId, editedCam0 + 1, wantSpeed);
 			// Settle windows: refreshEvents runs off the dock's own
 			// poll, and a rebuild deferred past an open editor takes
@@ -1389,16 +1391,19 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 					    idIt->data(Qt::UserRole).toInt() !=
 						    evId)
 						continue;
+					if (QWidget *nc = t->cellWidget(
+						    r, MultiReplayDock::kColNote))
+						if (auto *cm =
+							    nc->findChild<QComboBox *>(
+								    "mrAngleNote"))
+							c.searchCellNote =
+								cm->currentText()
+									.toStdString();
 					QWidget *cell = t->cellWidget(
 						r,
 						MultiReplayDock::kColFirstCam);
 					if (!cell)
 						break;
-					if (auto *cm = cell->findChild<QComboBox *>(
-						    "mrAngleNote"))
-						c.searchCellNote =
-							cm->currentText()
-								.toStdString();
 					if (auto *sp = cell->findChild<QComboBox *>(
 						    "mrAngleSpeed"))
 						c.searchCellPct =
@@ -1409,8 +1414,7 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 
 			ReplayEvent back;
 			if (store.get(evId, back)) {
-				c.searchStoredNote =
-					back.angles[editedCam0].note;
+				c.searchStoredNote = back.note;
 				c.searchStoredPct =
 					back.angles[editedCam0].speed > 0
 						? (int)std::lround(
@@ -1428,7 +1432,7 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 				c.searchCellNote.c_str(), c.searchCellPct,
 				c.searchStoredNote.c_str(), c.searchStoredPct);
 			// Put it back the way it was found.
-			store.setAngleNote(evId, editedCam0 + 1, "");
+			store.setDescription(evId, "");
 			store.setAngleSpeed(evId, editedCam0 + 1, -1.0);
 		}
 

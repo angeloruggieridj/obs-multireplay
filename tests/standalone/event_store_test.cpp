@@ -135,7 +135,6 @@ static void test_angle_edits_bounds()
 	CHECK(!store().toggleAngle(id, 0));
 	CHECK(!store().toggleAngle(id, kEventAngles + 1));
 	CHECK(!store().setAngle(id, 0, true));
-	CHECK(!store().setAngleNote(id, 9, "x"));
 	CHECK(!store().setAngleSpeed(id, 0, 0.5));
 
 	// Valid toggles.
@@ -284,15 +283,17 @@ static void test_description()
 	int id = store().markIn(0, 0);
 	CHECK(store().description(id).empty());
 
-	store().setAngleNote(id, 3, "angle3 note");
-	CHECK(store().description(id) == "angle3 note"); // first non-empty
-
-	store().setDescription(id, "global"); // writes every angle
+	// ONE COMMENT PER EVENT. It used to be written onto every angle and read
+	// back as "the first one that has something", which is the shape of a
+	// question asked once per lens and answered once.
+	store().setDescription(id, "global");
 	ReplayEvent ev;
 	CHECK(store().get(id, ev));
-	for (const auto &an : ev.angles)
-		CHECK(an.note == "global");
+	CHECK(ev.note == "global");
 	CHECK(store().description(id) == "global");
+
+	store().setDescription(id, "");
+	CHECK(store().description(id).empty());
 }
 
 static void test_chapters_text()
@@ -383,11 +384,9 @@ static void test_angle_triplet_is_independent()
 
 	CHECK(store().setAngle(id, 2, true));
 	CHECK(store().setAngleSpeed(id, 2, 0.5));
-	CHECK(store().setAngleNote(id, 2, "tight"));
 	CHECK(store().get(id, ev));
 	CHECK(ev.angles[1].enabled);
 	CHECK(ev.angles[1].speed == 0.5);
-	CHECK(ev.angles[1].note == "tight");
 
 	// Off and on again: the speed and the comment survive. An operator who
 	// unticks an angle to shorten a sequence has not thrown away his edit.
@@ -395,27 +394,23 @@ static void test_angle_triplet_is_independent()
 	CHECK(store().get(id, ev));
 	CHECK(!ev.angles[1].enabled);
 	CHECK(ev.angles[1].speed == 0.5);
-	CHECK(ev.angles[1].note == "tight");
 	CHECK(store().setAngle(id, 2, true));
 
 	// Clearing the speed leaves the comment, and vice versa.
 	CHECK(store().setAngleSpeed(id, 2, -1.0));
 	CHECK(store().get(id, ev));
-	CHECK(ev.angles[1].note == "tight");
-	CHECK(store().setAngleNote(id, 2, ""));
-	CHECK(store().get(id, ev));
 	CHECK(ev.angles[1].enabled);
 	CHECK(ev.angles[1].speed == -1.0);
-	CHECK(ev.angles[1].note.empty());
 
-	// A duplicate carries the whole triplet across (the reference controller), on a new id.
+	// A duplicate carries BOTH across on a new id: the angle pair (does it
+	// play, how fast) and the event comment, which is one per event now.
 	CHECK(store().setAngleSpeed(id, 3, 0.25));
-	CHECK(store().setAngleNote(id, 3, "wide"));
+	CHECK(store().setDescription(id, "wide"));
 	int dup = store().duplicate(id);
 	CHECK(dup != 0 && dup != id);
 	CHECK(store().get(dup, ev));
 	CHECK(ev.angles[2].speed == 0.25);
-	CHECK(ev.angles[2].note == "wide");
+	CHECK(ev.note == "wide");
 }
 
 // the reference controller: the 20 lists can be named, and the names belong to the project.

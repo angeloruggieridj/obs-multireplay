@@ -226,10 +226,16 @@ inline Scheme schemeFor(ThemeChoice choice, const QPalette &pal)
 
 	// SIGNAL. Fixed hues; only their lightness is answerable to the theme.
 	const QColor recHue("#C0202A");
-	const QColor pvwHue("#1C8A38");
+	// ONE GREEN. The angle being watched, the play key while it runs, a
+	// ticked angle and the on-air band were three greens a shade apart -
+	// near enough to read as one colour badly reproduced rather than as a
+	// distinction, and the paler two looked washed out beside the band.
+	// Green means REPLAY on this panel and red means the take and the
+	// Program: that is two signals, so there are two hues.
 	const QColor airHue("#199847");
+	const QColor pvwHue = airHue;
 	const QColor warnHue("#E0A020");
-	const QColor actHue("#1b8a44");
+	const QColor actHue = airHue;
 
 	const QColor rec = signalOn(recHue, bg, dark);
 	const QColor pvw = signalOn(pvwHue, bg, dark);
@@ -246,7 +252,12 @@ inline Scheme schemeFor(ThemeChoice choice, const QPalette &pal)
 	// down towards the ink. Measured: 2.9:1 for a checked key's label on the
 	// light theme, under the 3.0 a working panel needs, and the icon drawn on
 	// that key had exactly the same problem.
-	const double wash = dark ? 1.0 : 0.45;
+	// 0.20 on a light panel, not 0.45: the greens were unified onto the band's
+	// hue, which is a shade lighter than the one the lit keys used to carry, and
+	// the mark drawn on a lit key fell to 2.9:1 - under the 3.0 a working panel
+	// needs. Washing the background LESS keeps it nearer the paper, which is
+	// what the dark ink on it has to stand off.
+	const double wash = dark ? 1.0 : 0.20;
 	s.rec = hex(rec);
 	s.recBg = hex(mix(bg, rec, 0.30 * wash));
 	s.pvw = hex(pvw);
@@ -455,7 +466,12 @@ QLabel#mrStatUnit { color: @textMuted@; font-size: 11px; padding-bottom: 3px; }
    The caption band IS the tally: green = the angle being watched, red = the
    angle on air, so the operator reads it off the picture instead of
    correlating it with the angle keys. Signal, therefore not the theme's. */
-QWidget#mrTile { background: #000000; }
+/* NO BACKGROUND OF ITS OWN. A tile keeps the canvas ratio, so whenever the
+   block is not exactly that shape the difference shows as a band above and
+   below the picture - and painted black here that band was BLACK while the
+   same band on A and B, which carry no such rule, was the panel grey: two
+   letterboxes of two colours in one row of monitors. The picture itself is an
+   OBS display and black by nature; the band around it is panel. */
 /* QUIET UNTIL IT HAS SOMETHING TO SAY, and the same band A and B wear. It was
    filled with the theme's accent, so on an eight-camera rig six blue bars
    shouted from the corner of the panel about nothing at all — and the two that

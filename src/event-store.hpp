@@ -47,9 +47,16 @@ struct ReplayEvent {
 	// after that the operator owns it — a highlights reel is not "the order
 	// I happened to press the button in". Persisted with the event.
 	int order = 0;
+	// WHAT THIS EVENT IS, in the operator words. ONE per event and not one
+	// per angle: a goal is a goal on every camera that saw it, and the note
+	// per angle asked the operator the same question once for each lens - so
+	// in practice it was answered on one of them and left blank on the rest,
+	// which is why reading it back always meant "the first angle that has
+	// one". Files written before this carry it on the angles; the loader
+	// takes the first non-empty one and moves it here.
+	std::string note;
 	struct Angle {
 		bool enabled = false;
-		std::string note;
 		// -1 = use the default (the dock's slider). Otherwise a factor:
 		// 0.05..4.0, the range the playback engine accepts (5..400%).
 		double speed = -1.0;
@@ -113,7 +120,6 @@ public:
 	bool remove(int id);
 	bool toggleAngle(int id, int angle1Based);
 	bool setAngle(int id, int angle1Based, bool enabled);
-	bool setAngleNote(int id, int angle1Based, const std::string &note);
 	// Event-level description: stored as the note on every angle so it is
 	// independent of which cameras are enabled and survives toggling them.
 	bool setDescription(int id, const std::string &note);

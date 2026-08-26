@@ -3255,7 +3255,12 @@ void MultiReplayDock::updateMultiviewTally()
 // time it reads the strip.
 KeyBlock *MultiReplayDock::buildAngleMatrix()
 {
-	auto *blk = new KeyBlock(QString(), this);
+	// NAMED, because the three keys in it do not name themselves. Every other
+	// section is told apart by its own keys - a record dot, In and Out, the
+	// transport glyphs, the percentages - but "A|B  A  B" beside an arrow is
+	// a question the operator has to answer from memory: which of the two
+	// bays do the keys drive. The caption is the answer.
+	auto *blk = new KeyBlock(obs_module_text("Dock.ZoneOutput"), this);
 	channelBWidgets_.clear();
 	QWidget *sel = buildChannelRow();
 	QVector<Cell> row;
@@ -4654,11 +4659,11 @@ void MultiReplayDock::rebuildEventColumns()
 			        (int)cams.size() * kColsPerCam);
 	QStringList headers;
 	headers << QStringLiteral("#") << obs_module_text("Dock.In")
-		<< obs_module_text("Dock.Out") << obs_module_text("Dock.Duration");
-	// One heading per camera now, because there is one column per camera:
-	// the check, the speed and the comment are three answers about the same
-	// angle, and they used to be split across two headings the eye had to
-	// pair up again on every row.
+		<< obs_module_text("Dock.Out") << obs_module_text("Dock.Duration")
+		<< obs_module_text("Dock.Comment");
+	// One heading per camera, and the camera cell now holds the two things
+	// that really do differ per lens - does it play, and how fast. WHAT the
+	// event is has a column of its own, once per row.
 	for (size_t i = 0; i < cams.size(); i++)
 		headers << camLabels[(int)i];
 	events_->setHorizontalHeaderLabels(headers);
@@ -7365,7 +7370,7 @@ void MultiReplayDock::refreshEvents()
 		int64_t tout = -1;
 		bool camOn[kEventAngles] = {};
 		double camSpeeds[kEventAngles] = {};
-		std::string camNotes[kEventAngles];
+		std::string note;
 	};
 	std::vector<Row> rows;
 
@@ -7378,7 +7383,8 @@ void MultiReplayDock::refreshEvents()
 		int64_t tout = obs_data_get_int(e, "tOutNs");
 
 		bool camOn[kEventAngles] = {};
-		std::string camNotes[kEventAngles];
+		const char *nt = obs_data_get_string(e, "note");
+		const std::string note = nt ? nt : "";
 		double camSpeeds[kEventAngles];
 		for (int k = 0; k < kEventAngles; k++)
 			camSpeeds[k] = -1.0;
@@ -7392,8 +7398,6 @@ void MultiReplayDock::refreshEvents()
 					camOn[k] = true;
 					anglesStr += QString::number(k + 1) + " ";
 				}
-				const char *nt = obs_data_get_string(ad, "note");
-				camNotes[k] = nt ? nt : "";
 				camSpeeds[k] = obs_data_has_user_value(ad, "speed")
 						       ? obs_data_get_double(ad,
 									     "speed")
@@ -7412,14 +7416,11 @@ void MultiReplayDock::refreshEvents()
 		if (tin != kNoInstant && tout != kNoInstant && tout > tin)
 			rawMarkerIds.push_back(id);
 
-		// search filter (id / per-angle notes / angles)
+		// search filter (id / the event comment / angles)
 		if (!needle.isEmpty()) {
 			QString hay = QString::number(id) + " " + anglesStr;
-			for (int k = 0; k < kEventAngles; k++)
-				if (!camNotes[k].empty())
-					hay += " " + QString::fromStdString(
-							       camNotes[k])
-							       .toLower();
+			if (!note.empty())
+				hay += " " + QString::fromStdString(note).toLower();
 			if (!hay.contains(needle)) {
 				obs_data_release(e);
 				continue;
@@ -7433,8 +7434,8 @@ void MultiReplayDock::refreshEvents()
 		for (int k = 0; k < kEventAngles; k++) {
 			r.camOn[k] = camOn[k];
 			r.camSpeeds[k] = camSpeeds[k];
-			r.camNotes[k] = camNotes[k];
 		}
+		r.note = note;
 		rows.push_back(std::move(r));
 
 		obs_data_release(e);
@@ -7513,6 +7514,18 @@ void MultiReplayDock::refreshEvents()
 			  closed ? relTc(r.tout) : QStringLiteral("--"), mid);
 		setRoCell(row, kColDur, dur, mid);
 
+		// THE COMMENT, once, in a column of its own.
+		{
+			QWidget *nc = events_->cellWidget(row, kColNote);
+			if (!updateNoteCell(nc, r.id, r.note)) {
+				nc = buildNoteCell(r.id, r.note, commentPresets);
+				events_->setCellWidget(row, kColNote, nc);
+				const int want = nc->sizeHint().height() + 2;
+				if (want > tallestCell)
+					tallestCell = want;
+			}
+		}
+
 		// ONE cell per camera, holding the three things an operator says
 		// about that angle: does it play, how fast, and what is it. They
 		// were two columns and it read as two subjects; with four cameras
@@ -7534,14 +7547,13 @@ void MultiReplayDock::refreshEvents()
 			// style sheet.
 			QWidget *cell = events_->cellWidget(row, col);
 			if (updateAngleCell(cell, r.id, cam, r.camOn[cam],
-					    r.camSpeeds[cam], r.camNotes[cam])) {
+					    r.camSpeeds[cam])) {
 				cellReused++;
 			} else {
 				const uint64_t t0 = os_gettime_ns();
 				cell = buildAngleCell(r.id, cam, r.camOn[cam],
-						      r.camSpeeds[cam],
-						      r.camNotes[cam],
-						      commentPresets);
+						      r.camSpeeds[cam]);
+
 				const uint64_t t1 = os_gettime_ns();
 				// Replaces and deletes whatever was there.
 				events_->setCellWidget(row, col, cell);
@@ -7850,21 +7862,124 @@ void MultiReplayDock::centreComboItems(QComboBox *cb)
 //
 // refreshing_ is true throughout, so the handlers below early-out and none of
 // this reaches the store.
+// THE COMMENT, ONCE PER EVENT — the column to the right of the duration.
+//
+// It used to be a third control inside every camera cell, which asked the same
+// question once per lens: a goal is a goal on every camera that saw it, so in
+// practice it was answered on one of them and left blank on the rest, and
+// reading it back always meant "the first angle that has something". One column
+// says it once, and the angle cells are left with the two things that really do
+// differ per lens — does it play, and how fast.
+//
+// PARENTLESS until setCellWidget takes it, for the same reason as an angle cell:
+// the dock's style sheet is resolved for a widget the moment it is given a
+// parent inside the dock, so building it detached polishes the subtree once.
+QWidget *MultiReplayDock::buildNoteCell(int eventId, const std::string &note,
+					const std::vector<std::string> &presets)
+{
+	auto *w = new QWidget;
+	auto *h = new QHBoxLayout(w);
+	h->setContentsMargins(4, 0, 4, 0);
+	h->setSpacing(0);
+
+	auto *cm = new QComboBox(w);
+	cm->setObjectName("mrAngleNote");
+	cm->setEditable(true); // free text stays free text
+	cm->setInsertPolicy(QComboBox::NoInsert);
+	cm->setToolTip(obs_module_text("Dock.CamNoteHint"));
+	cm->addItem(QString()); // "no comment" is the first choice, not a gap
+	for (const auto &p : presets)
+		cm->addItem(QString::fromStdString(p));
+	// ...and everything the operator has typed during this session, on any
+	// event. A comment invented at the first goal is exactly the comment wanted
+	// at the second one, and having to retype it is why the preset list existed
+	// in the first place.
+	for (const QString &s : sessionComments_)
+		if (cm->findText(s) < 0)
+			cm->addItem(s);
+	cm->lineEdit()->setPlaceholderText(kNoNote);
+	cm->lineEdit()->setAlignment(Qt::AlignCenter);
+	centreComboItems(cm);
+	// THE TEXT GOES IN LAST, and the order is the bug.
+	//
+	// A comment is free text: a word the operator invented is not in the item
+	// list, so the combo's current index stays on the empty first entry while
+	// the LINE EDIT carries the word. centreComboItems() then writes an
+	// alignment role onto every item — a model change — and Qt answers a model
+	// change by re-syncing the line edit from the current index, which is the
+	// empty entry. The word was wiped a line after it was set.
+	cm->setCurrentText(QString::fromStdString(note));
+	h->addWidget(cm, 1);
+
+	w->setProperty("mrEventId", eventId);
+	// A cell records the vocabulary it was built with: a word typed on another
+	// event makes this one stale, because its list would be missing it.
+	w->setProperty("mrVocab", (qulonglong)commentVocabVersion_);
+
+	// A TAG REACHES THE STORE THE MOMENT IT IS ON SCREEN, whichever way it got
+	// there. It used to be written from activated() and editingFinished(), and
+	// a tag picked out of the list could be lost between them: activated is the
+	// popup's signal, editingFinished is the line edit's, and the paths a
+	// selection takes through an editable combo do not always raise both.
+	connect(cm, &QComboBox::currentTextChanged, this,
+		[this, eventId](const QString &text) {
+			if (refreshing_)
+				return;
+			const std::string want = text.trimmed().toStdString();
+			auto &store = EventStore::instance();
+			if (store.description(eventId) == want)
+				return;
+			store.setDescription(eventId, want);
+		});
+	// Finishing the edit is what promotes a word to this session's list: it is
+	// the point at which the operator has decided on it. Doing it per keystroke
+	// would offer "G", "Go" and "Gol" on every other row.
+	connect(cm->lineEdit(), &QLineEdit::editingFinished, this,
+		[this, cm]() {
+			if (refreshing_)
+				return;
+			rememberComment(cm->currentText().trimmed());
+		});
+	// ...and a tag picked out of the list is just as much a decision.
+	connect(cm, QOverload<int>::of(&QComboBox::activated), this,
+		[this, cm](int) {
+			if (refreshing_)
+				return;
+			rememberComment(cm->currentText().trimmed());
+		});
+	return w;
+}
+
+// The fast path for a comment cell that already belongs to this event.
+bool MultiReplayDock::updateNoteCell(QWidget *cell, int eventId,
+				     const std::string &note)
+{
+	if (!cell || cell->property("mrEventId").toInt() != eventId ||
+	    cell->property("mrVocab").toULongLong() != commentVocabVersion_)
+		return false;
+	auto *cm = cell->findChild<QComboBox *>(QStringLiteral("mrAngleNote"));
+	if (!cm)
+		return false;
+	const QString noteQ = QString::fromStdString(note);
+	if (cm->currentText() != noteQ)
+		cm->setCurrentText(noteQ);
+	return true;
+}
+
 bool MultiReplayDock::updateAngleCell(QWidget *cell, int eventId, int cam0,
-				      bool on, double speed,
-				      const std::string &note)
+				      bool on, double speed)
 {
 	if (!cell)
 		return false;
+	// No vocabulary version here any more: an angle cell holds no words, so
+	// a new tag cannot make it stale. That belongs to the comment cell.
 	if (cell->property("mrEventId").toInt() != eventId ||
-	    cell->property("mrCam").toInt() != cam0 ||
-	    cell->property("mrVocab").toULongLong() != commentVocabVersion_)
+	    cell->property("mrCam").toInt() != cam0)
 		return false;
 
 	auto *box = cell->findChild<QCheckBox *>();
 	auto *sp = cell->findChild<QComboBox *>(QStringLiteral("mrAngleSpeed"));
-	auto *cm = cell->findChild<QComboBox *>(QStringLiteral("mrAngleNote"));
-	if (!box || !sp || !cm)
+	if (!box || !sp)
 		return false;
 
 	if (box->isChecked() != on)
@@ -7886,9 +8001,6 @@ bool MultiReplayDock::updateAngleCell(QWidget *cell, int eventId, int cam0,
 		repolish(sp);
 	}
 
-	const QString noteQ = QString::fromStdString(note);
-	if (cm->currentText() != noteQ)
-		cm->setCurrentText(noteQ);
 	return true;
 }
 
@@ -7904,10 +8016,12 @@ bool MultiReplayDock::updateAngleCell(QWidget *cell, int eventId, int cam0,
 // forty. The list is the same for every cell on the panel, so it is read once
 // and handed down.
 QWidget *MultiReplayDock::buildAngleCell(int eventId, int cam0, bool on,
-					 double speed, const std::string &note,
-					 const std::vector<std::string> &presets)
+					 double speed)
 {
-	// [☑] [speed ▾] [comment ▾] — one widget, one angle, three answers.
+	// [☑] [speed ▾] - one widget, one angle, two answers: does it play,
+	// and how fast. WHAT it is moved out to a column of its own (kColNote):
+	// a goal is a goal on every lens that saw it, and asking once per camera
+	// meant it was answered on one of them and blank on the rest.
 	// Widgets rather than a delegate on purpose: the check has to toggle on
 	// the FIRST click and the two menus have to open on the first click too.
 	// With a delegate each of those is a click to select, then a click to
@@ -7974,40 +8088,6 @@ QWidget *MultiReplayDock::buildAngleCell(int eventId, int cam0, bool on,
 	centreComboItems(sp);
 	h->addWidget(sp);
 
-	auto *cm = new QComboBox(w);
-	cm->setObjectName("mrAngleNote");
-	cm->setEditable(true); // free text stays free text
-	cm->setInsertPolicy(QComboBox::NoInsert);
-	cm->setToolTip(obs_module_text("Dock.CamNoteHint"));
-	cm->addItem(QString()); // "no comment" is the first choice, not a gap
-	for (const auto &p : presets)
-		cm->addItem(QString::fromStdString(p));
-	// ...and everything the operator has typed during this session, on any
-	// event. A comment invented at the first goal is exactly the comment wanted
-	// at the second one, and having to retype it is why the preset list existed
-	// in the first place.
-	for (const QString &s : sessionComments_)
-		if (cm->findText(s) < 0)
-			cm->addItem(s);
-	cm->lineEdit()->setPlaceholderText(kNoNote);
-	cm->lineEdit()->setAlignment(Qt::AlignCenter);
-	centreComboItems(cm);
-	// THE TEXT GOES IN LAST, and the order is the bug.
-	//
-	// A comment is free text: a word the operator invented is not in the item
-	// list, so the combo's current index stays on the empty first entry while
-	// the LINE EDIT carries the word. centreComboItems() then writes an
-	// alignment role onto every item — a model change — and Qt answers a model
-	// change by re-syncing the line edit from the current index, which is the
-	// empty entry. The word was wiped a line after it was set.
-	//
-	// Invisible until a rebuild: the cell is only rebuilt when its event or
-	// angle changes, so it showed up as "clear a search and the comments come
-	// back blank" while events.json held them all along. The speed combo never
-	// suffered because its value IS an item, so re-syncing writes it back
-	// unchanged. Set after the model is finished with, it stays.
-	cm->setCurrentText(QString::fromStdString(note));
-	h->addWidget(cm, 1);
 
 	// WHAT THIS CELL IS ABOUT, so refreshEvents can tell whether it may be
 	// updated in place instead of rebuilt. The connections below capture the
@@ -8017,7 +8097,6 @@ QWidget *MultiReplayDock::buildAngleCell(int eventId, int cam0, bool on,
 	// reason: a reused cell keeps the comment list it was built with.
 	w->setProperty("mrEventId", eventId);
 	w->setProperty("mrCam", cam0);
-	w->setProperty("mrVocab", (qulonglong)commentVocabVersion_);
 
 	const int a1 = cam0 + 1; // EventStore is 1-based
 
@@ -8033,51 +8112,6 @@ QWidget *MultiReplayDock::buildAngleCell(int eventId, int cam0, bool on,
 			const int v = sp->currentData().toInt();
 			EventStore::instance().setAngleSpeed(
 				eventId, a1, v > 0 ? v / 100.0 : -1.0);
-		});
-	// A TAG REACHES THE STORE THE MOMENT IT IS ON SCREEN, whichever way it got
-	// there. It used to be written from activated() and editingFinished(), and
-	// a tag picked out of the list could be lost between them: activated is the
-	// popup's signal, editingFinished is the line edit's, and the paths a
-	// selection takes through an editable combo do not always raise both — a
-	// pick followed by a click straight onto another row left the cell showing
-	// the word and the store holding nothing.
-	//
-	// currentTextChanged is the one signal that is raised by all of them
-	// (picked, typed, completed, cleared), so there is one way in instead of
-	// two that have to cover each other. It also fires per keystroke, and that
-	// is affordable precisely BECAUSE the table refuses to rebuild while a line
-	// edit inside it has focus (see refreshEvents): the version bump is noticed
-	// only after the operator has finished. The comparison keeps even that
-	// honest — re-writing the same text would bump the version for nothing.
-	connect(cm, &QComboBox::currentTextChanged, this,
-		[this, eventId, a1](const QString &text) {
-			if (refreshing_)
-				return;
-			const std::string want = text.trimmed().toStdString();
-			auto &store = EventStore::instance();
-			ReplayEvent ev;
-			if (store.get(eventId, ev) &&
-			    ev.angles[a1 - 1].note == want)
-				return;
-			store.setAngleNote(eventId, a1, want);
-		});
-	// Finishing the edit is what promotes a word to this session's list: it is
-	// the point at which the operator has decided on it. Doing it per keystroke
-	// would offer "G", "Go" and "Gol" on every other row.
-	connect(cm->lineEdit(), &QLineEdit::editingFinished, this,
-		[this, cm]() {
-			if (refreshing_)
-				return;
-			rememberComment(cm->currentText().trimmed());
-		});
-	// ...and a tag picked out of the list is just as much a decision, so it
-	// joins the session list too. It never used to: only typed words did, so
-	// choosing a preset on one event offered nothing on the next.
-	connect(cm, QOverload<int>::of(&QComboBox::activated), this,
-		[this, cm](int) {
-			if (refreshing_)
-				return;
-			rememberComment(cm->currentText().trimmed());
 		});
 	return w;
 }

@@ -295,8 +295,7 @@ bool EventStore::setDescription(int id, const std::string &note)
 	std::lock_guard<std::mutex> lock(mutex_);
 	for (auto &ev : events_) {
 		if (ev.id == id) {
-			for (auto &a : ev.angles)
-				a.note = note;
+			ev.note = note;
 			save();
 			return true;
 		}
@@ -307,30 +306,10 @@ bool EventStore::setDescription(int id, const std::string &note)
 std::string EventStore::description(int id) const
 {
 	std::lock_guard<std::mutex> lock(mutex_);
-	for (const auto &ev : events_) {
-		if (ev.id == id) {
-			for (const auto &a : ev.angles)
-				if (!a.note.empty())
-					return a.note;
-			return {};
-		}
-	}
+	for (const auto &ev : events_)
+		if (ev.id == id)
+			return ev.note;
 	return {};
-}
-
-bool EventStore::setAngleNote(int id, int angle1Based, const std::string &note)
-{
-	std::lock_guard<std::mutex> lock(mutex_);
-	if (angle1Based < 1 || angle1Based > kEventAngles)
-		return false;
-	for (auto &ev : events_) {
-		if (ev.id == id) {
-			ev.angles[angle1Based - 1].note = note;
-			save();
-			return true;
-		}
-	}
-	return false;
 }
 
 bool EventStore::setAngleSpeed(int id, int angle1Based, double speed)
@@ -475,11 +454,11 @@ std::string EventStore::listJson(int list) const
 		obs_data_set_int(e, "tOutNs", ev.tOutNs);
 		obs_data_set_int(e, "order", ev.order);
 		obs_data_set_string(e, "createdMode", ev.createdMode.c_str());
+		obs_data_set_string(e, "note", ev.note.c_str());
 		obs_data_array_t *angles = obs_data_array_create();
 		for (const auto &a : ev.angles) {
 			obs_data_t *ad = obs_data_create();
 			obs_data_set_bool(ad, "enabled", a.enabled);
-			obs_data_set_string(ad, "note", a.note.c_str());
 			obs_data_set_double(ad, "speed", a.speed);
 			obs_data_array_push_back(angles, ad);
 			obs_data_release(ad);
@@ -516,14 +495,7 @@ std::string EventStore::chaptersText(int list, int64_t originNs) const
 			snprintf(ts, sizeof(ts), "%d:%02d:%02d", h, m, s);
 		else
 			snprintf(ts, sizeof(ts), "%d:%02d", m, s);
-		// First non-empty angle note (lowest index = highest priority).
-		std::string desc;
-		for (const auto &a : ev.angles) {
-			if (!a.note.empty()) {
-				desc = a.note;
-				break;
-			}
-		}
+		std::string desc = ev.note;
 		if (desc.empty())
 			desc = "Clip " + std::to_string(ev.id);
 		out += ts;
@@ -582,11 +554,11 @@ void EventStore::save() const
 		// the per-angle ones below and the operator's slider. An old file
 		// that still carries one is simply ignored on load.
 		obs_data_set_string(e, "createdMode", ev.createdMode.c_str());
+		obs_data_set_string(e, "note", ev.note.c_str());
 		obs_data_array_t *angles = obs_data_array_create();
 		for (const auto &a : ev.angles) {
 			obs_data_t *ad = obs_data_create();
 			obs_data_set_bool(ad, "enabled", a.enabled);
-			obs_data_set_string(ad, "note", a.note.c_str());
 			obs_data_set_double(ad, "speed", a.speed);
 			obs_data_array_push_back(angles, ad);
 			obs_data_release(ad);
@@ -768,6 +740,7 @@ void EventStore::load()
 			// be worse than dropping it.
 			ev.createdMode =
 				obs_data_get_string(e, "createdMode");
+			ev.note = obs_data_get_string(e, "note");
 			obs_data_array_t *angles =
 				obs_data_get_array(e, "angles");
 			if (angles) {
@@ -779,9 +752,14 @@ void EventStore::load()
 					ev.angles[j].enabled =
 						obs_data_get_bool(ad,
 								  "enabled");
-					ev.angles[j].note =
-						obs_data_get_string(ad,
-								    "note");
+					// MIGRATION. Before the note moved to the
+					// event it was written on every angle and
+					// read back as "the first one that has
+					// something" - so that is what an older
+					// file means, and it is taken once.
+					if (ev.note.empty())
+						ev.note = obs_data_get_string(
+							ad, "note");
 					ev.angles[j].speed =
 						obs_data_has_user_value(ad,
 									"speed")
