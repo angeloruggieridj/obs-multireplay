@@ -8089,14 +8089,12 @@ QWidget *MultiReplayDock::buildAngleCell(int eventId, int cam0, bool on,
 	box->setToolTip(obs_module_text("Dock.AngleOnHint"));
 	h->addWidget(box);
 
-	// THE SPEED IS A CHIP, not a drop-down.
-	//
-	// It was an editable-but-read-only QComboBox, which is three pieces of
-	// chrome around one short value: a frame, an arrow, and a line edit that
-	// had to be talked out of swallowing the click that opens the list. It also
-	// set the row height for the whole table. A chip is what the speed presets
-	// in the control strip already are — a small key that READS as a value —
-	// and it keeps the thing that matters: one click opens the list.
+	// THE SPEED IS A LABEL - text, like the id and the duration beside it -
+	// and a click on it opens the list. It has been a drop-down and then a
+	// chip, and the operator asked for the label back both times: a frame
+	// round a value says "this is a control", which is true of every cell in
+	// this table and so worth saying on none of them, and what it costs is
+	// the row height for the whole list.
 	//
 	// FIXED WIDTH so the column does not dance as "--" becomes "100%": eight
 	// rows of angles are scanned down, and a value that moves sideways between

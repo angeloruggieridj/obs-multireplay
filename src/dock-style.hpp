@@ -332,6 +332,25 @@ inline const char *const kDockStyleTemplate =
 R"QSS(
 /* ── base ─────────────────────────────────────────────── */
 #MultiReplayDock { background: @panel@; }
+/* EVERY SURFACE THE PANEL OWNS, and BY ID so OBS's own theme cannot out-rank
+   it. These were left to the application palette, which is invisible while the
+   panel and OBS are both dark and is a set of black patches the moment they are
+   not: a dialog, a scroll area's viewport, a menu, a group box. */
+#MultiReplayDock QDialog, #MultiReplayDock QStackedWidget,
+#MultiReplayDock QScrollArea, #MultiReplayDock QAbstractScrollArea {
+	background: @panel@; color: @text@;
+}
+#MultiReplayDock QMenu {
+	background: @raise1@; color: @text@;
+	border: 1px solid @border@;
+}
+#MultiReplayDock QMenu::item:selected {
+	background: @rowSel@; color: @rowSelText@;
+}
+#MultiReplayDock QGroupBox { color: @text@; }
+#MultiReplayDock QToolTip {
+	background: @raise2@; color: @text@; border: 1px solid @border@;
+}
 #MultiReplayDock QLabel { color: @text@; background: transparent; }
 
 /* labels */
@@ -812,27 +831,29 @@ QTableWidget#mrEvents QComboBox:hover, QTableWidget#mrEvents QLineEdit:hover {
 QTableWidget#mrEvents QComboBox:focus, QTableWidget#mrEvents QLineEdit:focus {
 	background: @raise1@; border-color: @accent@;
 }
-/* THE SPEED CHIP. Small, fixed width, and it READS AS A VALUE rather than as
-   a field: the speed presets in the control strip are the same shape, so an
-   operator who knows what 50% looks like there knows it here. Grey when the
-   slider decides, the panel's own text when the angle overrides it - the
-   override used to be amber, which read as a warning about what is only a
-   choice, and on a row of eight cameras it was the loudest thing in the list. */
+/* THE SPEED IS A LABEL, which is what it was before it became a drop-down and
+   then a chip - and the operator has now asked for it back twice over.
+
+   A value in a list of values should be drawn the way the id, the in-point and
+   the duration beside it are drawn: as text. A frame around it says "this is a
+   control", which is true of every cell in this table and therefore worth
+   saying on none of them; what it costs is the row height for the whole list.
+
+   What is NOT given up is the gesture: one click on the text opens the list.
+   Grey where the slider decides, the panel's ordinary text where the angle
+   overrides it. The only chrome is a tint under the pointer, which says
+   "this one" at the moment the question is being asked. */
 QTableWidget#mrEvents QPushButton#mrAngleSpeed {
-	background: @raise1@; color: @text@;
-	border: 1px solid @border@; border-radius: 3px;
-	padding: 0px 2px; min-height: @cellInput@px;
-	font-size: @cellFont@px; font-weight: 700;
+	background: transparent; border: 1px solid transparent;
+	color: @text@; padding: 0px 2px;
+	min-height: @cellInput@px; font-size: @cellFont@px;
+	text-align: center;
 }
 QTableWidget#mrEvents QPushButton#mrAngleSpeed:hover {
-	border-color: @borderHi@; background: @raise2@;
+	background: @raise1@; border-color: @borderHi@;
 }
 QTableWidget#mrEvents QPushButton#mrAngleSpeed[mrNoOverride="true"] {
-	background: transparent; color: @textDim@;
-	border-color: transparent; font-weight: 400;
-}
-QTableWidget#mrEvents QPushButton#mrAngleSpeed[mrNoOverride="true"]:hover {
-	border-color: @borderHi@;
+	color: @textDim@;
 }
 
 QTableWidget#mrEvents QComboBox QAbstractItemView::item {
@@ -892,9 +913,14 @@ QTableWidget#mrEvents::indicator:checked {
    the "angle I am watching" cue is a ▶ in the header TEXT (see
    updateCamHeaderHighlight) and not a green fill: a colour we cannot guarantee
    is worse than a glyph we can. */
-QHeaderView::section {
-	color: @text@; padding: 3px 5px;
+#MultiReplayDock QHeaderView::section {
+	background: @raise1@; color: @text@; padding: 3px 5px;
+	border: 0; border-bottom: 1px solid @border@;
 	font-size: 9px; font-weight: 700; letter-spacing: 0.6px;
+}
+#MultiReplayDock QHeaderView { background: @panel@; }
+#MultiReplayDock QTableCornerButton::section {
+	background: @raise1@; border: 0;
 }
 
 /* ── scrollbars ──────────────────────────────────────────── */
