@@ -1036,6 +1036,8 @@ private:
 	// How many columns the camera tiles get. Two were cabled in, which is
 	// right beside a big A output and wrong in a column.
 	int tileColumns(int tileCount) const;
+	// How tall the monitoring block may be. Never read off the block itself.
+	int monitorRoomH() const;
 
 	// --- THE PICTURES GET THE HEIGHT THEIR ASPECT ASKS FOR -------------------
 	// A preview box was given whatever height the splitter had spare, and

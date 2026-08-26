@@ -540,7 +540,14 @@ QPushButton#mrStatKey {
 	background: transparent; color: @textMuted@;
 	border: 1px solid transparent; border-radius: 3px;
 	font-size: 10px; font-weight: 700; letter-spacing: 0.4px;
-	min-height: 14px; padding: 1px 7px;
+	/* NO VERTICAL PADDING, and two pixels of headroom is the point. The key
+	   is pinned to 18 px by the layout; with 1 px of padding top and bottom
+	   plus a 1 px border the style asks for exactly 18 as well, and EXACTLY
+	   is not a margin - any rounding, at any display scale, puts the frame a
+	   pixel past the widget and the bottom border outside it. Invisible while
+	   the border is transparent; lit, it is a box somebody forgot to close,
+	   which is why of three identical keys only "in output" was reported. */
+	min-height: 0px; padding: 0px 7px;
 }
 QPushButton#mrStatKey:hover { color: @text@; border-color: @borderHi@; }
 QPushButton#mrStatKey:checked {

@@ -1065,14 +1065,34 @@ private:
 	static int aspectHeight(int w) { return std::max(1, w * 9 / 16); }
 
 	// How many columns the camera block wears in the arrangement it is in.
-	int tileColsFor(int paneW, int bays, int paneH) const
+	int tileColsFor(int paneW, int bays) const
 	{
 		if (mode_ == PanelMode::Tall)
 			return std::clamp(paneW / kTileMinWidth, 1,
 					  std::max(1, g_cams));
-		const int roomH = mode_ == PanelMode::Short ? std::max(40, paneH)
-							    : 0;
-		return tileBlockFor(paneW, bays, g_cams, 3, roomH).cols;
+		return std::max(1, tileBlockFor(paneW, bays, g_cams, 3, roomH()).cols);
+	}
+
+	// HOW TALL THE MONITORING BLOCK MAY BE, and it must not be read off the
+	// block itself: that height is DERIVED from the arrangement this number
+	// chooses, so feeding it back in makes the first pass decide from whatever
+	// the widget happened to be mid-settle - measured, 100 px, which picked an
+	// arrangement of 78 px stamps. What the splitter is willing to give depends
+	// only on the panel and a constant, so it is the same on every pass.
+	int roomH() const
+	{
+		if (bodyChosen() && leftCol_)
+			return std::max(40, leftCol_->height() - controlsHeight());
+		const int total = bodySplit_ ? bodySplit_->height() : height();
+		int room = total - kListFloor - controlsHeight();
+		// ...AND THE PICTURES MAY NOT HAVE MORE THAN HALF THE PANEL. Past
+		// that the list stops being a list. The cap belongs HERE and not at
+		// the point the divider is set, because the tile arithmetic asks the
+		// same question and the two answers have to be one: they were two,
+		// and the cameras were sized for 674 px of block that then got 517.
+		if (mode_ == PanelMode::Wide)
+			room = std::min(room, height() / 2);
+		return std::max(40, room);
 	}
 
 	int controlsHeight() const
@@ -1097,8 +1117,7 @@ private:
 		const int bays = g_haveB ? 2 : 1;
 		const int gap = monitorSplit_->handleWidth();
 
-		const int cols = tileColsFor(paneW, bays, leftCol_->height() -
-							       controlsHeight());
+		const int cols = tileColsFor(paneW, bays);
 		relayTiles(cols);
 		const int rows = (std::max(1, g_cams) + cols - 1) / cols;
 
@@ -1128,23 +1147,25 @@ private:
 			if (!monitorChosen())
 				monitorSplit_->setSizes({bayH, stripH});
 		} else {
-			const TileBlock tb = tileBlockFor(
-				paneW, bays, g_cams, 3,
-				mode_ == PanelMode::Short
-					? std::max(40, leftCol_->height() -
-								 controlsHeight())
-					: 0);
+			// THE HEIGHT THE BLOCK WILL ACTUALLY HAVE, in every wide
+			// arrangement and not only the short one. Left at 0 the
+			// calculation believes the bays can be as tall as their
+			// width allows - 840 px on a maximised panel - and picks
+			// the arrangement for a block that will really be 517: A
+			// comes out height-bound and 600 px narrower than the
+			// space it was given, which is the black band beside it.
+			const TileBlock tb =
+				tileBlockFor(paneW, bays, g_cams, 3, roomH());
 			tilesW = tb.blockW;
 			tileCap = tb.tileW;
 			baysW = std::max(60, paneW - tilesW - gap);
 			const int bayH =
 				aspectHeight((baysW - 3 * (bays - 1)) / bays) +
 				kTagH;
-			want = std::max(bayH, tb.blockH);
-			if (mode_ == PanelMode::Wide)
-				// The pictures may not have more than half the
-				// panel. Past that the list stops being a list.
-				want = std::min(want, height() / 2);
+			// roomH() is the ONE authority on how tall this block may
+			// be, and the tile arithmetic above was given the same
+			// number.
+			want = std::min(std::max(bayH, tb.blockH), roomH());
 			if (!monitorChosen())
 				monitorSplit_->setSizes({baysW, tilesW});
 		}

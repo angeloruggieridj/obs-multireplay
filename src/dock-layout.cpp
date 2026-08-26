@@ -363,14 +363,32 @@ TileBlock tileBlockFor(int paneW, int bays, int n, int gap, int maxH)
 		return best;
 	const auto aspect = [](int w) { return std::max(1, w * 9 / 16); };
 	const int tagH = AspectBox::kTagH;
-	const int target = (int)(paneW * kTileShare);
 	// Proportional, not a constant: see kTileMaxShare.
 	const int ceiling =
 		std::max(kTileMinWidth, (int)(paneW * kTileMaxShare));
-	const int aw0 = std::max(40, (paneW - target - gap * bays) / bays);
+	// A first guess at the bays' width, only so their height can be had.
+	const int aw0 = std::max(
+		40, (paneW - (int)(paneW * kTileShare) - gap * bays) / bays);
 	int bayH = aspect(aw0);
 	if (maxH > 0)
 		bayH = std::min(bayH, maxH);
+
+	// THE TARGET IS WHAT IS LEFT AFTER THE BAYS, not a flat share of the pane.
+	//
+	// It was `paneW * 22%`, and on a maximised panel that is the whole of "the
+	// cameras are small and there is a lot of empty space": the bays are
+	// limited by the HEIGHT the block was given, so at 1920x517 a 16:9 A comes
+	// out 898 px wide and leaves 1017 - while a 22% target asked for 422 and
+	// got a narrow stacked column with nearly 600 px of black beside it.
+	//
+	// Aiming at the leftover, the same two cameras go side by side and the
+	// block fills the width. What cannot be filled is the height: three 16:9
+	// pictures do not tile a 3.7:1 rectangle, and the arrangement that wastes
+	// least is the one that is chosen rather than the one that was written
+	// down.
+	const int bayW = std::max(40, (bayH - AspectBox::kTagH) * 16 / 9);
+	const int target = std::max(kTileMinWidth,
+				    paneW - bays * bayW - gap * bays);
 
 	int bestScore = INT_MAX;
 	for (int cols = 1; cols <= n; cols++) {
@@ -381,7 +399,12 @@ TileBlock tileBlockFor(int paneW, int bays, int n, int gap, int maxH)
 		if (cols * rows != n)
 			continue;
 		int th = (bayH - (rows - 1) * kTileGap) / rows - tagH;
-		int tw = std::clamp(th * 16 / 9, kTileMinWidth, ceiling);
+		// ...AND NO WIDER THAN ITS SHARE OF THE TARGET, or an arrangement
+		// that fills the height overflows the pane: two cameras as tall as
+		// A are two more A's, and the three of them do not fit.
+		const int share = (target - (cols - 1) * kTileGap) / cols;
+		int tw = std::clamp(th * 16 / 9, kTileMinWidth,
+				    std::min(ceiling, std::max(kTileMinWidth, share)));
 		th = aspect(tw);
 		const int bw = cols * tw + (cols - 1) * kTileGap;
 		const int bh = rows * (th + tagH) + (rows - 1) * kTileGap;
@@ -402,7 +425,9 @@ TileBlock tileBlockFor(int paneW, int bays, int n, int gap, int maxH)
 			std::max(1, (int)std::ceil(std::sqrt((double)n)));
 		const int rows = (n + cols - 1) / cols;
 		int th = std::max(1, (bayH - (rows - 1) * kTileGap) / rows - tagH);
-		int tw = std::clamp(th * 16 / 9, kTileMinWidth, ceiling);
+		const int share = (target - (cols - 1) * kTileGap) / cols;
+		int tw = std::clamp(th * 16 / 9, kTileMinWidth,
+				    std::min(ceiling, std::max(kTileMinWidth, share)));
 		th = aspect(tw);
 		best = {cols, tw, th, cols * tw + (cols - 1) * kTileGap,
 			rows * (th + tagH) + (rows - 1) * kTileGap};
@@ -952,19 +977,26 @@ int ControlStrip::layoutLanes(int width, bool apply) const
 	if (need > width)
 		return -1; // no room to tell the lanes apart; pack instead
 
-	// CENTRED IN THE GAP BETWEEN ITS NEIGHBOURS, not in the panel.
+	// THE LANES SPREAD, BUT ONLY SO FAR, AND THEN THE BLOCK IS CENTRED.
 	//
-	// It was centred in the panel, and that is right only while the two outer
-	// lanes are the same width. They are not: marks and record are wider than
-	// the exports and the speed dial, so the group came out sitting 20 px off
-	// the middle of the cell the two hairlines draw around it - and being off
-	// centre inside a frame you can SEE reads as a mistake, where being off
-	// the panel middle by the same amount reads as nothing at all.
-	const int gapL = LW + (LW ? kZoneGap : 0);
-	const int gapR = width - RW - (RW ? kZoneGap : 0);
-	int centreX = gapL + std::max(0, (gapR - gapL - CW) / 2);
-	centreX = std::max(centreX, gapL);
-	centreX = std::min(centreX, gapR - CW);
+	// Justification - marks at one end, the speed dial at the other - is the
+	// reference panel's shape and it is right up to a point. Past it the
+	// leftover was still going into the gaps, so a maximised panel drew three
+	// cramped groups with 400-500 px of nothing between them.
+	//
+	// So the gap between two lanes has a ceiling (kLaneGapMax) and whatever is
+	// left over goes OUTSIDE the block, which is then centred: the keys keep
+	// their own size, the middle of the strip stays the middle of the panel,
+	// and the centre lane is centred in the cell its two hairlines draw rather
+	// than in a panel whose outer lanes are different widths.
+	const int lanesW = LW + CW + RW;
+	const int spare = std::max(0, width - lanesW);
+	const int laneGap = std::min(spare / 2, kLaneGapMax);
+	const int blockW = lanesW + 2 * laneGap;
+	const int x0 = std::max(0, (width - blockW) / 2);
+	const int leftX = x0;
+	const int centreX = x0 + LW + laneGap;
+	const int rightX = centreX + CW + laneGap;
 
 	// A LANE USED ON ONE LINE ONLY GETS THE HEIGHT OF ALL OF THEM.
 	//
@@ -997,7 +1029,7 @@ int ControlStrip::layoutLanes(int width, bool apply) const
 	for (const Line &ln : lines) {
 		if (apply) {
 			int x[3];
-			x[(int)Lane::Left] = 0;
+			x[(int)Lane::Left] = leftX;
 			// THE CENTRE LANE IS CENTRED IN ITSELF TOO. Its width is
 			// the widest centre group across every line — the
 			// transport — so a narrower one on another line (the bay
@@ -1013,16 +1045,17 @@ int ControlStrip::layoutLanes(int width, bool apply) const
 			// different keys — which is what puts the speed dial
 			// under the exports instead of near them.
 			x[(int)Lane::Right] =
-				width - ln.laneW[(int)Lane::Right];
+				rightX + RW - ln.laneW[(int)Lane::Right];
 			// THE RULES SIT ON THE LANE BOUNDARIES, so the one between
 			// marks and angles is at the same x as the one between
 			// REC and the transport on the row below. Derived from
 			// the block edges instead they staggered by 80 px, which
 			// reads as a mistake rather than as a division.
 			if (ln.laneW[(int)Lane::Centre] > 0 && LW > 0)
-				addSeparator((LW + centreX) / 2, y, ln.height);
+				addSeparator((leftX + LW + centreX) / 2, y,
+					     ln.height);
 			if (ln.laneW[(int)Lane::Right] > 0 && CW > 0)
-				addSeparator((centreX + CW + width - RW) / 2, y,
+				addSeparator((centreX + CW + rightX) / 2, y,
 					     ln.height);
 			for (int k = ln.first; k < ln.last; k++) {
 				const Entry &e = blocks_[k];

@@ -1872,6 +1872,31 @@ void MultiReplayDock::applyMonitorsVisible(bool on)
 // window a re-parent would destroy — see the note in buildPreview().
 // ---------------------------------------------------------------------------
 
+// HOW TALL THE MONITORING BLOCK MAY BE, and it must not be read off the block
+// itself: that height is DERIVED from the arrangement this number chooses, so
+// feeding it back in makes a pass decide from whatever the widget happened to be
+// mid-settle - measured in the mockup, 100 px, which picked an arrangement of
+// 78 px stamps. What the splitter is willing to give depends only on the panel
+// and a constant, so it is the same on every pass.
+//
+// Once the OPERATOR has moved the divider it is his answer, and that is stable
+// for the same reason: it stops being derived from anything.
+int MultiReplayDock::monitorRoomH() const
+{
+	if (splitChosen() && previewPane_)
+		return std::max(40, previewPane_->height());
+	const int total = splitter_ ? splitter_->height() : height();
+	int room = total - kListPaneFloor;
+	// ...AND THE PICTURES MAY NOT HAVE MORE THAN HALF THE PANEL. Past that the
+	// list stops being a list. The cap belongs HERE, with the rest of the
+	// answer, because the tile arithmetic asks the same question and the two
+	// answers have to be the same one - they were two, and the cameras came out
+	// sized for a block a third taller than the one they were given.
+	if (panelMode_ == PanelMode::Wide)
+		room = std::min(room, height() / 2);
+	return std::max(40, room);
+}
+
 int MultiReplayDock::tileColumns(int tileCount) const
 {
 	const int n = std::max(1, tileCount);
@@ -1887,9 +1912,7 @@ int MultiReplayDock::tileColumns(int tileCount) const
 							     : width());
 		const Config cfg = ReplayCore::instance().getConfig();
 		const int bays = cfg.enableChannelB ? 2 : 1;
-		const int roomH = panelMode_ == PanelMode::Short && previewPane_
-					  ? std::max(40, previewPane_->height())
-					  : 0;
+		const int roomH = monitorRoomH();
 		return std::max(1, tileBlockFor(paneW, bays, n, 5, roomH).cols);
 	}
 	// In a COLUMN the same two columns build a block as tall as the picture
@@ -2103,11 +2126,15 @@ void MultiReplayDock::applyPreviewAspect()
 		// something else entirely.
 		int tilesW = 0, blockH = 0;
 		if (haveTiles) {
-			const TileBlock tb =
-				tileBlockFor(paneW, bays, visibleTiles, gap,
-					     panelMode_ == PanelMode::Short
-						     ? std::max(40, previewPane_->height())
-						     : 0);
+			// THE HEIGHT THE BLOCK WILL ACTUALLY HAVE, in every wide
+			// arrangement and not only the short one. Left unbounded the
+			// calculation believes the bays can be as tall as their width
+			// allows and picks the arrangement for a block that will
+			// really be much shorter: A comes out height-bound and far
+			// narrower than the space it was given, and the difference is
+			// the black band beside it.
+			const TileBlock tb = tileBlockFor(paneW, bays, visibleTiles,
+							  gap, monitorRoomH());
 			tilesW = tb.blockW;
 			blockH = tb.blockH;
 			tileCap_ = tb.tileW;
@@ -2130,7 +2157,9 @@ void MultiReplayDock::applyPreviewAspect()
 		const int baysW = std::max(60, paneW - tilesW - (haveTiles ? gap : 0));
 		const int bayH =
 			aspectHeight((baysW - 3 * (bays - 1)) / bays) + tagH;
-		want = std::max(bayH, blockH);
+		// monitorRoomH() is the ONE authority on how tall this block may be,
+		// and the tile arithmetic above was given the same number.
+		want = std::min(std::max(bayH, blockH), monitorRoomH());
 		if (!monitorSplitChosen() && haveTiles)
 			monitorSplit_->setSizes({baysW, tilesW});
 	}

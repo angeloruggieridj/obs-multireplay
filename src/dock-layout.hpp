@@ -143,6 +143,20 @@ inline constexpr int kShortMaxHeight = 540;
 // OBSQTDisplay widgets — which on Windows means re-allocating a D3D swap chain
 // on the graphics thread, several times a second, while a take is recording.
 inline constexpr int kModeHysteresis = 40;
+// HOW FAR APART THE THREE LANES MAY BE PUSHED.
+//
+// The wide arrangement justifies: marks at one end, the speed dial at the
+// other, the transport in the middle. That is the reference panel's own shape
+// and it reads well at the width it was designed for - but the leftover was
+// going into the gaps WITHOUT LIMIT, so on a maximised 1920 px panel the three
+// groups ended up with 400-500 px of nothing between them. Cramped keys with
+// acres of empty panel around them is not justification, it is a strip that
+// gave up.
+//
+// Past this the block stops spreading and is CENTRED instead, so the keys keep
+// their own size (a key that changes size with the window is a key the hand has
+// to find again) and the panel keeps its middle.
+inline constexpr int kLaneGapMax = 140;
 
 // Which arrangement a panel of this size wants. `current` is what it is wearing
 // now, and it is an argument rather than a fresh decision because a threshold
