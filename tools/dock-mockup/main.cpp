@@ -66,7 +66,7 @@ constexpr int kStatusH = 26;
 // caption over each; the captions are gone (the band is green and the bar is
 // graduated — neither has ever needed a heading to be told apart) and the bar's
 // ruler is tighter.
-constexpr int kClipBarH = 24;
+constexpr int kClipBarH = 28;
 constexpr int kSeekH = 42;
 // Narrower than this a tile stops being a picture and becomes a smear; wider
 // than this it stops being a confidence monitor and starts competing with the
@@ -1053,11 +1053,8 @@ private:
 		// past the end GROWS the grid, so a loop that walks to rowCount()
 		// adds one row every time it runs - and this runs on every resize.
 		for (int r = 0; r < std::max(rows + 1, tilesGrid_->rowCount()); r++)
-			tilesGrid_->setRowStretch(
-				r, (r < rows || (r == rows &&
-						 mode_ != PanelMode::Tall))
-					   ? 1
-					   : 0);
+			// NO SPARE ROW: the block is now exactly as tall as the bays.
+			tilesGrid_->setRowStretch(r, r < rows ? 1 : 0);
 		tileCols_ = cols;
 	}
 
@@ -1162,7 +1159,12 @@ private:
 				tileBlockFor(paneW, bays, g_cams, 3, roomH());
 			tilesW = tb.blockW;
 			tileCap = tb.tileW;
-			baysW = std::max(60, paneW - tilesW - gap);
+			// SIZED FROM THE PICTURES: tileBlockFor settled one height
+			// for the whole row, so a bay is exactly as wide as that
+			// height allows and the cameras take the rest.
+			baysW = std::max(60, bays * tb.bayW + 3 * (bays - 1));
+			if (baysW + tilesW + gap > paneW)
+				baysW = std::max(60, paneW - tilesW - gap);
 			const int bayH =
 				aspectHeight((baysW - 3 * (bays - 1)) / bays) +
 				kTagH;
@@ -1170,8 +1172,12 @@ private:
 			// be, and the tile arithmetic above was given the same
 			// number.
 			want = std::min(std::max(bayH, tb.blockH), roomH());
-			if (!monitorChosen())
-				monitorSplit_->setSizes({baysW, tilesW});
+			if (!monitorChosen()) {
+				const int slack =
+					std::max(0, paneW - baysW - tilesW - gap);
+				monitorSplit_->setSizes({baysW + slack / 2,
+							 tilesW + slack - slack / 2});
+			}
 		}
 
 		// --- 2. the divider between the pictures and the list --------

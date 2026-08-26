@@ -353,6 +353,10 @@ struct TileBlock {
 	int tileH = 0;
 	int blockW = 0;
 	int blockH = 0;
+	// What ONE bay must be to stand the same height as the camera rows.
+	// The caller sizes the panes from this rather than from what is left.
+	int bayW = 0;
+	int rowH = 0;
 };
 
 // A tile below this is not a confidence monitor any more.

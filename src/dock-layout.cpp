@@ -392,10 +392,6 @@ TileBlock tileBlockFor(int paneW, int bays, int n, int gap, int maxH)
 
 	// ONE ROW UP TO THREE, TWO ROWS BEYOND — DECLARED, NOT SCORED.
 	//
-	// The column count used to be chosen by scoring every arrangement that
-	// wasted no cell against a target width. It is a table instead now,
-	// because the operator has one and it is not the one a score produces:
-	//
 	//     1..3 cameras   one row,  n columns    A | C1 | C2 | C3
 	//     4              two rows, 2 columns
 	//     5, 6           two rows, 3 columns
@@ -403,27 +399,54 @@ TileBlock tileBlockFor(int paneW, int bays, int n, int gap, int maxH)
 	//
 	// which is ceil(n/2) columns past three. NEVER MORE THAN TWO ROWS: the
 	// cameras stand beside the bays, and a third row makes each of them
-	// smaller than the glance they exist for.
-	//
-	// Declared beats derived here for the same reason a section's two shapes
-	// are declared: "three across, then four" is a decision about how a rig
-	// is read, and a score agrees with it only by accident.
+	// smaller than the glance they exist for. Declared, because "three
+	// across, then four" is a decision about how a rig is read and a score
+	// agrees with it only by accident.
 	const int cols = (n <= 3) ? n : (n + 1) / 2;
 	const int rows = (n + cols - 1) / cols;
 
-	// The size is still arithmetic: as wide as its share of the leftover, and
-	// never so tall that the rows overflow the room the block has.
-	int tw = std::clamp((target - (cols - 1) * kTileGap) / cols,
-			    kTileMinWidth, ceiling);
-	if (maxH > 0) {
-		const int byH = std::max(
-			kTileMinWidth,
-			((maxH - (rows - 1) * kTileGap) / rows - tagH) * 16 / 9);
-		tw = std::min(tw, byH);
-	}
-	const int th = aspect(tw);
-	best = {cols, tw, th, cols * tw + (cols - 1) * kTileGap,
-		rows * (th + tagH) + (rows - 1) * kTileGap};
+	// THE WHOLE MONITORING ROW IS ONE HEIGHT, and that is the change that
+	// took the empty band out from under the cameras.
+	//
+	// It used to work the other way round: the bays' height was settled first
+	// and the cameras were then fitted INSIDE it, so a single row of tiles
+	// came out half as tall as A and the rest of the block was a strip of
+	// nothing. Cameras are 16:9 like the bays, so the honest statement is that
+	// A, B and every tile row share one height h - and h is whatever makes the
+	// row exactly as wide as the pane:
+	//
+	//     paneW = bays*aw(h) + block(h),  aw(h) = (h - tag) * 16/9
+	//
+	// One line of algebra rather than a search, and it fills BOTH dimensions:
+	// two cameras beside A become three equal pictures across the row, eight
+	// become four-by-two whose two rows together are exactly as tall as A.
+	// Nothing is left over to park, which is why there is no spare row any
+	// more.
+	const double perBay = 16.0 / 9.0;
+	const double perTile = cols * 16.0 / (9.0 * rows);
+	const double k = bays * perBay + perTile;
+	const double cst = gap * bays + (cols - 1) * kTileGap -
+			   bays * perBay * tagH -
+			   cols * (16.0 / 9.0) *
+				   ((rows - 1) * kTileGap / (double)rows + tagH);
+	int h = (k > 0.01) ? (int)((paneW - cst) / k) : maxH;
+	// ...AND NEVER TALLER THAN THE ROOM. Clamped, the row simply stops short
+	// of the pane's width — which is the one thing 16:9 cannot be argued out
+	// of when the panel is wide and shallow.
+	if (maxH > 0)
+		h = std::min(h, maxH);
+	h = std::max(h, kTileMinWidth * 9 / 16 + tagH);
+
+	int th = std::max(1, (h - (rows - 1) * kTileGap) / rows - tagH);
+	int tw = std::clamp(th * 16 / 9, kTileMinWidth, ceiling);
+	th = aspect(tw);
+	best = {cols,
+		tw,
+		th,
+		cols * tw + (cols - 1) * kTileGap,
+		rows * (th + tagH) + (rows - 1) * kTileGap,
+		std::max(40, (h - tagH) * 16 / 9),
+		h};
 	return best;
 }
 
@@ -1005,8 +1028,19 @@ int ControlStrip::layoutLanes(int width, bool apply) const
 	int laneLines[3] = {0, 0, 0};
 	for (const Line &ln : lines) {
 		bool used[3] = {false, false, false};
+		// A LANE COUNTS AS USED ONLY IF SOMETHING IS ACTUALLY IN IT.
+		//
+		// With one bay the bay-selector section still EXISTS - its keys are
+		// hidden and it measures zero - so counting blocks rather than
+		// widths made the centre lane look occupied on both macro-rows, and
+		// the transport stayed on the lower one with the whole upper one
+		// empty above it. The mockup could not show it: there the section is
+		// not built at all when B is off, so the count was right there and
+		// wrong in the panel.
 		for (int k = ln.first; k < ln.last; k++)
-			used[(int)blocks_[k].lane] = true;
+			if (blocks_[k].tall.width() > 0 &&
+			    blocks_[k].tall.height() > 0)
+				used[(int)blocks_[k].lane] = true;
 		for (int l = 0; l < 3; l++)
 			laneLines[l] += used[l] ? 1 : 0;
 	}

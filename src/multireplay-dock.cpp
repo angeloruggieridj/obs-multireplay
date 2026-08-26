@@ -1177,7 +1177,11 @@ ClipBar::ClipBar(QWidget *parent) : QWidget(parent)
 	// 24, and the >> key on it is 18: a stylesheet min-height LARGER than the
 	// widget's own height makes the style draw a taller frame than the widget
 	// owns and the bottom border lands outside it.
-	setFixedHeight(24);
+	// 28, NOT 24. The skip key sits ON this band and is pinned to four less
+	// than it; at 20 px the frame its style draws is 20 as well, so the bottom
+	// border landed on the widget edge and any rounding put it past. Same
+	// arithmetic as the status line above it, same four pixels of headroom.
+	setFixedHeight(28);
 	setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
 	// Deliberately NOT a pointing-hand cursor and deliberately not clickable:
 	// the bar directly under it IS clickable, and a bar that looks draggable
@@ -2125,6 +2129,7 @@ void MultiReplayDock::applyPreviewAspect()
 		// which is what every layout decision was being judged on, drew
 		// something else entirely.
 		int tilesW = 0, blockH = 0;
+		TileBlock tb0;
 		if (haveTiles) {
 			// THE HEIGHT THE BLOCK WILL ACTUALLY HAVE, in every wide
 			// arrangement and not only the short one. Left unbounded the
@@ -2135,6 +2140,7 @@ void MultiReplayDock::applyPreviewAspect()
 			// the black band beside it.
 			const TileBlock tb = tileBlockFor(paneW, bays, visibleTiles,
 							  gap, monitorRoomH());
+			tb0 = tb;
 			tilesW = tb.blockW;
 			blockH = tb.blockH;
 			tileCap_ = tb.tileW;
@@ -2154,14 +2160,29 @@ void MultiReplayDock::applyPreviewAspect()
 					 (rows - 1) * kTileGap;
 			}
 		}
-		const int baysW = std::max(60, paneW - tilesW - (haveTiles ? gap : 0));
-		const int bayH =
-			aspectHeight((baysW - 3 * (bays - 1)) / bays) + tagH;
+		// THE PANES ARE SIZED FROM THE PICTURES, not the other way round:
+		// tileBlockFor settled one height for the whole row, so a bay is
+		// exactly as wide as that height allows and the cameras take the
+		// rest. Sized from the leftover instead, A was height-bound and
+		// floated in a pane hundreds of pixels wider than itself.
+		const int bayW = haveTiles && tb0.bayW > 0
+					 ? tb0.bayW
+					 : aspectHeight(paneW / bays) + tagH;
+		int baysW = std::max(60, bays * bayW + 3 * (bays - 1));
+		if (haveTiles && baysW + tilesW + gap > paneW)
+			baysW = std::max(60, paneW - tilesW - gap);
+		const int bayH = aspectHeight((baysW - 3 * (bays - 1)) / bays) + tagH;
 		// monitorRoomH() is the ONE authority on how tall this block may be,
 		// and the tile arithmetic above was given the same number.
 		want = std::min(std::max(bayH, blockH), monitorRoomH());
-		if (!monitorSplitChosen() && haveTiles)
-			monitorSplit_->setSizes({baysW, tilesW});
+		if (!monitorSplitChosen() && haveTiles) {
+			// Anything the row cannot fill is split between the two
+			// panes, so each picture is centred in its own rather than
+			// the whole block hugging one edge.
+			const int slack = std::max(0, paneW - baysW - tilesW - gap);
+			monitorSplit_->setSizes(
+				{baysW + slack / 2, tilesW + slack - slack / 2});
+		}
 	}
 
 	// A tile is a CONFIDENCE MONITOR, so it has a ceiling: left to fill the
@@ -2766,34 +2787,17 @@ void MultiReplayDock::rebuildMultiview()
 	// one in use are also where the hidden tiles were left sitting.
 	const int usedRows =
 		((int)tileSlots.size() + cols - 1) / std::max(1, cols);
-	// ONE SPARE ROW BESIDE THE BAYS, and this only works because every tile
-	// now has a HEIGHT ceiling that actually binds (its own picture height,
-	// derived from the width the block was given). Without that the spare row
-	// is just a third row at stretch 1 and it takes a third of the block -
-	// measured, 137 px where the tiles were entitled to 206. With it, the rows
-	// in use stop at their ceiling, the leftover lands in the spare, and the
-	// camera block starts level with the top of A instead of floating in the
-	// middle of its own column. In a column the block is already exactly as
-	// tall as its pictures, so there is nothing to park.
-	// (Was: no spare row at all, which left the rows sharing the slack and a
-	// block taller than they are, and it took a THIRD of the block: with
-	// three rows all at stretch 1 and the tiles' own ceiling never reached,
-	// QGridLayout simply divided the height three ways and the cameras came
-	// out shorter than they were entitled to be. The ceiling already does
-	// that job - a row whose tile cannot grow any further stops taking, and
-	// what is left over is simply not handed out, which leaves it at the
-	// bottom where the spare row was meant to put it.
+	// NO SPARE ROW: the camera block is now exactly as tall as the bays
+	// beside it (tileBlockFor settles ONE height for the whole monitoring
+	// row), so there is nothing left over to park. A spare row here is the
+	// empty band that used to sit under C1 and C2.
 	//
 	// The bound is usedRows + 1, NOT rowCount(): setRowStretch on an index
 	// past the end GROWS the grid, so a loop that walks to rowCount() adds a
 	// row every time it runs - and this runs whenever the cameras change.
 	for (int r = 0;
 	     r < std::max(usedRows + 1, multiviewGrid_->rowCount()); r++)
-		multiviewGrid_->setRowStretch(
-			r, (r < usedRows ||
-			    (r == usedRows && panelMode_ != PanelMode::Tall))
-				   ? 1
-				   : 0);
+		multiviewGrid_->setRowStretch(r, r < usedRows ? 1 : 0);
 	tileTallyPvw_ = -2; // captions were just rewritten
 	tileTallyPgm_ = -2;
 	updateMultiviewTally();
@@ -3871,7 +3875,9 @@ QWidget *MultiReplayDock::buildBottomBar()
 		nextClipBtn_ = iconBtn(Icon::SkipNext, "skipNext",
 				       obs_module_text("Dock.NextClip"), clipBar_,
 				       "mrSkip");
-		nextClipBtn_->setFixedSize(30, 18);
+		// Four less than the band, which is 28: the key needs room for its
+		// own bottom border inside it.
+		nextClipBtn_->setFixedSize(30, 22);
 		nextClipBtn_->setMinimumHeight(0);
 		connect(nextClipBtn_, &QPushButton::clicked, this, [this]() {
 			// Logged both ways: "I pressed >> and nothing happened"
