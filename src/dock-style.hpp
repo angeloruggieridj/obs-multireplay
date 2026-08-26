@@ -826,6 +826,22 @@ QSplitter::handle:vertical:hover { background: @raise2@; }
 QSplitter::handle:horizontal { background: @raise1@; width: 5px; }
 QSplitter::handle:horizontal:hover { background: @raise2@; }
 
+/* A KEY WHOSE HEIGHT BELONGS TO THE LAYOUT.
+   Every key inside a section of the control strip is pinned by KeyBlock::apply
+   to the height of the rows it spans - 26 px in the wide shape, 22 in the
+   folded one. A min-height here is a CONTENT box with the padding and the
+   border added on top of it, so the rules above all state 26 px worth; asked
+   for 26 on a widget that owns 22, the style draws the frame past the bottom
+   edge and the underside of the key is cut off. That is the whole of "In, Out
+   and the two trims have no bottom border" in a column.
+
+   So the pinned keys stand their min-height down and let the layout's number be
+   the only one. Nothing else changes: a fixed height already overrides the
+   hint, and min-height never touched the width.
+
+   NOT last in the sheet - the focus ring is, and has to be. */
+#MultiReplayDock QPushButton[mrPinned="true"] { min-height: 0px; }
+
 /* ── WHERE THE KEYBOARD IS ──────────────────────────────────────────
    LAST IN THE SHEET, and that is the whole point of where it sits: Qt follows
    CSS specificity, and every role's own :hover and :checked rule scores the

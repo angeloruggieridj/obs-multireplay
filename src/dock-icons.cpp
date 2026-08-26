@@ -74,6 +74,27 @@ void triangleLeft(QPainterPath &p, qreal x, qreal y, qreal w, qreal h)
 	p.closeSubpath();
 }
 
+// A solid triangle with SOFTENED CORNERS, added to both paths so that the
+// round-join stroke following its outline is what rounds it. Written once
+// because the play key and the reverse key sit next to each other, and two
+// hand-drawn triangles is two chances to give them different weights - which is
+// exactly how the reverse one came out looking blunt beside the play one.
+//
+// Inset by half the stroke, so softening the shape does not also grow it.
+void triangleSoft(QPainterPath &fill, QPainterPath &line, qreal x, qreal y,
+		  qreal w, qreal h, bool pointsLeft)
+{
+	const qreal i = kStroke / 2.0;
+	const qreal X = x + i, Y = y + i, W = w - 2 * i, H = h - 2 * i;
+	if (pointsLeft) {
+		triangleLeft(fill, X, Y, W, H);
+		triangleLeft(line, X, Y, W, H);
+	} else {
+		triangleRight(fill, X, Y, W, H);
+		triangleRight(line, X, Y, W, H);
+	}
+}
+
 // A chevron (an arrow head drawn as two strokes, not filled): the mark for
 // "next / previous" where a solid triangle would read as "play".
 void chevronRight(QPainterPath &p, qreal x, qreal y, qreal w, qreal h)
@@ -101,7 +122,7 @@ void buildPaths(Icon id, QPainterPath &fill, QPainterPath &line)
 {
 	switch (id) {
 	case Icon::Play:
-		triangleRight(fill, 7, 4.5, 12, 15);
+		triangleSoft(fill, line, 7, 4.5, 12, 15, false);
 		break;
 
 	case Icon::Pause:
@@ -109,23 +130,13 @@ void buildPaths(Icon id, QPainterPath &fill, QPainterPath &line)
 		fill.addRoundedRect(QRectF(13, 5, 3.5, 14), 1.2, 1.2);
 		break;
 
-	case Icon::PlayPause:
-		// The triangle and the two bars, side by side and smaller than
-		// either would be alone. It says "this key is both" without
-		// changing under the hand, which is what a key that toggles has
-		// to do when the operator is watching the picture and not the
-		// panel.
-		triangleRight(fill, 3.5, 6.5, 8, 11);
-		fill.addRoundedRect(QRectF(14, 6.5, 2.8, 11), 1.0, 1.0);
-		fill.addRoundedRect(QRectF(18.2, 6.5, 2.8, 11), 1.0, 1.0);
-		break;
-
 	case Icon::Stop:
 		fill.addRoundedRect(QRectF(6.5, 6.5, 11, 11), 1.6, 1.6);
 		break;
 
 	case Icon::Reverse:
-		triangleLeft(fill, 5, 4.5, 12, 15);
+		// THE EXACT MIRROR OF Play, drawn by the same helper.
+		triangleSoft(fill, line, 5, 4.5, 12, 15, true);
 		break;
 
 	case Icon::PlayLast:

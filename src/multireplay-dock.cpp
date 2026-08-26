@@ -1660,7 +1660,6 @@ QWidget *MultiReplayDock::buildToolbar()
 	monitorsBtn_->setToolTip(obs_module_text("Dock.MonitorsHint"));
 	connect(monitorsBtn_, &QPushButton::toggled, this,
 		[this](bool on) { applyMonitorsVisible(on); });
-	h->addWidget(monitorsBtn_);
 
 	// ⛶ — the panel to the whole screen. ONLY WHEN IT FLOATS, and hidden (not
 	// disabled) otherwise: see fullScreenBtn_ in the header for why the key is
@@ -1686,9 +1685,15 @@ QWidget *MultiReplayDock::buildToolbar()
 	// the theme — and inside the record section it read as part of arming a
 	// take. It goes beside the full-screen key because those two are the pair
 	// that are about the panel itself rather than about the replay.
+	// ...AND THE THREE OF THEM SIT AT THE FAR END. Monitors, the gear and
+	// full screen are about the PANEL; search and Live are about the take.
+	// Packed together in the middle the six keys read as one group and the
+	// operator had to remember which three were which - so the stretch goes
+	// between them, and the panel keys end flush with the panel's edge.
+	h->addStretch(1);
+	h->addWidget(monitorsBtn_);
 	h->addWidget(buildGearMenu());
 	h->addWidget(fullScreenBtn_);
-	h->addStretch(1);
 	v->addWidget(topRow);
 
 	// The 20 lists as TABS, not a dropdown. the reference controller shows them all at once and
@@ -1927,10 +1932,18 @@ void MultiReplayDock::applyPanelMode(PanelMode m, bool force)
 			monitorSplit_->restoreState(savedMonitorSplit_[(int)m]);
 	}
 
-	// The strip follows the panel: a column stacks, anything wider keeps its
-	// two macro-rows. Width alone cannot tell those apart — see setStacked.
+	// THE STRIP STACKS WHENEVER IT IS IN A COLUMN, which is Tall AND Short:
+	// in Short the keys move into the left-hand column beside the list, so
+	// they have about half the panel's width. Left on the wide two-macro-row
+	// shape there, the sections did not fit across that half and the strip
+	// folded anyway - into something so deep that the panel's own floor rose
+	// above the height at which Short is chosen, and the arrangement was
+	// undone by the resize it had just caused. From the operator's chair
+	// Short flashed on and vanished, at every width.
+	//
+	// Width alone cannot tell these apart — see setStacked.
 	if (strip_)
-		strip_->setStacked(m == PanelMode::Tall ? 1 : 0);
+		strip_->setStacked(m == PanelMode::Wide ? 0 : 1);
 
 	// The search box is the one control that can be asked to give width back:
 	// in a column, 90 px of it is 90 px the Live and Monitors keys do not have.
@@ -1993,6 +2006,16 @@ void MultiReplayDock::applyPreviewAspect()
 	const int paneW = std::max(80, monitorSplit_->width());
 	const Config cfg = ReplayCore::instance().getConfig();
 	const int bays = cfg.enableChannelB ? 2 : 1;
+
+	// B'S SHARE OF THE ROW GOES AWAY WITH B, and hiding the box is not what
+	// does it. A grid column keeps the stretch it was given whether or not
+	// anything visible is in it, so with one bay A was laid out in the LEFT
+	// HALF of the picture row and centred there - which reads exactly like a
+	// panel holding a space open for something that is switched off. Across
+	// the bottom of a wide panel it also opened a gap between A and the first
+	// camera that no drag could close.
+	if (auto *bg = qobject_cast<QGridLayout *>(bays_->layout()))
+		bg->setColumnStretch(1, cfg.enableChannelB ? 1 : 0);
 	const int gap = monitorSplit_->handleWidth();
 	int visibleTiles = 0;
 	for (const PreviewTile &t : tiles_)
@@ -2007,6 +2030,7 @@ void MultiReplayDock::applyPreviewAspect()
 	// column has its minimum, and a tile's minimum is nothing. Eight cameras
 	// came out as eight vertical slivers.
 	const int cols = haveTiles ? std::max(1, tileColumns(visibleTiles)) : 1;
+	tileCap_ = kTileMaxWidth;
 	const int rows = haveTiles ? (visibleTiles + cols - 1) / cols : 0;
 	const int tagH = AspectBox::kTagH;
 
@@ -2017,8 +2041,17 @@ void MultiReplayDock::applyPreviewAspect()
 			aspectHeight((paneW - 3 * (bays - 1)) / bays) + tagH;
 		int stripH = 0;
 		if (haveTiles) {
-			const int tileW = std::min(kTileMaxWidth,
-						   (paneW - 2 * (cols - 1)) / cols);
+			// THE STRIP FILLS THE ROW. The 150 px ceiling is there
+			// to stop ONE camera drawing itself as big as the
+			// picture being watched; from two upwards the row is
+			// already divided, and holding the ceiling there just
+			// left a band of empty panel down the right-hand side of
+			// every filmstrip.
+			const int share = (paneW - 2 * (cols - 1)) / cols;
+			const int tileW = cols >= 2
+						  ? share
+						  : std::min(kTileMaxWidth, share);
+			tileCap_ = tileW;
 			stripH = rows * (aspectHeight(tileW) + tagH) +
 				 (rows - 1) * 2;
 		}
@@ -2051,9 +2084,31 @@ void MultiReplayDock::applyPreviewAspect()
 	// row, a single configured camera drew itself as big as the picture being
 	// watched — the same angle twice, with the event list paying for the
 	// second copy.
+	// ...AND A CEILING ON ITS HEIGHT, which is the same statement made
+	// the other way round: beside a big A the camera column is as tall as
+	// A is, and a box left free to fill it holds one small picture in the
+	// middle of a tall empty rectangle. Capped, the pictures stack at the
+	// top and the leftover goes to the spare row below them.
+	//
+	// IN A COLUMN THERE IS NO CEILING, and that is not a detail: in a
+	// column the strip's height is exactly what the pictures need, so a
+	// ceiling would be a second opinion on the same number - one derived
+	// from the width the layout just produced, fed back into the layout
+	// that produced it. Written that way this function span the panel until
+	// it was killed. Beside a big A the ceiling is a CONSTANT.
+	const int tileCapH = panelMode_ == PanelMode::Tall
+				     ? QWIDGETSIZE_MAX
+				     : aspectHeight(kTileMaxWidth) + tagH;
 	for (const PreviewTile &t : tiles_)
-		if (t.box)
-			t.box->setMaximumWidth(kTileMaxWidth);
+		if (t.box) {
+			// Only when it CHANGED. Setting a maximum invalidates
+			// the layout, and this runs from the resize it would
+			// then cause.
+			if (t.box->maximumWidth() != tileCap_)
+				t.box->setMaximumWidth(tileCap_);
+			if (t.box->maximumHeight() != tileCapH)
+				t.box->setMaximumHeight(tileCapH);
+		}
 
 	applyPreviewSplit(want);
 }
@@ -2546,7 +2601,13 @@ void MultiReplayDock::rebuildMultiview()
 	QStringList sigParts;
 	for (int s : tileSlots)
 		sigParts << QString::number(s);
+	// THE ARRANGEMENT IS PART OF IT TOO, and leaving it out was a hole the
+	// column count happened to cover most of the time: the spare row and the
+	// spare column are chosen by the arrangement, not by the cameras, so on a
+	// rig whose column count is the same in two arrangements - two cameras
+	// are two columns in both - turning the panel kept the other one's rule.
 	const QString sig = QString::number(show ? 1 : 0) + '|' +
+			    QString::number((int)panelMode_) + '|' +
 			    QString::number(cols) + '|' + sigParts.join(',') +
 			    '|' + captions.join(',');
 	if (sig == multiviewSig_)
@@ -2587,6 +2648,32 @@ void MultiReplayDock::rebuildMultiview()
 	for (int c = 0; c <= cols; c++)
 		multiviewGrid_->setColumnStretch(
 			c, (panelMode_ == PanelMode::Tall && c == cols) ? 1 : 0);
+	// THE ROWS IN USE SHARE THE BLOCK; the rest hold nothing. A
+	// QGridLayout remembers the stretch of a row it no longer has anything
+	// in and rowCount() never comes back down, so a rig that once wanted
+	// four rows keeps them stretching after it wants one - and the pictures
+	// get a quarter of the height the block was given. Rows past the last
+	// one in use are also where the hidden tiles were left sitting.
+	const int usedRows =
+		((int)tileSlots.size() + cols - 1) / std::max(1, cols);
+	// AND ONE SPARE ROW BELOW THEM, but only beside a big A - where the
+	// camera column is as tall as A is and the pictures would otherwise be
+	// stretched down it. Each tile is capped at its own picture height
+	// there, so the rows in use stop growing and the leftover lands in the
+	// spare one, which puts the strip at the TOP of the column instead of
+	// spread down it. In a column the block is already exactly as tall as
+	// its pictures, so a spare row there would just take half of them.
+	// The bound is usedRows + 1, NOT rowCount(): setRowStretch on an index
+	// past the end GROWS the grid, so a loop that walks to rowCount() adds a
+	// row every time it runs - and this runs whenever the cameras change.
+	for (int r = 0;
+	     r < std::max(usedRows + 1, multiviewGrid_->rowCount()); r++)
+		multiviewGrid_->setRowStretch(
+			r, r < usedRows ? 1
+					: (r == usedRows &&
+					   panelMode_ != PanelMode::Tall)
+						  ? 1
+						  : 0);
 	tileTallyPvw_ = -2; // captions were just rewritten
 	tileTallyPgm_ = -2;
 	updateMultiviewTally();
@@ -3229,7 +3316,7 @@ KeyBlock *MultiReplayDock::buildTransport()
 	// ONE MARK FOR A KEY THAT IS BOTH. This is a play at rest and a pause
 	// while a clip runs, and drawing it as one or the other made it look like
 	// two different keys depending on when you glanced at it.
-	playPauseBtn_ = iconBtn(Icon::PlayPause, "playPause",
+	playPauseBtn_ = iconBtn(Icon::Play, "playPause",
 				obs_module_text("Dock.PlayPause"), this, "mrPlay");
 
 	// Stop. It used to live two clicks deep in the ▾ menu, which was
@@ -6287,9 +6374,16 @@ void MultiReplayDock::poll()
 		}
 	}
 
-	// ⏸ U+23F8  ▶ U+25B6
-	playPauseBtn_->setText(playing ? QStringLiteral("⏸")
-				       : QStringLiteral("▶"));
+	// ONE MARK, and it says what the key will DO. The key carried a drawn
+	// mark AND a glyph in its text - a triangle, two bars and a third
+	// character on one 30 px key, the last of them turned cyan by the
+	// "playing" rule because a style sheet colours text and cannot reach a
+	// pixmap. Three marks on the key that gets pressed most.
+	if (playPauseIcon_ != (playing ? 1 : 0)) {
+		playPauseIcon_ = playing ? 1 : 0;
+		setKeyIcon(playPauseBtn_, playing ? Icon::Pause : Icon::Play,
+			   tintsFor(sc()));
+	}
 	if (playPauseBtn_->property("playing").toBool() != playing) {
 		playPauseBtn_->setProperty("playing", playing);
 		repolish(playPauseBtn_);
@@ -6574,8 +6668,15 @@ void MultiReplayDock::poll()
 		}
 	}
 
-	recBtn_->setText(rec ? QStringLiteral("◼  STOP")
-			     : QStringLiteral("●  REC"));
+	// A MARK AND A WORD, not a mark and a word with a second mark inside it.
+	// The text used to carry its own bullet, so the key showed the drawn
+	// record dot and then another one printed beside it.
+	recBtn_->setText(rec ? QStringLiteral("STOP") : QStringLiteral("REC"));
+	if (recIcon_ != (rec ? 1 : 0)) {
+		recIcon_ = rec ? 1 : 0;
+		setKeyIcon(recBtn_, rec ? Icon::Stop : Icon::Rec, tintsFor(sc()),
+			   13);
+	}
 	if (recBtn_->property("recording").toBool() != rec) {
 		recBtn_->setProperty("recording", rec);
 		repolish(recBtn_);

@@ -64,7 +64,6 @@ enum class Icon {
 	// is a play at rest and a pause while a clip runs, and drawing it as one
 	// or the other made it look like two different keys depending on when you
 	// glanced at it.
-	PlayPause,
 	Stop,
 	Reverse,
 	PlayLast, // ↺ replay the last event

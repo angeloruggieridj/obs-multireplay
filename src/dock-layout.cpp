@@ -358,6 +358,12 @@ KeyBlock::KeyBlock(const QString &caption, QWidget *parent)
 	// apart by the space between them, and the result is a dense strip that
 	// reads at a glance instead of a column of headings with keys under them.
 	// A caption line also costs ~16 px on a panel that is short of height.
+	//
+	// THE STRETCH GOES ABOVE THE CAPTION, not between it and the keys. It
+	// used to sit between, so on a deep line the caption stayed pinned to the
+	// top edge while its keys drifted to the middle - and a heading a
+	// centimetre away from what it names has stopped naming it.
+	v->addStretch(1);
 	if (!caption_.isEmpty()) {
 		cap_ = new QLabel(caption_.toUpper(), this);
 		cap_->setObjectName(QStringLiteral("mrZoneTitle"));
@@ -382,7 +388,6 @@ KeyBlock::KeyBlock(const QString &caption, QWidget *parent)
 	//
 	// Split evenly, the group sits on the line's optical centre, which is
 	// where a shorter group belongs beside a taller one.
-	v->addStretch(1);
 	v->addWidget(body_, 0);
 	v->addStretch(1);
 	setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Preferred);
@@ -515,10 +520,26 @@ void KeyBlock::apply()
 			// drawn at one, so the three first-function keys came out
 			// the same size as a frame step — the exact thing the
 			// spans were added to fix.
+			//
+			// AND THE STYLE SHEET HAS TO BE TOLD. A QSS min-height
+			// is a CONTENT box: the rules here state 26 px worth of
+			// content plus padding plus border, and a style asked for
+			// more height than the widget owns draws the frame past
+			// the bottom of it - which is what cut the underside off
+			// every key in the folded shape, where the pin is 22.
+			// The property says "this height is the layout's", and one
+			// rule at the end of the sheet stands the min-height down.
 			if (auto *btn = qobject_cast<QAbstractButton *>(cell.w)) {
 				const int h = flatActive_ ? kKeyFoldedH : kKeyH;
 				btn->setFixedHeight(cell.rowSpan * h +
 						    (cell.rowSpan - 1) * kBandVGap);
+				if (!btn->property("mrPinned").toBool()) {
+					btn->setProperty("mrPinned", true);
+					if (btn->style()) {
+						btn->style()->unpolish(btn);
+						btn->style()->polish(btn);
+					}
+				}
 			}
 			const bool wantVisible = !cell.w->isHidden();
 			cell.w->setParent(body_);

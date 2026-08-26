@@ -392,7 +392,7 @@ public:
 		bodySplit_->setOrientation(sideBySide ? Qt::Horizontal
 						      : Qt::Vertical);
 
-		strip_->setStacked(m == PanelMode::Tall ? 1 : 0);
+		strip_->setStacked(m == PanelMode::Wide ? 0 : 1);
 		applyCompactChrome(m == PanelMode::Tall);
 
 		// THE DIVIDERS THE OPERATOR CHOSE FOR *THIS* ARRANGEMENT, put
@@ -565,7 +565,10 @@ private:
 		baysGrid_->addWidget(aBox_, 0, 0);
 		baysGrid_->addWidget(bBox_, 0, 1);
 		baysGrid_->setColumnStretch(0, 1);
-		baysGrid_->setColumnStretch(1, 1);
+		// B'S HALF OF THE ROW GOES AWAY WITH B. A grid column keeps the
+		// stretch it was given whether or not anything visible is in it,
+		// so with one bay A was drawn in the LEFT HALF and centred there.
+		baysGrid_->setColumnStretch(1, g_haveB ? 1 : 0);
 
 		tiles_ = new QWidget(leftCol_);
 		tilesGrid_ = new QGridLayout(tiles_);
@@ -968,7 +971,7 @@ private:
 	void buildPlayback(Lane lane, int rank)
 	{
 		auto *blk = new KeyBlock(QString(), this);
-		auto *pp = iconKey(Icon::PlayPause, QStringLiteral("playPause"),
+		auto *pp = iconKey(Icon::Play, QStringLiteral("playPause"),
 				   QStringLiteral("Riproduci / pausa"), "mrPlay");
 		auto *stop = iconKey(Icon::Stop, QStringLiteral("stop"),
 				     QStringLiteral("Stop"));
@@ -1098,7 +1101,12 @@ private:
 		// a picture-shaped rectangle.
 		for (int i = 0; i < kTiles; i++)
 			tilesGrid_->addWidget(tile_[i], i / cols, i % cols);
-		const int rows = (kTiles + cols - 1) / cols;
+		// FROM THE TILES THAT ARE ON SCREEN, not from the eight that
+		// exist. Counted from kTiles, a two-camera rig stretched four
+		// rows to hold one row of pictures and each got a quarter of the
+		// block: 164 px wide and 26 px tall, which is a strip of
+		// letterboxing where two confidence monitors should be.
+		const int rows = (std::max(1, g_cams) + cols - 1) / cols;
 		// EVERY row and column, not just the ones in use now. A
 		// QGridLayout remembers the stretch of a row it no longer has
 		// items in, and rowCount() never comes back down — so a block
@@ -1106,8 +1114,19 @@ private:
 		// after it became four, and they took half the block's height.
 		for (int c = 0; c < std::max(cols, tilesGrid_->columnCount()); c++)
 			tilesGrid_->setColumnStretch(c, c < cols ? 1 : 0);
-		for (int r = 0; r < std::max(rows, tilesGrid_->rowCount()); r++)
-			tilesGrid_->setRowStretch(r, r < rows ? 1 : 0);
+		// The row PAST the last one stretches too: each tile is capped at
+		// its own picture height, so the rows in use stop growing and a
+		// block taller than the pictures keeps them at the top of it.
+		// The bound is rows + 1, NOT rowCount(): setRowStretch on an index
+		// past the end GROWS the grid, so a loop that walks to rowCount()
+		// adds one row every time it runs - and this runs on every resize.
+		for (int r = 0; r < std::max(rows + 1, tilesGrid_->rowCount()); r++)
+			tilesGrid_->setRowStretch(
+				r, r < rows ? 1
+					    : (r == rows &&
+					       mode_ != PanelMode::Tall)
+						      ? 1
+						      : 0);
 		tileCols_ = cols;
 	}
 
@@ -1158,6 +1177,7 @@ private:
 
 		// --- 1. what the two halves would like -----------------------
 		int baysW, tilesW, want;
+		int tileCap = kTileMaxWidth;
 		if (mode_ == PanelMode::Tall) {
 			// A COLUMN: the bays across the top, the cameras under
 			// them. Both halves have the whole width; the divider
@@ -1166,9 +1186,14 @@ private:
 			const int bayH = aspectHeight((paneW - 3 * (bays - 1)) /
 						      bays) +
 					 kTagH;
+			// THE STRIP FILLS THE ROW. The ceiling stops ONE camera
+			// drawing itself as big as the picture being watched; from
+			// two upwards the row is already divided between them.
+			const int share = (paneW - kTileGap * (cols - 1)) / cols;
 			const int tileW =
-				std::min(kTileMaxWidth,
-					 (paneW - kTileGap * (cols - 1)) / cols);
+				cols >= 2 ? share
+					  : std::min(kTileMaxWidth, share);
+			tileCap = tileW;
 			const int stripH = rows * (aspectHeight(tileW) + kTagH) +
 					   (rows - 1) * kTileGap;
 			want = bayH + gap + stripH;
@@ -1218,8 +1243,19 @@ private:
 		// the picture being watched — the same angle twice, with the
 		// event list paying for the second copy. Everything else about
 		// their shape the boxes work out themselves (see PictureBox).
-		for (int i = 0; i < kTiles; i++)
-			tile_[i]->setMaximumWidth(kTileMaxWidth);
+		// IN A COLUMN THERE IS NO CEILING ON THE HEIGHT: there the
+		// strip's height is already exactly what the pictures need, and a
+		// ceiling derived from the width this layout just produced, fed
+		// back into it, spins.
+		const int capH = mode_ == PanelMode::Tall
+					 ? QWIDGETSIZE_MAX
+					 : aspectHeight(kTileMaxWidth) + kTagH;
+		for (int i = 0; i < kTiles; i++) {
+			if (tile_[i]->maximumWidth() != tileCap)
+				tile_[i]->setMaximumWidth(tileCap);
+			if (tile_[i]->maximumHeight() != capH)
+				tile_[i]->setMaximumHeight(capH);
+		}
 		(void)rows;
 	}
 };
