@@ -3093,7 +3093,9 @@ QWidget *MultiReplayDock::buildChannelRow()
 	sel->setFixedHeight(kKeyH);
 	channelBWidgets_ << sel;
 
-	swapBtn_ = new QPushButton(QStringLiteral("\u21c4"), this);
+	swapBtn_ = iconBtn(Icon::Swap, "swapBays",
+			   obs_module_text("Dock.SwapChannels"), this,
+			   "mrChanSel");
 	swapBtn_->setFixedSize(kChanKeyWidth, kKeyH);
 	swapBtn_->setCursor(Qt::PointingHandCursor);
 	connect(swapBtn_, &QPushButton::clicked, this,
@@ -3771,7 +3773,10 @@ QToolButton *MultiReplayDock::buildGearMenu()
 	// read as part of arming a take.
 	auto *gear = new QToolButton(this);
 	gear->setObjectName("mrGear");
-	gear->setText(QStringLiteral("\u2699"));
+	gear->setIcon(iconFor(Icon::Gear, QColor(sc().textKey), 15,
+			      devicePixelRatioF()));
+	gear->setIconSize(QSize(15, 15));
+	setKeyId(gear, QStringLiteral("settings"));
 	gear->setCursor(Qt::PointingHandCursor);
 	gear->setToolTip(obs_module_text("Dock.Settings"));
 	gear->setPopupMode(QToolButton::InstantPopup);
