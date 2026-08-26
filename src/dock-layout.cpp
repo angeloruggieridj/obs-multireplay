@@ -15,6 +15,8 @@
 #include <QVBoxLayout>
 
 #include <algorithm>
+#include <climits>
+#include <cmath>
 
 namespace multireplay {
 
@@ -349,9 +351,73 @@ void AspectBox::relayout()
 		tag_->setGeometry(x, y + h, w, kTagH);
 }
 
+
+// ---------------------------------------------------------------------------
+// The camera block — see the note in the header
+// ---------------------------------------------------------------------------
+
+TileBlock tileBlockFor(int paneW, int bays, int n, int gap, int maxH)
+{
+	TileBlock best;
+	if (n <= 0 || paneW <= 0 || bays <= 0)
+		return best;
+	const auto aspect = [](int w) { return std::max(1, w * 9 / 16); };
+	const int tagH = AspectBox::kTagH;
+	const int target = (int)(paneW * kTileShare);
+	// Proportional, not a constant: see kTileMaxShare.
+	const int ceiling =
+		std::max(kTileMinWidth, (int)(paneW * kTileMaxShare));
+	const int aw0 = std::max(40, (paneW - target - gap * bays) / bays);
+	int bayH = aspect(aw0);
+	if (maxH > 0)
+		bayH = std::min(bayH, maxH);
+
+	int bestScore = INT_MAX;
+	for (int cols = 1; cols <= n; cols++) {
+		const int rows = (n + cols - 1) / cols;
+		// NO HOLES. A ragged last row is the thing the eye keeps
+		// returning to; if nothing divides evenly the fallback below
+		// takes the least ragged.
+		if (cols * rows != n)
+			continue;
+		int th = (bayH - (rows - 1) * kTileGap) / rows - tagH;
+		int tw = std::clamp(th * 16 / 9, kTileMinWidth, ceiling);
+		th = aspect(tw);
+		const int bw = cols * tw + (cols - 1) * kTileGap;
+		const int bh = rows * (th + tagH) + (rows - 1) * kTileGap;
+		// Width is the preference; HEIGHT IS A WALL. A block that does
+		// not fit the pane is not a slightly worse arrangement, it is a
+		// floor the operator cannot get back.
+		const int over = (maxH > 0) ? std::max(0, bh - maxH) : 0;
+		const int score = std::abs(bw - target) + over * 4;
+		if (score < bestScore) {
+			bestScore = score;
+			best = {cols, tw, th, bw, bh};
+		}
+	}
+	if (bestScore == INT_MAX) {
+		// Nothing divided evenly (a prime count of cameras). Take the
+		// squarest arrangement and live with the one empty cell.
+		const int cols =
+			std::max(1, (int)std::ceil(std::sqrt((double)n)));
+		const int rows = (n + cols - 1) / cols;
+		int th = std::max(1, (bayH - (rows - 1) * kTileGap) / rows - tagH);
+		int tw = std::clamp(th * 16 / 9, kTileMinWidth, ceiling);
+		th = aspect(tw);
+		best = {cols, tw, th, cols * tw + (cols - 1) * kTileGap,
+			rows * (th + tagH) + (rows - 1) * kTileGap};
+	}
+	return best;
+}
+
+
 KeyBlock::KeyBlock(const QString &caption, QWidget *parent)
 	: QWidget(parent), caption_(caption)
 {
+	// A HANDLE FOR THE GATE. This class has no Q_OBJECT - giving it one would
+	// put a moc'd type in a header the mockup also compiles - so a name is how
+	// a section is found from outside, exactly as the camera tiles are.
+	setObjectName(QStringLiteral("mrBlock"));
 	auto *v = new QVBoxLayout(this);
 	v->setContentsMargins(0, 0, 0, 0);
 	v->setSpacing(2);
@@ -886,12 +952,19 @@ int ControlStrip::layoutLanes(int width, bool apply) const
 	if (need > width)
 		return -1; // no room to tell the lanes apart; pack instead
 
-	// The centre lane is centred in the PANEL and then pushed clear of its
-	// neighbours, so it reads as the middle of the strip rather than as the
-	// leftover between two groups.
-	int centreX = (width - CW) / 2;
-	centreX = std::max(centreX, LW + (LW ? kZoneGap : 0));
-	centreX = std::min(centreX, width - RW - (RW ? kZoneGap : 0) - CW);
+	// CENTRED IN THE GAP BETWEEN ITS NEIGHBOURS, not in the panel.
+	//
+	// It was centred in the panel, and that is right only while the two outer
+	// lanes are the same width. They are not: marks and record are wider than
+	// the exports and the speed dial, so the group came out sitting 20 px off
+	// the middle of the cell the two hairlines draw around it - and being off
+	// centre inside a frame you can SEE reads as a mistake, where being off
+	// the panel middle by the same amount reads as nothing at all.
+	const int gapL = LW + (LW ? kZoneGap : 0);
+	const int gapR = width - RW - (RW ? kZoneGap : 0);
+	int centreX = gapL + std::max(0, (gapR - gapL - CW) / 2);
+	centreX = std::max(centreX, gapL);
+	centreX = std::min(centreX, gapR - CW);
 
 	// A LANE USED ON ONE LINE ONLY GETS THE HEIGHT OF ALL OF THEM.
 	//

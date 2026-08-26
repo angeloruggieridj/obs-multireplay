@@ -1163,12 +1163,11 @@ private:
 	// the picture being watched: left to fill the row, a single configured
 	// camera drew itself 340 px wide and 191 px tall, taking as much of the
 	// panel as A and telling the operator nothing A was not already telling him.
-	static constexpr int kTileMaxWidth = 150;
 	// How wide a tile may actually be drawn in the arrangement on screen.
 	// The ceiling above, except in a column, where a strip of two or more
 	// divides the row between them instead of leaving a band of empty panel
 	// beside it. applyPreviewAspect works it out and the tiles are told.
-	int tileCap_ = kTileMaxWidth;
+	int tileCap_ = kTileMinWidth;
 
 	// Which mark the two keys that change one are wearing: -1 nothing yet,
 	// 0 the resting one, 1 the running one. poll() runs thirty times a

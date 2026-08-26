@@ -1878,8 +1878,20 @@ int MultiReplayDock::tileColumns(int tileCount) const
 	// Beside a big A output the tiles are a tall narrow strip: two columns up
 	// to four tiles, three beyond. That was tuned against the picture next to
 	// it and stays.
-	if (panelMode_ != PanelMode::Tall)
-		return n <= 4 ? 2 : 3;
+	if (panelMode_ != PanelMode::Tall) {
+		// FROM THE SAME ARITHMETIC THE SIZES COME FROM. Hardcoded as
+		// "two up to four, three beyond", it could disagree with the
+		// block that was actually measured - and a column count that
+		// disagrees with the tile size is a block with a hole in it.
+		const int paneW = std::max(80, monitorSplit_ ? monitorSplit_->width()
+							     : width());
+		const Config cfg = ReplayCore::instance().getConfig();
+		const int bays = cfg.enableChannelB ? 2 : 1;
+		const int roomH = panelMode_ == PanelMode::Short && previewPane_
+					  ? std::max(40, previewPane_->height())
+					  : 0;
+		return std::max(1, tileBlockFor(paneW, bays, n, 5, roomH).cols);
+	}
 	// In a COLUMN the same two columns build a block as tall as the picture
 	// above them, and the picture is what the operator is looking at. So the
 	// tiles go as wide as the panel can carry them at a size still worth
@@ -2052,7 +2064,7 @@ void MultiReplayDock::applyPreviewAspect()
 	// column has its minimum, and a tile's minimum is nothing. Eight cameras
 	// came out as eight vertical slivers.
 	const int cols = haveTiles ? std::max(1, tileColumns(visibleTiles)) : 1;
-	tileCap_ = kTileMaxWidth;
+	tileCap_ = kTileMinWidth;
 	const int rows = haveTiles ? (visibleTiles + cols - 1) / cols : 0;
 	const int tagH = AspectBox::kTagH;
 
@@ -2070,9 +2082,10 @@ void MultiReplayDock::applyPreviewAspect()
 			// left a band of empty panel down the right-hand side of
 			// every filmstrip.
 			const int share = (paneW - 2 * (cols - 1)) / cols;
-			const int tileW = cols >= 2
-						  ? share
-						  : std::min(kTileMaxWidth, share);
+			const int tileW =
+				cols >= 2 ? share
+					  : std::min((int)(paneW * kTileMaxShare),
+						     share);
 			tileCap_ = tileW;
 			stripH = rows * (aspectHeight(tileW) + tagH) +
 				 (rows - 1) * 2;
@@ -2081,38 +2094,42 @@ void MultiReplayDock::applyPreviewAspect()
 		if (!monitorSplitChosen() && haveTiles)
 			monitorSplit_->setSizes({bayH, stripH});
 	} else {
-		int tilesW = 0;
+		// ONE PIECE OF ARITHMETIC, SHARED WITH THE MOCKUP (tileBlockFor,
+		// in dock-layout). This used to be a second, simpler copy here -
+		// a fixed 150 px ceiling and a flat share of the width - and the
+		// two disagreed: beside an 840 px A the cameras came out as two
+		// stamps with 270 px of empty panel under them, while the mockup,
+		// which is what every layout decision was being judged on, drew
+		// something else entirely.
+		int tilesW = 0, blockH = 0;
 		if (haveTiles) {
-			// THE DIVIDER IS THE OPERATOR'S ANSWER, once he has moved
-			// it. The 150 px ceiling is a DEFAULT - what a confidence
-			// monitor should be when nobody has said otherwise - and
-			// holding it after he has dragged the handle means the
-			// cameras stay small while the space he just gave them
-			// shows as empty panel. Dragging A narrower has to make
-			// them bigger, or the handle does not do the one thing it
-			// looks like it does.
+			const TileBlock tb =
+				tileBlockFor(paneW, bays, visibleTiles, gap,
+					     panelMode_ == PanelMode::Short
+						     ? std::max(40, previewPane_->height())
+						     : 0);
+			tilesW = tb.blockW;
+			blockH = tb.blockH;
+			tileCap_ = tb.tileW;
+			// THE DIVIDER IS THE OPERATOR'S ANSWER once he has moved
+			// it: the block above is what the panel would choose, and
+			// holding it after he has dragged the handle leaves the
+			// cameras small while the room he just gave them shows as
+			// empty panel.
 			const QList<int> have = monitorSplit_->sizes();
-			const bool chosen = monitorSplitChosen() &&
-					    have.size() > 1 && have[1] > 0;
-			const int tileW =
-				chosen ? std::max(kTileMinWidth,
-						  (have[1] - (cols - 1) * 2) / cols)
-				       : std::min(kTileMaxWidth,
-						  std::max(kTileMinWidth,
-							   (int)(paneW * 0.22) /
-								   cols));
-			tilesW = cols * tileW + (cols - 1) * 2;
-			tileCap_ = tileW;
+			if (monitorSplitChosen() && have.size() > 1 &&
+			    have[1] > 0) {
+				tilesW = have[1];
+				tileCap_ = std::max(
+					kTileMinWidth,
+					(tilesW - (cols - 1) * kTileGap) / cols);
+				blockH = rows * (aspectHeight(tileCap_) + tagH) +
+					 (rows - 1) * kTileGap;
+			}
 		}
 		const int baysW = std::max(60, paneW - tilesW - (haveTiles ? gap : 0));
 		const int bayH =
 			aspectHeight((baysW - 3 * (bays - 1)) / bays) + tagH;
-		int blockH = 0;
-		if (haveTiles) {
-			const int tileW = (tilesW - (cols - 1) * 2) / cols;
-			blockH = rows * (aspectHeight(tileW) + tagH) +
-				 (rows - 1) * 2;
-		}
 		want = std::max(bayH, blockH);
 		if (!monitorSplitChosen() && haveTiles)
 			monitorSplit_->setSizes({baysW, tilesW});
@@ -2689,9 +2706,10 @@ void MultiReplayDock::rebuildMultiview()
 		// hands a lone tile the whole row and it draws itself as big as
 		// the picture being watched — the same angle, twice, and the event
 		// list paying for the second copy.
-		t.box->setMaximumWidth(panelMode_ == PanelMode::Tall
-					       ? kTileMaxWidth
-					       : QWIDGETSIZE_MAX);
+		// applyPreviewAspect settles the real ceiling a moment later; this
+		// only stops a freshly shown tile claiming the whole row for one
+		// frame.
+		t.box->setMaximumWidth(tileCap_ > 0 ? tileCap_ : QWIDGETSIZE_MAX);
 		multiviewGrid_->addWidget(t.box, (int)k / cols, (int)k % cols);
 		t.box->setVisible(show);
 	}
@@ -2719,24 +2737,21 @@ void MultiReplayDock::rebuildMultiview()
 	// one in use are also where the hidden tiles were left sitting.
 	const int usedRows =
 		((int)tileSlots.size() + cols - 1) / std::max(1, cols);
-	// AND ONE SPARE ROW BELOW THEM, but only beside a big A - where the
-	// camera column is as tall as A is and the pictures would otherwise be
-	// stretched down it. Each tile is capped at its own picture height
-	// there, so the rows in use stop growing and the leftover lands in the
-	// spare one, which puts the strip at the TOP of the column instead of
-	// spread down it. In a column the block is already exactly as tall as
-	// its pictures, so a spare row there would just take half of them.
+	// NO SPARE ROW. One was added here to keep the pictures at the top of a
+	// block taller than they are, and it took a THIRD of the block: with
+	// three rows all at stretch 1 and the tiles' own ceiling never reached,
+	// QGridLayout simply divided the height three ways and the cameras came
+	// out shorter than they were entitled to be. The ceiling already does
+	// that job - a row whose tile cannot grow any further stops taking, and
+	// what is left over is simply not handed out, which leaves it at the
+	// bottom where the spare row was meant to put it.
+	//
 	// The bound is usedRows + 1, NOT rowCount(): setRowStretch on an index
 	// past the end GROWS the grid, so a loop that walks to rowCount() adds a
 	// row every time it runs - and this runs whenever the cameras change.
 	for (int r = 0;
 	     r < std::max(usedRows + 1, multiviewGrid_->rowCount()); r++)
-		multiviewGrid_->setRowStretch(
-			r, r < usedRows ? 1
-					: (r == usedRows &&
-					   panelMode_ != PanelMode::Tall)
-						  ? 1
-						  : 0);
+		multiviewGrid_->setRowStretch(r, r < usedRows ? 1 : 0);
 	tileTallyPvw_ = -2; // captions were just rewritten
 	tileTallyPgm_ = -2;
 	updateMultiviewTally();
@@ -3764,6 +3779,7 @@ QWidget *MultiReplayDock::buildBottomBar()
 	// order and the exports — which nobody touches while the ball is in play —
 	// come last.
 	strip_ = new ControlStrip(box);
+	strip_->setObjectName(QStringLiteral("mrStrip"));
 	strip_->addBlock(buildMarkers(), Lane::Left, false, 1);
 	strip_->addBlock(buildAngleMatrix(), Lane::Centre, false, 3);
 	strip_->addBlock(buildSpeedBlock(), Lane::Right, false, 5);

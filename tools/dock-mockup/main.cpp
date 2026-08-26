@@ -71,8 +71,6 @@ constexpr int kSeekH = 42;
 // Narrower than this a tile stops being a picture and becomes a smear; wider
 // than this it stops being a confidence monitor and starts competing with the
 // bay it is meant to be checked against.
-constexpr int kTileMinWidth = 78;
-constexpr int kTileMaxWidth = 150;
 
 
 // The naming band under a picture. AspectBox owns the number; this is the same
@@ -84,6 +82,8 @@ constexpr int kTagH = AspectBox::kTagH;
 // eight cameras.
 int g_cams = 8;
 bool g_haveB = true;
+// Sizes named on the command line with --size=WxH. Empty means the built-in set.
+QVector<QPair<int, int>> g_sizes;
 ThemeChoice g_theme = ThemeChoice::Broadcast;
 QPalette g_pal;
 Scheme g_sc;
@@ -149,95 +149,11 @@ QWidget *statusSep(QWidget *parent)
 	return s;
 }
 
-// ---------------------------------------------------------------------------
-// THE CAMERA BLOCK BESIDE THE BAYS — how many columns, and how big a tile
-// ---------------------------------------------------------------------------
-//
-// Two wrong answers were tried before this one, and both are worth knowing.
-//
-//   A GRID COLUMN WITH A STRETCH FACTOR. The obvious thing, and it collapsed:
-//   at 1000 px the tiles got 50 px between them while A and B took 370 each,
-//   because a stretch only shares what is left AFTER every column has its
-//   minimum, and the tiles' minimum was nothing.
-//
-//   ceil(sqrt(n)) COLUMNS. Square-ish, and wrong at exactly the count this
-//   panel is most often asked for: eight cameras became 3×3 with an empty cell
-//   in the corner, and the eye finds that hole every time it reads the block.
-//
-// What the block actually has to do is stand beside two 16:9 pictures and be
-// ABOUT AS TALL AS THEY ARE. So the arrangement is chosen from the bay height:
-// for each column count that wastes no cell, work out how big a 16:9 tile would
-// have to be to fill that height in the rows it implies, and keep the one whose
-// block comes out nearest the width the block is meant to have.
-struct TileBlock {
-	int cols = 1;
-	int tileW = kTileMinWidth;
-	int tileH = 44;
-	int blockW = 0;
-	int blockH = 0;
-};
-
-// The share of the monitoring pane the camera block is aimed at. They are
-// confidence monitors: the two bays are what is being watched.
-constexpr double kTileShare = 0.22;
-// Between two tiles. It was 2, and with a naming band under each picture that
-// put one row's label hard against the next row's picture — the block read as
-// one striped rectangle rather than as N monitors.
-constexpr int kTileGap = 4;
-
-// `maxH` is how much HEIGHT the block may actually have, which is a different
-// question from how tall the bays are and the one that matters when the panel
-// is docked under the OBS preview: there the pane is 750 px wide and 120 px
-// tall, so an arrangement chosen from the width alone asks for four rows of
-// tiles in a pane that has room for two. 0 = no limit.
-TileBlock tileBlockFor(int paneW, int bays, int n, int gap, int maxH = 0)
-{
-	TileBlock best;
-	if (n <= 0 || paneW <= 0)
-		return best;
-	auto aspect = [](int w) { return std::max(1, w * 9 / 16); };
-	const int target = (int)(paneW * kTileShare);
-	const int aw0 = std::max(40, (paneW - target - gap * bays) / bays);
-	int bayH = aspect(aw0);
-	if (maxH > 0)
-		bayH = std::min(bayH, maxH);
-
-	int bestScore = INT_MAX;
-	for (int cols = 1; cols <= n; cols++) {
-		const int rows = (n + cols - 1) / cols;
-		// NO HOLES. A ragged last row is the thing the eye keeps
-		// returning to; if nothing divides evenly the fallback below
-		// takes the least ragged.
-		if (cols * rows != n)
-			continue;
-		int th = (bayH - (rows - 1) * kTileGap) / rows;
-		int tw = std::clamp(th * 16 / 9, kTileMinWidth, kTileMaxWidth);
-		th = aspect(tw);
-		const int bw = cols * tw + (cols - 1) * kTileGap;
-		const int bh = rows * (th + kTagH) + (rows - 1) * kTileGap;
-		// Width is the preference; HEIGHT IS A WALL. A block that does
-		// not fit the pane is not a slightly worse arrangement, it is a
-		// floor the operator cannot get back.
-		const int over = (maxH > 0) ? std::max(0, bh - maxH) : 0;
-		const int score = std::abs(bw - target) + over * 4;
-		if (score < bestScore) {
-			bestScore = score;
-			best = {cols, tw, th, bw, bh};
-		}
-	}
-	if (bestScore == INT_MAX) {
-		// Nothing divided evenly (a prime count of cameras). Take the
-		// squarest arrangement and live with the one empty cell.
-		const int cols = std::max(1, (int)std::ceil(std::sqrt((double)n)));
-		const int rows = (n + cols - 1) / cols;
-		int th = std::max(1, (bayH - (rows - 1) * kTileGap) / rows);
-		int tw = std::clamp(th * 16 / 9, kTileMinWidth, kTileMaxWidth);
-		th = aspect(tw);
-		best = {cols, tw, th, cols * tw + (cols - 1) * kTileGap,
-			rows * (th + kTagH) + (rows - 1) * kTileGap};
-	}
-	return best;
-}
+// (The camera block's arithmetic - how many columns and how big a tile - used
+// to be duplicated here. It lives in src/dock-layout now, so this tool and the
+// panel cannot disagree about it: they did, and that is how two rounds of "the
+// cameras are still postage stamps" were answered by looking at this window and
+// declaring it fixed.)
 
 // A monitor box with a dummy picture in it. The SHAPE is AspectBox's job (it is
 // in src/dock-layout so the panel and this run the same rule); all this adds is
@@ -1129,19 +1045,15 @@ private:
 		// after it became four, and they took half the block's height.
 		for (int c = 0; c < std::max(cols, tilesGrid_->columnCount()); c++)
 			tilesGrid_->setColumnStretch(c, c < cols ? 1 : 0);
-		// The row PAST the last one stretches too: each tile is capped at
-		// its own picture height, so the rows in use stop growing and a
-		// block taller than the pictures keeps them at the top of it.
+		// NO SPARE ROW: one here took a THIRD of the block, because with
+		// every row at stretch 1 and the ceiling never reached the grid
+		// simply divided the height three ways. The tiles own ceiling is
+		// what keeps them at the top of a block taller than they are.
 		// The bound is rows + 1, NOT rowCount(): setRowStretch on an index
 		// past the end GROWS the grid, so a loop that walks to rowCount()
 		// adds one row every time it runs - and this runs on every resize.
 		for (int r = 0; r < std::max(rows + 1, tilesGrid_->rowCount()); r++)
-			tilesGrid_->setRowStretch(
-				r, r < rows ? 1
-					    : (r == rows &&
-					       mode_ != PanelMode::Tall)
-						      ? 1
-						      : 0);
+			tilesGrid_->setRowStretch(r, r < rows ? 1 : 0);
 		tileCols_ = cols;
 	}
 
@@ -1192,7 +1104,7 @@ private:
 
 		// --- 1. what the two halves would like -----------------------
 		int baysW, tilesW, want;
-		int tileCap = kTileMaxWidth;
+		int tileCap = kTileMinWidth;
 		if (mode_ == PanelMode::Tall) {
 			// A COLUMN: the bays across the top, the cameras under
 			// them. Both halves have the whole width; the divider
@@ -1207,7 +1119,8 @@ private:
 			const int share = (paneW - kTileGap * (cols - 1)) / cols;
 			const int tileW =
 				cols >= 2 ? share
-					  : std::min(kTileMaxWidth, share);
+					  : std::min((int)(paneW * kTileMaxShare),
+						     share);
 			tileCap = tileW;
 			const int stripH = rows * (aspectHeight(tileW) + kTagH) +
 					   (rows - 1) * kTileGap;
@@ -1222,6 +1135,7 @@ private:
 								 controlsHeight())
 					: 0);
 			tilesW = tb.blockW;
+			tileCap = tb.tileW;
 			baysW = std::max(60, paneW - tilesW - gap);
 			const int bayH =
 				aspectHeight((baysW - 3 * (bays - 1)) / bays) +
@@ -1264,7 +1178,7 @@ private:
 		// back into it, spins.
 		const int capH = mode_ == PanelMode::Tall
 					 ? QWIDGETSIZE_MAX
-					 : aspectHeight(kTileMaxWidth) + kTagH;
+					 : aspectHeight(tileCap) + kTagH;
 		for (int i = 0; i < kTiles; i++) {
 			if (tile_[i]->maximumWidth() != tileCap)
 				tile_[i]->setMaximumWidth(tileCap);
@@ -1661,6 +1575,19 @@ int main(int argc, char **argv)
 			g_cams = qBound(1, a.mid(7).toInt(), 8);
 		if (a == QStringLiteral("--nob"))
 			g_haveB = false;
+		// --size=WxH, repeatable: the sizes an operator's dock actually
+		// has, rather than the seven this file guessed at. A flag and not
+		// a positional argument, so it composes with --cams and --nob -
+		// which is how the panel is judged at the CONFIGURATION it will be
+		// used in instead of at the one that happens to be the default.
+		if (a.startsWith(QStringLiteral("--size="))) {
+			const QStringList wh =
+				a.mid(7).split(QLatin1Char('x'));
+			if (wh.size() == 2 && wh[0].toInt() > 0 &&
+			    wh[1].toInt() > 0)
+				g_sizes << QPair<int, int>(wh[0].toInt(),
+							   wh[1].toInt());
+		}
 	}
 	if (args.contains(QStringLiteral("--theme=obs")))
 		g_theme = ThemeChoice::FollowObs;
@@ -1716,10 +1643,15 @@ int main(int argc, char **argv)
 			       {"landscape-short", 1500, 560},
 			       {"tiny", 460, 420},
 			       {"floating", 1000, 760}};
-	if (args.size() > 2) {
-		const QStringList wh = args[2].split(QLatin1Char('x'));
-		if (wh.size() == 2)
-			sizes = {{"custom", wh[0].toInt(), wh[1].toInt()}};
+	static QVector<QByteArray> names;
+	if (!g_sizes.isEmpty()) {
+		sizes.clear();
+		for (const auto &s : g_sizes) {
+			names << QString("at-%1x%2").arg(s.first).arg(s.second)
+					 .toUtf8();
+			sizes << Size{names.last().constData(), s.first,
+				      s.second};
+		}
 	}
 
 	for (const Size &s : sizes) {

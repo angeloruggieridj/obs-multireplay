@@ -307,6 +307,65 @@ private:
 	int rw_ = 16, rh_ = 9;
 };
 
+
+// ---------------------------------------------------------------------------
+// The camera block beside the bays — how many columns, and how big a tile
+// ---------------------------------------------------------------------------
+//
+// ONE COPY, and it lives here because it used to be two: the panel had its own
+// arithmetic and the mockup had this one, so a change that made the mockup look
+// right left the panel exactly as it was. That is not a tidiness point — it is
+// the reason two rounds of "the cameras are still postage stamps" were answered
+// with "it is fixed, look at the mockup".
+//
+// Two wrong answers were tried before this one, and both are worth knowing.
+//
+//   A GRID COLUMN WITH A STRETCH FACTOR. The obvious thing, and it collapsed:
+//   a stretch only shares what is left AFTER every column has its minimum, and
+//   a tile's minimum is nothing.
+//
+//   ceil(sqrt(n)) COLUMNS. Square-ish, and wrong at exactly the count this
+//   panel is most often asked for: eight cameras became 3x3 with an empty cell
+//   in the corner, and the eye finds that hole every time it reads the block.
+//
+// What the block has to do is stand beside the bays and be ABOUT AS TALL AS
+// THEY ARE. So the arrangement is chosen from the bay height: for each column
+// count that wastes no cell, work out how big a 16:9 tile would have to be to
+// fill that height in the rows it implies, and keep the one whose block comes
+// out nearest the width the block is meant to have.
+struct TileBlock {
+	int cols = 1;
+	int tileW = 0;
+	int tileH = 0;
+	int blockW = 0;
+	int blockH = 0;
+};
+
+// A tile below this is not a confidence monitor any more.
+inline constexpr int kTileMinWidth = 78;
+// The share of the monitoring pane the camera block is aimed at. They are
+// confidence monitors: the bays are what is being watched.
+inline constexpr double kTileShare = 0.22;
+// ...AND THE CEILING IS A SHARE TOO, which is the whole of "the cameras are
+// still much smaller than A". It was a constant 150 px while every other number
+// in this block was proportional, so on a 1000 px panel beside an 840 px A the
+// cameras came out as two stamps with 270 px of empty panel under them. A
+// ceiling has to exist — left free, ONE camera draws itself as big as the
+// picture being watched — but it has to be the same kind of number as the
+// thing it is limiting.
+inline constexpr double kTileMaxShare = 0.34;
+// Between two tiles. It was 2, and with a naming band under each picture that
+// put one row's label hard against the next row's picture.
+inline constexpr int kTileGap = 4;
+
+// `paneW` is the whole monitoring pane, `bays` how many big pictures share it,
+// `n` the configured cameras. `maxH` is how much HEIGHT the block may actually
+// have, which is a different question from how tall the bays are and the one
+// that matters when the panel is docked under the OBS preview: there the pane
+// is wide and shallow, and an arrangement chosen from the width alone asks for
+// four rows of tiles in a pane with room for two. 0 = no limit.
+TileBlock tileBlockFor(int paneW, int bays, int n, int gap, int maxH = 0);
+
 // ---------------------------------------------------------------------------
 // KeyBlock — one captioned section, in two declared shapes
 // ---------------------------------------------------------------------------

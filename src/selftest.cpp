@@ -3964,6 +3964,14 @@ void runReopenPass(const std::string &outPath)
 	// to tell them apart is to ask for a wide, shallow window and read back
 	// both the arrangement AND the height that was actually granted.
 	bool shortReachable = false;
+	// IN A COLUMN THE STACKED KEYS SIT IN THE MIDDLE. Measured as the two
+	// margins between the strip and the sections in it: a block that is centred
+	// has them equal. Reported in pixels as well, because "it is centred" and
+	// "there was nothing to centre it in" look the same from a screenshot and
+	// only the numbers tell them apart.
+	bool keysCentred = false;
+	int keyPadL = 0, keyPadR = 0;
+	QString bandText, noticeText;
 	bool fsKeyShownWhenFloating = false;
 	bool fsCoversTheScreen = false;
 	bool fsRestoresTheWindow = false;
@@ -4180,6 +4188,40 @@ void runReopenPass(const std::string &outPath)
 			};
 			measure(1100, 700, tilesWideOk, wideTileW, wideTiles, wideMode);
 			measure(340, 900, tilesTallOk, tallTileW, tallTiles, tallMode);
+			runOnUi([&]() {
+				QWidget *strip = dock->findChild<QWidget *>(
+					QStringLiteral("mrStrip"));
+				if (!strip)
+					return;
+				int lo = 1 << 20, hi = 0;
+				for (QWidget *b : strip->findChildren<QWidget *>(
+					     QStringLiteral("mrBlock"))) {
+					if (!b->isVisible())
+						continue;
+					lo = std::min(lo, b->x());
+					hi = std::max(hi, b->x() + b->width());
+				}
+				if (hi <= 0)
+					return;
+				keyPadL = lo;
+				keyPadR = strip->width() - hi;
+				// Within a pixel of each other: the spine is an
+				// integer division, so a one-pixel bias is the
+				// arithmetic and not a mistake.
+				keysCentred = std::abs(keyPadL - keyPadR) <= 1;
+				if (auto *cb = dock->findChild<ClipBar *>())
+					bandText = cb->overlayText();
+				if (auto *nl = dock->findChild<QLabel *>(
+					    QStringLiteral("mrChanStrip")))
+					noticeText = nl->text();
+			});
+			obs_log(keysCentred ? LOG_INFO : LOG_ERROR,
+				"[selftest] reopen: stacked keys - %d px of panel to "
+				"the left of them, %d to the right: %s; band says "
+				"'%s'; status line says '%s'",
+				keyPadL, keyPadR, keysCentred ? "centred" : "NOT "
+									 "centred",
+				qUtf8Printable(bandText), qUtf8Printable(noticeText));
 			{
 				bool ignored = false;
 				int iw = 0, it = 0;
@@ -4236,7 +4278,7 @@ void runReopenPass(const std::string &outPath)
 			  fsWindowOffersMaximise && fsDoubleClickIsInert &&
 			  fsKeyShownWhenFloating && fsCoversTheScreen &&
 			  fsRestoresTheWindow && tilesWideOk && tilesTallOk &&
-			  shortReachable;
+			  shortReachable && keysCentred;
 
 	// --- Put everything back ----------------------------------------------
 	// The operator's project first (so nothing is pointing into the test one),
@@ -4287,8 +4329,14 @@ void runReopenPass(const std::string &outPath)
 	obs_data_set_bool(checks, "camera_tiles_have_width_when_wide", tilesWideOk);
 	obs_data_set_bool(checks, "camera_tiles_have_width_in_a_column", tilesTallOk);
 	obs_data_set_bool(checks, "short_arrangement_is_reachable", shortReachable);
+	obs_data_set_bool(checks, "stacked_keys_are_centred", keysCentred);
 	obs_data_set_obj(root, "checks", checks);
 	obs_data_release(checks);
+	// Numbers, not checks: how much panel there was to centre the keys in.
+	// "It is centred" and "there was nothing to centre it in" look identical
+	// from a screenshot, and these are what tell them apart.
+	obs_data_set_int(root, "stacked_keys_pad_left", keyPadL);
+	obs_data_set_int(root, "stacked_keys_pad_right", keyPadR);
 	obs_data_set_int(root, "reopen_footage_span_ms", sameBoot.footageMs);
 	obs_data_set_int(root, "reopen_bar_span_ms", sameBoot.barMs);
 	obs_data_set_int(root, "reopen_rebooted_footage_span_ms",
