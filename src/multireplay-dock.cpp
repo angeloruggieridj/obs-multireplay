@@ -7,6 +7,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
 #include "multireplay-dock.hpp"
 #include "dock-layout.hpp"
 #include "dock-style.hpp"
+#include "dock-icons.hpp"
 #include "qt-display.hpp"
 #include "branch-output-install.hpp"
 #include "replay-core.hpp"
@@ -110,6 +111,75 @@ Scheme &sc()
 	return s;
 }
 
+// ── KEYS, MARKS AND IDENTITIES ───────────────────────────────────────────
+//
+// Three things every command key on this panel needs and one place that gives
+// it all three: the mark (drawn, not a glyph from whatever font had one — see
+// dock-icons.hpp), the tooltip that says what the mark means, and the STABLE ID
+// the automated gate finds it by.
+//
+// The id is the part worth insisting on. The gate used to find twelve of these
+// keys by their literal text — "⏭", "■", "-5s" — which made every one of them a
+// tripwire under the wrong thing: a label is a translation and a glyph is a
+// drawing, and neither is the key's identity. An icon-first panel would have
+// broken all twelve at once while the keys themselves worked perfectly.
+QPushButton *iconBtn(Icon ic, const char *id, const QString &tip,
+		     QWidget *parent, const char *role = "mrTransport")
+{
+	auto *b = new QPushButton(parent);
+	b->setObjectName(QString::fromLatin1(role));
+	b->setToolTip(tip);
+	b->setCursor(Qt::PointingHandCursor);
+	b->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+	setKeyIcon(b, ic, tintsFor(sc()));
+	setKeyId(b, QString::fromLatin1(id));
+	return b;
+}
+
+// A key that is a mark AND a word — REC, the exports. Qt under-measures a
+// stylesheet-styled button carrying both (the sheet's padding is not in
+// sizeHint), so "Monitors" shipped with its last letter cut off; Fixed leaves
+// the layout nothing to squeeze. Inside a section KeyBlock promotes that back
+// to Preferred for any cell that declared grow, so a key meant to fill its row
+// still does.
+QPushButton *iconTextBtn(Icon ic, const QString &text, const char *id,
+			 QWidget *parent, const char *role = "", int px = 14)
+{
+	auto *b = new QPushButton(text, parent);
+	if (role && *role)
+		b->setObjectName(QString::fromLatin1(role));
+	b->setCursor(Qt::PointingHandCursor);
+	setKeyIcon(b, ic, tintsFor(sc()), px);
+	setKeyId(b, QString::fromLatin1(id));
+	b->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+	return b;
+}
+
+// ── A MODE, ON THE STATUS LINE ───────────────────────────────────────────
+//
+// Loop, music and "in output" are the modes a replay runs UNDER, and the status
+// line owns them rather than mirroring them: a bar that repeated four toggles
+// which were also keys in the strip would be four states with two homes, which
+// is exactly how a toggle ends up left in the wrong position.
+//
+// Shorter than a key in the strip because the line is shorter, and because
+// nothing here is reached for blind — these are pressed while being looked at.
+// Lit they are a STATE: hollow, not filled. The one filled key on this panel is
+// the one that takes the Program.
+QPushButton *statusToggle(Icon ic, const QString &text, const char *id,
+			  const QString &tip, QWidget *parent)
+{
+	auto *b = new QPushButton(text, parent);
+	b->setObjectName(QStringLiteral("mrStatKey"));
+	b->setCheckable(true);
+	b->setToolTip(tip);
+	b->setCursor(Qt::PointingHandCursor);
+	b->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+	setKeyIcon(b, ic, tintsFor(sc()), 12);
+	setKeyId(b, QString::fromLatin1(id));
+	return b;
+}
+
 // A scheme colour at partial opacity. The hairlines and the playhead used a
 // hardcoded white with alpha, which is a line that vanishes on a light theme.
 QColor tint(const QString &hex, int alpha)
@@ -128,7 +198,7 @@ constexpr int kNCams = kMaxCameras; // 8
 // multireplay-dock.hpp cannot see kMaxCameras (it does not include replay-core),
 // so the angle-key array is spelled 8 there. If that ever diverges the keys
 // would silently stop at the wrong camera.
-static_assert(kMaxCameras == 8, "angleKeys_ in the header is sized 8");
+static_assert(kMaxCameras == 8, "kMaxPreviewTiles in the header is sized for 8");
 
 // Scrubbing means "review from here": the engine plays a range, it has no
 // playhead to park. The window is capped because play() materialises every
@@ -368,13 +438,13 @@ namespace {
 // coloured rectangle, so the bar is made tall enough to afford it rather than
 // the labels being squeezed over the track and fighting the timecode there.
 // 14 was not enough: the labels are drawn into (kSeekRulerH - 5) pixels, so a
-// 14 px strip left 9 px for a number and clipped the digits - the scale was
-// there but unreadable, which is the same as not being there. 24 leaves 19 px,
-// comfortable for the small font at any DPI.
-constexpr int kSeekRulerH = 24;
+// 14 px strip left 9 px for a number and clipped the digits — the scale was
+// there but unreadable, which is the same as not being there. 20 leaves 15,
+// which the small font fits at any DPI.
+constexpr int kSeekRulerH = 20;
 // Track thickness. Wide enough to hold the event markers and the timecode the
 // way it always did.
-constexpr int kSeekTrackH = 26;
+constexpr int kSeekTrackH = 20;
 
 // Label for a graduation. Minutes and seconds up to an hour, then hours: a
 // position bar over a two-hour recording that counts to "137:00" is arithmetic
@@ -1104,9 +1174,10 @@ void SeekBar::mouseReleaseEvent(QMouseEvent *e)
 
 ClipBar::ClipBar(QWidget *parent) : QWidget(parent)
 {
-	// 28, not 24: the >> key lives on this band (right end) and a 22 px key
-	// inside 24 px of bar, with margins, had its bottom border clipped.
-	setFixedHeight(28);
+	// 24, and the >> key on it is 18: a stylesheet min-height LARGER than the
+	// widget's own height makes the style draw a taller frame than the widget
+	// owns and the bottom border lands outside it.
+	setFixedHeight(24);
 	setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
 	// Deliberately NOT a pointing-hand cursor and deliberately not clickable:
 	// the bar directly under it IS clickable, and a bar that looks draggable
@@ -1360,7 +1431,19 @@ MultiReplayDock::MultiReplayDock(QWidget *parent) : QWidget(parent)
 		splitter_ = new QSplitter(Qt::Vertical, this);
 		splitter_->setChildrenCollapsible(false);
 		splitter_->setHandleWidth(5);
-		splitter_->addWidget(buildPreview());
+		// THE LEFT COLUMN. In the wide and column arrangements it holds
+		// only the pictures and the splitter divides height. In the SHORT
+		// one — docked under the OBS preview, wide and shallow — the
+		// splitter divides WIDTH instead, the list takes the right-hand
+		// half, and the keys, the on-air band and the position bar come
+		// down here to stack under the pictures. It is the only shape in
+		// which a 340 px tall dock still shows a usable table.
+		leftCol_ = new QWidget(this);
+		leftColLayout_ = new QVBoxLayout(leftCol_);
+		leftColLayout_->setContentsMargins(0, 0, 0, 0);
+		leftColLayout_->setSpacing(3);
+		leftColLayout_->addWidget(buildPreview(), 1);
+		splitter_->addWidget(leftCol_);
 
 		// The list pane: what picks the events, then the events. One
 		// widget so the splitter treats them as the single zone they are
@@ -1375,14 +1458,21 @@ MultiReplayDock::MultiReplayDock(QWidget *parent) : QWidget(parent)
 		splitter_->addWidget(listPane);
 
 		connect(splitter_, &QSplitter::splitterMoved, this,
-			[this](int, int) { userSplit_ = true; });
+			[this](int, int) {
+				userSplit_[(int)panelMode_] = true;
+				savedSplit_[(int)panelMode_] =
+					splitter_->saveState();
+			});
 		splitter_->setStretchFactor(0, 3);
 		splitter_->setStretchFactor(1, 2);
 		root->addWidget(splitter_, 1);
 	}
 
-	root->addWidget(mkSep());
-	root->addWidget(buildBottomBar());
+	rootLayout_ = root;
+	bottomSep_ = mkSep();
+	root->addWidget(bottomSep_);
+	bottomBar_ = buildBottomBar();
+	root->addWidget(bottomBar_);
 
 	// THE KEYS HAVE TO WORK WHEREVER THE FOCUS IS, and in this panel the focus
 	// is nearly always on a button the operator has just pressed. A QPushButton
@@ -1414,7 +1504,6 @@ MultiReplayDock::MultiReplayDock(QWidget *parent) : QWidget(parent)
 	// second bay asked for it to be used).
 	applyChannelBVisibility();
 
-	refreshAngleRows();
 	refreshAngles();
 	refreshEvents();
 
@@ -1507,8 +1596,14 @@ QWidget *MultiReplayDock::buildToolbar()
 	// centre of the panel, not into a corner.
 	h->addStretch(1);
 
-	auto *mag = new QLabel(QStringLiteral("🔍"), box);
-	mag->setObjectName("mrMuted");
+	// A DRAWN MAGNIFIER, not the emoji. U+1F50D carries
+	// Emoji_Presentation=Yes, so Windows painted it in full colour from Segoe
+	// UI Emoji — a bright blue blob beside a grey search box, on a panel
+	// whose every other mark is a grey line.
+	auto *mag = new QLabel(box);
+	mag->setPixmap(iconFor(Icon::Search, QColor(sc().textMuted), 13,
+			       devicePixelRatioF())
+			       .pixmap(13, 13));
 	h->addWidget(mag);
 	search_ = new QLineEdit(box);
 	search_->setPlaceholderText(obs_module_text("Dock.Search"));
@@ -1522,7 +1617,8 @@ QWidget *MultiReplayDock::buildToolbar()
 	// the reference controller's Live button, in the reference controller's place and the reference controller's colour: red means the
 	// marks land where the action is happening, off means they land where the
 	// position bar is parked.
-	liveBtn_ = new QPushButton(obs_module_text("Dock.LiveMode"), box);
+	liveBtn_ = iconTextBtn(Icon::Live, obs_module_text("Dock.LiveMode"),
+			       "live", box, "mrLive", 12);
 	liveBtn_->setObjectName("mrLive");
 	liveBtn_->setCheckable(true);
 	liveBtn_->setCursor(Qt::PointingHandCursor);
@@ -1553,8 +1649,11 @@ QWidget *MultiReplayDock::buildToolbar()
 	// operator working from the list on a thin machine should be able to put it
 	// down. One key for the whole block: hiding the pictures and leaving the
 	// strip floating under nothing would read as a bug.
-	monitorsBtn_ = new QPushButton(obs_module_text("Dock.Monitors"), box);
-	monitorsBtn_->setObjectName("mrLive");
+	// A STATE, NOT A SIGNAL. It wore the Live key's role, so "the pictures are
+	// on" — the resting state of the panel — lit up in the same red as REC.
+	// Red has one meaning here and this is not it.
+	monitorsBtn_ = iconTextBtn(Icon::Monitors, obs_module_text("Dock.Monitors"),
+				   "monitors", box, "mrToggle", 12);
 	monitorsBtn_->setCheckable(true);
 	monitorsBtn_->setChecked(true);
 	monitorsBtn_->setCursor(Qt::PointingHandCursor);
@@ -1568,8 +1667,9 @@ QWidget *MultiReplayDock::buildToolbar()
 	// absent rather than dead, and why this makes a window state change instead
 	// of a new window. refreshFullScreenKey() decides whether it is on screen;
 	// it starts hidden because a dock is docked until somebody pulls it out.
-	fullScreenBtn_ = new QPushButton(QStringLiteral("⛶"), box);
-	fullScreenBtn_->setObjectName("mrToggle");
+	fullScreenBtn_ = iconBtn(Icon::FullScreen, "fullscreen",
+				 obs_module_text("Dock.FullScreenHint"), box,
+				 "mrToggle");
 	fullScreenBtn_->setCheckable(true);
 	fullScreenBtn_->setCursor(Qt::PointingHandCursor);
 	fullScreenBtn_->setToolTip(obs_module_text("Dock.FullScreenHint"));
@@ -1581,6 +1681,12 @@ QWidget *MultiReplayDock::buildToolbar()
 		// trusted to have made it happen.
 		refreshFullScreenKey();
 	});
+	// THE GEAR SITS WITH THE OTHER PANEL-WIDE KEYS. What it opens is the
+	// configuration of the whole panel — the project, the cameras, the tags,
+	// the theme — and inside the record section it read as part of arming a
+	// take. It goes beside the full-screen key because those two are the pair
+	// that are about the panel itself rather than about the replay.
+	h->addWidget(buildGearMenu());
 	h->addWidget(fullScreenBtn_);
 	h->addStretch(1);
 	v->addWidget(topRow);
@@ -1643,93 +1749,82 @@ QWidget *MultiReplayDock::buildPreview()
 	v->setContentsMargins(0, 0, 0, 0);
 	v->setSpacing(0);
 
-	// the reference controller: the A output big on the left, every camera small on the right.
-	// One row, two stretches — the operator watches the big one and keeps the
-	// others in the corner of his eye, which is the whole reason the strip is
-	// here rather than behind a button.
+	// the reference controller: the replay outputs big, every camera small
+	// beside them. The operator watches the big ones and keeps the others in
+	// the corner of his eye, which is the whole reason the strip is here
+	// rather than behind a button.
 	//
-	// A GRID, NOT A ROW, and it is not tidiness. The three panel arrangements
-	// (see applyPanelMode) move these three boxes between cells, and moving a
-	// widget from one LAYOUT to another re-parents it — which destroys the
-	// native window of every OBSQTDisplay underneath and strands its
-	// obs_display. Re-celling ONE grid never re-parents anything, which is the
-	// same reason the multiview tiles have always been moved rather than
-	// rebuilt.
-	auto *row = new QWidget(box);
-	auto *rh = new QGridLayout(row);
-	rh->setContentsMargins(0, 0, 0, 0);
-	rh->setSpacing(3);
-	previewGrid_ = rh;
+	// A SPLITTER, not a fixed division, because how much room the cameras are
+	// worth against the bays is the operator's call and nobody else's. In a
+	// wide panel that divider is a WIDTH — and since every box keeps the
+	// canvas's ratio (see AspectBox), the same drag changes their HEIGHT too,
+	// which is the only control over the size of the pictures there has ever
+	// been. Where he leaves it is remembered per arrangement.
+	//
+	// NOTHING IN HERE IS EVER RE-PARENTED. QSplitter::setOrientation does not
+	// touch its children, and A and B stay in one grid whichever way the panel
+	// is turned — because moving a widget from one LAYOUT to another destroys
+	// the native window of every OBSQTDisplay underneath it and strands the
+	// obs_display presenting into it.
+	bays_ = new QWidget(box);
+	auto *bg = new QGridLayout(bays_);
+	bg->setContentsMargins(0, 0, 0, 0);
+	bg->setSpacing(3);
 
-	// TWO outputs side by side, as in the reference controller: A on the left, B on the right,
-	// each under its own letter. One box for two channels would mean the
-	// operator has to remember which one he is looking at — and the point of
-	// a second channel is having the next replay ready while the first is on
-	// air, which cannot be done if only one of them can be seen.
-	auto *aBox = new QWidget(row);
-	aBox_ = aBox;
+	// TWO outputs side by side, in every arrangement. They are two bays of one
+	// deck: stacking them would make the pair read as a hierarchy, and it is
+	// the one relationship on this panel that is exactly equal. One box for
+	// both would mean the operator has to remember which he is looking at —
+	// and the point of a second bay is having the next replay ready while the
+	// first is on air, which cannot be done if only one can be seen.
+	aBox_ = new AspectBox(bays_);
 	{
-		auto *av = new QVBoxLayout(aBox);
-		av->setContentsMargins(0, 0, 0, 0);
-		av->setSpacing(1);
-		displayA_ = new OBSQTDisplay(aBox);
+		displayA_ = new OBSQTDisplay(aBox_);
 		displayA_->setRenderCallback(&MultiReplayDock::drawChannelA, this);
-		displayA_->setSizePolicy(QSizePolicy::Expanding,
-					 QSizePolicy::Expanding);
-		displayA_->setMinimumHeight(40);
-		av->addWidget(displayA_, 1);
-		labelA_ = new QLabel(QStringLiteral("A"), aBox);
+		labelA_ = new QLabel(QStringLiteral("A"), aBox_);
 		labelA_->setObjectName("mrChanTag");
 		labelA_->setProperty("chan", QStringLiteral("A"));
 		labelA_->setProperty("active", true); // A is where the panel starts
 		labelA_->setAlignment(Qt::AlignCenter);
-		av->addWidget(labelA_);
+		aBox_->setContents(displayA_, labelA_);
 	}
-	bBox_ = new QWidget(row);
-	QWidget *bBox = bBox_;
+	bBox_ = new AspectBox(bays_);
 	{
-		auto *bv = new QVBoxLayout(bBox);
-		bv->setContentsMargins(0, 0, 0, 0);
-		bv->setSpacing(1);
-		displayB_ = new OBSQTDisplay(bBox);
+		displayB_ = new OBSQTDisplay(bBox_);
 		displayB_->setRenderCallback(&MultiReplayDock::drawChannelB, this);
-		displayB_->setSizePolicy(QSizePolicy::Expanding,
-					 QSizePolicy::Expanding);
-		displayB_->setMinimumHeight(40);
-		bv->addWidget(displayB_, 1);
-		labelB_ = new QLabel(QStringLiteral("B"), bBox);
+		labelB_ = new QLabel(QStringLiteral("B"), bBox_);
 		labelB_->setObjectName("mrChanTag");
 		labelB_->setProperty("chan", QStringLiteral("B"));
 		labelB_->setProperty("active", false);
 		labelB_->setAlignment(Qt::AlignCenter);
-		bv->addWidget(labelB_);
+		bBox_->setContents(displayB_, labelB_);
 	}
-	// The cells are assigned by applyPanelMode(), which runs at the end of the
-	// constructor and on every resize that changes the arrangement. Building
-	// the multiview here only creates it; where it goes is the mode's business.
-	buildMultiview();
-	monitorsRow_ = row; // the Monitors key hides this whole block
-	v->addWidget(row, 1);
+	bg->addWidget(aBox_, 0, 0);
+	bg->addWidget(bBox_, 0, 1);
+	bg->setColumnStretch(0, 1);
+	bg->setColumnStretch(1, 1);
 
-	// The green strip the reference controller puts directly under the A output: which list, which
-	// clip of how many, how much of it is left, the event id, how far the
-	// playhead is past IN and short of OUT, the timecode and the speed. All of
-	// it is state we already had and were making the operator infer.
-	auto *strip = new QWidget(box);
-	auto *sh = new QHBoxLayout(strip);
-	sh->setContentsMargins(0, 0, 0, 0);
-	sh->setSpacing(0);
-	chanBadge_ = new QLabel(QStringLiteral("A1"), strip);
-	chanBadge_->setObjectName("mrChanBadge");
-	chanBadge_->setAlignment(Qt::AlignCenter);
-	chanStrip_ = new QLabel(strip);
-	chanStrip_->setObjectName("mrChanStrip");
-	chanStrip_->setFont(QFont(monoFamily()));
-	chanStrip_->setTextFormat(Qt::PlainText);
-	sh->addWidget(chanBadge_);
-	sh->addWidget(chanStrip_, 1);
-	monitorsStrip_ = strip; // goes away with the monitors it belongs to
-	v->addWidget(strip);
+	buildMultiview();
+
+	monitorSplit_ = new QSplitter(Qt::Horizontal, box);
+	monitorSplit_->setChildrenCollapsible(false);
+	monitorSplit_->setHandleWidth(5);
+	monitorSplit_->addWidget(bays_);
+	monitorSplit_->addWidget(multiviewBox_);
+	connect(monitorSplit_, &QSplitter::splitterMoved, this, [this](int, int) {
+		userMonitorSplit_[(int)panelMode_] = true;
+		savedMonitorSplit_[(int)panelMode_] = monitorSplit_->saveState();
+	});
+	monitorsRow_ = monitorSplit_; // the Monitors key hides this whole block
+	v->addWidget(monitorSplit_, 1);
+
+	// (The green channel strip that used to sit here is gone. It said which
+	// list, which clip of how many, how much was left, the event id, the two
+	// offsets, the timecode and the speed — three lines and 44 px of panel,
+	// nearly all of it a second copy of what the on-air band and the position
+	// bar already say. What was only said there — the notice answering a key
+	// the operator just pressed — is on the status line now.)
+	monitorsStrip_ = nullptr;
 
 	previewPane_ = box; // the splitter child the Monitors key gives back
 	return box;
@@ -1793,65 +1888,43 @@ int MultiReplayDock::tileColumns(int tileCount) const
 
 void MultiReplayDock::applyPanelMode(PanelMode m, bool force)
 {
-	if (!previewGrid_ || !splitter_)
+	if (!monitorSplit_ || !splitter_)
 		return;
 	if (!force && m == panelMode_)
 		return;
 	const PanelMode was = panelMode_;
 	panelMode_ = m;
-	if (was != m)
-		userSplit_ = false;
 
-	// B MAY NOT BE THERE AT ALL, and in a grid that matters in a way it did
-	// not in a box layout: setColumnStretch/setRowStretch are properties of the
-	// COLUMN, not of the widget in it, so a hidden B still gets its share of
-	// the room. The second bay is OFF by default, so this is the ordinary rig —
-	// three eighths of the picture area given to an invisible box. A box layout
-	// hid that for us because its stretch belongs to the item.
-	const bool haveB = ReplayCore::instance().getConfig().enableChannelB;
-	const int bStretch = haveB ? 3 : 0;
+	// THE MONITORING BLOCK IS ONE SPLITTER and every arrangement turns it
+	// rather than rebuilding it: side by side the bays and the cameras divide
+	// a WIDTH, in a column they divide a HEIGHT. setOrientation does not touch
+	// the children, which is the whole reason this is a splitter — moving an
+	// OBSQTDisplay between two layouts destroys its native window and strands
+	// the obs_display presenting into it.
+	//
+	// A AND B STAY SIDE BY SIDE IN ALL THREE. They are two bays of one deck;
+	// stacking them would make the pair read as a hierarchy, and it is the one
+	// relationship on this panel that is exactly equal.
+	monitorSplit_->setOrientation(m == PanelMode::Tall ? Qt::Vertical
+							   : Qt::Horizontal);
+	splitter_->setOrientation(m == PanelMode::Short ? Qt::Horizontal
+						       : Qt::Vertical);
 
-	while (QLayoutItem *it = previewGrid_->takeAt(0))
-		delete it;
-	for (int c = 0; c < 4; c++)
-		previewGrid_->setColumnStretch(c, 0);
-	for (int r = 0; r < 4; r++)
-		previewGrid_->setRowStretch(r, 0);
+	// SHORT PUTS THE CONTROLS IN THE LEFT COLUMN. The panel is wide and
+	// shallow, so the list goes down the right-hand half and everything else —
+	// pictures, keys, the on-air band and the position bar — stacks on the
+	// left. The strip carries no picture, so moving it between the two layouts
+	// costs a relayout and nothing else.
+	applyControlsColumn(m == PanelMode::Short);
 
-	if (m == PanelMode::Tall) {
-		// A COLUMN: A across the top at its own ratio, and B beside the
-		// camera filmstrip on ONE row underneath.
-		//
-		// Three full-width pictures stacked was the obvious arrangement
-		// and it does not fit: at 340 px wide a 16:9 picture is 191 px
-		// tall, so three of them ask for nearly 600 px of a panel that has
-		// about 330 to give. What the operator got instead was three
-		// squashed boxes with BLACK BARS down the sides of each — the
-		// picture drawn at its own ratio inside a box of another.
-		//
-		// A is the one being watched, so A gets the width. B and the
-		// tiles are confidence monitors: they share the row below.
-		previewGrid_->addWidget(aBox_, 0, 0, 1, 2);
-		previewGrid_->addWidget(bBox_, 1, 0);
-		previewGrid_->addWidget(multiviewBox_, 1, 1);
-		previewGrid_->setColumnStretch(0, bStretch ? 4 : 0);
-		previewGrid_->setColumnStretch(1, 6);
-		splitter_->setOrientation(Qt::Vertical);
-	} else {
-		// WIDE and SHORT share the pictures: A, B and the tiles in one
-		// row. What SHORT changes is the split below them — a shallow
-		// dock cannot stack the pictures on top of the list and leave
-		// either of them usable, so they go side by side. Only the
-		// splitter turns; its children stay its children.
-		previewGrid_->addWidget(aBox_, 0, 0);
-		previewGrid_->addWidget(bBox_, 0, 1);
-		previewGrid_->addWidget(multiviewBox_, 0, 2);
-		previewGrid_->setColumnStretch(0, 3);
-		previewGrid_->setColumnStretch(1, bStretch);
-		previewGrid_->setColumnStretch(2, 2);
-		previewGrid_->setRowStretch(0, 1);
-		splitter_->setOrientation(m == PanelMode::Short ? Qt::Horizontal
-							       : Qt::Vertical);
+	// THE DIVIDERS THE OPERATOR CHOSE FOR *THIS* ARRANGEMENT, put back. After
+	// the orientations, never before: a saved state applied to a splitter that
+	// is still dividing the other way is a split nobody asked for.
+	if (was != m) {
+		if (splitChosen())
+			splitter_->restoreState(savedSplit_[(int)m]);
+		if (monitorSplitChosen())
+			monitorSplit_->restoreState(savedMonitorSplit_[(int)m]);
 	}
 
 	// The strip follows the panel: a column stacks, anything wider keeps its
@@ -1904,178 +1977,151 @@ int MultiReplayDock::aspectHeight(int width)
 	return std::max(1, (int)std::lround(width * ratio));
 }
 
+// ── THE MONITORING BLOCK, in three steps ─────────────────────────────────
+//
+//  1. pick the camera block's shape for the room there is;
+//  2. unless the OPERATOR has moved a divider, put the dividers where the
+//     pictures want them;
+//  3. nothing. Every box keeps the canvas's ratio by itself (AspectBox), so
+//     there is no third step any more — which is most of what this function
+//     used to be, and all of what it used to get wrong.
 void MultiReplayDock::applyPreviewAspect()
 {
-	if (!previewPane_ || !monitorsRow_)
+	if (!previewPane_ || !monitorSplit_)
 		return;
 
-	// How wide the BIGGEST picture in the row is, which is what sets the
-	// pane's height: in a column that is the full width, side by side it is
-	// A's share of it.
-	const int paneW = std::max(80, monitorsRow_->width());
-	int aW = paneW;
-	if (panelMode_ != PanelMode::Tall) {
-		// A and B take 3 parts each and the tiles 2, with two 3 px gaps —
-		// asked of the grid rather than assumed, so a stretch change here
-		// cannot leave this arithmetic behind.
-		const int cols = previewGrid_ ? previewGrid_->columnCount() : 3;
-		int total = 0;
-		for (int c = 0; c < cols; c++)
-			total += std::max(1, previewGrid_->columnStretch(c));
-		const int mine = previewGrid_ ? std::max(1, previewGrid_->columnStretch(0))
-					      : 3;
-		aW = (paneW - 3 * (cols - 1)) * mine / std::max(1, total);
-	}
+	const int paneW = std::max(80, monitorSplit_->width());
+	const Config cfg = ReplayCore::instance().getConfig();
+	const int bays = cfg.enableChannelB ? 2 : 1;
+	const int gap = monitorSplit_->handleWidth();
+	int visibleTiles = 0;
+	for (const PreviewTile &t : tiles_)
+		if (t.box && t.box->isVisible())
+			visibleTiles++;
+	const bool haveTiles = visibleTiles > 0 && multiviewBox_ &&
+			       multiviewBox_->isVisible();
 
-	// The letter under a box and the caption under a tile are MEASURED, not
-	// assumed: both are styled from the sheet, and the sheet is now built per
-	// theme. A number written here would be right until somebody changed a
-	// padding.
-	const int tagH = labelA_ ? labelA_->sizeHint().height() : 14;
+	// THE CAMERA BLOCK IS SIZED FIRST and the bays take what is left, which is
+	// the opposite of what a stretch factor does — and the reason a stretch
+	// factor starved them: a stretch shares only what is left AFTER every
+	// column has its minimum, and a tile's minimum is nothing. Eight cameras
+	// came out as eight vertical slivers.
+	const int cols = haveTiles ? std::max(1, tileColumns(visibleTiles)) : 1;
+	const int rows = haveTiles ? (visibleTiles + cols - 1) / cols : 0;
+	const int tagH = AspectBox::kTagH;
 
-	int want = aspectHeight(aW) + tagH;
+	int want = 0;
 	if (panelMode_ == PanelMode::Tall) {
-		// A is row 0 at the full width; row 1 holds B and the filmstrip
-		// side by side, so the row costs the TALLER of the two, not both.
-		const bool haveB = bBox_ && bBox_->isVisible();
-		int visibleTiles = 0;
-		const QLabel *aCaption = nullptr;
-		for (const PreviewTile &t : tiles_)
-			if (t.box && t.box->isVisible()) {
-				visibleTiles++;
-				if (!aCaption)
-					aCaption = t.caption;
-			}
-		const bool haveTiles = visibleTiles > 0 && multiviewBox_ &&
-				       multiviewBox_->isVisible();
-		const int tilesW = haveB ? (paneW - 3) * 6 / 10 : paneW;
-		int rowH = 0;
-		if (haveB)
-			rowH = aspectHeight((paneW - 3) * 4 / 10) + tagH;
+		// A COLUMN: the bays across the top, the cameras under them.
+		const int bayH =
+			aspectHeight((paneW - 3 * (bays - 1)) / bays) + tagH;
+		int stripH = 0;
 		if (haveTiles) {
-			const int cols = std::max(1, tileColumns(visibleTiles));
-			const int rows = (visibleTiles + cols - 1) / cols;
 			const int tileW = std::min(kTileMaxWidth,
-						   (tilesW - 2 * (cols - 1)) / cols);
-			const int capH = aCaption ? aCaption->sizeHint().height() : 13;
-			rowH = std::max(rowH, rows * (aspectHeight(tileW) + capH) +
-						      (rows - 1) * 2);
+						   (paneW - 2 * (cols - 1)) / cols);
+			stripH = rows * (aspectHeight(tileW) + tagH) +
+				 (rows - 1) * 2;
 		}
-		// EACH BOX IS CAPPED TOO, not just the pane. Capping only the pane
-		// leaves the grid free to stretch whatever is inside it: with one
-		// camera the filmstrip row was handed 140 px for a tile 150 px
-		// wide, so the tile came out as a tall narrow rectangle with the
-		// picture letterboxed inside — the same black bars one level down.
-		if (aBox_)
-			aBox_->setMaximumHeight(aspectHeight(aW) + tagH);
-		if (haveB && bBox_)
-			bBox_->setMaximumHeight(
-				aspectHeight((paneW - 3) * 4 / 10) + tagH);
-		if (haveTiles && multiviewBox_) {
-			multiviewBox_->setMaximumHeight(rowH);
-			// A FIXED WIDTH, not a maximum. A maximum is a ceiling and
-			// a tile has no floor of its own worth the name, so with a
-			// stretch column beside it the grid gave each tile the width
-			// of its caption — a 20 px sliver of picture. The tiles are
-			// the one thing on this panel whose size is chosen rather
-			// than derived: they are confidence monitors, and 150 px is
-			// what one is worth in a column.
-			const int cols = std::max(1, tileColumns(visibleTiles));
-			const int tileW = std::min(
-				kTileMaxWidth, (tilesW - 2 * (cols - 1)) / cols);
-			const int capH = aCaption ? aCaption->sizeHint().height() : 13;
-			for (const PreviewTile &t : tiles_)
-				if (t.box && t.box->isVisible()) {
-					t.box->setFixedWidth(tileW);
-					t.box->setMaximumHeight(
-						aspectHeight(tileW) + capH);
-				}
-		}
-
-		if (rowH > 0)
-			want += rowH + 3;
+		want = bayH + (haveTiles ? gap + stripH : 0);
+		if (!monitorSplitChosen() && haveTiles)
+			monitorSplit_->setSizes({bayH, stripH});
 	} else {
-		// Side by side the row is one picture tall and the grid has no
-		// spare to stretch into, so the caps come off — a leftover
-		// maximum from the column arrangement would pin the pictures small
-		// the moment the dock was widened.
-		for (QWidget *w : {aBox_, bBox_, multiviewBox_})
-			if (w)
-				w->setMaximumHeight(QWIDGETSIZE_MAX);
-		for (const PreviewTile &t : tiles_)
-			if (t.box) {
-				t.box->setMinimumWidth(0);
-				t.box->setMaximumWidth(QWIDGETSIZE_MAX);
-				t.box->setMaximumHeight(QWIDGETSIZE_MAX);
-			}
+		int tilesW = 0;
+		if (haveTiles) {
+			const int tileW = std::min(
+				kTileMaxWidth,
+				std::max(kTileMinWidth, (int)(paneW * 0.22) / cols));
+			tilesW = cols * tileW + (cols - 1) * 2;
+		}
+		const int baysW = std::max(60, paneW - tilesW - (haveTiles ? gap : 0));
+		const int bayH =
+			aspectHeight((baysW - 3 * (bays - 1)) / bays) + tagH;
+		int blockH = 0;
+		if (haveTiles) {
+			const int tileW = (tilesW - (cols - 1) * 2) / cols;
+			blockH = rows * (aspectHeight(tileW) + tagH) +
+				 (rows - 1) * 2;
+		}
+		want = std::max(bayH, blockH);
+		if (!monitorSplitChosen() && haveTiles)
+			monitorSplit_->setSizes({baysW, tilesW});
 	}
-	// Plus the green channel strip, which is not a picture and has its own
-	// height whatever the ratio is.
-	if (monitorsStrip_ && monitorsStrip_->isVisible())
-		want += monitorsStrip_->sizeHint().height();
 
-	// …AND NEVER MORE THAN HALF THE PANEL. Side by side, A is most of the
-	// width, so its aspect height is most of the panel: on 1500x900 an exact
-	// picture is 506 px and the event list is left with about 150. The
-	// pictures being right is not worth the list being useless — that is the
-	// trade this whole pass is about — so the aspect is the ceiling and this
-	// is the ceiling on the ceiling. Where it bites, A letterboxes a little
-	// and the operator has the splitter handle, which from then on wins.
-	if (panelMode_ != PanelMode::Tall)
-		want = std::min(want, height() / 2);
+	// A tile is a CONFIDENCE MONITOR, so it has a ceiling: left to fill the
+	// row, a single configured camera drew itself as big as the picture being
+	// watched — the same angle twice, with the event list paying for the
+	// second copy.
+	for (const PreviewTile &t : tiles_)
+		if (t.box)
+			t.box->setMaximumWidth(kTileMaxWidth);
 
+	applyPreviewSplit(want);
+}
+
+// ── WHERE THE KEYS LIVE ──────────────────────────────────────────────────
+//
+// Across the foot of the panel, or stacked in the left column beside the list.
+// The strip carries no picture, so moving it between the two layouts costs a
+// relayout and nothing else — which is exactly why the PICTURES are not the
+// thing that moves: re-parenting an OBSQTDisplay destroys its native window and
+// strands the obs_display presenting into it.
+//
+// A no-op unless the answer changed. It is called from applyPanelMode, which is
+// called from every resize.
+void MultiReplayDock::applyControlsColumn(bool inColumn)
+{
+	if (!bottomBar_ || !rootLayout_ || !leftColLayout_)
+		return;
+	if (inColumn == controlsInColumn_)
+		return;
+	controlsInColumn_ = inColumn;
+	if (inColumn) {
+		rootLayout_->removeWidget(bottomSep_);
+		rootLayout_->removeWidget(bottomBar_);
+		bottomSep_->hide();
+		leftColLayout_->addWidget(bottomBar_);
+	} else {
+		leftColLayout_->removeWidget(bottomBar_);
+		bottomBar_->setParent(this);
+		rootLayout_->addWidget(bottomSep_);
+		rootLayout_->addWidget(bottomBar_);
+		bottomSep_->show();
+	}
+	bottomBar_->show();
+}
+
+// The divider between the pictures and the list. In Short it divides WIDTH, so
+// a height means nothing to it and the pane simply takes the column it is in.
+void MultiReplayDock::applyPreviewSplit(int want)
+{
+	if (panelMode_ == PanelMode::Short) {
+		previewPane_->setMaximumHeight(QWIDGETSIZE_MAX);
+		return;
+	}
 	// A CAP, so the pane can never be GIVEN more room than its pictures can
-	// fill — every pixel over is a black bar, and the list wanted it.
+	// fill — every pixel over is panel showing through where a picture was
+	// expected, and the list wanted it.
 	if (previewPane_->maximumHeight() != want)
 		previewPane_->setMaximumHeight(want);
-
-	// …AND THE SPLITTER HAS TO BE TOLD, which the cap alone does not do. A
-	// QSplitter hands out height by stretch factor: capped at the top it can
-	// still give the pane LESS than the pictures need, and short is a black
-	// bar too — down the sides instead of along the top, which is exactly the
-	// pair of bars an operator saw on A and on the camera tile beneath it.
+	// …AND THE SPLITTER HAS TO BE TOLD, which the cap alone does not do: a
+	// QSplitter hands out height by stretch factor and capped at the top it
+	// can still give the pane LESS than the pictures need.
 	//
-	// Only when the cap has actually moved. Calling this on every resize would
-	// undo the operator's own drag of the handle a frame after he made it.
-	// UNTIL THE OPERATOR SAYS OTHERWISE. The panel sizes the pictures to their
-	// own ratio; the moment he drags the handle he has stated a preference and
-	// it is not overruled until the arrangement changes under him.
-	//
-	// This replaced a memo on `want`, which looked equivalent and was not: the
-	// first call happens during construction, when the splitter has almost no
-	// height, so the split it computed was a few pixels — and having recorded
-	// `want` it never tried again. The panel then kept that ratio for the rest
-	// of the session, which is the squashed picture with black bars the
-	// operator reported. A guard has to key on the thing it is guarding.
-	//
-	// ONLY WHEN THE SPLITTER DIVIDES HEIGHT. In the Short arrangement it
-	// divides WIDTH — pictures beside the list — so `want`, which is a height,
-	// means nothing to it. Handing it over anyway gave the monitoring pane 38
-	// px of WIDTH on a 1400 px panel. There the height cap is the whole story:
-	// the pane is as tall as the splitter and no taller than its pictures.
-	if (!userSplit_ && splitter_->orientation() == Qt::Vertical) {
-		const int total = splitter_->height();
-		// AS MUCH AS THE PICTURES NEED, OR AS MUCH AS IS LEFT AFTER THE
-		// LIST HAS ITS FLOOR — whichever is smaller.
-		//
-		// The first version refused to split at all unless both fitted,
-		// which on a 340x900 column is never: the pictures want 300 px and
-		// the strip has already taken 408 of the 900. So it always took
-		// the early-out and left the pane on its stretch factor, which is
-		// the squashed picture the operator reported. Giving the list its
-		// floor and the pictures the rest is worse than perfect and much
-		// better than that — and an operator who wants the pictures whole
-		// has the Monitors key, which is what it is for.
-		//
-		// THE MEMO IS ONLY WRITTEN WHEN THE SPLIT HAPPENED: written either
-		// way, the first call — during construction, before the splitter
-		// has any height — would take the early-out for ever after.
-		const int give = std::min(want, total - kListPaneFloor);
-		const QList<int> now = splitter_->sizes();
-		if (give > 0 && (now.isEmpty() || std::abs(now[0] - give) > 2))
-			splitter_->setSizes({give, total - give});
-	}
+	// UNTIL THE OPERATOR SAYS OTHERWISE. The moment he drags the handle he has
+	// stated a preference, and it is not overruled until the arrangement
+	// changes under him.
+	if (splitChosen())
+		return;
+	const int total = splitter_->height();
+	// As much as the pictures need, or as much as is left once the list has
+	// its floor — whichever is smaller. A perfect picture over two visible
+	// rows of events is the wrong trade on a panel whose point is the list.
+	const int give = std::min(want, total - kListPaneFloor);
+	const QList<int> now = splitter_->sizes();
+	if (give > 0 && (now.isEmpty() || std::abs(now[0] - give) > 2))
+		splitter_->setSizes({give, total - give});
 }
+
 
 void MultiReplayDock::resizeEvent(QResizeEvent *event)
 {
@@ -2104,6 +2150,13 @@ void MultiReplayDock::applyTheme()
 	sc() = schemeFor((ThemeChoice)choice, qApp->palette());
 	setStyleSheet(dockStyle(sc(), cfg.tableDensity));
 	applyTableDensity(cfg.tableDensity);
+
+	// THE MARKS ARE PIXMAPS, so unlike every label on this panel they do not
+	// follow a new style sheet: a theme that moved the key colour under them
+	// would leave them the colour they were drawn in, which on a light panel
+	// is a row of keys with invisible marks on them. Each one remembers which
+	// mark it is (see dock-icons.hpp) and is redrawn from the new scheme.
+	restyleIcons(this, tintsFor(sc()));
 
 	// The two painted widgets read sc() directly and are not restyled by the
 	// sheet, so they have to be told to redraw. Everything else Qt repolishes
@@ -2414,34 +2467,35 @@ QWidget *MultiReplayDock::buildMultiview()
 		PreviewTile &t = tiles_[i];
 		t.cam0 = (i < kMaxCameras) ? i : -1;
 
-		t.box = new QWidget(multiviewBox_);
+		t.box = new AspectBox(multiviewBox_);
 		t.box->setObjectName(QStringLiteral("mrTile"));
-		auto *tv = new QVBoxLayout(t.box);
-		tv->setContentsMargins(0, 0, 0, 0);
-		tv->setSpacing(0);
+		// CLICKING THE PICTURE IS HOW AN ANGLE IS CHOSEN, and since the
+		// camera key matrix was taken off the panel it is the ONLY way
+		// with a mouse. It is also the shortest path there is from "that
+		// camera has it" to "put that camera up": the key said "C5", the
+		// picture says what C5 is pointing at. The cursor is the only
+		// thing that advertises it, so it is not optional.
+		t.box->setCursor(Qt::PointingHandCursor);
 
 		t.display = new OBSQTDisplay(t.box);
-		t.display->setSizePolicy(QSizePolicy::Expanding,
-					 QSizePolicy::Expanding);
 		// Small on purpose: a tile costs a present() of its own on the
 		// shared graphics thread, and the operator is checking framing
 		// here, not focus.
-		t.display->setMinimumSize(80, 45);
+		t.display->setMinimumSize(60, 34);
 		tileCtx_[i].dock = this;
 		tileCtx_[i].slot = i;
 		t.display->setRenderCallback(&MultiReplayDock::drawTile,
 					     &tileCtx_[i]);
-		// Clicking a tile selects that angle: it is the shortest path there
-		// is from "that camera has it" to "put that camera up", and it is
-		// what an operator tries first. Handled in eventFilter().
 		t.display->installEventFilter(this);
-		tv->addWidget(t.display, 1);
 
 		t.caption = new QLabel(t.box);
 		t.caption->setObjectName(QStringLiteral("mrTileCap"));
 		t.caption->setTextFormat(Qt::PlainText);
+		t.caption->setAlignment(Qt::AlignCenter);
 		t.caption->installEventFilter(this);
-		tv->addWidget(t.caption, 0);
+		// The box keeps the canvas's ratio and places these two itself;
+		// there is no layout to negotiate with (see AspectBox).
+		t.box->setContents(t.display, t.caption);
 
 		t.box->setVisible(false); // rebuildMultiview() decides
 		multiviewGrid_->addWidget(t.box, i / 2, i % 2);
@@ -2971,94 +3025,43 @@ void MultiReplayDock::updateMultiviewTally()
 }
 
 // ---------------------------------------------------------------------------
-// Angle row — the reference controller's "A [1..8]" camera matrix
+// WHICH BAY the keys drive. That is all this section is now.
 // ---------------------------------------------------------------------------
-
+//
+// IT USED TO CARRY THE CAMERA MATRIX AS WELL — two rows of eight keys, sixteen
+// in all, the widest thing on the panel by a long way and the single reason it
+// could not be docked down the side of an OBS window. Measured: taking it off
+// brought the panel's minimum width from 336 px to 268.
+//
+// The angles are chosen by CLICKING THE PICTURE now. That is not a substitute,
+// it is the better control: the key said "C5", the picture says what C5 is
+// pointing at — and it is where the operator is already looking. The tally that
+// used to be on the keys is on the pictures, which is where the reference
+// controller has always put it.
+//
+// With one bay this section is not built at all: not disabled, absent. Three
+// greyed keys on a single-bay rig are three keys the eye has to rule out every
+// time it reads the strip.
 KeyBlock *MultiReplayDock::buildAngleMatrix()
 {
-	// TWO ROWS of camera keys, with the two controls that are ABOUT both of
-	// them standing beside them: the bay selector at the left, the swap at
-	// the right. That is the reference panel's own arrangement, and it is
-	// what a selector on a row of its own could never be - three loose keys
-	// near the matrix rather than one control attached to it.
-	//
-	//   A|B A B   A [1..8]   swap
-	//             B [1..8]
-	//
-	// The B row and the selector exist only when the second bay does (see
-	// applyChannelBVisibility): with one bay they are not disabled, they are
-	// absent, and the section is simply one row of cameras.
-	auto *blk = new KeyBlock(obs_module_text("Dock.ZoneAngles"), this);
+	auto *blk = new KeyBlock(QString(), this);
 	channelBWidgets_.clear();
-
-	QVector<Cell> rowA, rowB;
-	for (int ch = 0; ch < kChannels; ch++) {
-		QLabel *letter =
-			sectionLabel(QString(channelLetter((Which)ch)), this);
-		letter->setFixedWidth(kAngleLabelWidth);
-		letter->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-		(ch ? rowB : rowA) << Cell(letter, 1, false);
-
-		auto *group = new QButtonGroup(this);
-		group->setExclusive(true);
-		// All eight are BUILT, and refreshAngleRows() names the ones that
-		// are configured and draws the rest as empty slots. Built once and
-		// re-labelled, never created and destroyed: the checked state and
-		// the tally live on these widgets.
-		for (int i = 1; i <= kNCams; i++) {
-			auto *b = new QPushButton(QString::number(i), this);
-			b->setObjectName("mrAngle");
-			b->setCheckable(true);
-			b->setCursor(Qt::PointingHandCursor);
-			// FIXED HEIGHT. The style sheet asks these keys for 26 px
-			// of content plus a 1 px border top and bottom; a row that
-			// allocated a pixel less drew the bottom border outside
-			// the widget, which is what "the C1 and C2 keys are cut
-			// off at the bottom" was.
-			b->setFixedSize(kAngleKeyWidth, kKeyH);
-			b->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
-			group->addButton(b, i);
-			(ch ? rowB : rowA) << Cell(b, 1, false);
-			angleKeys_[ch][i - 1] = b;
-			if (ch == 1)
-				channelBWidgets_ << b;
-		}
-		const Which which = (Which)ch;
-		connect(group, &QButtonGroup::idClicked, this,
-			[this, which](int id) { setAngleOn(which, id); });
-		angles_[ch] = group;
-		if (ch == 0)
-			anglesA_ = group; // the name the rest of the panel knows
-		else
-			channelBWidgets_ << letter;
-	}
-
 	QWidget *sel = buildChannelRow();
-	QVector<Cell> top;
-	top << Cell(sel, 1, false, 2);
-	top += rowA;
-	top << Cell(swapBtn_, 1, false, 2);
-	QVector<Cell> bottom;
-	bottom << Cell(nullptr, 1); // the selector's column, already taken
-	bottom += rowB;
-	// COMPACT: the bay selector drops UNDER the matrix. Standing beside it, as
-	// it does in the wide shape, it costs a column the eight camera slots need
-	// — and on a narrow panel the slots are the section. The swap keeps its
-	// distance from the three selector keys: ⇄ is not a fourth mode, and
-	// pressed by mistake it puts the wrong clip on air.
-	QVector<Cell> cSel;
-	cSel << Cell(nullptr, 1) << Cell(sel, 3, false) << Cell(nullptr, 2)
-	     << Cell(swapBtn_, 1, false);
-	blk->setShapes({top, bottom}, {rowA, rowB, cSel});
+	QVector<Cell> row;
+	row << Cell(sel, 1, false);
+	// The swap skips a column: ⇄ is not a fourth mode, and pressed by mistake
+	// it puts the wrong clip on air.
+	row << Cell(nullptr, 1) << Cell(swapBtn_, 1, false);
+	blk->setShapes({row}, {row});
 	angleBlock_ = blk;
 	return blk;
 }
 
-// The A|B / A / B selector and the swap, on the camera matrix's own columns.
+// The A|B / A / B selector and the swap.
 //
-// They are drawn at the angle keys' width and start at the angle keys' x, so the
-// three of them read as one segmented control sitting under the matrix rather
-// than as three loose keys near it. The swap skips a column: ⇄ is not a fourth
+// They are drawn as one segmented control rather than as three loose keys: the
+// question they answer — which bay do these keys drive — is one question. The
+// swap skips a column: ⇄ is not a fourth
 // mode, and pressed by mistake it puts the wrong clip on air.
 QWidget *MultiReplayDock::buildChannelRow()
 {
@@ -3069,8 +3072,10 @@ QWidget *MultiReplayDock::buildChannelRow()
 
 	chanSel_ = new QButtonGroup(this);
 	chanSel_->setExclusive(true);
+	// A↔B, not A|B: it says what the mode DOES — a command goes to both bays
+	// — rather than naming two things with a bar between them.
 	const std::pair<const char *, int> chanChoices[] = {
-		{"A|B", 2}, {"A", 0}, {"B", 1}};
+		{"A↔B", 2}, {"A", 0}, {"B", 1}};
 	for (const auto &[label, code] : chanChoices) {
 		auto *b = new QPushButton(QString::fromUtf8(label), sel);
 		b->setObjectName("mrChanSel");
@@ -3078,6 +3083,7 @@ QWidget *MultiReplayDock::buildChannelRow()
 		b->setChecked(code == 0); // A, as it has always been
 		b->setFixedSize(kChanKeyWidth, kKeyH);
 		b->setCursor(Qt::PointingHandCursor);
+		setKeyId(b, QString("bay%1").arg(code));
 		chanSel_->addButton(b, code);
 		h->addWidget(b);
 	}
@@ -3088,8 +3094,6 @@ QWidget *MultiReplayDock::buildChannelRow()
 	channelBWidgets_ << sel;
 
 	swapBtn_ = new QPushButton(QStringLiteral("\u21c4"), this);
-	swapBtn_->setObjectName("mrChanSel");
-	swapBtn_->setToolTip(obs_module_text("Dock.SwapChannels"));
 	swapBtn_->setFixedSize(kChanKeyWidth, kKeyH);
 	swapBtn_->setCursor(Qt::PointingHandCursor);
 	connect(swapBtn_, &QPushButton::clicked, this,
@@ -3152,23 +3156,17 @@ void MultiReplayDock::applyChannelBVisibility()
 	// box alone leaves the space it had. Re-applying the arrangement re-reads
 	// the flag and sets that share to zero.
 	applyPanelMode(panelMode_, /*force*/ true);
-	// The B row and the selector row are made to COLLAPSE, not to hold their
-	// place: an unconfigured camera keeps its slot because the slot is coming
-	// back (see refreshAngleRows), while a bay the operator has switched off
-	// is not coming back until he switches it on. Retaining the size of these
-	// would leave the matrix two empty rows tall on a single-bay rig.
+	// The selector and the swap COLLAPSE rather than holding their place: a
+	// bay the operator has switched off is not coming back until he switches
+	// it on, and with them gone the section is empty and takes no room at all.
 	for (QWidget *w : channelBWidgets_) {
 		QSizePolicy sp = w->sizePolicy();
 		sp.setRetainSizeWhenHidden(false);
 		w->setSizePolicy(sp);
 		w->setVisible(on);
 	}
-	// The slots of the B row need their retain flag set again when the bay
-	// comes back; refreshAngleRows owns that, so make it run - and the
-	// section has one row fewer or one row more, which the strip only learns
-	// when the block is re-measured.
-	angleRowSig_.clear();
-	refreshAngleRows();
+	// The section is a row shorter or a row longer, which the strip only
+	// learns when the block is re-measured.
 	if (strip_ && angleBlock_)
 		strip_->blockChanged(angleBlock_);
 
@@ -3193,77 +3191,6 @@ void MultiReplayDock::applyChannelBVisibility()
 	obs_log(LOG_INFO, "[dock] channel B %s", on ? "enabled (A|B)" : "disabled");
 }
 
-void MultiReplayDock::refreshAngleRows()
-{
-	// Which cameras exist, and what they are called. Cheap enough for the
-	// slow beat of poll(); it does nothing at all unless the answer changed,
-	// because setText() on a visible button is a relayout.
-	const Config cfg = ReplayCore::instance().getConfig();
-	QString signature;
-	int configured = 0;
-	for (int i = 0; i < kNCams; i++) {
-		const bool on = !cfg.cameras[i].sourceName.empty();
-		if (on)
-			configured = i + 1; // the LAST configured slot
-		signature += (on ? QString::fromStdString(cfg.cameras[i].displayName)
-				 : QString()) +
-			     "\x1f";
-	}
-	signature += (channelBEnabled_ ? "B" : "-");
-	if (signature == angleRowSig_)
-		return;
-	angleRowSig_ = signature;
-
-	for (int ch = 0; ch < kChannels; ch++) {
-		// A hidden bay's row is gone, not held open (see
-		// applyChannelBVisibility).
-		const bool rowLives = ch == 0 || channelBEnabled_;
-		for (int i = 0; i < kNCams; i++) {
-			QPushButton *b = angleKeys_[ch][i];
-			if (!b)
-				continue;
-			// ONLY THE CONFIGURED CAMERAS ARE DRAWN, and the rest of
-			// the matrix is EMPTY SPACE. A key that does nothing is a
-			// key the eye has to rule out every time it reads the
-			// row; its PLACE, on the other hand, has to stay, or
-			// angle 5 moves the day a camera is added to slot 3 and
-			// the operator's fingers have to learn the row again
-			// mid-match.
-			const bool show = rowLives && i < configured;
-			QSizePolicy sp = b->sizePolicy();
-			if (sp.retainSizeWhenHidden() != rowLives) {
-				sp.setRetainSizeWhenHidden(rowLives);
-				b->setSizePolicy(sp);
-			}
-			b->setVisible(show);
-			if (!show)
-				continue;
-			const std::string &nm = cfg.cameras[i].displayName;
-			const QString full = nm.empty()
-						     ? QString::number(i + 1)
-						     : QString::fromStdString(nm);
-			// Elided INTO the key, so a long name cannot stretch the
-			// row. Measured against the key's REAL width: the style
-			// sheet has its own padding, so eliding against our
-			// constant left Qt to elide the result a second time and
-			// the operator read "Ca..." where "Cam1" fitted.
-			const int avail =
-				(b->width() > 8 ? b->width() : kAngleKeyWidth) - 6;
-			const QFontMetrics fm(b->font());
-			b->setText(fm.elidedText(full, Qt::ElideRight, avail));
-			b->setToolTip(QString("%1 %2 - %3 (%4)")
-					      .arg(obs_module_text("Dock.Angle"))
-					      .arg(i + 1)
-					      .arg(full)
-					      .arg(channelLetter((Which)ch)));
-			b->setEnabled(true);
-		}
-	}
-	if (angleBlock_)
-		angleBlock_->refresh();
-	obs_log(LOG_INFO, "[dock] angle keys: %d configured camera(s) shown",
-		configured);
-}
 
 // ---------------------------------------------------------------------------
 // Transport — the reference controller's centre group: ⏸ ◀ ↺ [Play Events ▾] NOW ⏮ ⏭ Loop ♫
@@ -3297,31 +3224,29 @@ KeyBlock *MultiReplayDock::buildTransport()
 	// rows of unrelated lengths.
 
 	// ▶ U+25B6
-	playPauseBtn_ = transportBtn(QStringLiteral("▶"), this,
-				     obs_module_text("Dock.PlayPause"), "mrPlay");
+	// ONE MARK FOR A KEY THAT IS BOTH. This is a play at rest and a pause
+	// while a clip runs, and drawing it as one or the other made it look like
+	// two different keys depending on when you glanced at it.
+	playPauseBtn_ = iconBtn(Icon::PlayPause, "playPause",
+				obs_module_text("Dock.PlayPause"), this, "mrPlay");
 
-	// ■ U+25A0 — Stop. It used to live two clicks deep in the ▾ menu, which
-	// was survivable while every replay ended by itself at its OUT. A free
-	// review does not: it runs until it is stopped, so the way to stop it has
-	// to be a key. And ▶ cannot be that key — while something plays it is a
-	// PAUSE, which holds the picture instead of giving Program back.
-	// EXACTLY ONE button in this dock may carry this glyph: the gate finds
-	// Stop by it.
-	stopBtn_ = transportBtn(QStringLiteral("■"), this,
-				obs_module_text("Dock.Stop"));
+	// Stop. It used to live two clicks deep in the ▾ menu, which was
+	// survivable while every replay ended by itself at its OUT. A free review
+	// does not: it runs until it is stopped, so the way to stop it has to be a
+	// key. And ▶ cannot be that key — while something plays it is a PAUSE,
+	// which holds the picture instead of giving Program back.
+	stopBtn_ = iconBtn(Icon::Stop, "stop", obs_module_text("Dock.Stop"), this);
 
-	// ◀ U+25C0 — the reference controller's reverse-play key, and it works now (v1.3). Nothing
-	// decodes backwards, so this is a GOP cache shown newest-first; see
-	// reverse-plan.hpp. EXACTLY ONE button in this dock may carry this glyph:
-	// the gate finds reverse play by it.
-	auto *revBtn = transportBtn(QStringLiteral("◀"), this,
-				    obs_module_text("Dock.PlayReverse"));
+	// The reverse-play key, and it works (v1.3). Nothing decodes backwards, so
+	// this is a GOP cache shown newest-first; see reverse-plan.hpp.
+	auto *revBtn = iconBtn(Icon::Reverse, "playReverse",
+			       obs_module_text("Dock.PlayReverse"), this);
 	connect(revBtn, &QPushButton::clicked, this,
 		[this]() { playSelectedReverse(); });
 
-	// ↺ the reference controller "instantly play last event".
-	auto *lastBtn = transportBtn(QStringLiteral("↺"), this,
-				     obs_module_text("Dock.PlayLast"));
+	// "Instantly play last event".
+	auto *lastBtn = iconBtn(Icon::PlayLast, "playLast",
+				obs_module_text("Dock.PlayLast"), this);
 	connect(lastBtn, &QPushButton::clicked, this, [this]() {
 		std::string err;
 		if (!pc().playLastEvent(
@@ -3331,24 +3256,35 @@ KeyBlock *MultiReplayDock::buildTransport()
 					     QString::fromStdString(err));
 	});
 
-	// the reference controller's "Play Events". The gate finds this button by its module text, so
-	// the LABEL may move with the locale but the widget must stay a plain
-	// QPushButton whose text is exactly obs_module_text("Dock.PlaySelected") —
-	// no menu on it (a QPushButton with a menu swallows click()), hence the
-	// separate ▾ beside it, which is where the reference controller keeps the same options.
-	auto *playSel = compactBtn(obs_module_text("Dock.PlaySelected"), this,
-				   "mrAccent");
+	// ── PLAY: the biggest key on the panel ───────────────────────────────
+	//
+	// It is the one that takes the Program, so it is the one the eye should
+	// land on without reading anything. It was a text button the same weight
+	// as a frame step, in a row of eight, and the operator had to read the
+	// strip to find it. Now it is a filled green rectangle two key-rows tall
+	// carrying nothing but the play mark — and there are exactly two filled
+	// keys on this panel, this and REC once it is armed.
+	//
+	// It must stay a plain QPushButton with no menu on it: QPushButton::setMenu
+	// swallows click(), and both a hotkey and the automated gate reach this
+	// key that way. The options live on the ▾ beside it, which is where the
+	// reference controller keeps them too.
+	auto *playSel = iconBtn(Icon::Play, "playEvents",
+				obs_module_text("Dock.PlaySelected"), this,
+				"mrAccent");
+	setKeyIcon(playSel, Icon::Play, tintsFor(sc()), 22);
+	playSel->setMinimumWidth(64);
 	connect(playSel, &QPushButton::clicked, this,
 		&MultiReplayDock::playSelected);
 
 	auto *more = new QToolButton(this);
 	more->setObjectName("mrGear");
-	more->setText(QStringLiteral("▾"));
-	// A QToolButton defaults to icon-only, and with no icon that is a blank
-	// key with a menu arrow. These are glyph buttons, so say text-only.
-	more->setToolButtonStyle(Qt::ToolButtonTextOnly);
+	more->setIcon(iconFor(Icon::Menu, QColor(sc().textKey), 14,
+			      devicePixelRatioF()));
+	more->setIconSize(QSize(14, 14));
 	more->setCursor(Qt::PointingHandCursor);
 	more->setToolTip(obs_module_text("Dock.PlayOptions"));
+	setKeyId(more, QStringLiteral("playOptions"));
 	more->setPopupMode(QToolButton::InstantPopup);
 	{
 		auto *menu = new QMenu(more);
@@ -3381,28 +3317,29 @@ KeyBlock *MultiReplayDock::buildTransport()
 			[this]() { pc().stopEvents(); });
 	}
 
+	// NOW IS A DESTINATION, not a modifier: it drops the replay and puts the
+	// operator back on the live edge, which during a match is the most
+	// consequential key on this panel after REC and PLAY. It keeps the WORD —
+	// there is no mark for "back to now" that anybody would read — and it gets
+	// the whole width of the transport row under the keys, which is what
+	// "first function" looks like on a key that is not a rectangle of colour.
 	nowBtn_ = new QPushButton(QStringLiteral("NOW"), this);
 	nowBtn_->setObjectName("mrNow");
 	nowBtn_->setProperty("live", false);
 	nowBtn_->setCursor(Qt::PointingHandCursor);
 	nowBtn_->setToolTip(obs_module_text("Dock.JumpToNow"));
+	setKeyId(nowBtn_, QStringLiteral("now"));
 	nowBtn_->setMinimumWidth(38);
-	// The stylesheet asks for min-height 28 (see #mrNow) — 6 px taller than its
-	// neighbours in this row — and a layout that sizes itself to the others cut
-	// the bottom border off. Stated on the widget so the row cannot allocate
-	// less than the border needs.
-	nowBtn_->setMinimumHeight(28);
 
-	// ⏮ U+23EE / ⏭ U+23ED — one frame back, one frame forward (the reference controller
-	// frame-by-frame). EXACTLY ONE button in this dock may carry each of these
-	// glyphs: the gate finds the two steps by them.
-	auto *stepBackBtn = transportBtn(QStringLiteral("⏮"), this,
-					 obs_module_text("Dock.StepBack"));
+	// One frame back, one frame forward. The step BACK is not the forward one
+	// with the sign changed — see stepFrameBackward.
+	auto *stepBackBtn = iconBtn(Icon::StepBack, "stepBack",
+				    obs_module_text("Dock.StepBack"), this);
 	connect(stepBackBtn, &QPushButton::clicked, this,
 		[this]() { stepFrameBackward(); });
 
-	auto *stepBtn = transportBtn(QStringLiteral("⏭"), this,
-				     obs_module_text("Dock.StepFwd"));
+	auto *stepBtn = iconBtn(Icon::StepFwd, "stepFwd",
+				obs_module_text("Dock.StepFwd"), this);
 	connect(stepBtn, &QPushButton::clicked, this,
 		[this]() { stepFrameForward(); });
 
@@ -3415,32 +3352,26 @@ KeyBlock *MultiReplayDock::buildTransport()
 	// whole GOP (that is what makes reverse possible at all), which is ~100 ms on
 	// an iGPU, and asking for the next one before the last has been served just
 	// queues work the machine is already behind on.
-	// AND THEY ARE DRAWN AS TEXT, not as colour emoji: these two glyphs carry
-	// Emoji_Presentation=Yes, so Windows was painting the two least
-	// consequential keys in the row in bright Segoe UI Emoji blue. See
-	// useTextGlyph — the fix is the font, because the gate finds these keys by
-	// their text.
-	useTextGlyph(stepBackBtn, stepBackBtn->text());
-	useTextGlyph(stepBtn, stepBtn->text());
+	// (These two used to be Unicode glyphs, and U+23EE / U+23ED carry
+	// Emoji_Presentation=Yes — so Windows painted the two least consequential
+	// keys in the row in bright Segoe UI Emoji blue, on a panel where every
+	// other key is a grey mark. useTextGlyph existed to force the font. They
+	// are drawn now, at the one weight every other mark is drawn at, and the
+	// problem cannot come back.)
 	for (QPushButton *b : {stepBackBtn, stepBtn}) {
 		b->setAutoRepeat(true);
 		b->setAutoRepeatDelay(400);
 		b->setAutoRepeatInterval(150);
 	}
 
-	loopBtn_ = toggleBtn(obs_module_text("Dock.Loop"), this,
-			     obs_module_text("Dock.Loop"));
+	loopBtn_ = statusToggle(Icon::Loop, obs_module_text("Dock.Loop"), "loop",
+				obs_module_text("Dock.Loop"), this);
 	connect(loopBtn_, &QPushButton::toggled, this,
 		[this](bool on) { pc().setLoop(on); });
 
-	// THE WORD, not the note. These three keys are one group — the modes a
-	// replay runs under — and it read as two words and a symbol, which makes
-	// the symbol look like a different kind of control than the two beside it.
-	// A glyph earns its place when it is standard and shorter than its name
-	// (▶, ■, ⏭); ♫ is neither: "musica" is one word, and nothing else on this
-	// panel uses a note for it.
-	musicBtn_ = toggleBtn(obs_module_text("Dock.Music"), this,
-			      obs_module_text("Dock.MusicHint"));
+	musicBtn_ = statusToggle(Icon::Music, obs_module_text("Dock.Music"),
+				 "music",
+				 obs_module_text("Dock.MusicHint"), this);
 	connect(musicBtn_, &QPushButton::toggled, this, [this](bool on) {
 		for (Which w : targetChannels())
 			PlaybackCoordinator::instance(w).setMusicEnabled(on);
@@ -3455,8 +3386,9 @@ KeyBlock *MultiReplayDock::buildTransport()
 			showNotice(QString::fromStdString(why));
 	});
 
-	toOutputBtn_ = toggleBtn(obs_module_text("Dock.ToOutput"), this,
-				 obs_module_text("Dock.ToOutput"));
+	toOutputBtn_ = statusToggle(Icon::ToOutput,
+				    obs_module_text("Dock.ToOutput"), "toOutput",
+				    obs_module_text("Dock.ToOutput"), this);
 	// ONE state, two places to see it: the key starts where Settings says, and
 	// every play path reads the key (see playOnTargets). A setting and a button
 	// that each hold their own copy of "does this take Program" is a button left
@@ -3467,48 +3399,39 @@ KeyBlock *MultiReplayDock::buildTransport()
 	// operator presses mid-match must not reach it — the same rule that keeps a
 	// typed comment out of the config. Settings seeds the key at start-up; from
 	// then on the key is the live state and Settings is where the default lives.
-
-	// NOW IS A DESTINATION, not a modifier: it drops the replay and puts the
-	// operator back on the live edge, which during a match is the most
-	// consequential key on this panel after REC. It is given a width of its
-	// own and, in the style sheet, the red of the thing it does - at rest as
-	// well as when it is lit.
-	nowBtn_->setMinimumWidth(56);
-	more->setFixedSize(24, kKeyH);
-	for (QPushButton *b : {playPauseBtn_, stopBtn_, revBtn, lastBtn,
-			       stepBackBtn, stepBtn, nowBtn_, loopBtn_,
-			       musicBtn_, toOutputBtn_})
-		b->setFixedHeight(kKeyH);
-	playSel->setFixedHeight(kKeyH);
-	// THREE CLUSTERS, in one row, and this is the arrangement the comment at
-	// the top of this function has described all along without the code ever
-	// doing it:
+	// TWO ROWS, AND THE TWO KEYS THAT MATTER MOST ARE DRAWN LIKE IT:
 	//
-	//   ▶ ■ ◀ ↺ ⏮ ⏭        drive the clip that is showing
-	//   [Riproduci eventi] ▾ NOW   put a replay on air / come back to live
-	//   Loop  ♫  In output         the modes the other two run under
+	//   play/pause  stop  reverse  last  step-  step+  ⋮   drive the clip
+	//   [           NOW           ]                        back to the live edge
+	//   [ PLAY ]  two rows tall, filled                     events on air
 	//
-	// Two keys moved and nothing else did, because the rest of this row IS the
-	// reference panel's order and an operator who has used one finds it there.
-	// NOW came out from between the frame steps and the modes — it is the
-	// partner of "Riproduci eventi", not a transport key — and the two frame
-	// steps closed up with the other glyph keys, which is where the eye looks
-	// for them.
+	// PLAY is the biggest key on the panel because it is the one that takes
+	// Program; NOW is the widest because it is the way back. They were a text
+	// button and a small key in a row of eight, the same weight as a frame
+	// step, so the eye had to read the whole strip to find either.
 	//
 	// Stop stands next to Play, in that order, because that is the pair: one
 	// starts the picture and the other gives Program back.
+	//
+	// The three MODES that used to end this row — loop, music, in output — are
+	// on the status line now. They are not things you do to the clip, they are
+	// the conditions the next one runs under, and mixed in here they read as
+	// four more transport keys.
+	nowBtn_->setMinimumWidth(56);
+	more->setFixedSize(22, kKeyH);
+	for (QPushButton *b : {playPauseBtn_, stopBtn_, revBtn, lastBtn,
+			       stepBackBtn, stepBtn})
+		b->setFixedHeight(kKeyH);
+	nowBtn_->setFixedHeight(kKeyH);
+	playSel->setMaximumHeight(QWIDGETSIZE_MAX);
 	blk->setShapes({{Cell(playPauseBtn_), Cell(stopBtn_), Cell(revBtn),
 			 Cell(lastBtn), Cell(stepBackBtn), Cell(stepBtn),
-			 Cell(playSel), Cell(more), Cell(nowBtn_),
-			 Cell(loopBtn_), Cell(musicBtn_), Cell(toOutputBtn_)}},
-		       // compact: what you press first on top, what drives the
-		       // clip under it, the modes last — the order an operator
-		       // reaches for them in, which is what a stack should be.
-		       {{Cell(playSel, 3), Cell(more), Cell(nowBtn_, 2)},
-			{Cell(playPauseBtn_), Cell(stopBtn_), Cell(revBtn),
-			 Cell(lastBtn), Cell(stepBackBtn), Cell(stepBtn)},
-			{Cell(loopBtn_, 2), Cell(musicBtn_),
-			 Cell(toOutputBtn_, 3)}});
+			 Cell(more), Cell(playSel, 1, true, 2)},
+			{Cell(nowBtn_, 7)}},
+		       {{Cell(playPauseBtn_), Cell(stopBtn_), Cell(revBtn),
+			 Cell(lastBtn), Cell(stepBackBtn), Cell(stepBtn),
+			 Cell(more)},
+			{Cell(nowBtn_, 4), Cell(playSel, 3)}});
 
 	// There WAS a big "position / length" readout under these keys. It is gone:
 	// the position bar prints the same two numbers on itself (setOverlayText),
@@ -3574,6 +3497,72 @@ KeyBlock *MultiReplayDock::buildTransport()
 // Bottom bar — the reference controller's two control rows plus the full-width position bar
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// The status line
+// ---------------------------------------------------------------------------
+//
+// One row. On the left the health badge and the sentence — which list and which
+// event the transport keys are about, where the playhead is, and the answer to
+// a key the operator just pressed; on the right the three modes and the speed
+// the next replay will run at.
+//
+// THE MODES SIT AGAINST THE RIGHT EDGE, not in the middle: a group centred on a
+// bar whose width changes with the dock is a group that moves every time the
+// panel is resized, and against an edge the hand finds it the same way twice.
+QWidget *MultiReplayDock::buildStatusBar(QWidget *parent)
+{
+	statusBar_ = new QWidget(parent);
+	statusBar_->setObjectName(QStringLiteral("mrStatusBar"));
+	statusBar_->setFixedHeight(kStatusBarH);
+	auto *h = new QHBoxLayout(statusBar_);
+	h->setContentsMargins(6, 2, 6, 2);
+	h->setSpacing(6);
+
+	// The health badge moved here from beside REC. What it reports is a
+	// READING — how the take is going — and the record section is where the
+	// take is ARMED. It is hidden unless there is something to say: a badge
+	// that is always there is furniture, and furniture is what nobody looks
+	// at the day it finally turns red.
+	//
+	// DENSE, so the style sheet does not ask for a taller frame than the
+	// widget owns — which put its bottom border outside it and read as a box
+	// somebody forgot to close. Same trap as the skip key on the on-air band.
+	healthBtn_->setParent(statusBar_);
+	healthBtn_->setProperty("dense", true);
+	healthBtn_->setMinimumHeight(0);
+	healthBtn_->setFixedHeight(kStatusBarH - 6);
+	setKeyIcon(healthBtn_, Icon::Health, tintsFor(sc()), 11);
+	setKeyId(healthBtn_, QStringLiteral("health"));
+	h->addWidget(healthBtn_);
+
+	statusNotice_ = new QLabel(statusBar_);
+	statusNotice_->setObjectName(QStringLiteral("mrChanStrip"));
+	statusNotice_->setTextFormat(Qt::PlainText);
+	// Ignored horizontally: what it says changes every tick and its natural
+	// width would otherwise be a floor under the whole panel.
+	statusNotice_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+	h->addWidget(statusNotice_, 1);
+
+	auto *sep = new QWidget(statusBar_);
+	sep->setObjectName(QStringLiteral("mrStatSep"));
+	sep->setFixedWidth(1);
+	h->addWidget(sep);
+	for (QPushButton *b : {loopBtn_, musicBtn_, toOutputBtn_}) {
+		b->setParent(statusBar_);
+		b->setFixedHeight(kStatusBarH - 4);
+		h->addWidget(b);
+	}
+	auto *sep2 = new QWidget(statusBar_);
+	sep2->setObjectName(QStringLiteral("mrStatSep"));
+	sep2->setFixedWidth(1);
+	h->addWidget(sep2);
+
+	statusSpeed_ = new QLabel(QStringLiteral("1.00\xc3\x97"), statusBar_);
+	statusSpeed_->setObjectName(QStringLiteral("mrStatusValue"));
+	h->addWidget(statusSpeed_);
+	return statusBar_;
+}
+
 QWidget *MultiReplayDock::buildBottomBar()
 {
 	auto *box = new QWidget(this);
@@ -3589,15 +3578,15 @@ QWidget *MultiReplayDock::buildBottomBar()
 	box->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Minimum);
 
 	// -- THE CONTROL STRIP --------------------------------------------
-	// Two macro-rows, as on the reference panel:
+	// Two macro-rows:
 	//
-	//   MARK           A|B A B  [A 1..8 / B 1..8]  swap        EXPORT
-	//   REC            play rev last [Riproduci eventi] step NOW   VELOCITA
+	//   MARK (3 rows)     A↔B A B ⇄        speeds / dial / Export
+	//   REC + clock       transport + NOW + PLAY      ▲ ▼ ⋯
 	//
-	// The first line is what you do to the footage, the second is the take
-	// and the transport. Justification puts the first section of a line at
-	// the left and the last at the right, which is what keeps REC in one
-	// corner, the playback keys in the middle and the speed in the other.
+	// The first line is what you do to the FOOTAGE, the second is the take
+	// and the transport. Lanes put the same group in the same place on both
+	// rows, so the left lane starts at one x on each and the right lane ends
+	// at one x on each.
 	//
 	// Every section declares that wide arrangement AND a compact fold of the
 	// same keys; the strip wears the wide one whenever the dock is wide
@@ -3605,21 +3594,34 @@ QWidget *MultiReplayDock::buildBottomBar()
 	// ever clipped and nothing is ever hidden.
 	//
 	// addStrip(), not addWidget(): the strip tells its parent two different
-	// heights - the one it can live with and the one it would like - and
-	// only a layout item of its own can carry both. Added as a plain widget
-	// its floor becomes its preference, which is what pinned the panel at
-	// 680 px and made it look unresizable.
+	// heights — the one it can live with and the one it would like — and only
+	// a layout item of its own can carry both. Added as a plain widget its
+	// floor becomes its preference, which is what pinned the panel at 680 px
+	// and made it look unresizable.
+	//
 	// The rank is the order when the strip FOLDS on a narrow dock: what an
-	// operator reaches for through a whole match comes first, and the
-	// exports - which nobody touches while the ball is in play - come last.
+	// operator reaches for through a whole match comes first, and the running
+	// order and the exports — which nobody touches while the ball is in play —
+	// come last.
 	strip_ = new ControlStrip(box);
 	strip_->addBlock(buildMarkers(), Lane::Left, false, 1);
-	strip_->addBlock(buildAngleMatrix(), Lane::Centre, false, 2);
-	strip_->addBlock(buildExportBlock(), Lane::Right, false, 5);
+	strip_->addBlock(buildAngleMatrix(), Lane::Centre, false, 3);
+	strip_->addBlock(buildSpeedBlock(), Lane::Right, false, 5);
 	strip_->addBlock(buildRecBlock(), Lane::Left, /*startsLine*/ true, 0);
-	strip_->addBlock(buildTransport(), Lane::Centre, false, 3);
-	strip_->addBlock(buildSpeedBlock(), Lane::Right, false, 4);
+	strip_->addBlock(buildTransport(), Lane::Centre, false, 2);
+	strip_->addBlock(buildExportBlock(), Lane::Right, false, 4);
 	addStrip(v, strip_);
+
+	// ── THE STATUS LINE, ABOVE THE GREEN BAND ────────────────────────
+	// The band says what is ON AIR; this line says what the next replay will
+	// run under. Below it, the modes read as a footnote to a clip that is
+	// already playing.
+	//
+	// It OWNS the modes rather than mirroring them: loop, music and "in
+	// output" are buttons here and nowhere else. A status bar repeating three
+	// toggles that were also keys in the strip would be three states with two
+	// homes, which is exactly how a toggle ends up left in the wrong position.
+	v->addWidget(buildStatusBar(box));
 
 	// ── Row 3: the green ON-AIR band, and the key that skips past it ──
 	// What is playing, on which angle, how much is left, at what speed —
@@ -3639,13 +3641,20 @@ QWidget *MultiReplayDock::buildBottomBar()
 		// in a row of unrelated keys made the operator hunt for it, and the
 		// band is where his eye already is.
 		// Its own role (mrSkip), not a transport key: a transport key's
-		// stylesheet asks for 28 px of height, this band is 28 px tall in
-		// total, and a style that draws taller than the widget owns puts the
-		// bottom border outside it. 22 px inside 28 with 2+2 of margin.
-		nextClipBtn_ = transportBtn(QStringLiteral(">>"), clipBar_,
-					    obs_module_text("Dock.NextClip"),
-					    "mrSkip");
-		nextClipBtn_->setFixedHeight(22);
+		// Its own role (mrSkip), not a transport key: a transport key's
+		// stylesheet asks for a height this band does not have in total, and
+		// a style that draws taller than the widget owns puts the bottom
+		// border outside it.
+		//
+		// CHEVRONS, deliberately not the solid triangles of a transport key.
+		// It does not start anything: it drops the clip on air and takes the
+		// next of the queue, and a mark that looked like play would be read
+		// as one under pressure.
+		nextClipBtn_ = iconBtn(Icon::SkipNext, "skipNext",
+				       obs_module_text("Dock.NextClip"), clipBar_,
+				       "mrSkip");
+		nextClipBtn_->setFixedSize(30, 18);
+		nextClipBtn_->setMinimumHeight(0);
 		connect(nextClipBtn_, &QPushButton::clicked, this, [this]() {
 			// Logged both ways: "I pressed >> and nothing happened"
 			// is otherwise indistinguishable from "the press never
@@ -3668,8 +3677,11 @@ QWidget *MultiReplayDock::buildBottomBar()
 		auto *wl = new QHBoxLayout(wrap);
 		wl->setContentsMargins(0, 0, 0, 0);
 		wl->addWidget(clipBar_, 1);
-		h->addWidget(zoneBox(obs_module_text("Dock.ZoneOnAir"), wrap, this),
-			     1);
+		// NO CAPTION OVER IT. The band is green, full width and the only
+		// thing on the panel that fills with colour as a clip runs; a
+		// heading saying "ON AIR" above it was a line of height spent
+		// telling the operator what he could already see.
+		h->addWidget(wrap, 1);
 		v->addLayout(h);
 	}
 
@@ -3690,7 +3702,12 @@ QWidget *MultiReplayDock::buildBottomBar()
 	zoomBtn_ = new QPushButton(QStringLiteral("1×"), this);
 	zoomBtn_->setObjectName("mrChanSel");
 	zoomBtn_->setToolTip(obs_module_text("Dock.ZoomFit"));
+	setKeyId(zoomBtn_, QStringLiteral("zoom"));
 	zoomBtn_->setMinimumWidth(34);
+	// AS TALL AS THE BAR IT BELONGS TO. At a key's height it stood against the
+	// bar's top edge with a notch of panel under it, which reads as a control
+	// that has come loose from the thing it controls.
+	zoomBtn_->setFixedHeight(kSeekTrackH + kSeekRulerH + 2);
 	zoomBtn_->setCursor(Qt::PointingHandCursor);
 	// A MENU of spans, not a reset. The wheel is how you zoom by feel, but "show
 	// me the last five minutes" is a thing an operator wants exactly and cannot
@@ -3733,27 +3750,28 @@ QWidget *MultiReplayDock::buildBottomBar()
 		row->setContentsMargins(0, 0, 0, 0);
 		row->setSpacing(4);
 		row->addWidget(seek_, 1);
-		row->addWidget(zoomBtn_, 0, Qt::AlignBottom);
-		v->addWidget(zoneBox(obs_module_text("Dock.ZoneTimeline"), barBox,
-				     this));
+		row->addWidget(zoomBtn_, 0);
+		// …and none over the position bar either: it is graduated, which is
+		// how an operator recognises a scrubber, and a caption above it was
+		// naming the one control on the panel that names itself.
+		v->addWidget(barBox);
 	}
 
 	return box;
 }
 
-
-// ---------------------------------------------------------------------------
-// REC - the take: settings, the record key, the clock
 // ---------------------------------------------------------------------------
 
-KeyBlock *MultiReplayDock::buildRecBlock()
+
+QToolButton *MultiReplayDock::buildGearMenu()
 {
-	auto *blk = new KeyBlock(obs_module_text("Dock.ZoneRec"), this);
-
+	// SETTINGS BELONGS WITH THE PANEL-WIDE KEYS, not inside the record
+	// section. What it opens is the configuration of the whole panel — the
+	// project, the cameras, the tags, the theme — and sitting beside REC it
+	// read as part of arming a take.
 	auto *gear = new QToolButton(this);
 	gear->setObjectName("mrGear");
 	gear->setText(QStringLiteral("\u2699"));
-	gear->setToolButtonStyle(Qt::ToolButtonTextOnly);
 	gear->setCursor(Qt::PointingHandCursor);
 	gear->setToolTip(obs_module_text("Dock.Settings"));
 	gear->setPopupMode(QToolButton::InstantPopup);
@@ -3793,13 +3811,31 @@ KeyBlock *MultiReplayDock::buildRecBlock()
 		connect(actChapters, &QAction::triggered, this,
 			&MultiReplayDock::copyYouTubeChapters);
 	}
+	return gear;
+}
 
-	recBtn_ = new QPushButton(QStringLiteral("\u25cf  REC"), this);
-	recBtn_->setObjectName("mrRec");
+// ---------------------------------------------------------------------------
+// REC — the take, and every number about it
+// ---------------------------------------------------------------------------
+//
+// ONE SECTION, as it should always have been: arming the take, how long it has
+// been running, how much room is left, and the wall clock. They were spread
+// between here and the status line, so "how long have we been recording" was
+// answered in a different place from "are we recording".
+//
+// REC SPANS BOTH ROWS. It is one of the three first-function keys on this panel
+// (REC, PLAY, NOW) and it is drawn bigger than the rest — exactly the height of
+// the section, so nothing beside it is left misaligned.
+KeyBlock *MultiReplayDock::buildRecBlock()
+{
+	auto *blk = new KeyBlock(QString(), this);
+
+	// A MARK AND A WORD. The record dot is not the Live dot: one arms a take,
+	// the other says where a mark lands, and they were the same drawing.
+	recBtn_ = iconTextBtn(Icon::Rec, QStringLiteral("REC"), "rec", this,
+			      "mrRec", 13);
 	recBtn_->setProperty("recording", false);
-	recBtn_->setMinimumWidth(84);
-	recBtn_->setFixedHeight(kKeyH);
-	recBtn_->setCursor(Qt::PointingHandCursor);
+	recBtn_->setMinimumWidth(78);
 	connect(recBtn_, &QPushButton::clicked, this, [this]() {
 		auto &core = ReplayCore::instance();
 		if (core.isRecording()) {
@@ -3830,37 +3866,31 @@ KeyBlock *MultiReplayDock::buildRecBlock()
 	connect(healthBtn_, &QPushButton::clicked, this,
 		&MultiReplayDock::showHealthDetails);
 
-	// The reference panel stacks the wall clock over the remaining recording
-	// time, right of the record key, in red. Same two lines, same place -
-	// and inside one widget, so the section stays one key-row tall.
-	auto *clockBox = new QWidget(this);
-	auto *cv = new QVBoxLayout(clockBox);
-	cv->setContentsMargins(2, 0, 0, 0);
-	cv->setSpacing(0);
-	clockLbl_ = new QLabel(clockBox);
+	// HOW LONG THE TAKE HAS BEEN RUNNING is the number the operator looks for,
+	// so it is the big one and it is red while it runs. The wall clock and the
+	// room left are the small print under it.
+	//
+	// FIXED WIDTH, and it is not cosmetic: these change four times a second and
+	// their text changes LENGTH with it. A width change re-flows the strip,
+	// which changes its height, which makes the panel redistribute height — and
+	// what gives it up is the pictures, whose resize re-allocates a swap chain
+	// on the graphics thread. A label that cannot change width cannot start
+	// that chain.
+	clockLbl_ = new QLabel(this);
 	clockLbl_->setObjectName("mrClock");
 	clockLbl_->setFont(QFont(monoFamily()));
-	statusLbl_ = new QLabel(clockBox);
+	statusLbl_ = new QLabel(this);
 	statusLbl_->setObjectName("mrMuted");
-	// FIXED WIDTH, both of them, and it is not cosmetic. These two change
-	// four times a second and their text changes LENGTH with it. A width
-	// change re-flows the strip, which changes its height, which makes the
-	// panel redistribute height - and the widgets that give it up are the
-	// previews, whose resize re-allocates a D3D swap chain on the graphics
-	// thread. A label that cannot change width cannot start that chain.
 	const int kClockW = clockLbl_->fontMetrics().horizontalAdvance(
 				    QStringLiteral("0000-00-00 00:00:00")) +
 			    8;
 	clockLbl_->setFixedWidth(kClockW);
 	statusLbl_->setFixedWidth(kClockW);
-	cv->addWidget(clockLbl_);
-	cv->addWidget(statusLbl_);
-	clockBox->setFixedHeight(kKeyH);
 
-	blk->setShapes({{Cell(gear), Cell(recBtn_), Cell(healthBtn_),
-			 Cell(clockBox, 1, false)}},
-		       {{Cell(gear), Cell(recBtn_, 2), Cell(healthBtn_)},
-			{Cell(clockBox, 4, false)}});
+	blk->setShapes({{Cell(recBtn_, 1, true, 2), Cell(clockLbl_, 1, false)},
+			{Cell(nullptr, 1), Cell(statusLbl_, 1, false)}},
+		       {{Cell(recBtn_, 1, true, 2), Cell(clockLbl_, 1, false)},
+			{Cell(nullptr, 1), Cell(statusLbl_, 1, false)}});
 	return blk;
 }
 
@@ -3888,6 +3918,7 @@ KeyBlock *MultiReplayDock::buildSpeedBlock()
 		int p = pct; // copy: capturing a structured binding is
 			     // non-portable
 		auto *b = compactBtn(QString::fromUtf8(lbl), this, "mrSpeedChip");
+		setKeyId(b, QString("speed%1").arg(p));
 		speedChips_->addButton(b, p);
 		connect(b, &QPushButton::clicked, this, [this, p]() {
 			QSignalBlocker block(speed_);
@@ -3907,25 +3938,33 @@ KeyBlock *MultiReplayDock::buildSpeedBlock()
 
 	speed_->setMinimumWidth(110);
 	speed_->setFixedHeight(kKeyH);
-
 	// THE DIAL SITS UNDER THE PRESETS, in both arrangements: they are one
 	// control at two resolutions, and side by side the dial is a strip of
 	// nothing between two groups of keys.
+	//
+	// AND THE EXPORT KEY UNDER BOTH. There were two of them in a section of
+	// their own — one clip, or the whole selection as one file — and that is a
+	// QUESTION, not two keys. One key that asks it takes half the room and
+	// stops the operator having to know the difference before he has decided
+	// he wants to export at all.
+	auto *exportKey = buildExportKey();
 	blk->setShapes({{Cell(chips[0]), Cell(chips[1]), Cell(chips[2]),
 			 Cell(chips[3]), Cell(chips[4]), Cell(chips[5])},
-			{Cell(speed_, 5), Cell(speedLbl_, 1, false)}},
+			{Cell(speed_, 5), Cell(speedLbl_, 1, false)},
+			{Cell(exportKey, 6)}},
 		       // The six presets stay on ONE row folded as well. They are
-		       // the narrowest keys on the panel and splitting them
-		       // across two rows bought nothing but a line — and it broke
-		       // the run of values an operator reads left to right.
+		       // the narrowest keys on the panel and splitting them across
+		       // two rows bought nothing but a line — and it broke the run
+		       // of values an operator reads left to right.
 		       {{Cell(chips[0]), Cell(chips[1]), Cell(chips[2]),
 			 Cell(chips[3]), Cell(chips[4]), Cell(chips[5])},
-			{Cell(speed_, 5), Cell(speedLbl_, 1, false)}});
+			{Cell(speed_, 5), Cell(speedLbl_, 1, false)},
+			{Cell(exportKey, 6)}});
 	return blk;
 }
 
 // ---------------------------------------------------------------------------
-// EXPORT - what is done with the clips once they are marked
+// THE RUNNING ORDER, and the actions that have no key of their own
 // ---------------------------------------------------------------------------
 
 KeyBlock *MultiReplayDock::buildExportBlock()
@@ -3938,17 +3977,17 @@ KeyBlock *MultiReplayDock::buildExportBlock()
 	// the wrong thing to risk.
 	int orderKeyW = 0;
 	QVector<QPushButton *> order;
-	for (const auto &mv : {std::pair<const char *, int>{"\u25b2", -1},
-			       std::pair<const char *, int>{"\u25bc", +1}}) {
+	for (const auto &mv : {std::pair<Icon, int>{Icon::MoveUp, -1},
+			       std::pair<Icon, int>{Icon::MoveDown, +1}}) {
 		const int delta = mv.second;
-		auto *b = transportBtn(QString::fromUtf8(mv.first), this,
-				       obs_module_text(delta < 0 ? "Dock.MoveUp"
-								 : "Dock.MoveDown"));
+		auto *b = iconBtn(mv.first, delta < 0 ? "moveUp" : "moveDown",
+				  obs_module_text(delta < 0 ? "Dock.MoveUp"
+							    : "Dock.MoveDown"),
+				  this);
 		connect(b, &QPushButton::clicked, this,
 			[this, delta]() { moveSelectedEvent(delta); });
 		b->ensurePolished();
 		b->setFixedHeight(kKeyH);
-		b->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
 		orderKeyW = std::max(orderKeyW, b->sizeHint().width());
 		order << b;
 	}
@@ -3959,10 +3998,12 @@ KeyBlock *MultiReplayDock::buildExportBlock()
 	// click away, and on the table's right-click menu as well.
 	auto *edit = new QToolButton(this);
 	edit->setObjectName("mrGear");
-	edit->setText(QStringLiteral("\u22ef"));
-	edit->setToolButtonStyle(Qt::ToolButtonTextOnly);
+	edit->setIcon(iconFor(Icon::More, QColor(sc().textKey), 14,
+			      devicePixelRatioF()));
+	edit->setIconSize(QSize(14, 14));
 	edit->setCursor(Qt::PointingHandCursor);
 	edit->setToolTip(obs_module_text("Dock.ClipActions"));
+	setKeyId(edit, QStringLiteral("clipActions"));
 	edit->setPopupMode(QToolButton::InstantPopup);
 	{
 		auto *menu = new QMenu(edit);
@@ -3998,57 +4039,66 @@ KeyBlock *MultiReplayDock::buildExportBlock()
 	edit->setMinimumWidth(orderKeyW);
 	edit->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
 
-	auto *exp = compactBtn(obs_module_text("Dock.ExportClips"), this);
-	connect(exp, &QPushButton::clicked, this, [this]() {
-		auto ids = selectedEventIds();
-		if (ids.empty())
-			return;
-		QString folder = QFileDialog::getExistingDirectory(
-			this, obs_module_text("Dock.ExportFolder"));
-		if (folder.isEmpty())
-			return;
-		std::string err;
-		for (int id : ids)
-			ExportManager::instance().exportEvent(
-				id, 0, folder.toStdString(), err);
-	});
+	blk->setShapes({{Cell(order[0]), Cell(order[1]), Cell(edit)}},
+		       {{Cell(order[0]), Cell(order[1]), Cell(edit)}});
+	return blk;
+}
 
-	// ...and the whole selection as ONE file: the highlights reel. Same
-	// events, same order, same angles, same speeds - one clip after another,
-	// with the operator's music over it if the music key is down.
-	auto *reel = compactBtn(obs_module_text("Dock.ExportReel"), this);
-	reel->setToolTip(obs_module_text("Dock.ExportReelHint"));
-	connect(reel, &QPushButton::clicked, this, [this]() {
-		auto ids = selectedEventIds();
+// ---------------------------------------------------------------------------
+// ONE EXPORT KEY, which asks WHICH
+// ---------------------------------------------------------------------------
+//
+// There were two, side by side in a section of their own: one clip each, or the
+// whole selection as a single file. That is a QUESTION, not two keys — and
+// asking it on the press takes half the room and stops the operator having to
+// know the difference before he has decided he wants to export at all.
+//
+// It lives under the speed dial, with the rest of what is done to a clip once
+// it is marked.
+QPushButton *MultiReplayDock::buildExportKey()
+{
+	auto *exp = iconTextBtn(Icon::ExportClip,
+				obs_module_text("Dock.ExportClips"), "export", this);
+	exp->setToolTip(obs_module_text("Dock.ExportReelHint"));
+	exp->setFixedHeight(kKeyH);
+	connect(exp, &QPushButton::clicked, this, [this, exp]() {
+		const auto ids = selectedEventIds();
 		if (ids.empty()) {
 			showNotice(obs_module_text("Dock.SelectToReorder"));
 			return;
 		}
-		QString folder = QFileDialog::getExistingDirectory(
+		QMenu menu(this);
+		QAction *one = menu.addAction(obs_module_text("Dock.ExportClips"));
+		QAction *reel = menu.addAction(obs_module_text("Dock.ExportReel"));
+		QAction *picked = menu.exec(
+			exp->mapToGlobal(QPoint(0, exp->height())));
+		if (!picked)
+			return;
+		const QString folder = QFileDialog::getExistingDirectory(
 			this, obs_module_text("Dock.ExportFolder"));
 		if (folder.isEmpty())
 			return;
-		const bool music = musicBtn_ && musicBtn_->isChecked();
 		std::string err;
+		if (picked == one) {
+			for (int id : ids)
+				ExportManager::instance().exportEvent(
+					id, 0, folder.toStdString(), err);
+			return;
+		}
+		if (picked != reel)
+			return;
+		// ...and the whole selection as ONE file: the highlights reel.
+		// Same events, same order, same angles, same speeds — one clip
+		// after another, with the operator's music over it if the music
+		// key is down.
+		const bool music = musicBtn_ && musicBtn_->isChecked();
 		if (!ExportManager::instance().exportSequence(
 			    ids, music, folder.toStdString(), err))
 			showNotice(QString::fromStdString(err));
 		else
 			showNotice(obs_module_text("Dock.ExportReelStarted"));
 	});
-	for (QPushButton *b : {exp, reel})
-		b->setFixedHeight(kKeyH);
-
-	blk->setShapes({{Cell(order[0]), Cell(order[1]), Cell(edit), Cell(exp),
-			 Cell(reel)}},
-		       // compact: the three ordering keys beside the first export,
-		       // the reel under them. Six columns, two rows — it was
-		       // three, one per wide key, on a panel whose scarce axis is
-		       // exactly that.
-		       {{Cell(order[0]), Cell(order[1]), Cell(edit),
-			 Cell(exp, 3)},
-			{Cell(reel, 6)}});
-	return blk;
+	return exp;
 }
 
 // ---------------------------------------------------------------------------
@@ -4073,8 +4123,19 @@ KeyBlock *MultiReplayDock::buildMarkers()
 	// in the corner, and the eye finds that hole every time it reads the block.
 	auto *blk = new KeyBlock(obs_module_text("Dock.Mark"), this);
 
-	auto *in = compactBtn(obs_module_text("Dock.MarkIn"), this, "mrAccent");
-	auto *out = compactBtn(obs_module_text("Dock.MarkOut"), this, "mrAccent");
+	// IN AND OUT STAY WORDS. The brief asks for icons wherever an action is
+	// universally recognisable, and these are the counter-example it names
+	// itself: every mark on a timeline is a bracket of some kind, and a panel
+	// whose two most-pressed keys are two brackets is a panel you have to
+	// hover to use.
+	//
+	// AND THEY ARE COMMANDS, NOT ACTIONS. They were drawn in the same filled
+	// green as "play the events" — so the loudest keys on the panel were two
+	// that mark a point and put nothing on air.
+	auto *in = compactBtn(obs_module_text("Dock.MarkIn"), this);
+	setKeyId(in, QStringLiteral("markIn"));
+	auto *out = compactBtn(obs_module_text("Dock.MarkOut"), this);
+	setKeyId(out, QStringLiteral("markOut"));
 	connect(in, &QPushButton::clicked, this, [this]() {
 		const int64_t t = markTimeNs();
 		if (!markable(t))
@@ -4097,7 +4158,11 @@ KeyBlock *MultiReplayDock::buildMarkers()
 	QList<QPushButton *> keys{in, out};
 	QVector<QPushButton *> presets;
 	for (int sec : {5, 10, 20}) {
-		auto *b = compactBtn(QString("-%1s").arg(sec), this);
+		// A MINUS SIGN, not a hyphen: these read as durations before an
+		// instant, and U+2212 is the character that says so at the size
+		// the keys are drawn.
+		auto *b = compactBtn(QString("−%1s").arg(sec), this);
+		setKeyId(b, QString("mark%1").arg(sec));
 		connect(b, &QPushButton::clicked, this, [this, sec]() {
 			const int64_t t = markTimeNs();
 			if (!markable(t))
@@ -4120,12 +4185,12 @@ KeyBlock *MultiReplayDock::buildMarkers()
 	// Frame nudges are hotkeys rather than four more keys on a full row (see
 	// registerDockHotkeys): a Stream Deck is where this kind of work actually
 	// happens, and the panel is already dense.
-	auto *trimIn = compactBtn(QStringLiteral("⇤IN"), this);
-	trimIn->setToolTip(obs_module_text("Dock.TrimInHint"));
+	auto *trimIn = iconBtn(Icon::TrimIn, "trimIn",
+			       obs_module_text("Dock.TrimInHint"), this);
 	connect(trimIn, &QPushButton::clicked, this,
 		[this]() { setSelectedPoint(true); });
-	auto *trimOut = compactBtn(QStringLiteral("OUT⇥"), this);
-	trimOut->setToolTip(obs_module_text("Dock.TrimOutHint"));
+	auto *trimOut = iconBtn(Icon::TrimOut, "trimOut",
+				obs_module_text("Dock.TrimOutHint"), this);
 	connect(trimOut, &QPushButton::clicked, this,
 		[this]() { setSelectedPoint(false); });
 	keys << trimIn << trimOut;
@@ -4133,39 +4198,42 @@ KeyBlock *MultiReplayDock::buildMarkers()
 	// Cancel ends the FIRST row, beside the two keys it undoes, and it is the
 	// only key of this group in the danger colour. On the old single row it sat
 	// at the far end, five keys away from the thing it cancels.
-	auto *cancel = compactBtn(obs_module_text("Dock.Cancel"), this, "mrDanger");
+	auto *cancel = iconBtn(Icon::Cancel, "markCancel",
+			       obs_module_text("Dock.Cancel"), this, "mrDanger");
 	connect(cancel, &QPushButton::clicked, this, [this]() {
 		EventStore::instance().markCancel();
 		refreshEvents();
 	});
 	keys << cancel;
 
-	// ONE ROW, in the reference panel's own order: take a point, close it,
-	// take the last N seconds whole, move a point, throw it away. The keys
-	// keep their natural widths - forcing them all to the widest ("Annulla")
-	// puts five short labels in five wide keys, and the row stops reading as
-	// a row of marks and starts reading as a form.
-	// …and the COMPACT shape, which is the three questions above, one per row.
-	// It was `{}` — "this section has only one shape" — which meant that on a
-	// narrow panel these eight keys stayed one 360 px row and were cut off at
-	// the edge. That is most of why the panel could not be docked down a side:
-	// the section with no fold is the section that sets the floor.
+	// THREE ROWS, because it answers three questions, in the order an operator
+	// reaches for them during a match:
 	//
-	// SIX COLUMNS, not three, so the row of two fills the section just as the
-	// rows of three do; on three columns the trim row left an empty cell in the
-	// corner and the eye finds that hole every time it reads the block.
-	blk->setShapes({{Cell(in), Cell(out), Cell(presets[0]), Cell(presets[1]),
-			 Cell(presets[2]), Cell(trimIn), Cell(trimOut),
-			 Cell(cancel)}},
-		       // EIGHT columns, two rows: taking a point and moving one on
-		       // top, taking the last N seconds and throwing it away
-		       // underneath. It was three rows of six, which is the same
-		       // eight keys and one more line of a panel that is short of
-		       // lines — and on eight columns nothing is a hole.
-		       {{Cell(in, 2), Cell(out, 2), Cell(trimIn, 2),
-			 Cell(trimOut, 2)},
-			{Cell(presets[0], 2), Cell(presets[1], 2),
-			 Cell(presets[2], 2), Cell(cancel, 2)}});
+	//   −5s −10s −20s    take the last N seconds whole   (first function)
+	//   IN  OUT  ✕       take a point, close it, undo it (second)
+	//   ⇤IN OUT⇥         move a point already taken      (third)
+	//
+	// It was one row of eight, and one row said those three were the same kind
+	// of act: "-10s" and "OUT" are not, and putting them side by side claimed
+	// they were.
+	//
+	// SIX COLUMNS so the row of two divides as evenly as the rows of three: on
+	// three columns the trim row left a hole in the corner, and the eye finds
+	// that hole every time it reads the block.
+	//
+	// FOLDED IT IS TWO ROWS, and that is a deliberate trade rather than a
+	// compromise. In a column every key row is charged to the event list, and a
+	// third row here put the panel's floor past what a small floating window
+	// can be. The hierarchy stands where there is room to draw it; where there
+	// is not, the durations keep their own row and the points and the trims
+	// share the next one.
+	blk->setShapes({{Cell(presets[0], 2), Cell(presets[1], 2),
+			 Cell(presets[2], 2)},
+			{Cell(in, 2), Cell(out, 2), Cell(cancel, 2)},
+			{Cell(trimIn, 3), Cell(trimOut, 3)}},
+		       {{Cell(presets[0]), Cell(presets[1]), Cell(presets[2]),
+			 Cell(cancel)},
+			{Cell(in), Cell(out), Cell(trimIn), Cell(trimOut)}});
 	return blk;
 }
 
@@ -5449,14 +5517,12 @@ void MultiReplayDock::showZoomMenu()
 
 void MultiReplayDock::showNotice(const QString &text)
 {
-	// Shown on the green channel strip (see updateChannelStrip): it is wide,
-	// it is directly under the picture the operator is looking at, and it is
-	// where the reference controller keeps the state of the channel. The corner status line is
-	// two inches wide and would swallow half the sentence.
+	// Shown on the STATUS LINE, which owns it for a few seconds (see
+	// updateChannelStrip). It runs the width of the panel, it is next to the
+	// modes the sentence is usually about, and it is the one place left that
+	// can hold a sentence at all now that the three-line channel band is gone.
 	noticeText_ = text;
 	noticeUntilNs_ = (int64_t)os_gettime_ns() + kNoticeNs;
-	if (chanStrip_)
-		chanStrip_->setToolTip(text);
 	updateChannelStrip();
 }
 
@@ -5483,7 +5549,7 @@ void MultiReplayDock::updateChannelStrip()
 {
 	// Both are built before the first poll(), but showNotice() can be reached
 	// from anywhere and a half-built dock must not be a crash.
-	if (!chanStrip_ || !events_)
+	if (!events_)
 		return;
 
 	// mm:ss.cc — the reference controller's precision on this strip. Hundredths, because a
@@ -5539,57 +5605,59 @@ void MultiReplayDock::updateChannelStrip()
 		clipPos = std::clamp(playheadNs_, ev.tInNs, hi);
 	}
 
-	QString l1 = listText;
-	if (ps.active && ps.queued > 0)
-		l1 += QString("   %1/%2 %3")
-			      .arg(ps.queuePos, 2, 10, QLatin1Char('0'))
-			      .arg(ps.queued, 2, 10, QLatin1Char('0'))
-			      .arg(obs_module_text("Dock.Clips"));
-	// Playing BACKWARDS: everything that counts down to the end of the clip has
-	// to count down to the other end of it. A clip running in reverse finishes
-	// at its IN, so "remaining" measured to the OUT would grow while the
-	// picture ran out.
+	// ── ONE LINE, ON THE STATUS BAR ──────────────────────────────────────
+	//
+	// This was a three-line green band under the pictures — list / clip x of
+	// y / remaining, then the event id with the two offsets, then timecode and
+	// speed. Forty-four pixels of panel, and nearly all of it a second copy of
+	// what the on-air band and the position bar were already saying, in a
+	// second green that the eye had to tell apart from the first.
+	//
+	// What is left here is the part that was said NOWHERE else: which list and
+	// which event the transport keys are about, where the playhead is, and —
+	// the reason this has to exist at all — the answer to a key the operator
+	// just pressed. A notice OWNS the line while it lasts, because a refusal
+	// nobody sees is a panel that ignored him.
 	const bool reverseOnAir = ps.active && ps.reverse;
-	if (haveEv && ev.tOutNs != kNoInstant) {
-		// Remaining WALL time, so it counts down at the rate the operator
-		// is watching: at 50% a 4 s clip has 8 s left, not 4.
-		const int64_t remNs =
-			reverseOnAir
-				? (clipPos > ev.tInNs ? clipPos - ev.tInNs : 0)
-				: (ev.tOutNs > clipPos ? ev.tOutNs - clipPos : 0);
-		const int pct = speedPct_ > 0 ? speedPct_ : 100;
-		l1 += QString("   REM %1").arg(shortTc(remNs * 100 / pct));
-	}
-
-	QString l2;
-	if (haveEv) {
-		l2 = QString("%1").arg(evId, idDigits, 10, QLatin1Char('0'));
-		l2 += QString("  IN %1").arg(signedTc(clipPos - ev.tInNs));
-		if (ev.tOutNs != kNoInstant)
-			l2 += QString("  OUT %1")
-				      .arg(signedTc(clipPos - ev.tOutNs));
+	QString line;
+	const bool notice = noticeUntilNs_ > 0 &&
+			    (int64_t)os_gettime_ns() < noticeUntilNs_;
+	if (notice) {
+		line = noticeText_;
 	} else {
-		l2 = obs_module_text("Dock.NoEvent");
-	}
-
-	QString l3;
-	if (noticeUntilNs_ > 0 && (int64_t)os_gettime_ns() < noticeUntilNs_) {
-		l3 = QStringLiteral("⚠ ") + noticeText_;
-	} else {
+		line = listText;
+		if (haveEv)
+			line += QString("   %1")
+					.arg(evId, idDigits, 10, QLatin1Char('0'));
+		else
+			line += QString("   %1").arg(obs_module_text("Dock.NoEvent"));
+		if (ps.active && ps.queued > 0)
+			line += QString("   %1/%2")
+					.arg(ps.queuePos, 2, 10, QLatin1Char('0'))
+					.arg(ps.queued, 2, 10, QLatin1Char('0'));
 		const bool haveTc = eventOriginNs_ != kNoInstant &&
 				    playheadNs_ != kNoInstant &&
 				    playheadNs_ > eventOriginNs_;
-		const int64_t rel = haveTc ? playheadNs_ - eventOriginNs_ : 0;
-		l3 = QString("TC %1   %2%")
-			     .arg(eventOriginNs_ != kNoInstant
-					  ? shortTc(rel)
-					  : QStringLiteral("--:--.--"))
-			     .arg(speedPct_);
+		line += QString("   %1").arg(
+			eventOriginNs_ != kNoInstant
+				? shortTc(haveTc ? playheadNs_ - eventOriginNs_ : 0)
+				: QStringLiteral("--:--.--"));
 	}
-
-	chanStrip_->setText(l1 + "\n" + l2 + "\n" + l3);
-	if (chanBadge_)
-		chanBadge_->setText(QString("A%1").arg(currentAngle1()));
+	if (statusNotice_) {
+		statusNotice_->setText(line);
+		statusNotice_->setProperty("notice", notice);
+		if (statusNoticeLit_ != notice) {
+			statusNoticeLit_ = notice;
+			repolish(statusNotice_);
+		}
+		statusNotice_->setToolTip(notice ? noticeText_ : QString());
+	}
+	if (statusSpeed_)
+		statusSpeed_->setText(
+			QString::asprintf("%.2f\xc3\x97", speedPct_ / 100.0));
+	// clipPos and signedTc are still what the on-air band below is built from.
+	(void)clipPos;
+	(void)signedTc;
 
 	// --- the green band: the state of the ANGLE that is on air ------------
 	// id · angle · time left · speed, with the fill as the progress through
@@ -6253,40 +6321,6 @@ void MultiReplayDock::poll()
 		}
 	}
 
-	// Angle buttons: PVW green = selected, PGM red = event playing on it.
-	// Visual state is driven by the "state" property + QSS, not :checked.
-	// One row per channel, each reading ITS OWN channel: A'+[char]39+'s row shows what
-	// A is on and what A has on air, and B'+[char]39+'s row the same for B. Reading
-	// both from the active channel would light the wrong row the moment the
-	// selector moved.
-	for (int chi = 0; chi < kChannels; chi++) {
-		QButtonGroup *grp = angles_[chi];
-		if (!grp)
-			continue;
-		const auto chSt = PlaybackCoordinator::instance((Which)chi)
-					  .playState();
-		// PGM follows the angle actually on air, which is not the selected
-		// one any more: a two-angle event plays C1 then C2 while the dock
-		// still points at whichever the operator picked.
-		bool ep = chSt.active && chSt.angle1 > 0;
-		const int sel = angle1_[chi];
-		for (int i = 1; i <= kNCams; i++) {
-			auto *b = qobject_cast<QPushButton *>(grp->button(i));
-			if (!b || !b->isVisible())
-				continue;
-			QString st = (ep && i == chSt.angle1)
-					     ? QStringLiteral("program")
-				   : (i == sel) ? QStringLiteral("preview")
-						: QString();
-			if (b->property("state").toString() != st) {
-				b->setProperty("state", st);
-				repolish(b);
-			}
-		}
-		// Keep exclusive selection in sync for click handling
-		if (grp->button(sel))
-			grp->button(sel)->setChecked(true);
-	}
 
 	// The row on air gets a PGM cue on its id cell. the reference controller colours the whole
 	// row, but our row colour is the selection (orange), and repainting a
@@ -6570,15 +6604,11 @@ void MultiReplayDock::poll()
 	// A live notice owns the status line until it expires: it is the answer to
 	// something the operator just did, and overwriting it 250 ms later with the
 	// idle line is how "the dock ignored me" happens.
-	// On the same slow beat, and for the same reason: the angle keys follow the
-	// camera CONFIGURATION, which changes when the operator saves Settings — a
-	// few times an evening, not thirty times a second. (It early-outs on an
-	// unchanged signature anyway; this keeps the getConfig() lock off the fast
-	// path.)
+	// On the same slow beat: whether there are two bays at all. It changes
+	// when Settings is saved — a few times an evening, not thirty times a
+	// second — and it early-outs otherwise, which keeps the getConfig() lock
+	// off the fast path.
 	if (refreshStatus) {
-		refreshAngleRows();
-		// ...and whether there are two bays at all. Same beat, same reason:
-		// it changes when Settings is saved, and it early-outs otherwise.
 		applyChannelBVisibility();
 		// ...and whether the panel is floating, which is the only state
 		// in which there is a screen for it to take. Same beat, same
@@ -6936,33 +6966,12 @@ void MultiReplayDock::renameListDialog()
 
 void MultiReplayDock::refreshAngles()
 {
-	// The multiview follows the same configuration as the angle buttons, and
-	// this is the one function every path that can change it calls. A no-op
-	// unless the set of configured cameras (or a name) really moved.
+	// The cameras are chosen by clicking their PICTURES now, so the only thing
+	// left that follows the camera configuration is the multiview itself. This
+	// stayed a function of its own because every path that can change that
+	// configuration already calls it, and it is a no-op unless the set of
+	// cameras (or one of their names) really moved.
 	rebuildMultiview();
-	if (!anglesA_)
-		return;
-	Config cfg = ReplayCore::instance().getConfig();
-	for (int i = 0; i < kNCams; i++) {
-		auto *b = qobject_cast<QPushButton *>(anglesA_->button(i + 1));
-		if (!b)
-			continue;
-		// Show button only for cameras that have a source assigned.
-		bool configured = !cfg.cameras[i].sourceName.empty();
-		b->setVisible(configured);
-		if (!configured)
-			continue;
-		const std::string &dn = cfg.cameras[i].displayName;
-		if (dn.empty()) {
-			b->setText(QString::number(i + 1));
-			b->setToolTip(QString("%1 %2")
-					      .arg(obs_module_text("Dock.Angle"))
-					      .arg(i + 1));
-		} else {
-			b->setText(QString::fromStdString(dn).left(5));
-			b->setToolTip(QString::fromStdString(dn));
-		}
-	}
 }
 
 void MultiReplayDock::refreshEvents()
@@ -7536,12 +7545,10 @@ void MultiReplayDock::setActiveChannel(Which which, bool linked)
 		repolish(labelA_);
 		repolish(labelB_);
 	}
-	if (chanBadge_)
-		chanBadge_->setText(QString("%1%2")
-					    .arg(linked ? QStringLiteral("A|B")
-							: QString(channelLetter(
-								  which)))
-					    .arg(currentAngle1()));
+	// (There was a badge here spelling out "A|B 3". The two letters under the
+	// pictures already say which bay the keys drive, and they say it where
+	// the operator is looking; the angle is said by the tally on the camera
+	// whose picture is green.)
 	poll();
 }
 

@@ -23,6 +23,7 @@ extern "C" {
 }
 #include "health.hpp"
 #include "multireplay-dock.hpp"
+#include "dock-icons.hpp"
 #include "packet-tap.hpp"
 // pathToUtf8: a path handed to FFmpeg is UTF-8, never path::string() (which is
 // the ANSI code page on MSVC). See the rule in CLAUDE.md.
@@ -46,6 +47,7 @@ extern "C" {
 #include <QObject>
 #include <QItemSelectionModel>
 #include <QComboBox>
+#include <QLabel>
 #include <QPushButton>
 #include <QString>
 #include <QFontMetrics>
@@ -920,30 +922,33 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 				break;
 			}
 		}
-		// Matched on the text the dock itself builds: "-5s" is composed
-		// from a number so it is locale-independent, and the play button
-		// goes through the same obs_module_text() we do.
-		const QString mark5 = QStringLiteral("-5s");
-		const QString playSel = QString::fromUtf8(
-			obs_module_text("Dock.PlaySelected"));
-		// The transport keys carry glyphs, not translated words, so they
-		// are matched on the glyph the dock builds them with. Exactly one
-		// button may carry each of these — that constraint is written down
-		// in the architecture notes and in buildTransport(), and this is what enforces
-		// it.
-		const QString step = QStringLiteral("⏭");
-		const QString stepBack = QStringLiteral("⏮");
-		const QString reverse = QStringLiteral("◀");
+		// ── FOUND BY IDENTITY, NOT BY LABEL ──────────────────────
+		//
+		// These used to be matched on the literal text the dock built
+		// them with — "-5s", "⏭", "■", ">>" — and that made every one of
+		// them a tripwire under the WRONG thing. A label is a translation
+		// and a glyph is a drawing; neither is what the key IS. The panel
+		// redesign that replaced the glyphs with drawn marks would have
+		// broken twelve checks at once while every key still worked
+		// perfectly, which is a gate reporting on itself.
+		//
+		// Every command key now carries a stable id in a dynamic property
+		// (see dock-icons.hpp). It survives a locale, a font and a
+		// redesign, and there is exactly one key per id — which is the
+		// constraint that used to be written as "exactly one button may
+		// carry this glyph" and is now enforced by the panel rather than
+		// hoped for.
 		for (QPushButton *b : dock->findChildren<QPushButton *>()) {
-			if (b->text() == mark5)
+			const QString id = b->property(kKeyProperty).toString();
+			if (id == QLatin1String("mark5"))
 				markBtn = b;
-			else if (b->text() == playSel)
+			else if (id == QLatin1String("playEvents"))
 				playBtn = b;
-			else if (b->text() == step)
+			else if (id == QLatin1String("stepFwd"))
 				stepBtn = b;
-			else if (b->text() == stepBack)
+			else if (id == QLatin1String("stepBack"))
 				stepBackBtn = b;
-			else if (b->text() == reverse)
+			else if (id == QLatin1String("playReverse"))
 				revBtn = b;
 		}
 	});
@@ -1751,11 +1756,11 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 		// would also "leave clip 1" — and that is the bug this would be).
 		{
 			QPushButton *skipBtn = nullptr;
-			const QString skip = QStringLiteral(">>");
+			const QString skip = QStringLiteral("skipNext");
 			runOnUi([&]() {
 				for (QPushButton *b :
 				     dock->findChildren<QPushButton *>())
-					if (b->text() == skip)
+					if (b->property(kKeyProperty).toString() == skip)
 						skipBtn = b;
 			});
 			for (int a = 1; a <= kEventAngles; a++)
@@ -2172,9 +2177,8 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 			runOnUi([&]() {
 				for (QPushButton *b :
 				     dock->findChildren<QPushButton *>())
-					if (b->objectName() ==
-						    QStringLiteral("mrChanSel") &&
-					    b->text() == QStringLiteral("A|B") &&
+					if (b->property(kKeyProperty).toString() ==
+						    QStringLiteral("bay2") &&
 					    b->isVisibleTo(dock))
 						selectorShown = true;
 			});
@@ -2219,51 +2223,60 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 		}
 
 		// --- the angle keys are the CAMERAS, by name ------------------
-		// One key per configured camera, starting from the left, labelled
-		// with the camera's name and never wider than its neighbours. Eight
-		// keys on a two-camera rig is six keys that do nothing, and a key
-		// that grows with its label moves every other key out from under
-		// the operator's fingers when a camera is renamed.
+		// ── ONE PICTURE PER CONFIGURED CAMERA, AND IT IS THE ANGLE KEY ──
+		//
+		// The camera matrix — two rows of eight keys — is gone. It was the
+		// widest thing on the panel and the single reason it could not be
+		// docked down the side of an OBS window; the angle is chosen by
+		// clicking the PICTURE now, which is where the operator is already
+		// looking and which no key can do better ("C5" against what C5 is
+		// pointing at).
+		//
+		// So what has to be true is about the TILES: one per configured
+		// camera, on screen, each with a live display behind it and each
+		// NAMED. A black rectangle with no caption is a camera the operator
+		// has to identify by remembering where it is.
 		{
-			int visible = 0, named = 0, widths = 0, firstW = 0;
 			const Config kc = ReplayCore::instance().getConfig();
 			int configured = 0;
 			for (int i = 0; i < kEventAngles && i < kMaxCameras; i++)
 				if (!kc.cameras[i].sourceName.empty())
 					configured = i + 1;
+			int visible = 0, named = 0, clickable = 0;
 			runOnUi([&]() {
-				for (QPushButton *b :
-				     dock->findChildren<QPushButton *>()) {
-					if (b->objectName() !=
-					    QStringLiteral("mrAngle"))
+				// By objectName rather than by class: AspectBox is a
+				// plain QWidget subclass with no Q_OBJECT, and giving
+				// it one would put a moc'd type in a header the
+				// mockup also compiles.
+				for (QWidget *box :
+				     dock->findChildren<QWidget *>()) {
+					if (box->objectName() !=
+					    QStringLiteral("mrTile"))
 						continue;
-					if (!b->isVisibleTo(dock))
+					if (!box->isVisibleTo(dock))
 						continue;
 					visible++;
-					if (firstW == 0)
-						firstW = b->width();
-					if (b->width() == firstW)
-						widths++;
-					// The NAME, not the number: a key whose
-					// text is just its index never got the
-					// camera's label.
-					bool isNumber = false;
-					b->text().toInt(&isNumber);
-					if (!isNumber || b->text().isEmpty())
-						named++;
+					if (box->cursor().shape() ==
+					    Qt::PointingHandCursor)
+						clickable++;
+					for (QLabel *l :
+					     box->findChildren<QLabel *>())
+						if (l->objectName() ==
+							    QStringLiteral(
+								    "mrTileCap") &&
+						    !l->text().isEmpty())
+							named++;
 				}
 			});
-			// Two rows (A and B), so twice the configured count.
 			c.angleKeysFollowCameras = configured > 0 &&
-						   visible == configured * 2 &&
-						   widths == visible && named > 0;
+						   visible == configured &&
+						   named == visible &&
+						   clickable == visible;
 			c.visibleAngleKeys = visible;
 			obs_log(c.angleKeysFollowCameras ? LOG_INFO : LOG_ERROR,
-				"[selftest] dock: %d angle key(s) visible for %d "
-				"configured camera(s) across 2 rows, %d named, all "
-				"%d px: %s",
-				visible, configured, named, firstW,
-				widths == visible ? "yes" : "NO");
+				"[selftest] dock: %d camera tile(s) for %d configured "
+				"camera(s), %d named, %d clickable",
+				visible, configured, named, clickable);
 		}
 
 		// --- the green band spans the SEQUENCE ------------------------
@@ -2317,9 +2330,8 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 			runOnUi([&]() {
 				for (QPushButton *b :
 				     dock->findChildren<QPushButton *>())
-					if (b->objectName() ==
-						    QStringLiteral("mrChanSel") &&
-					    b->text() == QStringLiteral("B"))
+					if (b->property(kKeyProperty).toString() ==
+					    QStringLiteral("bay1"))
 						selB = b;
 				if (selB)
 					selB->click(); // the keys now drive B
@@ -2359,7 +2371,8 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 			runOnUi([&]() {
 				for (QPushButton *b :
 				     dock->findChildren<QPushButton *>())
-					if (b->text() == QStringLiteral("⇄"))
+					if (b->property(kKeyProperty).toString() ==
+					    QStringLiteral("swapBays"))
 						swapBtn = b;
 				if (swapBtn)
 					swapBtn->click();
@@ -2384,9 +2397,8 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 			runOnUi([&]() {
 				for (QPushButton *b :
 				     dock->findChildren<QPushButton *>())
-					if (b->objectName() ==
-						    QStringLiteral("mrChanSel") &&
-					    b->text() == QStringLiteral("A"))
+					if (b->property(kKeyProperty).toString() ==
+					    QStringLiteral("bay0"))
 						b->click();
 			});
 		}
@@ -2438,7 +2450,8 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 				}
 				for (QPushButton *b :
 				     dock->findChildren<QPushButton *>())
-					if (b->text() == QStringLiteral("⇤IN")) {
+					if (b->property(kKeyProperty).toString() ==
+					    QStringLiteral("trimIn")) {
 						b->click();
 						clicked = true;
 					}
@@ -2730,27 +2743,26 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 		QPushButton *stopKey = nullptr;  // ■
 		QPushButton *playSelKey = nullptr; // "Play events"
 		QPushButton *outKey = nullptr;   // "In output"
-		const QString playSelText =
-			QString::fromUtf8(obs_module_text("Dock.PlaySelected"));
-		const QString stopGlyph = QStringLiteral("■");
-		// BY TEXT, not by objectName. The object names here are STYLE
-		// roles, and two different keys legitimately share one: Live and
-		// Monitors are both "mrLive" because they are drawn the same way,
-		// so findChild("mrLive") answers with whichever was built first.
-		// The text is what tells them apart, and it goes through the same
-		// obs_module_text() the dock builds them with.
-		const QString outText =
-			QString::fromUtf8(obs_module_text("Dock.ToOutput"));
+		// ── FOUND BY IDENTITY, NOT BY LABEL ──────────────────────────
+		// The object names here are STYLE roles and two different keys can
+		// legitimately share one; the text is a translation and, for the
+		// keys that are marks now, gone entirely. The mrKey id is what a key
+		// IS (see dock-icons.hpp).
+		const QString stopGlyph = QStringLiteral("stop");
+		const QString playSelText = QStringLiteral("playEvents");
+		const QString outText = QStringLiteral("toOutput");
 		runOnUi([&]() {
 			bar = dock->findChild<SeekBar *>();
 			playKey = dock->findChild<QPushButton *>(
 				QStringLiteral("mrPlay"));
 			for (QPushButton *b : dock->findChildren<QPushButton *>()) {
-				if (b->text() == stopGlyph)
+				const QString id =
+					b->property(kKeyProperty).toString();
+				if (id == stopGlyph)
 					stopKey = b;
-				else if (b->text() == playSelText)
+				else if (id == playSelText)
 					playSelKey = b;
-				else if (b->text() == outText)
+				else if (id == outText)
 					outKey = b;
 			}
 		});
@@ -2962,7 +2974,8 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 				// them.
 				for (QPushButton *b :
 				     dock->findChildren<QPushButton *>())
-					if (b->text() == liveText)
+					if (b->property(kKeyProperty).toString() ==
+					    QStringLiteral("live"))
 						liveKey = b;
 				if (liveKey) {
 					// setChecked(true) on an already-checked
@@ -3317,7 +3330,7 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 		std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
 		QPushButton *upBtn = nullptr;
-		const QString up = QStringLiteral("▲");
+		const QString up = QStringLiteral("moveUp");
 		std::vector<int> before, after;
 		const auto idsInTableOrder = [&](std::vector<int> &out) {
 			out.clear();
@@ -3334,7 +3347,7 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 		};
 		runOnUi([&]() {
 			for (QPushButton *b : dock->findChildren<QPushButton *>())
-				if (b->text() == up)
+				if (b->property(kKeyProperty).toString() == up)
 					upBtn = b;
 			idsInTableOrder(before);
 		});
@@ -3971,7 +3984,8 @@ void runReopenPass(const std::string &outPath)
 			// By glyph, the way the transport keys are found: exactly
 			// one button in this dock carries it.
 			for (QPushButton *b : dock->findChildren<QPushButton *>())
-				if (b->text() == QStringLiteral("⛶"))
+				if (b->property(kKeyProperty).toString() ==
+				    QStringLiteral("fullscreen"))
 					fsKey = b;
 			if (!host)
 				return;

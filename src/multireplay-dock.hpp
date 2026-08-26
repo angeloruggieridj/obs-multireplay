@@ -583,18 +583,33 @@ private:
 	// it: REC | MARK | ANGOLI | RIPRODUZIONE | VELOCITA | EXPORT. Each one
 	// declares a tall shape and a flat one and lets ControlStrip decide (see
 	// dock-layout.hpp).
+	// The gear and its menu — Settings, projects, tags, chapters. It lives in
+	// the TOOLBAR with the other panel-wide keys, not inside the record
+	// section where it read as part of arming a take.
+	QToolButton *buildGearMenu();
 	KeyBlock *buildRecBlock();
 	KeyBlock *buildMarkers();
 	KeyBlock *buildAngleMatrix();
 	KeyBlock *buildTransport();
 	KeyBlock *buildSpeedBlock();
 	KeyBlock *buildExportBlock();
+	// The single Export key, which asks on the press whether it is one clip or
+	// the whole selection as one file. Built separately because the SPEED
+	// section places it — under the dial, with the rest of what is done to a
+	// clip once it is marked.
+	QPushButton *buildExportKey();
 	ControlStrip *strip_ = nullptr;
 	// The camera section, kept because switching the second bay on or off
 	// changes how many rows it has and the strip has to be told.
 	KeyBlock *angleBlock_ = nullptr;
 	QWidget *buildEvents();
 	QWidget *buildBottomBar();
+	// The status line, above the on-air band. It OWNS the modes — loop, music,
+	// "in output" — rather than mirroring keys that live somewhere else.
+	QWidget *buildStatusBar(QWidget *parent);
+	// How tall it is. Shorter than a key row because nothing in it is reached
+	// for blind: these are pressed while being looked at.
+	static constexpr int kStatusBarH = 22;
 
 	// --- engine interaction ---
 	void poll();             // periodic transport/status refresh
@@ -615,7 +630,6 @@ private:
 	void buildSpeedDial();
 	// Show one angle key per CONFIGURED camera, labelled with its name. Called
 	// on the slow beat of poll(); a no-op unless the cameras changed.
-	void refreshAngleRows();
 	// The member half of releasePreviewRefs(), so the destructor need not go
 	// through the static pointer it has already cleared.
 	void dropPreviewRefs();
@@ -630,7 +644,7 @@ private:
 	// Stop both bays and forget what they were showing (a new or newly opened
 	// project is empty on both).
 	void clearBothBays();
-	QWidget *bBox_ = nullptr;            // B's preview box, hidden with B
+	AspectBox *bBox_ = nullptr;          // B's bay, absent when B is off
 	// the reference controller's Monitors key and what it takes away: the whole monitoring block
 	// (both decks, the camera previews) and the green strip that belongs under it.
 	QPushButton *monitorsBtn_ = nullptr;
@@ -766,10 +780,8 @@ private:
 	static constexpr int kAngleLabelWidth = 12;
 	// 8 = kMaxCameras (replay-core.hpp, which this header does not include —
 	// the .cpp static_asserts the two agree).
-	QPushButton *angleKeys_[2][8] = {};
 	// What the rows were last built for; refreshAngleRows() compares against it
 	// rather than rewriting eight labels thirty times a second.
-	QString angleRowSig_;
 
 	// Centre every row of a combo's dropdown, in both directions. Needs code
 	// rather than a stylesheet: item text goes through the view's delegate.
@@ -1032,17 +1044,47 @@ private:
 	// ratio comes from the OBS canvas (obs_get_video_info), not from a
 	// hardcoded 16:9: a vertical canvas is a real thing an operator streams.
 	void applyPreviewAspect();
+	// The divider between the pictures and the list, given the height the
+	// pictures would like. Split out because it is the half that has to do
+	// nothing at all in the Short arrangement, where that divider is a width.
+	void applyPreviewSplit(int want);
+	// SHORT stacks the keys under the pictures in the LEFT column instead of
+	// across the foot of the panel. A no-op unless the answer changed.
+	void applyControlsColumn(bool inColumn);
+	bool controlsInColumn_ = false;
+	QVBoxLayout *rootLayout_ = nullptr;
+	QWidget *leftCol_ = nullptr;
+	QVBoxLayout *leftColLayout_ = nullptr;
+	QWidget *bottomBar_ = nullptr;
+	QWidget *bottomSep_ = nullptr;
 	// Height of a picture that wide, in the canvas's own ratio.
 	static int aspectHeight(int width);
 	PanelMode panelMode() const { return panelMode_; }
 	PanelMode panelMode_ = PanelMode::Wide;
-	QWidget *aBox_ = nullptr;         // A's preview box; re-celled per mode
-	QGridLayout *previewGrid_ = nullptr;
-	// The last height applyPreviewAspect() asked the splitter for. Only a CHANGE
-	// The operator has dragged the splitter handle, so the panel stops sizing
-	// the pictures for him. Cleared on a mode change: a new arrangement is a
-	// new question, and the answer he gave was about the old one.
-	bool userSplit_ = false;
+	// The two bays, each keeping the canvas's ratio whatever cell it is given
+	// (see AspectBox). They live in one grid, side by side, in every
+	// arrangement — nothing here is ever re-parented.
+	AspectBox *aBox_ = nullptr;
+	QWidget *bays_ = nullptr;
+	// The divider between the bays and the cameras. It is the operator's, and
+	// because every box keeps its ratio, dragging it in a wide panel changes
+	// the pictures' HEIGHT as well as their width.
+	QSplitter *monitorSplit_ = nullptr;
+
+	// ── WHERE THE OPERATOR PUT THE DIVIDERS, PER ARRANGEMENT ─────────────
+	// A drag is a decision and it has to survive; but it is a decision about
+	// ONE arrangement. The split that is right for a wide floating window
+	// means nothing in a narrow column where the same divider runs the other
+	// way, so carrying it across would hand back a layout he never chose.
+	// Indexed by PanelMode.
+	QByteArray savedSplit_[3], savedMonitorSplit_[3];
+	bool userSplit_[3] = {false, false, false};
+	bool userMonitorSplit_[3] = {false, false, false};
+	bool splitChosen() const { return userSplit_[(int)panelMode_]; }
+	bool monitorSplitChosen() const
+	{
+		return userMonitorSplit_[(int)panelMode_];
+	}
 	// How much list is kept whatever the pictures ask for. The pictures get
 	// their aspect height or what is left after this, whichever is smaller —
 	// a perfect picture over two visible rows of events is the wrong trade on
@@ -1122,7 +1164,7 @@ private:
 		int slot = 0; // index into tiles_ / tileSource_
 	};
 	struct PreviewTile {
-		QWidget *box = nullptr;
+		AspectBox *box = nullptr;
 		OBSQTDisplay *display = nullptr;
 		QLabel *caption = nullptr;
 		int cam0 = -1; // 0-based camera, -1 = the replay tile
@@ -1244,12 +1286,22 @@ private:
 	std::vector<OBSQTDisplay *> allDisplays() const;
 	QLabel *labelA_ = nullptr; // the letter under each box
 	QLabel *labelB_ = nullptr;
-	QButtonGroup *anglesA_ = nullptr; // channel A's row (kept by name)
-	QButtonGroup *angles_[kChannels] = {nullptr, nullptr};
 	void replayCurrentOn(Which which);
 	// the reference controller's green channel strip under the A preview.
-	QLabel *chanBadge_ = nullptr; // "A1"
-	QLabel *chanStrip_ = nullptr; // the three information lines
+	// THE STATUS LINE. It replaced a three-line green band under the
+	// pictures, nearly all of which was a second copy of what the on-air band
+	// and the position bar already say — in a second green the eye had to
+	// tell apart from the first. What is here is what was said nowhere else:
+	// which list and which event the transport keys are about, where the
+	// playhead is, and the answer to a key the operator just pressed.
+	QLabel *statusNotice_ = nullptr;
+	QLabel *statusSpeed_ = nullptr;
+	QLabel *statusTake_ = nullptr; // elapsed / remaining, while recording
+	QWidget *statusBar_ = nullptr;
+	// Whether the line is currently carrying a notice rather than the resting
+	// text. Kept so the restyle that goes with it happens on the CHANGE, not
+	// thirty times a second.
+	bool statusNoticeLit_ = false;
 
 	// recording / status
 	QPushButton *recBtn_ = nullptr;

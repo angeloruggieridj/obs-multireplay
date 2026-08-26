@@ -134,6 +134,8 @@ target_sources(
     src/dock-layout.cpp
     src/dock-layout.hpp
     src/dock-style.hpp
+    src/dock-icons.cpp
+    src/dock-icons.hpp
 )
 
 set_target_properties_plugin(${CMAKE_PROJECT_NAME} PROPERTIES OUTPUT_NAME ${_name})

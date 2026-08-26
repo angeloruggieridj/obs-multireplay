@@ -280,6 +280,69 @@ void useTextGlyph(QWidget *w, const QString &glyph)
 // KeyBlock
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// AspectBox — see the note in the header
+// ---------------------------------------------------------------------------
+
+AspectBox::AspectBox(QWidget *parent) : QWidget(parent)
+{
+	// NO FLOOR. A minimum here becomes the panel's, and four rows of tiles
+	// at a comfortable size put that past what a small floating window can
+	// be. The box is happy at any size; what it will not do is be the wrong
+	// shape at one.
+	setMinimumSize(0, 0);
+}
+
+void AspectBox::setContents(QWidget *picture, QWidget *tag)
+{
+	pic_ = picture;
+	tag_ = tag;
+	relayout();
+}
+
+void AspectBox::setRatio(int w, int h)
+{
+	if (w <= 0 || h <= 0 || (w == rw_ && h == rh_))
+		return;
+	rw_ = w;
+	rh_ = h;
+	relayout();
+}
+
+void AspectBox::resizeEvent(QResizeEvent *)
+{
+	relayout();
+}
+
+void AspectBox::relayout()
+{
+	if (!pic_)
+		return;
+	// THE BAND GOES BEFORE THE SHAPE DOES. Squeezed under the OBS preview a
+	// tile can end up shorter than its own naming band, and the first
+	// version answered that by giving the picture the whole box — which is
+	// the one thing this class exists to prevent. A 12 px band on an 11 px
+	// box was not telling anybody anything; the ratio still is.
+	int availH = height();
+	const bool room = tag_ && availH >= kTagH + 10;
+	if (room)
+		availH -= kTagH;
+	if (tag_)
+		tag_->setVisible(room);
+	if (availH < 2 || width() < 4) {
+		pic_->setGeometry(0, 0, std::max(0, width()),
+				  std::max(0, height()));
+		return;
+	}
+	const int w = std::max(1, std::min(width(), availH * rw_ / rh_));
+	const int h = std::max(1, w * rh_ / rw_);
+	const int x = (width() - w) / 2;
+	const int y = (availH - h) / 2;
+	pic_->setGeometry(x, y, w, h);
+	if (room)
+		tag_->setGeometry(x, y + h, w, kTagH);
+}
+
 KeyBlock::KeyBlock(const QString &caption, QWidget *parent)
 	: QWidget(parent), caption_(caption)
 {

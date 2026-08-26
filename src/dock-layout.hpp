@@ -237,6 +237,59 @@ void equaliseKeyWidths(const QList<QPushButton *> &keys);
 void useTextGlyph(QWidget *w, const QString &glyph);
 
 // ---------------------------------------------------------------------------
+// AspectBox — a monitor that is 16:9 whatever it is put in
+// ---------------------------------------------------------------------------
+//
+// A box of any other shape draws the video letterboxed inside itself, and from
+// the operator's chair a black edge is indistinguishable from the framing. So
+// the shape is not negotiated with the layout: the box takes whatever cell it
+// is given and places the LARGEST picture of the canvas's ratio that fits,
+// centred, with its naming band tucked under it at the picture's own width.
+//
+// IT WAS DONE THE OTHER WAY FIRST — a maximum size computed from the parent's
+// current width — and the panel's own check caught it on a two-camera rig: the
+// maximum was worked out from a pane that had not been laid out yet, so a box
+// was sized for one cell and then handed another. A widget that maintains its
+// own geometry has nothing to be out of step with, and it settles in one pass
+// rather than in however many the splitters take.
+//
+// IT NEVER RE-PARENTS ANYTHING. Its children are created with it as their
+// parent and are only ever MOVED, because in the panel the picture is an
+// OBSQTDisplay: Qt answers a re-parent by destroying the native window, which
+// strands the obs_display presenting into it.
+//
+// The children are placed by hand rather than by a layout for the same reason
+// the shape is not negotiated: a layout would negotiate, and there is nothing
+// here to negotiate about.
+class AspectBox : public QWidget {
+public:
+	explicit AspectBox(QWidget *parent = nullptr);
+
+	// Both must already be children of this box. `tag` may be null.
+	void setContents(QWidget *picture, QWidget *tag);
+	QWidget *picture() const { return pic_; }
+
+	// The canvas's own ratio. A vertical canvas is a real thing an operator
+	// streams, so this is not hardcoded to 16:9 — the panel reads it from
+	// obs_get_video_info and the mockup from its own default.
+	void setRatio(int w, int h);
+
+	// How tall the naming band is. It is a TALLY as much as a label — which
+	// box is which is read by colour before it is read by letter — so it is
+	// small but never nothing.
+	static constexpr int kTagH = 12;
+
+protected:
+	void resizeEvent(QResizeEvent *) override;
+
+private:
+	void relayout();
+	QWidget *pic_ = nullptr;
+	QWidget *tag_ = nullptr;
+	int rw_ = 16, rh_ = 9;
+};
+
+// ---------------------------------------------------------------------------
 // KeyBlock — one captioned section, in two declared shapes
 // ---------------------------------------------------------------------------
 

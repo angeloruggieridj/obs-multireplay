@@ -73,9 +73,11 @@ constexpr int kSeekH = 42;
 // bay it is meant to be checked against.
 constexpr int kTileMinWidth = 78;
 constexpr int kTileMaxWidth = 150;
-// The band under a picture that names it — A, B, C1… It is a TALLY as much as a
-// label: which box is which is read by colour before it is read by letter.
-constexpr int kTagH = 12;
+
+
+// The naming band under a picture. AspectBox owns the number; this is the same
+// one, named locally so the block arithmetic below reads.
+constexpr int kTagH = AspectBox::kTagH;
 
 // The RIG the mockup pretends to be driving. Defaults to the one that is
 // hardest on the layout and happens to be the operator's own: both bays and
@@ -237,34 +239,18 @@ TileBlock tileBlockFor(int paneW, int bays, int n, int gap, int maxH = 0)
 	return best;
 }
 
-// ---------------------------------------------------------------------------
-// PictureBox — a monitor that is 16:9 whatever it is put in
-// ---------------------------------------------------------------------------
-//
-// A box of any other shape draws the video letterboxed inside itself, and from
-// the operator's chair a black edge is indistinguishable from the framing. So
-// the shape is not negotiated with the layout: the box takes whatever cell it
-// is given and places the LARGEST 16:9 picture that fits, centred, with its
-// naming band tucked under it at the picture's own width.
-//
-// IT WAS DONE THE OTHER WAY FIRST — a maximum size computed from the parent's
-// current width — and the automated check caught it on a two-camera rig: the
-// maximum was worked out from a pane that had not been laid out yet, so the box
-// was sized for one cell and then handed another. A widget that maintains its
-// own geometry has nothing to be out of step with, and it converges in one
-// pass rather than in however many the splitters take to settle.
-//
-// The children are placed by hand rather than by a layout for the same reason:
-// a layout would negotiate, and there is nothing here to negotiate about.
-class PictureBox : public QWidget {
+// A monitor box with a dummy picture in it. The SHAPE is AspectBox's job (it is
+// in src/dock-layout so the panel and this run the same rule); all this adds is
+// something black to look at and a band that can be tallied.
+class PictureBox : public AspectBox {
 public:
 	PictureBox(const QString &text, const char *tagRole, const Scheme &sc,
 		   QWidget *parent)
-		: QWidget(parent)
+		: AspectBox(parent)
 	{
-		pic_ = new QLabel(text, this);
-		pic_->setAlignment(Qt::AlignCenter);
-		pic_->setStyleSheet(
+		auto *pic = new QLabel(text, this);
+		pic->setAlignment(Qt::AlignCenter);
+		pic->setStyleSheet(
 			QString("background:#000;color:%1;font-size:10px;")
 				.arg(sc.textDim));
 		tag_ = new QLabel(text, this);
@@ -272,43 +258,15 @@ public:
 		tag_->setProperty("chan", text);
 		tag_->setProperty("active", text == QStringLiteral("A"));
 		tag_->setAlignment(Qt::AlignCenter);
-		// NO FLOOR. A minimum here becomes the panel's, and the point of
-		// the redesign is that this panel can be made short.
-		setMinimumSize(0, 0);
+		setContents(pic, tag_);
 	}
 
-	QWidget *picture() const { return pic_; }
-	void setTally(const char *what) { tag_->setProperty("tally", QString::fromLatin1(what)); }
-
-protected:
-	void resizeEvent(QResizeEvent *) override
+	void setTally(const char *what)
 	{
-		// THE BAND GOES BEFORE THE SHAPE DOES. Squeezed under the OBS
-		// preview a tile can end up shorter than its own naming band, and
-		// the first version answered that by giving the picture the whole
-		// box — which is the one thing this class exists to prevent. A
-		// 12 px band on an 11 px box was not telling anybody anything
-		// anyway; 16:9 still is.
-		int availH = height();
-		const bool room = availH >= kTagH + 10;
-		if (room)
-			availH -= kTagH;
-		tag_->setVisible(room);
-		if (availH < 2 || width() < 4) {
-			pic_->setGeometry(0, 0, std::max(0, width()),
-					  std::max(0, height()));
-			return;
-		}
-		const int w = std::max(1, std::min(width(), availH * 16 / 9));
-		const int h = std::max(1, w * 9 / 16);
-		const int x = (width() - w) / 2;
-		const int y = (availH - h) / 2;
-		pic_->setGeometry(x, y, w, h);
-		tag_->setGeometry(x, y + h, w, kTagH);
+		tag_->setProperty("tally", QString::fromLatin1(what));
 	}
 
 private:
-	QLabel *pic_ = nullptr;
 	QLabel *tag_ = nullptr;
 };
 
