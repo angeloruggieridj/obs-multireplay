@@ -38,6 +38,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
 #include <QLabel>
 #include <QLineEdit>
 #include <QComboBox>
+#include <QCompleter>
 #include <QCheckBox>
 #include <QPlainTextEdit>
 #include <QTableWidget>
@@ -1887,8 +1888,14 @@ void MultiReplayDock::applyMonitorsVisible(bool on)
 // for the same reason: it stops being derived from anything.
 int MultiReplayDock::monitorRoomH() const
 {
-	if (splitChosen() && previewPane_)
-		return std::max(40, previewPane_->height());
+	// IT MUST NOT BE READ OFF THE PANE, not even once the operator has moved
+	// the divider. It used to be, and that is why maximising the window left
+	// the pictures the size they were: the ceiling on the picture pane is set
+	// FROM this number, so taking it from the pane made the ceiling equal to
+	// the height the pane already had - a pane that could never grow, however
+	// big the window got. What the operator chose is WHERE the divider sits,
+	// and applyPreviewSplit still leaves that alone; how tall the block may be
+	// is a question about the panel.
 	const int total = splitter_ ? splitter_->height() : height();
 	int room = total - kListPaneFloor;
 	// ...AND THE PICTURES MAY NOT HAVE MORE THAN HALF THE PANEL. Past that the
@@ -7895,58 +7902,64 @@ QWidget *MultiReplayDock::buildNoteCell(int eventId, const std::string &note,
 	h->setContentsMargins(4, 0, 4, 0);
 	h->setSpacing(0);
 
-	auto *cm = new QComboBox(w);
-	cm->setObjectName("mrAngleNote");
-	cm->setEditable(true); // free text stays free text
-	cm->setInsertPolicy(QComboBox::NoInsert);
-	cm->setToolTip(obs_module_text("Dock.CamNoteHint"));
-	cm->addItem(QString()); // "no comment" is the first choice, not a gap
-	for (const auto &p : presets)
-		cm->addItem(QString::fromStdString(p));
-	// ...and everything the operator has typed during this session, on any
-	// event. A comment invented at the first goal is exactly the comment wanted
-	// at the second one, and having to retype it is why the preset list existed
-	// in the first place.
-	for (const QString &s : sessionComments_)
-		if (cm->findText(s) < 0)
-			cm->addItem(s);
-	cm->lineEdit()->setPlaceholderText(kNoNote);
-	cm->lineEdit()->setAlignment(Qt::AlignCenter);
-	centreComboItems(cm);
-	// THE TEXT GOES IN LAST, and the order is the bug.
+	// THE COMMENT IS TEXT, and only text.
 	//
-	// A comment is free text: a word the operator invented is not in the item
-	// list, so the combo's current index stays on the empty first entry while
-	// the LINE EDIT carries the word. centreComboItems() then writes an
-	// alignment role onto every item — a model change — and Qt answers a model
-	// change by re-syncing the line edit from the current index, which is the
-	// empty entry. The word was wiped a line after it was set.
-	cm->setCurrentText(QString::fromStdString(note));
+	// It was an editable combo, which put a frame and a drop-down arrow round a
+	// free word: the arrow took width the word needed, the frame set the row
+	// height for the whole list, and neither said anything a text field does
+	// not. What the list was FOR — the operator's own vocabulary — is on the
+	// right button now, where a list of words is looked for, and on a completer
+	// that offers them as he types.
+	auto *cm = new QLineEdit(w);
+	cm->setObjectName("mrAngleNote");
+	cm->setToolTip(obs_module_text("Dock.CamNoteHint"));
+	cm->setPlaceholderText(kNoNote);
+	cm->setAlignment(Qt::AlignCenter);
+	cm->setFrame(false);
+	{
+		QStringList words;
+		for (const auto &p : presets)
+			words << QString::fromStdString(p);
+		// ...and everything typed during this session, on any event. A
+		// comment invented at the first goal is exactly the comment
+		// wanted at the second one.
+		for (const QString &s : sessionComments_)
+			if (!words.contains(s))
+				words << s;
+		auto *comp = new QCompleter(words, cm);
+		comp->setCaseSensitivity(Qt::CaseInsensitive);
+		comp->setCompletionMode(QCompleter::PopupCompletion);
+		cm->setCompleter(comp);
+	}
+	cm->setText(QString::fromStdString(note));
 	h->addWidget(cm, 1);
 
-	// ...AND THE VOCABULARY IS ALSO ON THE RIGHT BUTTON. With the drop-down
-	// arrow gone the list is still one click away on the text, but a right
-	// click is where a list of words is looked for — and it goes ABOVE the
-	// ordinary cut/copy/paste rather than instead of it.
-	cm->lineEdit()->setContextMenuPolicy(Qt::CustomContextMenu);
-	connect(cm->lineEdit(), &QLineEdit::customContextMenuRequested, this,
-		[cm](const QPoint &at) {
-			QMenu *m = cm->lineEdit()->createStandardContextMenu();
+	// THE VOCABULARY IS ON THE RIGHT BUTTON, above the ordinary
+	// cut/copy/paste rather than instead of it.
+	cm->setContextMenuPolicy(Qt::CustomContextMenu);
+	connect(cm, &QLineEdit::customContextMenuRequested, this,
+		[this, cm, presets](const QPoint &at) {
+			QMenu *m = cm->createStandardContextMenu();
 			QAction *first = m->actions().isEmpty()
 						 ? nullptr
 						 : m->actions().first();
-			for (int i = 0; i < cm->count(); i++) {
-				const QString t = cm->itemText(i);
+			QStringList words;
+			for (const auto &p : presets)
+				words << QString::fromStdString(p);
+			for (const QString &s : sessionComments_)
+				if (!words.contains(s))
+					words << s;
+			for (const QString &t : words) {
 				if (t.isEmpty())
 					continue;
 				auto *a = new QAction(t, m);
 				connect(a, &QAction::triggered, cm,
-					[cm, t]() { cm->setCurrentText(t); });
+					[cm, t]() { cm->setText(t); });
 				m->insertAction(first, a);
 			}
-			if (first)
+			if (first && !words.isEmpty())
 				m->insertSeparator(first);
-			m->exec(cm->lineEdit()->mapToGlobal(at));
+			m->exec(cm->mapToGlobal(at));
 			delete m;
 		});
 
@@ -7956,11 +7969,12 @@ QWidget *MultiReplayDock::buildNoteCell(int eventId, const std::string &note,
 	w->setProperty("mrVocab", (qulonglong)commentVocabVersion_);
 
 	// A TAG REACHES THE STORE THE MOMENT IT IS ON SCREEN, whichever way it got
-	// there. It used to be written from activated() and editingFinished(), and
-	// a tag picked out of the list could be lost between them: activated is the
-	// popup's signal, editingFinished is the line edit's, and the paths a
-	// selection takes through an editable combo do not always raise both.
-	connect(cm, &QComboBox::currentTextChanged, this,
+	// there — typed, completed or picked off the right-button list. One signal
+	// covers all three; it fires per keystroke, and that is affordable because
+	// the table refuses to rebuild while a line edit inside it has focus (see
+	// refreshEvents). The comparison keeps even that honest: re-writing the same
+	// text would bump the store's version for nothing.
+	connect(cm, &QLineEdit::textChanged, this,
 		[this, eventId](const QString &text) {
 			if (refreshing_)
 				return;
@@ -7973,19 +7987,11 @@ QWidget *MultiReplayDock::buildNoteCell(int eventId, const std::string &note,
 	// Finishing the edit is what promotes a word to this session's list: it is
 	// the point at which the operator has decided on it. Doing it per keystroke
 	// would offer "G", "Go" and "Gol" on every other row.
-	connect(cm->lineEdit(), &QLineEdit::editingFinished, this,
-		[this, cm]() {
-			if (refreshing_)
-				return;
-			rememberComment(cm->currentText().trimmed());
-		});
-	// ...and a tag picked out of the list is just as much a decision.
-	connect(cm, QOverload<int>::of(&QComboBox::activated), this,
-		[this, cm](int) {
-			if (refreshing_)
-				return;
-			rememberComment(cm->currentText().trimmed());
-		});
+	connect(cm, &QLineEdit::editingFinished, this, [this, cm]() {
+		if (refreshing_)
+			return;
+		rememberComment(cm->text().trimmed());
+	});
 	return w;
 }
 
@@ -7996,12 +8002,12 @@ bool MultiReplayDock::updateNoteCell(QWidget *cell, int eventId,
 	if (!cell || cell->property("mrEventId").toInt() != eventId ||
 	    cell->property("mrVocab").toULongLong() != commentVocabVersion_)
 		return false;
-	auto *cm = cell->findChild<QComboBox *>(QStringLiteral("mrAngleNote"));
+	auto *cm = cell->findChild<QLineEdit *>(QStringLiteral("mrAngleNote"));
 	if (!cm)
 		return false;
 	const QString noteQ = QString::fromStdString(note);
-	if (cm->currentText() != noteQ)
-		cm->setCurrentText(noteQ);
+	if (cm->text() != noteQ)
+		cm->setText(noteQ);
 	return true;
 }
 
@@ -8017,7 +8023,7 @@ bool MultiReplayDock::updateAngleCell(QWidget *cell, int eventId, int cam0,
 		return false;
 
 	auto *box = cell->findChild<QCheckBox *>();
-	auto *sp = cell->findChild<QComboBox *>(QStringLiteral("mrAngleSpeed"));
+	auto *sp = cell->findChild<QPushButton *>(QStringLiteral("mrAngleSpeed"));
 	if (!box || !sp)
 		return false;
 
@@ -8025,14 +8031,10 @@ bool MultiReplayDock::updateAngleCell(QWidget *cell, int eventId, int cam0,
 		box->setChecked(on);
 
 	const int pct = speed >= 0 ? (int)std::lround(speed * 100.0) : -1;
-	if (sp->currentData().toInt() != pct) {
-		int idx = sp->findData(pct);
-		if (idx < 0 && pct > 0) { // a speed set elsewhere
-			sp->addItem(QString("%1%").arg(pct), pct);
-			centreComboItems(sp);
-			idx = sp->count() - 1;
-		}
-		sp->setCurrentIndex(idx < 0 ? 0 : idx);
+	if (sp->property("mrPct").toInt() != pct) {
+		sp->setProperty("mrPct", pct);
+		sp->setText(pct > 0 ? QString("%1%").arg(pct)
+				    : QStringLiteral("--"));
 	}
 	const bool noOverride = pct <= 0;
 	if (sp->property("mrNoOverride").toBool() != noOverride) {
@@ -8074,58 +8076,79 @@ QWidget *MultiReplayDock::buildAngleCell(int eventId, int cam0, bool on,
 	// subtree is polished ONCE, when the table adopts it.
 	auto *w = new QWidget;
 	auto *h = new QHBoxLayout(w);
-	h->setContentsMargins(4, 0, 4, 0);
-	h->setSpacing(4);
+	// THE PAIR IS CENTRED AND TIGHT. With the comment gone the cell holds two
+	// small controls in a column the table stretches, and packed to the left
+	// at the old spacing they read as a tick marooned a long way from the
+	// number it belongs to - two things, not one answer about one angle.
+	h->setContentsMargins(2, 0, 2, 0);
+	h->setSpacing(2);
+	h->addStretch(1);
 
 	auto *box = new QCheckBox(w);
 	box->setChecked(on);
 	box->setToolTip(obs_module_text("Dock.AngleOnHint"));
 	h->addWidget(box);
 
-	auto *sp = new QComboBox(w);
+	// THE SPEED IS A CHIP, not a drop-down.
+	//
+	// It was an editable-but-read-only QComboBox, which is three pieces of
+	// chrome around one short value: a frame, an arrow, and a line edit that
+	// had to be talked out of swallowing the click that opens the list. It also
+	// set the row height for the whole table. A chip is what the speed presets
+	// in the control strip already are — a small key that READS as a value —
+	// and it keeps the thing that matters: one click opens the list.
+	//
+	// FIXED WIDTH so the column does not dance as "--" becomes "100%": eight
+	// rows of angles are scanned down, and a value that moves sideways between
+	// rows is read twice.
+	auto *sp = new QPushButton(w);
 	sp->setObjectName("mrAngleSpeed");
 	sp->setToolTip(obs_module_text("Dock.AngleSpeedHint"));
+	sp->setCursor(Qt::PointingHandCursor);
+	sp->setFocusPolicy(Qt::NoFocus);
+	sp->setFixedWidth(44);
+	const int pct = speed >= 0 ? (int)std::lround(speed * 100.0) : -1;
 	// "--", NOT "100%", for the default (Angelo, 2026-08-17). The value means
 	// "no override; the slider decides", and printing it as a number lies
 	// whenever the slider is not at 100: with the slider on 25 the cell read
 	// 100% while the clip played at a quarter speed. A number the operator can
-	// read is worth having, but not a number that can be wrong — "--" sends him
-	// to the slider, which is where the answer actually is. Still first in the
-	// list: it is the common case and must be one click from any override.
-	sp->addItem(QStringLiteral("--"), -1);
-	// 100 IS one of the presets, and has to be: "--" is not a speed, so without
-	// it there is no way to pin an angle to 1x while the slider sits at 25.
-	for (int pct : {25, 33, 50, 75, 100, 200})
-		sp->addItem(QString("%1%").arg(pct), pct);
-	const int pct = speed >= 0 ? (int)std::lround(speed * 100.0) : -1;
-	int idx = sp->findData(pct);
-	if (idx < 0 && pct > 0) { // a speed typed elsewhere (an older project)
-		sp->addItem(QString("%1%").arg(pct), pct);
-		idx = sp->count() - 1;
-	}
-	sp->setCurrentIndex(idx < 0 ? 0 : idx);
+	// read is worth having, but not a number that can be wrong.
+	sp->setText(pct > 0 ? QString("%1%").arg(pct) : QStringLiteral("--"));
+	sp->setProperty("mrPct", pct);
 	// Grey for "the slider decides", the panel's ordinary text for an override.
-	// The override used to be amber, which read as a warning about a setting
-	// that is simply a choice — and on a row of eight cameras the amber was the
-	// loudest thing in the table.
-	// A PROPERTY, not a per-widget style sheet. setStyleSheet on a single
-	// widget makes Qt build a style context of its own for it and re-polish
-	// its subtree; done once per angle cell it is a measurable part of a
-	// rebuild that was taking over a tenth of a second. The rule that reads
-	// this lives with the rest of them in the dock style sheet.
+	// A PROPERTY, not a per-widget style sheet: setStyleSheet on a single widget
+	// makes Qt build a style context of its own for it and re-polish its
+	// subtree, once per angle cell, on a rebuild that was already the longest
+	// thing the dock's poll did.
 	sp->setProperty("mrNoOverride", pct <= 0);
-	// Centred, like every other cell in this table. A non-editable QComboBox
-	// draws its label left-aligned and no stylesheet moves it, so the display is
-	// a read-only line edit — and because a read-only line edit would otherwise
-	// swallow the click that opens the list, the dock's event filter turns a
-	// press on it back into showPopup() (see eventFilter).
-	sp->setEditable(true);
-	sp->lineEdit()->setReadOnly(true);
-	sp->lineEdit()->setAlignment(Qt::AlignCenter);
-	sp->lineEdit()->setCursor(Qt::PointingHandCursor);
-	sp->lineEdit()->installEventFilter(this);
-	centreComboItems(sp);
 	h->addWidget(sp);
+	h->addStretch(1);
+
+	const int a1c = cam0 + 1;
+	connect(sp, &QPushButton::clicked, this, [this, sp, eventId, a1c]() {
+		if (refreshing_)
+			return;
+		QMenu m(sp);
+		// 100 IS one of the presets, and has to be: "--" is not a speed,
+		// so without it there is no way to pin an angle to 1x while the
+		// slider sits at 25.
+		const QVector<int> pcts = {-1, 25, 33, 50, 75, 100, 200};
+		const int now = sp->property("mrPct").toInt();
+		for (int p : pcts) {
+			QAction *a = m.addAction(
+				p > 0 ? QString("%1%").arg(p)
+				      : QStringLiteral("--"));
+			a->setCheckable(true);
+			a->setChecked(p == now);
+			connect(a, &QAction::triggered, this,
+				[this, eventId, a1c, p]() {
+					EventStore::instance().setAngleSpeed(
+						eventId, a1c,
+						p > 0 ? p / 100.0 : -1.0);
+				});
+		}
+		m.exec(sp->mapToGlobal(QPoint(0, sp->height())));
+	});
 
 
 	// WHAT THIS CELL IS ABOUT, so refreshEvents can tell whether it may be
@@ -8144,14 +8167,6 @@ QWidget *MultiReplayDock::buildAngleCell(int eventId, int cam0, bool on,
 			return;
 		EventStore::instance().setAngle(eventId, a1, v);
 	});
-	connect(sp, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
-		[this, sp, eventId, a1](int) {
-			if (refreshing_)
-				return;
-			const int v = sp->currentData().toInt();
-			EventStore::instance().setAngleSpeed(
-				eventId, a1, v > 0 ? v / 100.0 : -1.0);
-		});
 	return w;
 }
 
@@ -9256,6 +9271,7 @@ void MultiReplayDock::openSettings()
 	theme->addItem(obs_module_text("Dock.ThemeFollowObs"), 0);
 	theme->addItem(obs_module_text("Dock.ThemeBroadcast"), 1);
 	theme->addItem(obs_module_text("Dock.ThemeContrast"), 2);
+	theme->addItem(obs_module_text("Dock.ThemeLight"), 3);
 	{
 		const int idx = theme->findData(cfg.uiTheme);
 		theme->setCurrentIndex(idx >= 0 ? idx : 0);

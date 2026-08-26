@@ -63,6 +63,13 @@ enum class ThemeChoice {
 	// Same layout, harder edges and brighter text, for a gallery with the
 	// lights up.
 	HighContrast = 2,
+	// A LIGHT panel, ours, and not merely "whatever OBS is wearing". The
+	// derived scale has always worked on paper - every surface is a step from
+	// the background TOWARDS the text, which on a light theme means darker -
+	// but until now the only way to see it was to run OBS in a light theme.
+	// An operator working in daylight should not have to re-theme OBS to get
+	// a panel he can read.
+	Light = 3,
 };
 
 // ---------------------------------------------------------------------------
@@ -145,7 +152,14 @@ inline QColor signalOn(const QColor &hue, const QColor &bg, bool dark,
 	const int want = dark ? qMax(l, darkFloor) : qMin(l, 110);
 	c.setHsl(c.hslHue(), c.hslSaturation(), want, 255);
 	// …and if it still does not separate from the background, push it away.
-	if (qAbs(c.lightness() - bg.lightness()) < 60)
+	//
+	// NOT WHEN THE CALLER SAID THE HUE IS THE STATEMENT (darkFloor 0). The
+	// greens ARE the colour the on-air band is painted, and under "follow the
+	// OBS theme" - where the background is often mid-dark rather than near
+	// black - this clause fired and lifted them to bg + 90, which is the pale
+	// green that kept being reported. The band is legible at that hue on that
+	// background because it IS that hue on that background.
+	if (darkFloor > 0 && qAbs(c.lightness() - bg.lightness()) < 60)
 		c.setHsl(c.hslHue(), c.hslSaturation(),
 			 dark ? qMin(255, bg.lightness() + 90)
 			      : qMax(0, bg.lightness() - 90),
@@ -184,6 +198,13 @@ inline Scheme schemeFor(ThemeChoice choice, const QPalette &pal)
 		hl = QColor("#1D3D74");
 		hlText = QColor("#ffffff");
 		base = QColor("#00121C");
+		break;
+	case ThemeChoice::Light:
+		bg = QColor("#efefef");
+		fg = QColor("#101010");
+		hl = QColor("#2f6fd0");
+		hlText = QColor("#ffffff");
+		base = QColor("#ffffff");
 		break;
 	case ThemeChoice::HighContrast:
 		bg = QColor("#000000");
@@ -791,6 +812,29 @@ QTableWidget#mrEvents QComboBox:hover, QTableWidget#mrEvents QLineEdit:hover {
 QTableWidget#mrEvents QComboBox:focus, QTableWidget#mrEvents QLineEdit:focus {
 	background: @raise1@; border-color: @accent@;
 }
+/* THE SPEED CHIP. Small, fixed width, and it READS AS A VALUE rather than as
+   a field: the speed presets in the control strip are the same shape, so an
+   operator who knows what 50% looks like there knows it here. Grey when the
+   slider decides, the panel's own text when the angle overrides it - the
+   override used to be amber, which read as a warning about what is only a
+   choice, and on a row of eight cameras it was the loudest thing in the list. */
+QTableWidget#mrEvents QPushButton#mrAngleSpeed {
+	background: @raise1@; color: @text@;
+	border: 1px solid @border@; border-radius: 3px;
+	padding: 0px 2px; min-height: @cellInput@px;
+	font-size: @cellFont@px; font-weight: 700;
+}
+QTableWidget#mrEvents QPushButton#mrAngleSpeed:hover {
+	border-color: @borderHi@; background: @raise2@;
+}
+QTableWidget#mrEvents QPushButton#mrAngleSpeed[mrNoOverride="true"] {
+	background: transparent; color: @textDim@;
+	border-color: transparent; font-weight: 400;
+}
+QTableWidget#mrEvents QPushButton#mrAngleSpeed[mrNoOverride="true"]:hover {
+	border-color: @borderHi@;
+}
+
 QTableWidget#mrEvents QComboBox QAbstractItemView::item {
 	min-height: @cellInput@px;
 }

@@ -47,6 +47,7 @@ extern "C" {
 #include <QObject>
 #include <QItemSelectionModel>
 #include <QComboBox>
+#include <QLineEdit>
 #include <QLabel>
 #include <QPushButton>
 #include <QString>
@@ -1309,15 +1310,16 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 				if (!idIt ||
 				    idIt->data(Qt::UserRole).toInt() != evId)
 					continue;
-				// The first camera's cell now holds ONE widget
-				// with the whole angle in it: the check, the
-				// speed and the comment. So the speed is picked
-				// from its drop-down, which is what an operator
-				// does — no item text to type into any more.
+				// A camera's cell holds the two things that differ
+				// per lens: the check and the speed. The speed is a
+				// CHIP now, not a drop-down - a key carrying the
+				// value in a property - so the gate sets that value
+				// through the store, which is what the chip's menu
+				// does, and reads the chip back.
 				QWidget *cell = t->cellWidget(
 					r, MultiReplayDock::kColFirstCam);
-				QComboBox *sp =
-					cell ? cell->findChild<QComboBox *>(
+				QPushButton *sp =
+					cell ? cell->findChild<QPushButton *>(
 						       "mrAngleSpeed")
 					     : nullptr;
 				if (!sp)
@@ -1331,9 +1333,8 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 					editedCam0 = i;
 					break;
 				}
-				const int idx = sp->findData(50);
-				if (idx >= 0)
-					sp->setCurrentIndex(idx);
+				EventStore::instance().setAngleSpeed(
+					evId, editedCam0 + 1, 0.5);
 				break;
 			}
 		});
@@ -1394,20 +1395,20 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 					if (QWidget *nc = t->cellWidget(
 						    r, MultiReplayDock::kColNote))
 						if (auto *cm =
-							    nc->findChild<QComboBox *>(
+							    nc->findChild<QLineEdit *>(
 								    "mrAngleNote"))
 							c.searchCellNote =
-								cm->currentText()
+								cm->text()
 									.toStdString();
 					QWidget *cell = t->cellWidget(
 						r,
 						MultiReplayDock::kColFirstCam);
 					if (!cell)
 						break;
-					if (auto *sp = cell->findChild<QComboBox *>(
+					if (auto *sp = cell->findChild<QPushButton *>(
 						    "mrAngleSpeed"))
 						c.searchCellPct =
-							sp->currentData().toInt();
+							sp->property("mrPct").toInt();
 					break;
 				}
 			});
