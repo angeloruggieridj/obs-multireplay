@@ -3978,6 +3978,13 @@ void runReopenPass(const std::string &outPath)
 	// "there was nothing to centre it in" look the same from a screenshot and
 	// only the numbers tell them apart.
 	bool keysCentred = false;
+	// THE GREEN PLAY KEY IS TWO ROWS TALL, and it is checked because it has
+	// quietly stopped being so twice. It is one of the three first-function
+	// keys on this panel and it is drawn bigger on purpose; "it looks smaller
+	// again" is an impression until somebody measures it against the key
+	// beside it.
+	bool playKeyIsTall = false;
+	int playKeyH = 0, stepKeyH = 0;
 	int keyPadL = 0, keyPadR = 0;
 	QString bandText, noticeText;
 	bool fsKeyShownWhenFloating = false;
@@ -4195,6 +4202,26 @@ void runReopenPass(const std::string &outPath)
 				});
 			};
 			measure(1100, 700, tilesWideOk, wideTileW, wideTiles, wideMode);
+			runOnUi([&]() {
+				for (QPushButton *b :
+				     dock->findChildren<QPushButton *>()) {
+					const QString id =
+						b->property(kKeyProperty).toString();
+					if (id == QStringLiteral("playEvents"))
+						playKeyH = b->height();
+					else if (id == QStringLiteral("stepFwd"))
+						stepKeyH = b->height();
+				}
+				// Two rows plus the gap between them, less a pixel of
+				// slack: anything near one row is the fault.
+				playKeyIsTall = stepKeyH > 0 &&
+						playKeyH >= stepKeyH * 2;
+			});
+			obs_log(playKeyIsTall ? LOG_INFO : LOG_ERROR,
+				"[selftest] reopen: green play key %d px against a "
+				"%d px frame step: %s",
+				playKeyH, stepKeyH,
+				playKeyIsTall ? "two rows" : "NOT two rows");
 			measure(340, 900, tilesTallOk, tallTileW, tallTiles, tallMode);
 			runOnUi([&]() {
 				QWidget *strip = dock->findChild<QWidget *>(
@@ -4286,7 +4313,7 @@ void runReopenPass(const std::string &outPath)
 			  fsWindowOffersMaximise && fsDoubleClickIsInert &&
 			  fsKeyShownWhenFloating && fsCoversTheScreen &&
 			  fsRestoresTheWindow && tilesWideOk && tilesTallOk &&
-			  shortReachable && keysCentred;
+			  shortReachable && keysCentred && playKeyIsTall;
 
 	// --- Put everything back ----------------------------------------------
 	// The operator's project first (so nothing is pointing into the test one),
@@ -4338,6 +4365,7 @@ void runReopenPass(const std::string &outPath)
 	obs_data_set_bool(checks, "camera_tiles_have_width_in_a_column", tilesTallOk);
 	obs_data_set_bool(checks, "short_arrangement_is_reachable", shortReachable);
 	obs_data_set_bool(checks, "stacked_keys_are_centred", keysCentred);
+	obs_data_set_bool(checks, "play_key_spans_two_rows", playKeyIsTall);
 	obs_data_set_obj(root, "checks", checks);
 	obs_data_release(checks);
 	// Numbers, not checks: how much panel there was to centre the keys in.

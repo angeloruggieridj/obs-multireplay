@@ -474,6 +474,13 @@ void setKeyIcon(QAbstractButton *b, Icon id, const IconTints &tints, int px)
 		return;
 	b->setProperty("mrIcon", (int)id);
 	b->setProperty("mrIconPx", px);
+	// A KEY MAY ASK FOR A WHITE MARK WHEN IT IS LIT. The lit tint is the
+	// panel's preview colour, which is right on a neutral key and wrong on one
+	// that is itself a signal: a green dot inside the red LIVE key is two
+	// signals arguing in one control.
+	IconTints t = tints;
+	if (b->property("mrIconOnWhite").toBool())
+		t.on = QColor(Qt::white);
 
 	const qreal dpr = b->devicePixelRatioF() > 0 ? b->devicePixelRatioF() : 1.0;
 	QIcon ic;
@@ -482,17 +489,17 @@ void setKeyIcon(QAbstractButton *b, Icon id, const IconTints &tints, int px)
 	// the mark on it is a pixmap and would stay one colour through all of it —
 	// so a lit toggle would be a bright key wearing a dim mark, which reads as
 	// disabled.
-	ic.addPixmap(cachedPixmap(id, tints.rest, px, dpr), QIcon::Normal,
+	ic.addPixmap(cachedPixmap(id, t.rest, px, dpr), QIcon::Normal,
 		     QIcon::Off);
-	ic.addPixmap(cachedPixmap(id, tints.hover, px, dpr), QIcon::Active,
+	ic.addPixmap(cachedPixmap(id, t.hover, px, dpr), QIcon::Active,
 		     QIcon::Off);
-	ic.addPixmap(cachedPixmap(id, tints.disabled, px, dpr), QIcon::Disabled,
+	ic.addPixmap(cachedPixmap(id, t.disabled, px, dpr), QIcon::Disabled,
 		     QIcon::Off);
-	ic.addPixmap(cachedPixmap(id, tints.on, px, dpr), QIcon::Normal,
+	ic.addPixmap(cachedPixmap(id, t.on, px, dpr), QIcon::Normal,
 		     QIcon::On);
-	ic.addPixmap(cachedPixmap(id, tints.on, px, dpr), QIcon::Active,
+	ic.addPixmap(cachedPixmap(id, t.on, px, dpr), QIcon::Active,
 		     QIcon::On);
-	ic.addPixmap(cachedPixmap(id, tints.disabled, px, dpr), QIcon::Disabled,
+	ic.addPixmap(cachedPixmap(id, t.disabled, px, dpr), QIcon::Disabled,
 		     QIcon::On);
 	b->setIcon(ic);
 	b->setIconSize(QSize(px, px));

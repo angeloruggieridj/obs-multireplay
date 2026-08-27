@@ -868,7 +868,10 @@ private:
 	// IN/OUT offsets, timecode, speed. Same fields the reference controller puts there.
 	void updateChannelStrip();
 	void renameListDialog(); // gear menu → rename the selected list
-	void onEventItemChanged(QTableWidgetItem *item); // edit commit
+	void onEventItemChanged(QTableWidgetItem *item);
+	// The selection is painted by the view, which draws AROUND a cell widget:
+	// the comment and the speed have to be told, or they keep the panel ink.
+	void tintSelectedCells();
 	// The take armed Branch Output but nothing started: disarm and say why.
 	// Called from poll() when the watchdog below expires.
 	void cancelDeadRecording();

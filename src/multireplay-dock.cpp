@@ -1445,6 +1445,7 @@ MultiReplayDock::MultiReplayDock(QWidget *parent) : QWidget(parent)
 		// down here to stack under the pictures. It is the only shape in
 		// which a 340 px tall dock still shows a usable table.
 		leftCol_ = new QWidget(this);
+		leftCol_->setObjectName(QStringLiteral("mrLeftCol"));
 		leftColLayout_ = new QVBoxLayout(leftCol_);
 		leftColLayout_->setContentsMargins(0, 0, 0, 0);
 		leftColLayout_->setSpacing(3);
@@ -1456,6 +1457,7 @@ MultiReplayDock::MultiReplayDock(QWidget *parent) : QWidget(parent)
 		// — dragging the handle must not be able to leave the search row
 		// stranded away from its table.
 		auto *listPane = new QWidget(this);
+		listPane->setObjectName(QStringLiteral("mrListPane"));
 		auto *lv = new QVBoxLayout(listPane);
 		lv->setContentsMargins(0, 0, 0, 0);
 		lv->setSpacing(2);
@@ -1478,6 +1480,7 @@ MultiReplayDock::MultiReplayDock(QWidget *parent) : QWidget(parent)
 	bottomSep_ = mkSep();
 	root->addWidget(bottomSep_);
 	bottomBar_ = buildBottomBar();
+	bottomBar_->setObjectName(QStringLiteral("mrBottomBar"));
 	root->addWidget(bottomBar_);
 
 	// THE KEYS HAVE TO WORK WHEREVER THE FOCUS IS, and in this panel the focus
@@ -1627,6 +1630,15 @@ QWidget *MultiReplayDock::buildToolbar()
 	liveBtn_ = iconTextBtn(Icon::Live, obs_module_text("Dock.LiveMode"),
 			       "live", box, "mrLive", 12);
 	liveBtn_->setObjectName("mrLive");
+	// UPPER CASE, in code: Qt style sheets have no text-transform, and the
+	// letter-spacing this key carries made the mixed-case word read as "LIve".
+	liveBtn_->setText(QString::fromUtf8(obs_module_text("Dock.LiveMode"))
+				  .toUpper());
+	// ...AND ITS MARK STAYS WHITE WHEN THE KEY IS LIT. The lit tint is the
+	// panel's green, which on a red key is a green dot inside a red rectangle:
+	// two signals arguing in one control. White is what the word beside it is.
+	liveBtn_->setProperty("mrIconOnWhite", true);
+	setKeyIcon(liveBtn_, Icon::Live, tintsFor(sc()), 12);
 	liveBtn_->setCheckable(true);
 	liveBtn_->setCursor(Qt::PointingHandCursor);
 	liveBtn_->setToolTip(obs_module_text("Dock.LiveModeHint"));
@@ -1838,6 +1850,7 @@ QWidget *MultiReplayDock::buildPreview()
 	// the operator just pressed — is on the status line now.)
 	monitorsStrip_ = nullptr;
 
+	box->setObjectName(QStringLiteral("mrPreviewPane"));
 	previewPane_ = box; // the splitter child the Monitors key gives back
 	return box;
 }
@@ -4592,6 +4605,11 @@ QWidget *MultiReplayDock::buildEvents()
 	// mark was taken during a match, which is the opposite of what an operator
 	// watching the game wants.
 	connect(events_, &QTableWidget::itemSelectionChanged, this, [this]() {
+		// The two cells that are widgets are drawn AROUND by the view, so
+		// they never hear about the selection. Told on every change, and
+		// before the early-out: a programmatic re-select still moves the
+		// highlight, and the ink has to follow it.
+		tintSelectedCells();
 		if (refreshing_ || itemsProgrammatic_ || reselecting_)
 			return;
 		cueSelected();
@@ -7634,6 +7652,9 @@ void MultiReplayDock::refreshEvents()
 	}
 
 	refreshing_ = false;
+	// The rows were just rebuilt, so any widget cell is new and knows nothing
+	// about the selection the view is still painting.
+	tintSelectedCells();
 	// Only when it actually hurt, and at most once every few seconds: a
 	// rebuild is a normal thing that happens on every mark.
 	const int64_t rebuildNs = (int64_t)(os_gettime_ns() - refreshStartNs);
@@ -7985,6 +8006,10 @@ QWidget *MultiReplayDock::buildNoteCell(int eventId, const std::string &note,
 	cm->setPlaceholderText(kNoNote);
 	cm->setAlignment(Qt::AlignCenter);
 	cm->setFrame(false);
+	// NO CONTEXT MENU. Cut/copy/paste on a one-word field is three entries
+	// nobody came for, and the vocabulary - the only list worth offering here -
+	// is on the chooser beside it where it can be seen.
+	cm->setContextMenuPolicy(Qt::NoContextMenu);
 	h->addWidget(cm, 1);
 
 	// The chooser. A glyph rather than a word: it is 14 px wide and the words
@@ -8183,6 +8208,44 @@ QWidget *MultiReplayDock::buildAngleCell(int eventId, int cam0, bool on,
 		EventStore::instance().setAngle(eventId, a1, v);
 	});
 	return w;
+}
+
+// THE TWO CELLS THAT ARE WIDGETS HAVE TO BE TOLD THE ROW IS SELECTED.
+//
+// A selected row is painted by the view — background and text — and that reaches
+// the four plain columns and stops. The comment and the speed live in widgets,
+// which the view draws round rather than through, so on a selected row they kept
+// the panel's ordinary ink: dark text on the selection's fill, which on a light
+// theme is unreadable. A property and one rule each; there is nowhere else the
+// selection can arrive from.
+void MultiReplayDock::tintSelectedCells()
+{
+	if (!events_)
+		return;
+	for (int r = 0; r < events_->rowCount(); r++) {
+		const bool sel = events_->selectionModel() &&
+				 events_->selectionModel()->isRowSelected(r);
+		auto mark = [&](QWidget *w) {
+			if (!w || w->property("sel").toBool() == sel)
+				return;
+			w->setProperty("sel", sel);
+			repolish(w);
+		};
+		if (QWidget *nc = events_->cellWidget(r, kColNote)) {
+			mark(nc);
+			if (auto *le = nc->findChild<QLineEdit *>(
+				    QStringLiteral("mrAngleNote")))
+				repolish(le);
+		}
+		for (size_t i = 0; i < camCols_.size(); i++) {
+			QWidget *cell = events_->cellWidget(
+				r, kColFirstCam + (int)i * kColsPerCam);
+			if (!cell)
+				continue;
+			mark(cell->findChild<QPushButton *>(
+				QStringLiteral("mrAngleSpeed")));
+		}
+	}
 }
 
 void MultiReplayDock::onEventItemChanged(QTableWidgetItem *item)

@@ -340,6 +340,15 @@ inline const char *const kDockStyleTemplate =
 R"QSS(
 /* ── base ─────────────────────────────────────────────── */
 #MultiReplayDock { background: @panel@; }
+/* THE PANEL'S OWN CONTAINERS ARE TRANSPARENT, and they have to SAY so: a plain
+   QWidget with no rule is styled by OBS, and a theme that paints QWidget paints
+   the strip and every section in it. That is the dark band under a light
+   panel. */
+#MultiReplayDock QWidget#mrBottomBar, #MultiReplayDock QWidget#mrStrip,
+#MultiReplayDock QWidget#mrBlock, #MultiReplayDock QWidget#mrLeftCol,
+#MultiReplayDock QWidget#mrListPane, #MultiReplayDock QWidget#mrPreviewPane {
+	background: transparent;
+}
 /* EVERY SURFACE THE PANEL OWNS, and BY ID so OBS's own theme cannot out-rank
    it. These were left to the application palette, which is invisible while the
    panel and OBS are both dark and is a set of black patches the moment they are
@@ -495,7 +504,9 @@ QListWidget#mrSettingsNav {
 	border: 0; border-right: 1px solid @border@;
 	outline: 0; font-size: 11px;
 }
-QListWidget#mrSettingsNav::item { padding: 8px 12px; border: 0; }
+/* WITH A COLOUR. It had none, so on a light panel the unselected sections
+   were white on white - the list looked empty until something was hovered. */
+QListWidget#mrSettingsNav::item { padding: 8px 12px; border: 0; color: @textKey@; }
 QListWidget#mrSettingsNav::item:hover { background: @raise2@; color: @text@; }
 QListWidget#mrSettingsNav::item:selected {
 	background: @accent@; color: @accentText@;
@@ -774,6 +785,17 @@ R"QSS(
 }
 #MultiReplayDock QComboBox:hover, #MultiReplayDock QLineEdit:hover { border-color: @borderHi@; }
 #MultiReplayDock QComboBox::drop-down { border: 0; width: 16px; }
+/* THE ARROW IS DRAWN, not left to the style. Qt paints a selector's arrow from
+   the platform style, which on a light panel under a dark OBS is a white
+   triangle on white. A CSS triangle is a shape we own and can colour. */
+#MultiReplayDock QComboBox::down-arrow {
+	width: 0; height: 0; image: none;
+	border-left: 4px solid transparent;
+	border-right: 4px solid transparent;
+	border-top: 5px solid @textKey@;
+	margin-right: 5px;
+}
+#MultiReplayDock QComboBox::down-arrow:hover { border-top-color: @text@; }
 /* AN EDITABLE COMBO IS A COMBO WITH A LINE EDIT INSIDE IT, and the rule above
    matches BOTH. So the per-angle speed and tag cells were paying for the box
    twice: the combo's own 3px/7px padding, its border and its min-height, and
@@ -793,6 +815,7 @@ R"QSS(
 #MultiReplayDock QComboBox[mrNoOverride="true"] QLineEdit {
 	color: @textMuted@;
 }
+#MultiReplayDock QComboBox QAbstractItemView::item { color: @text@; }
 #MultiReplayDock QComboBox QAbstractItemView {
 	background: @raise1@; color: @text@; border: 1px solid @border@;
 	selection-background-color: @accent@; selection-color: @accentText@; outline: 0;
@@ -850,10 +873,17 @@ QTableWidget#mrEvents QWidget#mrNoteCell { background: transparent; }
 QTableWidget#mrEvents QWidget#mrNoteCell:hover {
 	background: @raise1@;
 }
+/* NO font-size HERE. The four columns to the left of these are plain table
+   items drawn in the table's own font; setting a smaller one on the two cells
+   that are widgets made them read as a footnote beside their own row. The only
+   metric they carry is the row height. */
 QTableWidget#mrEvents QLineEdit#mrAngleNote {
 	background: transparent; border: 0; padding: 0px 2px;
-	min-height: @cellInput@px; font-size: @cellFont@px;
-	color: @text@;
+	min-height: @cellInput@px; color: @text@;
+}
+QTableWidget#mrEvents QWidget#mrNoteCell[sel="true"] QLineEdit#mrAngleNote,
+QTableWidget#mrEvents QPushButton#mrAngleSpeed[sel="true"] {
+	color: @rowSelText@;
 }
 QTableWidget#mrEvents QPushButton#mrNotePick {
 	background: transparent; border: 0; padding: 0;
@@ -878,7 +908,7 @@ QTableWidget#mrEvents QPushButton#mrNotePick:hover {
 QTableWidget#mrEvents QPushButton#mrAngleSpeed {
 	background: transparent; border: 1px solid transparent;
 	color: @text@; padding: 0px 2px;
-	min-height: @cellInput@px; font-size: @cellFont@px;
+	min-height: @cellInput@px;
 	text-align: center;
 }
 QTableWidget#mrEvents QPushButton#mrAngleSpeed:hover {
