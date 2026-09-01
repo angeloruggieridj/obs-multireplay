@@ -183,6 +183,7 @@ SegmentIndex::~SegmentIndex()
 
 void SegmentIndex::start(const std::string &folder,
 			 const std::array<bool, kMaxSegmentCameras> &cams,
+			 const std::array<int, kMaxSegmentCameras> &canonical,
 			 int64_t epochMasterNs, int64_t epochWallNs)
 {
 	stop();
@@ -190,6 +191,7 @@ void SegmentIndex::start(const std::string &folder,
 		std::lock_guard<std::mutex> lock(mutex_);
 		folder_ = folder;
 		cams_ = cams;
+		canonical_ = canonical;
 		epochMasterNs_ = epochMasterNs;
 		epochWallNs_ = epochWallNs;
 		for (auto &v : segments_)
@@ -566,6 +568,13 @@ void SegmentIndex::recomputeBoundaries()
 	}
 }
 
+int SegmentIndex::owner(int camIndex) const
+{
+	if (camIndex < 0 || camIndex >= kMaxSegmentCameras)
+		return camIndex;
+	return canonical_[camIndex];
+}
+
 bool SegmentIndex::resolve(int camIndex, int64_t masterNs, std::string &pathOut,
 			   int64_t &fileTimeNsOut) const
 {
@@ -573,7 +582,10 @@ bool SegmentIndex::resolve(int camIndex, int64_t masterNs, std::string &pathOut,
 		return false;
 
 	std::lock_guard<std::mutex> lock(mutex_);
-	const auto &segs = segments_[camIndex];
+	// A slot that only duplicates an earlier slot's source never wrote a file
+	// series of its own — the footage lives under the canonical slot instead
+	// (see start() and camera-dedup.hpp), and it is the same footage.
+	const auto &segs = segments_[owner(camIndex)];
 	for (size_t i = 0; i < segs.size(); i++) {
 		const RecordingSegment &s = segs[i];
 		if (!s.anchored || masterNs < s.anchorMasterNs)
@@ -598,7 +610,7 @@ int64_t SegmentIndex::oldestNs(int camIndex) const
 	if (camIndex < 0 || camIndex >= kMaxSegmentCameras)
 		return kNoInstant;
 	std::lock_guard<std::mutex> lock(mutex_);
-	const auto &segs = segments_[camIndex];
+	const auto &segs = segments_[owner(camIndex)];
 	return segs.empty() ? kNoInstant : segs.front().anchorMasterNs;
 }
 
@@ -608,7 +620,7 @@ int64_t SegmentIndex::newestNs(int camIndex) const
 		return kNoInstant;
 	std::lock_guard<std::mutex> lock(mutex_);
 	int64_t newest = kNoInstant;
-	for (const RecordingSegment &s : segments_[camIndex]) {
+	for (const RecordingSegment &s : segments_[owner(camIndex)]) {
 		if (!s.anchored)
 			continue;
 		// A closed segment ends where the next one begins; that is known
@@ -701,7 +713,7 @@ std::vector<RecordingSegment> SegmentIndex::segments(int camIndex) const
 	if (camIndex < 0 || camIndex >= kMaxSegmentCameras)
 		return {};
 	std::lock_guard<std::mutex> lock(mutex_);
-	return segments_[camIndex];
+	return segments_[owner(camIndex)];
 }
 
 int SegmentIndex::anchoredCount() const

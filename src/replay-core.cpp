@@ -6,6 +6,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "replay-core.hpp"
 #include "branch-output-control.hpp"
+#include "camera-dedup.hpp"
 #include "event-store.hpp"
 #include "health.hpp"
 #include "playback-coordinator.hpp"
@@ -15,10 +16,12 @@ SPDX-License-Identifier: GPL-2.0-or-later
 #include "project-name.hpp"
 #include "replay-channel.hpp"
 #include "segment-index.hpp"
+#include "version-compare.hpp"
 
 #include <util/platform.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <chrono>
 #include <cstdlib>
@@ -27,13 +30,22 @@ SPDX-License-Identifier: GPL-2.0-or-later
 
 namespace multireplay {
 
+namespace {
+std::atomic<bool> g_verboseLog{false};
+}
+
 bool debugLoggingEnabled()
 {
-	static const bool enabled = []() {
+	static const bool env = []() {
 		const char *v = getenv("OBS_MULTIREPLAY_DEBUG");
 		return v && *v && *v != '0';
 	}();
-	return enabled;
+	return env || g_verboseLog.load(std::memory_order_relaxed);
+}
+
+void setVerboseLogging(bool on)
+{
+	g_verboseLog.store(on, std::memory_order_relaxed);
 }
 
 namespace {
@@ -133,14 +145,28 @@ void ReplayCore::restartSegmentIndex(const std::string &folder)
 	// is nothing to re-derive an anchor from, and inventing one is exactly what
 	// this engine exists not to do.
 	std::array<bool, kMaxSegmentCameras> segCams{};
+	std::array<int, kMaxSegmentCameras> segCanonical{};
+	for (int i = 0; i < kMaxSegmentCameras; i++)
+		segCanonical[i] = i;
 	{
 		std::lock_guard<std::mutex> lock(mutex_);
 		for (int i = 0; i < kMaxCameras && i < kMaxSegmentCameras; i++)
 			segCams[i] = !config_.cameras[i].sourceName.empty();
+		// A slot that only duplicates an earlier slot's source never had a
+		// file series of its own on disk (see startRecording): redirect its
+		// reads to the slot that does, the same way PacketTap's live ring
+		// does for the recent past.
+		std::array<std::string, kMaxCameras> srcNames{};
+		for (int i = 0; i < kMaxCameras; i++)
+			srcNames[i] = config_.cameras[i].sourceName;
+		const std::array<int, kMaxCameras> canonicalCam =
+			canonicalCameraIndices(srcNames);
+		for (int i = 0; i < kMaxCameras && i < kMaxSegmentCameras; i++)
+			segCanonical[i] = canonicalCam[i];
 	}
 	const SessionEpoch epoch = sessionEpoch();
-	SegmentIndex::instance().start(folder, segCams, epoch.masterNs,
-				       epoch.wallNs);
+	SegmentIndex::instance().start(folder, segCams, segCanonical,
+				       epoch.masterNs, epoch.wallNs);
 
 	// The folder just changed, so whatever disk bandwidth was measured for
 	// the previous one means nothing here. Measuring is I/O, so it happens
@@ -443,6 +469,12 @@ bool ReplayCore::startRecording(std::string &errorOut)
 	int started = 0;
 	std::string recFolder;
 	std::array<bool, kMaxSegmentCameras> segCams{};
+	// Identity until the lock below fills it in from the live config — a
+	// duplicate slot's file/ring reads redirect here (see PacketTap::owner
+	// and SegmentIndex, both fed this same mapping).
+	std::array<int, kMaxSegmentCameras> segCanonical{};
+	for (int i = 0; i < kMaxSegmentCameras; i++)
+		segCanonical[i] = i;
 	{
 		std::lock_guard<std::mutex> lock(mutex_);
 		// Between the snapshot above and here, another entry point may have
@@ -457,6 +489,23 @@ bool ReplayCore::startRecording(std::string &errorOut)
 		recFolder = recordingFolderLocked();
 		std::filesystem::create_directories(utf8ToPath(recFolder), ec);
 
+		// WHICH SLOT OWNS THE FILTER/ENCODER for its source (camera-dedup.hpp).
+		// Two or more slots naming the same OBS source are the same picture:
+		// only the lowest-numbered one — the CANONICAL slot — ever gets a
+		// Branch Output filter. Asking Branch Output to encode the same
+		// source a second time for nothing is how eight configured slots
+		// became eight hardware encode sessions racing for a GPU that may
+		// only have room for a few, and the losing ones never came up at all
+		// — which is what "only the first camera's preview ever shows a
+		// picture" looks like from the panel.
+		std::array<std::string, kMaxCameras> srcNames{};
+		for (int i = 0; i < kMaxCameras; i++)
+			srcNames[i] = config_.cameras[i].sourceName;
+		const std::array<int, kMaxCameras> canonicalCam =
+			canonicalCameraIndices(srcNames);
+		for (int i = 0; i < kMaxCameras && i < kMaxSegmentCameras; i++)
+			segCanonical[i] = canonicalCam[i];
+
 		for (int i = 0; i < kMaxCameras; i++) {
 			auto &st = cameraStatus_[i];
 			st = CameraStatus{};
@@ -465,6 +514,22 @@ bool ReplayCore::startRecording(std::string &errorOut)
 			st.configured = !st.sourceName.empty();
 			if (!st.configured)
 				continue;
+
+			if (canonicalCam[i] != i) {
+				// A DUPLICATE of an earlier slot's source: it rides
+				// that slot's already-armed filter and encoder rather
+				// than asking for a second one. Processed in order
+				// 0..7, so the slot it mirrors was already handled.
+				const CameraStatus &owner =
+					cameraStatus_[canonicalCam[i]];
+				st.sourceFound = owner.sourceFound;
+				st.filterPresent = false;
+				st.recording = owner.recording;
+				st.startTimestampNs = owner.startTimestampNs;
+				if (st.recording)
+					started++;
+				continue;
+			}
 
 			obs_source_t *target =
 				obs_get_source_by_name(st.sourceName.c_str());
@@ -521,22 +586,35 @@ bool ReplayCore::startRecording(std::string &errorOut)
 		// (fail-SOFT in M0, fail-CLOSED from M1 once the ring is authoritative).
 		{
 			std::array<bool, kMaxTapChannels> wantTap{};
+			std::array<int, kMaxTapChannels> tapCanonical{};
 			std::array<bool, kMaxCameras> armedCams{};
 			for (int i = 0; i < kMaxCameras; i++) {
 				armedCams[i] = cameraStatus_[i].recording;
-				if (i < kMaxTapChannels)
-					wantTap[i] = cameraStatus_[i].recording;
+				if (i < kMaxTapChannels) {
+					tapCanonical[i] = canonicalCam[i];
+					// Only the canonical slot has a filter to
+					// attach to; a duplicate's reads redirect to
+					// it instead of arming a channel of its own.
+					wantTap[i] = cameraStatus_[i].recording &&
+						     canonicalCam[i] == i;
+				}
 			}
 			// budget was filled in (and possibly cut to fit RAM) by pre-flight.
-			PacketTap::instance().armAsync(wantTap, budget);
+			PacketTap::instance().armAsync(wantTap, tapCanonical, budget);
 
 			// The monitor's baselines belong to this take: resident memory
 			// before it, the frame counters at its start, and the ring window
 			// it was actually granted rather than the one it asked for.
+			//
+			// The disk-bandwidth estimate counts DISTINCT encoders only: a
+			// duplicate slot writes no file of its own, so folding it into
+			// this count would ask the disk-speed check for bandwidth
+			// nothing is actually asking the disk for.
 			int armedCount = 0;
-			for (bool a : armedCams)
-				armedCount += a ? 1 : 0;
-			monitor.takeStarted(armedCams, budget.seconds,
+			for (int i = 0; i < kMaxCameras; i++)
+				if (armedCams[i] && canonicalCam[i] == i)
+					armedCount++;
+			monitor.takeStarted(armedCams, canonicalCam, budget.seconds,
 					    (int64_t)budget.kbpsPerCamera * 1000 / 8 *
 						    armedCount,
 					    cfg.sessionFolder);
@@ -560,8 +638,8 @@ bool ReplayCore::startRecording(std::string &errorOut)
 	// marks. One pair per process (see sessionEpoch).
 	{
 		const SessionEpoch epoch = sessionEpoch();
-		SegmentIndex::instance().start(recFolder, segCams, epoch.masterNs,
-					       epoch.wallNs);
+		SegmentIndex::instance().start(recFolder, segCams, segCanonical,
+					       epoch.masterNs, epoch.wallNs);
 	}
 
 	// The encoder-startup latency detector is gone with the file-based engine:
@@ -672,17 +750,40 @@ void ReplayCore::disarmPersistedFilters()
 			"recording starts only via REC",
 			ctx.disarmed);
 
+	// PRUNING STALE FILTERS IS NOT DONE HERE ON PURPOSE.
+	//
 	// The scene collection has just been (re)loaded, which is the moment the
 	// filters it persisted come back — including the ones belonging to a
-	// project that is no longer open. Disarming them is not enough: they are
-	// still filters of ours on sources this project does not use, and the
-	// count of filters is what anybody reads as the count of angles.
-	Config cfg;
-	{
-		std::lock_guard<std::mutex> lock(mutex_);
-		cfg = config_;
-	}
-	branch_output::pruneFilters(cfg);
+	// project that is no longer open, or the ones a duplicate camera slot
+	// (camera-dedup.hpp) no longer gets. Disarming them (above) is enough for
+	// safety; pruning is destructive, and this function is called from
+	// FINISHED_LOADING/SCENE_COLLECTION_CHANGED while OBSInit() is still one
+	// long synchronous C++ call with no Qt event loop of its own running.
+	// Deserialising the scene collection just handed every persisted Branch
+	// Output filter its own queued "filter added" notification on BO's
+	// status dock (Qt::QueuedConnection, holding a raw source pointer), and
+	// that queue is NOT drained by anything here — the first thing in
+	// OBSInit() that actually spins a Qt event loop is NewYouTubeAppDock,
+	// further down. Pruning now — even posted through obs_queue_task, which
+	// measured no later than a couple of milliseconds after this call, not
+	// "the next real event-loop turn" — destroys some of those just-loaded
+	// filters before their own "added" notification is ever processed, and
+	// OBS crashes minutes later inside NewYouTubeAppDock's nested loop,
+	// calling obs_source_get_name() on a filter that is long gone. Measured
+	// on a real project with 8 camera slots on one source, where
+	// pruneFilters now correctly removes 7 of them (camera-dedup.hpp,
+	// previously 0 — this crash could not happen before that fix):
+	//   obs.dll!obs_source_get_name
+	//   osi-branch-output.dll!OutputTableRow::OutputTableRow
+	//   osi-branch-output.dll!BranchOutputStatusDock::addFilter/addRow
+	//   obs64.exe!OBSBasic::NewYouTubeAppDock -> ...OBSInit
+	//
+	// The caller (plugin-main.cpp, which has Qt available and this file
+	// deliberately does not) schedules the prune with QTimer::singleShot —
+	// a real Qt timer only ever fires from inside an actual event-loop
+	// iteration, so it lands in the SAME queue as Branch Output's own
+	// connections and after them, in post order, instead of racing ahead of
+	// them through some other, earlier drain path.
 }
 
 bool ReplayCore::deleteAllSession(std::string &errorOut)
@@ -754,6 +855,9 @@ void ReplayCore::setConfig(const Config &cfg)
 		config_.preRollMs = std::max(0, config_.preRollMs);
 		config_.postRollMs = std::max(0, config_.postRollMs);
 	}
+	// Takes effect at once — the operator flips it in Settings precisely to
+	// catch the next resize.
+	setVerboseLogging(cfg.verboseLog);
 	// Marking is a store rule and the hotkeys never pass through the dock, so
 	// the rolls go where both paths read them.
 	EventStore::instance().setRollNs((int64_t)cfg.preRollMs * 1000000,
@@ -996,9 +1100,22 @@ void ReplayCore::reapplyFilterSettings()
 // later turn of the UI loop (see the note above on Branch Output's status dock).
 void ReplayCore::addFiltersForConfig(const Config &cfg)
 {
+	// Only the CANONICAL slot for each source gets a filter (camera-dedup.hpp):
+	// a later slot naming the same source is the same picture, and building
+	// Branch Output a second filter for it duplicates the encoder, the file
+	// and — on a GPU with a limited number of concurrent hardware sessions —
+	// the odds that camera ever actually starts.
+	std::array<std::string, kMaxCameras> srcNames{};
+	for (int i = 0; i < kMaxCameras; i++)
+		srcNames[i] = cfg.cameras[i].sourceName;
+	const std::array<int, kMaxCameras> canonicalCam =
+		canonicalCameraIndices(srcNames);
+
 	for (int i = 0; i < kMaxCameras; i++) {
 		if (cfg.cameras[i].sourceName.empty())
 			continue;
+		if (canonicalCam[i] != i)
+			continue; // a duplicate source shares the canonical slot's filter
 		obs_source_t *target =
 			obs_get_source_by_name(cfg.cameras[i].sourceName.c_str());
 		if (!target)
@@ -1197,6 +1314,17 @@ void ReplayCore::loadConfigFile(const char *path, bool projectScoped)
 	// and it is ignored when the file is a project's.
 	if (!projectScoped && obs_data_has_user_value(data, "updateChannel"))
 		config_.updateChannel = obs_data_get_string(data, "updateChannel");
+	else if (!projectScoped && parseVersion(PLUGIN_VERSION).pre > 0)
+		// A BUILD THAT IS ITSELF A PRE-RELEASE DEFAULTS TO THE BETA
+		// CHANNEL, and this is not opting anybody in: installing a beta
+		// IS the opt-in, and it already happened. On the stable channel
+		// this operator is offered nothing until the FINAL release of
+		// those numbers ships — every beta between his and that one is a
+		// pre-release, and pre-releases are what the stable channel
+		// filters out. Someone testing beta7 is exactly the person beta8
+		// was published for. An explicit choice in config.json still
+		// wins, in both directions.
+		config_.updateChannel = "beta";
 	if (obs_data_has_user_value(data, "port"))
 		config_.port = (int)obs_data_get_int(data, "port");
 	if (obs_data_has_user_value(data, "splitMinutes"))
@@ -1308,6 +1436,11 @@ void ReplayCore::loadConfigFile(const char *path, bool projectScoped)
 		}
 		obs_data_array_release(cams);
 	}
+	// GLOBAL, like uiTheme: a chatty diagnostic log is a per-operator choice,
+	// not a per-project one. The env var still forces it on regardless.
+	if (!projectScoped && obs_data_has_user_value(data, "verboseLog"))
+		config_.verboseLog = obs_data_get_bool(data, "verboseLog");
+	setVerboseLogging(config_.verboseLog);
 	// The operator's own comment list. Absent in a project written before it
 	// existed, which simply means no shortcuts and a plain text field.
 	config_.commentPresets.clear();
@@ -1426,6 +1559,7 @@ void ReplayCore::saveConfigFile(const char *path) const
 	obs_data_set_int(data, "uiTheme", config_.uiTheme);
 	obs_data_set_int(data, "tableDensity", config_.tableDensity);
 	obs_data_set_int(data, "eventListCount", config_.eventListCount);
+	obs_data_set_bool(data, "verboseLog", config_.verboseLog);
 	obs_data_set_string(data, "recFormat", config_.recFormat.c_str());
 
 	obs_data_array_t *cams = obs_data_array_create();

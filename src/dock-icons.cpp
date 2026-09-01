@@ -398,7 +398,12 @@ void buildPaths(Icon id, QPainterPath &fill, QPainterPath &line)
 		break;
 
 	case Icon::Menu:
-		chevronDown(line, 7.5, 10, 9, 4.5);
+		// THE SAME CHEVRON AS MoveDown, and it used to be two thirds of
+		// it. A mark drawn smaller than every other mark on the panel is
+		// not "quieter", it is fainter — and on the one key that carries
+		// nothing else it read as an empty key once the platform's own
+		// arrow stopped being printed over the top of it.
+		chevronDown(line, 6.5, 9.5, 11, 5.5);
 		break;
 	}
 }
@@ -474,13 +479,13 @@ void setKeyIcon(QAbstractButton *b, Icon id, const IconTints &tints, int px)
 		return;
 	b->setProperty("mrIcon", (int)id);
 	b->setProperty("mrIconPx", px);
-	// A KEY MAY ASK FOR A WHITE MARK WHEN IT IS LIT. The lit tint is the
-	// panel's preview colour, which is right on a neutral key and wrong on one
-	// that is itself a signal: a green dot inside the red LIVE key is two
-	// signals arguing in one control.
-	IconTints t = tints;
-	if (b->property("mrIconOnWhite").toBool())
-		t.on = QColor(Qt::white);
+	// WHICH INK, and it is asked of the KEY rather than of the caller: see
+	// IconRole. A key that is itself a signal — the filled play key, ≫ on the
+	// on-air band, REC, Annulla, the health badge — wears its own colour, and
+	// it has to be re-derived here on every rebuild so that a theme change
+	// carries it. Absent property = Chrome = the four tints as given.
+	const IconTints t = tintsForRole(
+		tints, (IconRole)b->property(kIconRoleProperty).toInt());
 
 	const qreal dpr = b->devicePixelRatioF() > 0 ? b->devicePixelRatioF() : 1.0;
 	QIcon ic;
@@ -503,6 +508,15 @@ void setKeyIcon(QAbstractButton *b, Icon id, const IconTints &tints, int px)
 		     QIcon::On);
 	b->setIcon(ic);
 	b->setIconSize(QSize(px, px));
+}
+
+void setKeyIconRole(QAbstractButton *b, Icon id, IconRole role,
+		    const IconTints &tints, int px)
+{
+	if (!b)
+		return;
+	b->setProperty(kIconRoleProperty, (int)role);
+	setKeyIcon(b, id, tints, px);
 }
 
 void restyleIcons(QObject *root, const IconTints &tints)

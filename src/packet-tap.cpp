@@ -299,6 +299,7 @@ void PacketTap::unload()
 }
 
 void PacketTap::armAsync(const std::array<bool, kMaxTapChannels> &wanted,
+			 const std::array<int, kMaxTapChannels> &canonical,
 			 const RingBudget &budget)
 {
 	// Size the live history from the configured bitrate, with headroom for
@@ -313,6 +314,8 @@ void PacketTap::armAsync(const std::array<bool, kMaxTapChannels> &wanted,
 	{
 		std::lock_guard<std::mutex> lock(mutex_);
 		wanted_ = wanted;
+		for (int i = 0; i < kMaxTapChannels; i++)
+			canonical_[i].store(canonical[i], std::memory_order_relaxed);
 		for (int i = 0; i < kMaxTapChannels; i++) {
 			auto &ch = channels_[i];
 			if (!wanted_[i] || ch.attached.load())
@@ -786,6 +789,13 @@ int PacketTap::attachedCount() const
 	return n;
 }
 
+int PacketTap::owner(int camIndex) const
+{
+	if (camIndex < 0 || camIndex >= kMaxTapChannels)
+		return camIndex;
+	return canonical_[camIndex].load(std::memory_order_relaxed);
+}
+
 bool PacketTap::resolveRange(int camIndex, int64_t inNs, int64_t outNs,
 			     std::vector<LivePacket> &packetsOut,
 			     int64_t &presentInNs, int64_t &presentOutNs) const
@@ -793,7 +803,10 @@ bool PacketTap::resolveRange(int camIndex, int64_t inNs, int64_t outNs,
 	if (camIndex < 0 || camIndex >= kMaxTapChannels)
 		return false;
 
-	const Channel &ch = channels_[camIndex];
+	// A slot that merely duplicates an earlier slot's source owns no filter
+	// and no encoder — the bytes live under the canonical slot's channel
+	// (see armAsync / camera-dedup.hpp), which is exactly the same footage.
+	const Channel &ch = channels_[owner(camIndex)];
 
 	// WHERE the range is, under the lock. The COPY, in pieces (M3).
 	//
@@ -855,7 +868,7 @@ StreamConfig PacketTap::streamConfig(int camIndex) const
 {
 	if (camIndex < 0 || camIndex >= kMaxTapChannels)
 		return {};
-	const Channel &ch = channels_[camIndex];
+	const Channel &ch = channels_[owner(camIndex)];
 	std::lock_guard<std::mutex> lock(ch.ringMutex);
 	return ch.config;
 }
@@ -866,7 +879,7 @@ std::vector<AnchorSample> PacketTap::videoSamples(int camIndex) const
 	if (camIndex < 0 || camIndex >= kMaxTapChannels)
 		return out;
 
-	const Channel &ch = channels_[camIndex];
+	const Channel &ch = channels_[owner(camIndex)];
 	std::lock_guard<std::mutex> lock(ch.ringMutex);
 	out.reserve(ch.ring.size() / 2);
 	for (size_t i = 0; i < ch.ring.size(); i++) {
@@ -882,7 +895,7 @@ int64_t PacketTap::newestNs(int camIndex) const
 {
 	if (camIndex < 0 || camIndex >= kMaxTapChannels)
 		return 0;
-	const Channel &ch = channels_[camIndex];
+	const Channel &ch = channels_[owner(camIndex)];
 	std::lock_guard<std::mutex> lock(ch.ringMutex);
 	return ch.ring.newestNs();
 }
@@ -891,7 +904,7 @@ int64_t PacketTap::oldestReplayableNs(int camIndex) const
 {
 	if (camIndex < 0 || camIndex >= kMaxTapChannels)
 		return 0;
-	const Channel &ch = channels_[camIndex];
+	const Channel &ch = channels_[owner(camIndex)];
 	std::lock_guard<std::mutex> lock(ch.ringMutex);
 	int64_t ns = 0;
 	return ch.ring.oldestKeyframeNs(ns) ? ns : 0;
@@ -904,8 +917,11 @@ TapStats PacketTap::stats(int camIndex) const
 		return s;
 
 	std::lock_guard<std::mutex> lock(mutex_);
-	const Channel &ch = channels_[camIndex];
+	const Channel &ch = channels_[owner(camIndex)];
 	s.attached = ch.attached.load();
+	// The caller's own index, not the channel's: a duplicate slot is still a
+	// real angle on the panel, and health/the dock ask "is camIndex alive"
+	// meaning the slot they clicked, not the encoder underneath it.
 	s.camIndex = camIndex;
 	s.outputName = ch.outputName;
 	s.encoderPtr = ch.encoderPtr;
@@ -962,6 +978,20 @@ std::string PacketTap::report() const
 	os << "[tap] attached channels: " << attachedCount() << "\n";
 
 	for (int i = 0; i < kMaxTapChannels; i++) {
+		const int own = owner(i);
+		if (own != i) {
+			// A duplicate slot shares its canonical channel's encoder
+			// and ring entirely (see armAsync); printing its stats a
+			// second time under a different camera number would say
+			// nothing new and look like eight cameras when there is
+			// one. One line says where the picture actually is.
+			if (!channels_[own].attached.load())
+				continue;
+			os << "[tap] cam" << (i + 1)
+			   << " shares cam" << (own + 1)
+			   << "'s encoder (same source, see above)\n";
+			continue;
+		}
 		const TapStats s = stats(i);
 		if (!s.attached && s.videoPackets == 0)
 			continue;

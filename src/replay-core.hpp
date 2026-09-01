@@ -28,10 +28,16 @@ GNU General Public License for more details.
 
 namespace multireplay {
 
-// Verbose [ev]/[live] tracing is gated behind the env var OBS_MULTIREPLAY_DEBUG
-// (set to anything but empty/"0"). Off by default → no per-event log spam in
-// production. Use MR_DLOG(...) exactly like obs_log's format args.
+// Verbose diagnostic tracing — the [ev]/[live] logs, and the layout/resize
+// traces ([mondiag], the floor breakdown, the [ui] repaint census). Gated so
+// production stays quiet. Two switches, either one enables it:
+//   - the env var OBS_MULTIREPLAY_DEBUG (anything but empty/"0"), read once —
+//     for a crash before Settings can be reached, and for the gate;
+//   - Config.verboseLog (Settings ▸ Advanced), pushed here by setVerboseLogging()
+//     whenever the config is applied, so the operator can flip it at runtime.
+// Use MR_DLOG(...) exactly like obs_log's format args.
 bool debugLoggingEnabled();
+void setVerboseLogging(bool on);
 #define MR_DLOG(...)                                       \
 	do {                                               \
 		if (::multireplay::debugLoggingEnabled())  \
@@ -199,6 +205,15 @@ struct Config {
 	// cell behaves as the plain text field it was before.
 	std::vector<std::string> commentPresets;
 	std::array<CameraConfig, kMaxCameras> cameras;
+	// VERBOSE DIAGNOSTIC LOGGING (Settings ▸ Advanced). Off by default. When on,
+	// the deterministic layout/resize traces (`[mondiag]`, the floor breakdown,
+	// the [ui] repaint census) and the [ev]/[live] tracing are written to the
+	// OBS log, so a report like "the boxes are the wrong size on resize" can be
+	// diagnosed from a log instead of reproduced blind. GLOBAL, like uiTheme:
+	// whether an operator wants a chatty log is a fact about the operator, not
+	// the match. The env var OBS_MULTIREPLAY_DEBUG still forces it on regardless
+	// — for a crash before Settings can be reached, and for the gate.
+	bool verboseLog = false;
 };
 
 struct CameraStatus {

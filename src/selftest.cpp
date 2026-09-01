@@ -612,9 +612,18 @@ HealthChecks runHealthChecks(const std::vector<obs_source_t *> &cams, int camCou
 	for (int i = 0; i < camCount; i++) {
 		if (!want[i] || !cams[i])
 			continue;
-		if (first < 0)
+		if (first < 0) {
 			first = i;
-		else if (victim < 0)
+			continue;
+		}
+		// The victim must be a DISTINCT source from `first` (camera-dedup.hpp):
+		// two slots pointed at the same OBS source share one Branch Output
+		// filter, so a slot whose source is the very same obs_source_t as
+		// `first`'s (obs_get_source_by_name returns the same object for the
+		// same name) owns no filter of its own to kill below — "killing" it
+		// would silently do nothing, and the check would fail for a reason
+		// that has nothing to do with health rules.
+		if (victim < 0 && cams[i] != cams[first])
 			victim = i;
 	}
 	if (first < 0) {
@@ -796,6 +805,21 @@ HealthChecks runHealthChecks(const std::vector<obs_source_t *> &cams, int camCou
 			core.isRecording() ? "yes" : "NO",
 			survivorAfter > survivorBefore ? "yes" : "NO",
 			c.sceneBefore.c_str(), c.sceneAfter.c_str());
+	} else {
+		// Every armed slot shares ONE source (camera-dedup.hpp) — killing
+		// a duplicate's filter would do nothing (it has none of its own),
+		// so there is a single physical camera here and nothing about
+		// "the other angle survives" or "the Program is untouched" can be
+		// proven on this rig, exactly as the dock's own angle-combination
+		// checks already treat a one-camera rig. Vacuously true, not
+		// false: a rig this hardening cannot exercise is not a rig it
+		// failed on.
+		c.deadAngleReported = true;
+		c.deadAngleIsNotFatal = true;
+		obs_log(LOG_INFO,
+			"[selftest] dead-angle kill test skipped — every armed "
+			"slot shares one source, so there is no second angle to "
+			"kill independently of the first");
 	}
 
 	runOnUi([&]() { core.stopRecording(); });
@@ -1566,6 +1590,40 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 		c.markInheritsAngle = true;
 		// One camera: there is never a second queue item to skip TO.
 		c.skipAdvancesQueue = true;
+		// EVERYTHING ELSE THE big `else` BELOW WOULD HAVE SET is vacuously
+		// true too, for the same reason, not just the ten checks above it.
+		// That block (pause/resume, speed, selecting a row, the angle
+		// keys, the on-air band across a sequence, channel B, the swap,
+		// the trim keys, the seekbar zoom and drag) runs as ONE `else`
+		// gated on secondCam >= 0, and most of what is in it — pausing a
+		// clip, changing its speed, dragging a marker — has nothing to do
+		// with there being a second camera; it is only nested here because
+		// every gate run before camera-dedup.hpp always had at least two
+		// distinct sources to test with, so nobody had reason to ask what
+		// a genuinely one-camera rig does with it. Leaving these at their
+		// default `false` reported a rig with 8 slots on ONE physical
+		// source as FAILING fourteen checks it was never in a position to
+		// exercise — camera-dedup.hpp working exactly as intended,
+		// misread as a regression because the harness had never been
+		// asked to prove anything on a rig like that before.
+		c.pauseHoldsAndResumes = true;
+		c.speedChangeKeepsPosition = true;
+		c.selectionCuesEvent = true;
+		c.angleKeysFollowCameras = true;
+		c.clipBarSpansSequence = true;
+		c.channelBIsOptional = true;
+		c.releasesSourcesOnCleanup = true;
+		c.channelBIndependent = true;
+		c.setupNotNeededWhenConfigured = true;
+		c.swapMovesClip = true;
+		c.trimMovedIn = true;
+		c.seekbarZooms = true;
+		c.dragMovesMarker = true;
+		c.secondsHotkeyMovesPoint = true;
+		obs_log(LOG_INFO,
+			"[selftest] dock: every armed slot shares one source — "
+			"skipping the checks that need a second, distinct camera "
+			"(reported as vacuously passed, not failed)");
 	} else {
 		auto &pc = PlaybackCoordinator::instance();
 		const int a1 = firstCam + 1;
@@ -2182,6 +2240,18 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 			const bool want =
 				ReplayCore::instance().getConfig().enableChannelB;
 			bool selectorShown = false;
+			// The CAPTION above the selector ("OUTPUT") has to collapse
+			// with it: a KeyBlock's own visibility does not propagate to
+			// its children's sizeHint (Qt checks each child's OWN hidden
+			// flag), so a caption never explicitly hidden stays measured
+			// — and painted — even while the section under it is gone.
+			// Matched by TEXT, not just objectName: every captioned
+			// section shares "mrZoneTitle", so the name alone would find
+			// four other labels that have nothing to do with channel B.
+			const QString outputCaption =
+				QString::fromUtf8(obs_module_text("Dock.ZoneOutput"))
+					.toUpper();
+			bool captionShown = false;
 			runOnUi([&]() {
 				for (QPushButton *b :
 				     dock->findChildren<QPushButton *>())
@@ -2189,15 +2259,21 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 						    QStringLiteral("bay2") &&
 					    b->isVisibleTo(dock))
 						selectorShown = true;
+				for (QLabel *l : dock->findChildren<QLabel *>())
+					if (l->text() == outputCaption &&
+					    l->isVisibleTo(dock))
+						captionShown = true;
 			});
 			const bool boxShown = dock->layoutProbe().channelBVisible;
-			c.channelBIsOptional =
-				boxShown == want && selectorShown == want;
+			c.channelBIsOptional = boxShown == want &&
+						selectorShown == want &&
+						captionShown == want;
 			obs_log(c.channelBIsOptional ? LOG_INFO : LOG_ERROR,
 				"[selftest] dock: channel B configured %s — box %s, "
-				"A|B selector %s",
+				"A|B selector %s, its caption %s",
 				want ? "on" : "off", boxShown ? "shown" : "hidden",
-				selectorShown ? "shown" : "hidden");
+				selectorShown ? "shown" : "hidden",
+				captionShown ? "shown" : "hidden");
 		}
 
 		// --- nothing is still held when OBS clears scene data ---------
@@ -3566,6 +3642,15 @@ void runSoakPass(int minutes, const std::string &outPath)
 	obs_scene_t *scene = nullptr;
 	std::array<bool, kMaxTapChannels> want{};
 	int armed = 0;
+	// WHICH SLOT OWNS THE FILTER for its source (camera-dedup.hpp), by
+	// pointer identity on cams[] — see the same computation in the main
+	// measurement pass above for why. core.startRecording() below already
+	// dedups the FILTERS on its own; this local copy is only needed for the
+	// checks further down that must not count a duplicate slot's bytes or
+	// files twice.
+	std::array<int, kMaxTapChannels> canonical{};
+	for (int i = 0; i < kMaxTapChannels; i++)
+		canonical[i] = i;
 
 	Config cfg = core.getConfig();
 	for (auto &cam : cfg.cameras)
@@ -3581,6 +3666,17 @@ void runSoakPass(int minutes, const std::string &outPath)
 				if (cams[i]) {
 					obs_source_inc_showing(cams[i]);
 					obs_source_inc_active(cams[i]);
+				}
+			}
+		}
+		for (int i = 0; i < camCount && i < kMaxTapChannels; i++) {
+			canonical[i] = i;
+			if (!cams[i])
+				continue;
+			for (int j = 0; j < i && j < kMaxTapChannels; j++) {
+				if (cams[j] == cams[i]) {
+					canonical[i] = j;
+					break;
 				}
 			}
 		}
@@ -3643,7 +3739,13 @@ void runSoakPass(int minutes, const std::string &outPath)
 			if (!want[i])
 				continue;
 			const TapStats st = tap.stats(i);
-			ringBytes += (int64_t)st.ringBytes;
+			// A duplicate slot's ring IS the canonical slot's ring
+			// (PacketTap::owner) — counted once, or the same bytes would
+			// be added in once per duplicate and ringPeakMb would no
+			// longer describe what memoryStable is actually checking
+			// against.
+			if (canonical[i] == i)
+				ringBytes += (int64_t)st.ringBytes;
 			s.videoPackets += st.videoPackets;
 			s.worstAgeMs = std::max(s.worstAgeMs, st.maxAgeUsec / 1000);
 			malformed += st.malformedPackets;
@@ -3700,7 +3802,13 @@ void runSoakPass(int minutes, const std::string &outPath)
 		rssGrowthMb <=
 		ringPeakMb + health::kMemorySlackBytes / (1024 * 1024);
 	const bool clean = malformed == 0 && discontinuities == 0;
-	const bool filesOk = anchored >= armed && unanchored == 0;
+	// A duplicate slot (camera-dedup.hpp) writes no file of its own, so the
+	// file count is judged against the DISTINCT sources, not every slot.
+	int distinctArmed = 0;
+	for (int i = 0; i < camCount && i < kMaxTapChannels; i++)
+		if (want[i] && canonical[i] == i)
+			distinctArmed++;
+	const bool filesOk = anchored >= distinctArmed && unanchored == 0;
 	const bool obsOk = laggedPct <= 1.0;
 	const bool healthOk = worstSeen < health::Level::Blocker;
 	const bool pass = started && armed > 0 && everyIntervalFlowed && clean &&
@@ -3876,13 +3984,16 @@ void runReopenPass(const std::string &outPath)
 		// out of each filename.
 		std::array<bool, kMaxSegmentCameras> segCams{};
 		segCams.fill(true);
+		std::array<int, kMaxSegmentCameras> segCanonical{};
+		for (int i = 0; i < kMaxSegmentCameras; i++)
+			segCanonical[i] = i; // gate rigs use one source per slot
 		const int64_t epochWallNs =
 			std::chrono::duration_cast<std::chrono::nanoseconds>(
 				std::chrono::system_clock::now()
 					.time_since_epoch())
 				.count();
-		SegmentIndex::instance().start(folder, segCams, epochMasterNs,
-					       epochWallNs);
+		SegmentIndex::instance().start(folder, segCams, segCanonical,
+					       epochMasterNs, epochWallNs);
 
 		// The recordings are re-anchored from anchors.json immediately,
 		// but their LENGTHS are demuxed one file per watcher pass and
@@ -3972,6 +4083,20 @@ void runReopenPass(const std::string &outPath)
 	// to tell them apart is to ask for a wide, shallow window and read back
 	// both the arrangement AND the height that was actually granted.
 	bool shortReachable = false;
+	// PUTTING THE MONITORS DOWN HAS TO GIVE THE ROOM TO THE LIST, and this is
+	// the one check that can tell the difference between the pictures going
+	// away and the room coming back. They are not the same thing, and for a
+	// while only the first was true: the splitter's child stopped being the
+	// picture pane the day the Short arrangement wrapped it in a column, so
+	// hiding the pane left an empty visible child holding exactly the height
+	// the key was pressed to reclaim. On a maximised panel that is a band of
+	// nothing where the pictures were, and a list no taller than before.
+	//
+	// Asserted on the GROWTH against the room that was there, not on a
+	// threshold: "the table got bigger" would pass on a panel that handed back
+	// a third of it.
+	bool monitorsGiveRoom = false;
+	int listBeforeH = 0, listAfterH = 0, monitorRoomWas = 0;
 	// IN A COLUMN THE STACKED KEYS SIT IN THE MIDDLE. Measured as the two
 	// margins between the strip and the sections in it: a block that is centred
 	// has them equal. Reported in pixels as well, because "it is centred" and
@@ -3984,6 +4109,28 @@ void runReopenPass(const std::string &outPath)
 	// again" is an impression until somebody measures it against the key
 	// beside it.
 	bool playKeyIsTall = false;
+	// THE PANEL PAINTS ITS OWN BACKGROUND, asserted as the MECHANISM rather
+	// than as a colour, because the colour cannot fail here and the mechanism
+	// can. Qt honours `#MultiReplayDock { background: … }` only on a widget
+	// carrying WA_StyledBackground and does not set it for a subclass, so for
+	// as long as this panel existed that rule was a no-op and what showed
+	// instead was OBS's own window colour — invisible while the panel and OBS
+	// are both dark, and a dark band across a light panel the day they are not.
+	//
+	// A pixel check would be furniture on this bench: the gate runs the panel
+	// on "follow the OBS theme", where the colour the rule paints and the
+	// colour that shows without it are the SAME. The attribute is the fix, it
+	// is one line, and it is exactly what a future edit would drop.
+	bool panelPaintsItself = false;
+	// THE MARKS A SUB-CONTROL IS HANDED AS A FILE, ASSERTED AT START-UP AND
+	// NOT AFTER A THEME CHANGE — because that is precisely where they were
+	// missing. The constructor used to build the sheet itself, three lines
+	// that did not pass the marks, so the panel came up with no drop-down
+	// arrows, no spin arrows and no tick anywhere; they appeared the first
+	// time the operator changed theme and the real applyTheme() ran. This
+	// pass has never changed the theme, so what it reads is the start-up
+	// sheet.
+	bool panelMarksAreDrawn = false;
 	int playKeyH = 0, stepKeyH = 0;
 	int keyPadL = 0, keyPadR = 0;
 	QString bandText, noticeText;
@@ -4216,12 +4363,91 @@ void runReopenPass(const std::string &outPath)
 				// slack: anything near one row is the fault.
 				playKeyIsTall = stepKeyH > 0 &&
 						playKeyH >= stepKeyH * 2;
+				panelPaintsItself = dock->testAttribute(
+					Qt::WA_StyledBackground);
+				// A file path rather than `image: none`: the
+				// sheet says one or the other for every one of
+				// these marks, and which one it says is the
+				// whole question.
+				const QString sheet = dock->styleSheet();
+				panelMarksAreDrawn =
+					sheet.contains(QStringLiteral("mr-down-")) &&
+					sheet.contains(QStringLiteral("mr-up-")) &&
+					sheet.contains(QStringLiteral("mr-tick"));
 			});
+			obs_log(panelPaintsItself ? LOG_INFO : LOG_ERROR,
+				"[selftest] reopen: panel styled background: %s",
+				panelPaintsItself ? "yes" : "NO (it will show "
+						    "whatever OBS painted)");
+			obs_log(panelMarksAreDrawn ? LOG_INFO : LOG_ERROR,
+				"[selftest] reopen: sub-control marks at "
+				"start-up: %s",
+				panelMarksAreDrawn
+					? "drawn"
+					: "MISSING (no arrows, no tick until "
+					  "the theme is changed)");
 			obs_log(playKeyIsTall ? LOG_INFO : LOG_ERROR,
 				"[selftest] reopen: green play key %d px against a "
 				"%d px frame step: %s",
 				playKeyH, stepKeyH,
 				playKeyIsTall ? "two rows" : "NOT two rows");
+			// ── THE MONITORS KEY, PRESSED FOR REAL ──────────────
+			//
+			// Still at 1100x700, still Wide — the arrangement the
+			// report came from ("in full screen the table does not
+			// grow"). Through the key itself, because the rule that
+			// hands the room back lives behind the toggle and a
+			// direct call would prove the pictures hidden and
+			// nothing about the height the list was owed.
+			{
+				QPushButton *mon = nullptr;
+				runOnUi([&]() {
+					for (QPushButton *b :
+					     dock->findChildren<QPushButton *>())
+						if (b->property(kKeyProperty)
+							    .toString() ==
+						    QStringLiteral("monitors"))
+							mon = b;
+					QWidget *lc = dock->findChild<QWidget *>(
+						QStringLiteral("mrLeftCol"));
+					QTableWidget *t =
+						dock->findChild<QTableWidget *>();
+					listBeforeH = t ? t->height() : 0;
+					// What the pictures were holding, handle
+					// included: it goes with a hidden child.
+					monitorRoomWas =
+						(lc && lc->isVisible())
+							? lc->height() + 5
+							: 0;
+					if (mon && mon->isChecked())
+						mon->click();
+				});
+				std::this_thread::sleep_for(
+					std::chrono::milliseconds(500));
+				runOnUi([&]() {
+					QTableWidget *t =
+						dock->findChild<QTableWidget *>();
+					listAfterH = t ? t->height() : 0;
+					// Sixteen pixels of slack: layout spacing
+					// and a splitter handle, not a share.
+					monitorsGiveRoom =
+						monitorRoomWas > 0 &&
+						listAfterH - listBeforeH >=
+							monitorRoomWas - 16;
+					if (mon && !mon->isChecked())
+						mon->click(); // put them back
+				});
+				std::this_thread::sleep_for(
+					std::chrono::milliseconds(500));
+				obs_log(monitorsGiveRoom ? LOG_INFO : LOG_ERROR,
+					"[selftest] reopen: monitors down — list "
+					"%d -> %d px against %d px of pictures: "
+					"%s",
+					listBeforeH, listAfterH, monitorRoomWas,
+					monitorsGiveRoom
+						? "the room went to the list"
+						: "THE ROOM WAS NOT GIVEN BACK");
+			}
 			measure(340, 900, tilesTallOk, tallTileW, tallTiles, tallMode);
 			runOnUi([&]() {
 				QWidget *strip = dock->findChild<QWidget *>(
@@ -4313,7 +4539,9 @@ void runReopenPass(const std::string &outPath)
 			  fsWindowOffersMaximise && fsDoubleClickIsInert &&
 			  fsKeyShownWhenFloating && fsCoversTheScreen &&
 			  fsRestoresTheWindow && tilesWideOk && tilesTallOk &&
-			  shortReachable && keysCentred && playKeyIsTall;
+			  shortReachable && keysCentred && playKeyIsTall &&
+			  panelPaintsItself && panelMarksAreDrawn &&
+			  monitorsGiveRoom;
 
 	// --- Put everything back ----------------------------------------------
 	// The operator's project first (so nothing is pointing into the test one),
@@ -4364,13 +4592,21 @@ void runReopenPass(const std::string &outPath)
 	obs_data_set_bool(checks, "camera_tiles_have_width_when_wide", tilesWideOk);
 	obs_data_set_bool(checks, "camera_tiles_have_width_in_a_column", tilesTallOk);
 	obs_data_set_bool(checks, "short_arrangement_is_reachable", shortReachable);
+	obs_data_set_bool(checks, "monitors_key_gives_the_room_to_the_list",
+			  monitorsGiveRoom);
 	obs_data_set_bool(checks, "stacked_keys_are_centred", keysCentred);
 	obs_data_set_bool(checks, "play_key_spans_two_rows", playKeyIsTall);
+	obs_data_set_bool(checks, "panel_paints_its_own_background",
+			  panelPaintsItself);
+	obs_data_set_bool(checks, "panel_marks_are_drawn", panelMarksAreDrawn);
 	obs_data_set_obj(root, "checks", checks);
 	obs_data_release(checks);
 	// Numbers, not checks: how much panel there was to centre the keys in.
 	// "It is centred" and "there was nothing to centre it in" look identical
 	// from a screenshot, and these are what tell them apart.
+	obs_data_set_int(root, "monitors_list_before_px", listBeforeH);
+	obs_data_set_int(root, "monitors_list_after_px", listAfterH);
+	obs_data_set_int(root, "monitors_room_px", monitorRoomWas);
 	obs_data_set_int(root, "stacked_keys_pad_left", keyPadL);
 	obs_data_set_int(root, "stacked_keys_pad_right", keyPadR);
 	obs_data_set_int(root, "reopen_footage_span_ms", sameBoot.footageMs);
@@ -4495,6 +4731,62 @@ void runSelfTest()
 	// is really a wrong folder.
 	const std::string projectFolder = folder.string();
 
+	// --- CHANNEL B IS ABSENT FROM THE DOCK'S VERY FIRST PAINT ---------------
+	// Not "eventually hidden once something re-applies the flag" — absent from
+	// construction, because that is the state almost every real session is in
+	// (the default is off) and the state a fresh install's dock is built
+	// under. This can ONLY be asked here: the block right below turns B on
+	// for the rest of the run, on purpose, so the channel-B checks further
+	// down have something to test — after that, whether the panel got the
+	// OFF state right at construction can never be observed again this
+	// session. Read-only: it looks at the dock the plugin has already built,
+	// nothing is toggled.
+	bool channelBHiddenAtStartup = true;
+	{
+		const bool startedOff =
+			!ReplayCore::instance().getConfig().enableChannelB;
+		if (startedOff) {
+			MultiReplayDock *dock = nullptr;
+			bool captionShown = false, selectorShown = false;
+			const QString outputCaption =
+				QString::fromUtf8(
+					obs_module_text("Dock.ZoneOutput"))
+					.toUpper();
+			runOnUi([&]() {
+				auto *main = static_cast<QMainWindow *>(
+					obs_frontend_get_main_window());
+				dock = main ? main->findChild<MultiReplayDock *>()
+					    : nullptr;
+				if (!dock)
+					return;
+				for (QLabel *l : dock->findChildren<QLabel *>())
+					if (l->text() == outputCaption &&
+					    l->isVisibleTo(dock))
+						captionShown = true;
+				for (QPushButton *b :
+				     dock->findChildren<QPushButton *>())
+					if (b->property(kKeyProperty).toString() ==
+						    QStringLiteral("bay2") &&
+					    b->isVisibleTo(dock))
+						selectorShown = true;
+			});
+			channelBHiddenAtStartup =
+				dock && !captionShown && !selectorShown;
+			obs_log(channelBHiddenAtStartup ? LOG_INFO : LOG_ERROR,
+				"[selftest] dock: channel B off at construction — "
+				"its caption %s, its A|B selector %s (both must "
+				"be hidden; dock found: %s)",
+				captionShown ? "SHOWN" : "hidden",
+				selectorShown ? "SHOWN" : "hidden",
+				dock ? "yes" : "NO");
+		} else {
+			obs_log(LOG_INFO,
+				"[selftest] dock: channel B was already on when "
+				"the dock was built — nothing to prove about the "
+				"off-at-startup state this run");
+		}
+	}
+
 	// TWO BAYS for this run. The second one is optional now and off by default,
 	// but half a dozen checks below drive it (it plays, it takes its own scene,
 	// the swap moves a clip across), and with it off its input is never even
@@ -4530,6 +4822,15 @@ void runSelfTest()
 	obs_scene_t *testScene = nullptr;
 	std::array<bool, kMaxTapChannels> want{};
 	int armed = 0;
+	// WHICH SLOT OWNS THE FILTER for its source (camera-dedup.hpp), by
+	// POINTER identity on `cams[]` rather than by name: obs_get_source_by_name
+	// returns the very same obs_source_t for a repeated real name, and a
+	// synthetic camera is always its own distinct object, so this is correct
+	// for both without needing realNames here. Identity until cams[] is
+	// filled in below.
+	std::array<int, kMaxTapChannels> canonical{};
+	for (int i = 0; i < kMaxTapChannels; i++)
+		canonical[i] = i;
 
 	runOnUi([&]() {
 		for (int i = 0; i < camCount; i++) {
@@ -4546,6 +4847,22 @@ void runSelfTest()
 				if (cams[i]) {
 					obs_source_inc_showing(cams[i]);
 					obs_source_inc_active(cams[i]);
+				}
+			}
+		}
+
+		// A repeated -Sources name (e.g. "Media,Media") lands two slots on
+		// the exact same obs_source_t*, which is how this gate exercises the
+		// duplicate-camera-source dedup path instead of just the ordinary
+		// one-source-per-slot case.
+		for (int i = 0; i < camCount && i < kMaxTapChannels; i++) {
+			canonical[i] = i;
+			if (!cams[i])
+				continue;
+			for (int j = 0; j < i && j < kMaxTapChannels; j++) {
+				if (cams[j] == cams[i]) {
+					canonical[i] = j;
+					break;
 				}
 			}
 		}
@@ -4573,6 +4890,16 @@ void runSelfTest()
 		for (int i = 0; i < camCount; i++) {
 			if (!cams[i])
 				continue;
+			// A duplicate slot (canonical[i] != i) owns no filter of its
+			// own — it shares the canonical slot's (camera-dedup.hpp),
+			// exactly what ReplayCore::addFiltersForConfig does. Still
+			// counted as armed: the slot works, it just is not the one
+			// with a filter attached.
+			if (i < kMaxTapChannels && canonical[i] != i) {
+				want[i] = true;
+				armed++;
+				continue;
+			}
 			// Created, NOT armed: this is exactly what New Project /
 			// Open Project / Settings do, and it must not record.
 			obs_source_t *filter =
@@ -4609,6 +4936,11 @@ void runSelfTest()
 	runOnUi([&]() {
 		for (int i = 0; i < camCount; i++) {
 			if (!want[i] || !cams[i])
+				continue;
+			// A duplicate slot has no filter of its own to be idle or
+			// not — that is the canonical slot's, checked when i reaches
+			// it — so there is nothing to assert here.
+			if (i < kMaxTapChannels && canonical[i] != i)
 				continue;
 			const std::string fname =
 				std::string(branch_output::kFilterNamePrefix) +
@@ -4654,13 +4986,18 @@ void runSelfTest()
 	// Watch the recording folder so the gate also exercises file anchoring.
 	{
 		std::array<bool, kMaxSegmentCameras> segCams{};
+		std::array<int, kMaxSegmentCameras> segCanonical{};
+		for (int i = 0; i < kMaxSegmentCameras; i++)
+			segCanonical[i] = i;
+		for (int i = 0; i < kMaxSegmentCameras && i < kMaxTapChannels; i++)
+			segCanonical[i] = canonical[i];
 		for (int i = 0; i < camCount && i < kMaxSegmentCameras; i++)
 			segCams[i] = want[i];
 		const int64_t epochWallNs =
 			std::chrono::duration_cast<std::chrono::nanoseconds>(
 				std::chrono::system_clock::now().time_since_epoch())
 				.count();
-		SegmentIndex::instance().start(projectFolder, segCams,
+		SegmentIndex::instance().start(projectFolder, segCams, segCanonical,
 					       (int64_t)os_gettime_ns(), epochWallNs);
 	}
 
@@ -4700,7 +5037,13 @@ void runSelfTest()
 
 	RingBudget budget;
 	budget.kbpsPerCamera = cfg.videoBitrateKbps + cfg.audioBitrateKbps;
-	PacketTap::instance().armAsync(want, budget);
+	// Only a canonical index attaches its own channel — a duplicate's reads
+	// redirect through `canonical` instead (see PacketTap::owner), exactly
+	// as ReplayCore::startRecording arms the real product path.
+	std::array<bool, kMaxTapChannels> wantTap{};
+	for (int i = 0; i < kMaxTapChannels; i++)
+		wantTap[i] = want[i] && canonical[i] == i;
+	PacketTap::instance().armAsync(wantTap, canonical, budget);
 
 	// --- Measure ---------------------------------------------------------
 	for (int s = 0; s < durationSecs; s++) {
@@ -4714,13 +5057,22 @@ void runSelfTest()
 	if (animator.joinable())
 		animator.join();
 
+	// How many DISTINCT sources are actually armed — not `armed`, which also
+	// counts a duplicate slot (camera-dedup.hpp) that writes no file of its
+	// own and so can never anchor one. Comparing a file count against a slot
+	// count would fail this precisely when the dedup fix is working.
+	int distinctArmed = 0;
+	for (int i = 0; i < camCount && i < kMaxTapChannels; i++)
+		if (want[i] && canonical[i] == i)
+			distinctArmed++;
+
 	const int segmentsAnchored = SegmentIndex::instance().anchoredCount();
 	const int segmentsUnanchored = SegmentIndex::instance().unanchoredCount();
 	// Every recording file that appeared must have been placed on the
 	// timeline exactly; anything left unanchored is footage we would refuse
 	// to play rather than guess the position of.
 	const bool segmentsOk =
-		segmentsAnchored >= armed && segmentsUnanchored == 0;
+		segmentsAnchored >= distinctArmed && segmentsUnanchored == 0;
 	obs_log(LOG_INFO, "[selftest] segments anchored=%d unanchored=%d",
 		segmentsAnchored, segmentsUnanchored);
 
@@ -4746,11 +5098,12 @@ void runSelfTest()
 			obs_data_release(root);
 		}
 	}
-	const bool anchorsPersisted = anchorsOnDisk >= armed;
+	const bool anchorsPersisted = anchorsOnDisk >= distinctArmed;
 	obs_log(anchorsPersisted ? LOG_INFO : LOG_ERROR,
-		"[selftest] anchors.json holds %d segment(s) mid-take (%d armed) - "
-		"this is what a project reopened tomorrow reads",
-		anchorsOnDisk, armed);
+		"[selftest] anchors.json holds %d segment(s) mid-take (%d slot(s) "
+		"armed, %d distinct source(s)) - this is what a project reopened "
+		"tomorrow reads",
+		anchorsOnDisk, armed, distinctArmed);
 
 	// --- Event timecodes have an origin that exists -----------------------
 	// A mark is an absolute instant on a clock that started with OBS; it only
@@ -5150,9 +5503,18 @@ void runSelfTest()
 		for (int i = 0; i < camCount; i++) {
 			if (!want[i])
 				continue;
-			if (firstArmed < 0)
+			if (firstArmed < 0) {
 				firstArmed = i;
-			else if (secondArmed < 0)
+				continue;
+			}
+			// secondArmed must be a DISTINCT source from firstArmed
+			// (camera-dedup.hpp): two slots on the same obs_source_t*
+			// (obs_get_source_by_name returns the same object for a
+			// repeated real name) are the same picture, and the
+			// combinations/angle-choice checks below need two angles
+			// that can actually be told apart.
+			if (secondArmed < 0 && i < (int)cams.size() &&
+			    cams[i] != cams[firstArmed])
 				secondArmed = i;
 		}
 		if (firstArmed >= 0)
@@ -5462,7 +5824,20 @@ void runSelfTest()
 	}
 
 	// --- Verdict ----------------------------------------------------------
-	bool passAttached = attached == armed && armed > 0;
+	// NOT `attached == armed`: attachedCount() counts DISTINCT encoders, and
+	// a duplicate slot (camera-dedup.hpp) deliberately has none of its own —
+	// it reads its canonical slot's (see PacketTap::owner), which is exactly
+	// what stats(i).attached already reports for it. So the real question is
+	// per SLOT, via the same stats this function already gathered below.
+	bool passAttached = armed > 0;
+	for (int i = 0; i < camCount; i++) {
+		if (!want[i])
+			continue;
+		if (!stats[i].attached) {
+			passAttached = false;
+			obs_log(LOG_ERROR, "[selftest] cam%d: never attached", i + 1);
+		}
+	}
 	bool passNoNewEncoder = armed > 0;
 	bool passPackets = armed > 0;
 	bool passClean = true;
@@ -5577,7 +5952,8 @@ void runSelfTest()
 			  healthChecks.monitorSamplesTheTake &&
 			  healthChecks.deadAngleReported &&
 			  healthChecks.deadAngleIsNotFatal &&
-			  healthChecks.findingsClearedAtStop;
+			  healthChecks.findingsClearedAtStop &&
+			  channelBHiddenAtStartup;
 
 	// --- Report -----------------------------------------------------------
 	obs_data_t *root = obs_data_create();
@@ -5736,6 +6112,11 @@ void runSelfTest()
 	// The second bay is optional and off by default: absent, not greyed out.
 	obs_data_set_bool(checks, "dock_channel_b_is_optional",
 			  dockChecks.channelBIsOptional);
+	// ...and absent from the dock's very first paint, not just once
+	// something later re-applies the flag — see the note where this is
+	// measured, right before the run turns B on for the checks that need it.
+	obs_data_set_bool(checks, "dock_channel_b_hidden_at_startup",
+			  channelBHiddenAtStartup);
 	// ...and it lets go of every source before OBS clears scene data.
 	obs_data_set_bool(checks, "dock_releases_sources_on_cleanup",
 			  dockChecks.releasesSourcesOnCleanup);

@@ -317,6 +317,12 @@ with:
 If OBS froze or crashed, say whether a recording was running at the time: it
 narrows the search enormously.
 
+For a **layout or sizing problem** (a preview the wrong size, panels that do not
+come back after a resize), turn on **⚙ ▸ Settings ▸ Advanced ▸ Verbose log**
+first, then reproduce it and attach that run's log: it records the exact
+geometry of every pass, so the fault can be read off the log instead of guessed
+at.
+
 ### Licence
 
 GPL-2.0-or-later. See [LICENSE](LICENSE).
@@ -610,6 +616,12 @@ con:
 
 Se OBS si è bloccato o è andato in crash, scrivi se in quel momento era in
 corso una registrazione: restringe moltissimo il campo.
+
+Per un **problema di disposizione o dimensioni** (un'anteprima della misura
+sbagliata, pannelli che non tornano dopo un ridimensionamento), attiva prima
+**⚙ ▸ Impostazioni ▸ Avanzate ▸ Log verboso**, poi riproducilo e allega il log
+di quell'esecuzione: registra la geometria esatta di ogni passata, così il
+guasto si legge dal log invece di doverlo indovinare.
 
 ### Licenza
 

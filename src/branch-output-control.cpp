@@ -5,6 +5,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
 */
 
 #include "branch-output-control.hpp"
+#include "camera-dedup.hpp"
 #include "replay-core.hpp"
 #include "path-utf8.hpp"
 #include "plugin-support.h"
@@ -184,12 +185,26 @@ int pruneFilters(const Config &cfg)
 	// health rules, Branch Output's own dock) who asks how many angles this
 	// session records. Three declared, two armed.
 	//
-	// So a filter of ours is kept only when the slot it is named for is
-	// configured AND names the very source it is attached to; anything else is
-	// removed. Two references are taken during the enumeration and the removal
-	// happens after it: obs_enum_sources holds libobs' source list while it
-	// calls back, and taking a filter off a source inside that callback is a
+	// A filter of ours is kept only when the slot it is named for is
+	// CONFIGURED, names the very source it is attached to, AND is that
+	// source's CANONICAL slot (camera-dedup.hpp) — the lowest-numbered slot
+	// naming it. A later slot pointed at the same source as an earlier one is
+	// the same picture: it never gets a filter of its own (see
+	// ReplayCore::startRecording / addFiltersForConfig), so a filter sitting
+	// under its name is always a leftover from before this rule existed, and
+	// pruning it is what turns eight identical Branch Output filters on one
+	// camera back into one.
+	//
+	// Two references are taken during the enumeration and the removal happens
+	// after it: obs_enum_sources holds libobs' source list while it calls
+	// back, and taking a filter off a source inside that callback is a
 	// re-entrancy nobody has to risk for a loop this short.
+	std::array<std::string, kMaxCameras> names{};
+	for (int i = 0; i < kMaxCameras; i++)
+		names[i] = cfg.cameras[i].sourceName;
+	const std::array<int, kMaxCameras> canonical =
+		canonicalCameraIndices(names);
+
 	struct Doomed {
 		obs_source_t *target;
 		obs_source_t *filter;
@@ -197,8 +212,9 @@ int pruneFilters(const Config &cfg)
 	};
 	struct Ctx {
 		const Config *cfg;
+		const std::array<int, kMaxCameras> *canonical;
 		std::vector<Doomed> doomed;
-	} ctx{&cfg, {}};
+	} ctx{&cfg, &canonical, {}};
 
 	obs_enum_sources(
 		[](void *param, obs_source_t *source) {
@@ -213,7 +229,11 @@ int pruneFilters(const Config &cfg)
 				if (!f)
 					continue;
 				const std::string &want = c->cfg->cameras[i].sourceName;
-				const bool belongs = !want.empty() && sn && want == sn;
+				const bool isCanonical =
+					(*c->canonical)[i] == i;
+				const bool belongs = isCanonical &&
+						     !want.empty() && sn &&
+						     want == sn;
 				if (belongs) {
 					obs_source_release(f);
 					continue;

@@ -18,6 +18,7 @@ start.
 #pragma once
 
 #include "dock-layout.hpp"
+#include "dock-style.hpp"
 
 #include <obs.h>
 #include <util/platform.h>
@@ -658,14 +659,25 @@ private:
 	QPushButton *monitorsBtn_ = nullptr;
 	QWidget *monitorsRow_ = nullptr;
 	QWidget *monitorsStrip_ = nullptr;
-	// The splitter pane the two rows above live in. Hiding the rows is not
-	// enough: the splitter keeps the pane's share of the height and the list
-	// below it stays exactly as short as it was, with a band of nothing on
-	// top. A hidden splitter child gives its height back (and takes its handle
-	// with it), which is what "put the monitors down" has to mean.
+	// The pane the two rows above live in. Hiding the rows is not enough: the
+	// splitter keeps that share of the height and the list below stays exactly
+	// as short as it was, with a band of nothing on top. A hidden splitter
+	// child gives its height back (and takes its handle with it), which is
+	// what "put the monitors down" has to mean.
+	//
+	// ...AND THIS IS NOT THE SPLITTER'S CHILD. leftCol_ is — see
+	// applyMonitorsRoom(). It was previewPane_ when the rule above was
+	// written, and the Short arrangement then wrapped it in a column that
+	// also carries the key strip. So hiding this hid the pictures and left an
+	// EMPTY visible child holding the share the key was meant to hand back.
 	QWidget *previewPane_ = nullptr;
 	// Applies the Monitors key to the pane and the rows inside it.
 	void applyMonitorsVisible(bool on);
+	// ...and gives the height (or, in Short, the width) back to the list.
+	void applyMonitorsRoom();
+	// Whether the pictures are up. Read by applyPreviewAspect and by poll():
+	// the row's arithmetic must not size — or cap — a block nobody can see.
+	bool monitorsOn_ = true;
 
 	// ─── ⛶ THE PANEL TO THE WHOLE SCREEN, AND ONLY WHILE IT FLOATS ───────
 	//
@@ -1037,6 +1049,24 @@ public:
 	// after the operator switches to a light theme is worse than one that never
 	// followed at all.
 	void applyTheme();
+	// Redraw the search magnifier in the current scheme. Its own function
+	// because it is built in one place and re-tinted in another.
+	void restyleSearchIcon();
+	// The marks the style sheet can only be handed as files: written into the
+	// plugin config directory and re-drawn on every theme change.
+	SheetAssetPaths sheetAssets() const;
+	// The size the event table is really drawing its items in, so the two cells
+	// that are widgets can be given the same one.
+	int rowFontPx() const;
+	// The two geometries the monitoring row was last computed from. poll() re-runs
+	// applyPreviewAspect when they no longer match what the panel actually has:
+	// a pass that read them mid-resize leaves the tile ceiling too small, and a
+	// ceiling is a maximum that sticks.
+	int aspectPaneW_ = 0;
+	int aspectRoomH_ = 0;
+	// The size the sheet was last built with, so applyTheme can tell whether
+	// polishing moved it.
+	int rowFont_ = 0;
 	// Which of the three arrangements the panel is wearing. Public for the
 	// gate: "the cameras have no width in a column" is a fault only a check
 	// that knows the arrangement can name, and naming it is the difference
@@ -1072,6 +1102,18 @@ private:
 	// pictures would like. Split out because it is the half that has to do
 	// nothing at all in the Short arrangement, where that divider is a width.
 	void applyPreviewSplit(int want);
+
+	// TEMP DIAGNOSTIC — "resizing sizes the C1..C8 tiles wrong, leaving unused
+	// space". Dumps the monitoring row measured: panel/pane sizes, the room
+	// the row may have, visible-vs-configured tile counts, the column/row
+	// split, the TileBlock arithmetic, the resulting slack on each axis, the
+	// live splitter sizes and every tile box's geometry + written maximum.
+	// Deduplicated on its payload so a drag emits one line per distinct state.
+	// Call via queueMonitorDump() so it reads geometry AFTER the layout pass.
+	void dumpMonitorLayout(const char *why);
+	void queueMonitorDump(const char *why);
+	QString lastMonitorDiag_;
+	bool monitorDiagQueued_ = false;
 	// SHORT stacks the keys under the pictures in the LEFT column instead of
 	// across the foot of the panel. A no-op unless the answer changed.
 	void applyControlsColumn(bool inColumn);
@@ -1105,16 +1147,19 @@ private:
 	// way, so carrying it across would hand back a layout he never chose.
 	// Indexed by PanelMode.
 	QByteArray savedSplit_[3], savedMonitorSplit_[3];
-	bool userSplit_[3] = {false, false, false};
 	bool userMonitorSplit_[3] = {false, false, false};
-	// How many cameras the divider above was chosen for. A different number is
-	// a different question, so the choice is dropped (see rebuildMultiview).
-	int lastTileCount_ = -1;
-	bool splitChosen() const { return userSplit_[(int)panelMode_]; }
+	// Has the operator dragged the divider inside the monitoring row? Then the
+	// two widths are his and each side fills its own at 16:9 - see the note
+	// where the splitter is built.
 	bool monitorSplitChosen() const
 	{
 		return userMonitorSplit_[(int)panelMode_];
 	}
+	bool userSplit_[3] = {false, false, false};
+	// How many cameras the divider above was chosen for. A different number is
+	// a different question, so the choice is dropped (see rebuildMultiview).
+	int lastTileCount_ = -1;
+	bool splitChosen() const { return userSplit_[(int)panelMode_]; }
 	// How much list is kept whatever the pictures ask for. The pictures get
 	// their aspect height or what is left after this, whichever is smaller —
 	// a perfect picture over two visible rows of events is the wrong trade on
@@ -1349,6 +1394,9 @@ private:
 	QLabel *statusLbl_ = nullptr;
 	QLabel *clockLbl_ = nullptr;   // wall clock + remaining recording time
 	QLabel *projectLbl_ = nullptr; // shows active project name
+	// The magnifier beside the search box: the one mark on this panel that is
+	// not on a button, and therefore the one restyleIcons cannot redraw.
+	QLabel *searchIcon_ = nullptr;
 	// M4: what the health monitor found, next to the record key. Hidden while
 	// there is nothing to say — a badge that is always there is furniture, and
 	// furniture does not get looked at when it finally turns red. Amber for a

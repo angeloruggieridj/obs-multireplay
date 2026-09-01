@@ -163,9 +163,11 @@ health::PreflightResult HealthMonitor::preflight(const Config &cfg,
 			in.camerasWithSource++;
 			obs_source_release(src);
 		}
-		// Two slots on one source means two Branch Output filters on it,
-		// two files of the same picture, and two angles the operator
-		// cannot tell apart on the multiview.
+		// Two slots on one source get ONE Branch Output filter between
+		// them (camera-dedup.hpp: the earlier slot is canonical, the
+		// later one rides its encoder and ring), so this is no longer a
+		// resource-cost warning — only a note that two angles on the
+		// multiview will show the same picture.
 		for (int j = 0; j < i; j++)
 			if (cfg.cameras[j].sourceName == name)
 				in.duplicateSourceSlots++;
@@ -230,6 +232,7 @@ void HealthMonitor::rememberPreflight(const health::PreflightResult &r)
 // ---------------------------------------------------------------------------
 
 void HealthMonitor::takeStarted(const std::array<bool, kMaxCameras> &armed,
+				const std::array<int, kMaxCameras> &canonical,
 				int ringSecondsGranted, int64_t requiredBps,
 				const std::string &sessionFolder)
 {
@@ -242,6 +245,7 @@ void HealthMonitor::takeStarted(const std::array<bool, kMaxCameras> &armed,
 		std::lock_guard<std::mutex> lock(mutex_);
 		const int64_t now = (int64_t)os_gettime_ns();
 		armed_ = armed;
+		canonical_ = canonical;
 		for (int i = 0; i < kMaxCameras; i++)
 			armedAtNs_[i] = armed[i] ? now : 0;
 		recording_ = true;
@@ -309,6 +313,7 @@ void HealthMonitor::sampleOnce()
 	// --- what the rules need, copied out under a short lock --------------
 	health::RuntimeInput in;
 	std::array<bool, kMaxCameras> armed{};
+	std::array<int, kMaxCameras> canonical{};
 	std::array<int64_t, kMaxCameras> armedAt{};
 	std::string folder;
 	int64_t lastDiskCheck = 0, diskFree = -1;
@@ -324,6 +329,7 @@ void HealthMonitor::sampleOnce()
 		if (!recording_)
 			return;
 		armed = armed_;
+		canonical = canonical_;
 		armedAt = armedAtNs_;
 		folder = sessionFolder_;
 		lastDiskCheck = lastDiskCheckNs_;
@@ -356,7 +362,13 @@ void HealthMonitor::sampleOnce()
 		a.malformedPackets = st.malformedPackets;
 		a.discontinuities = st.discontinuities;
 		a.ringSpanNs = st.ringSpanNs;
-		ringBytes += (int64_t)st.ringBytes;
+		// A duplicate slot's channel IS the canonical slot's channel (see
+		// packet-tap.hpp) — counted once, under the canonical index, or the
+		// same bytes would be added into the total once per duplicate and
+		// the memory-growth check would be comparing RSS against a number
+		// nobody's RAM usage could ever produce.
+		if (canonical[i] == i)
+			ringBytes += (int64_t)st.ringBytes;
 		// The newest packet sits on the master clock, which IS the system
 		// clock os_gettime_ns() reads — that is the whole point of
 		// sys_dts_usec — so this difference is the age of the live edge.

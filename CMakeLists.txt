@@ -4,6 +4,33 @@ include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/common/bootstrap.cmake" NO_POLICY_SCO
 
 project(${_name} VERSION ${_version})
 
+# ── THE VERSION THE BINARY REPORTS, PRE-RELEASE SUFFIX AND ALL ───────────────
+#
+# project(VERSION) will not take "1.0.0-beta7", so the numbers live in
+# buildspec's `version` and the suffix in its `prerelease` — and the two are put
+# back together here, for plugin-support.c.in and therefore for
+# Updater::currentVersion().
+#
+# This is not cosmetic. Until it existed, a build tagged 1.0.0-beta7 reported
+# itself as "1.0.0" — and 1.0.0 is NEWER than every 1.0.0-betaN (a final release
+# is later than its own pre-releases, see version-compare.hpp). So the updater
+# compared beta8 against 1.0.0, found it older, and told an operator running a
+# beta that he had the newest build on the channel. Every beta after the one he
+# installed was invisible to him, and so was 1.0.0 itself, until 1.0.1 shipped.
+#
+# The tag and this pair CANNOT drift: push.yaml recomposes the same string from
+# buildspec and refuses to publish a release whose tag disagrees with it.
+string(JSON _prerelease ERROR_VARIABLE _prerelease_err GET ${buildspec} prerelease)
+if(_prerelease_err OR _prerelease STREQUAL "NOTFOUND")
+  set(_prerelease "")
+endif()
+if(_prerelease STREQUAL "")
+  set(PLUGIN_VERSION_FULL "${CMAKE_PROJECT_VERSION}")
+else()
+  set(PLUGIN_VERSION_FULL "${CMAKE_PROJECT_VERSION}-${_prerelease}")
+endif()
+message(STATUS "obs-multireplay reports itself as ${PLUGIN_VERSION_FULL}")
+
 option(ENABLE_FRONTEND_API "Use obs-frontend-api for UI functionality" ON)
 option(ENABLE_QT "Use Qt functionality" ON)
 

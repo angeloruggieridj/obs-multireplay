@@ -31,6 +31,18 @@ bool available();
 // (0-based) and apply recording settings derived from `cfg`.
 // Returns the filter source (caller must obs_source_release) or nullptr.
 //
+// CALL THIS ONLY FOR A SLOT'S CANONICAL CAMERA (camera-dedup.hpp:
+// canonicalCameraIndices — the lowest-numbered slot naming a given source).
+// Two slots pointed at the same OBS source are the same picture, and asking
+// Branch Output to encode it twice is not two angles, it is one angle
+// encoded twice — two filters, two files, and on a GPU with a limited number
+// of concurrent hardware encode sessions, enough of them that the losing
+// slots' outputs never go active at all (the packet tap can then never
+// attach to them — see packet-tap.hpp — which is the shape of "only the
+// first camera's preview ever shows a picture"). A duplicate slot owns no
+// filter of its own; everything that would read one from it (PacketTap,
+// SegmentIndex) redirects to the canonical slot instead.
+//
 // The returned filter is ALWAYS DISARMED, whether it was just created or only
 // reconfigured. Configuring is not arming: a filter left enabled records the
 // moment Branch Output's timer notices it, which is how creating a project used
@@ -39,8 +51,15 @@ bool available();
 obs_source_t *ensureFilter(obs_source_t *target, int camIndex, const Config &cfg);
 
 // Remove every filter of ours that this configuration does not claim, and
-// return how many went. A filter is ours by name ("MultiReplay camN"), so it is
-// kept only when slot N is configured AND names the source it is attached to.
+// return how many went. A filter is ours by name ("MultiReplay camN") — this
+// function NEVER enumerates or touches a Branch Output filter under any other
+// name, so a recording the operator built by hand with Branch Output's own UI,
+// on a source we do not manage, is invisible to it and cannot be removed or
+// reconfigured by it. One of ours is kept only when slot N is CONFIGURED,
+// names the source it is attached to, AND is that source's CANONICAL slot
+// (camera-dedup.hpp) — a filter under the name of a slot that merely
+// duplicates an earlier one's source is pruned even though the source name
+// still matches, because no such filter is ever created any more.
 //
 // Without this the count of filters and the count of angles drift apart the
 // first time a project is opened with fewer cameras than the last one: cam3's

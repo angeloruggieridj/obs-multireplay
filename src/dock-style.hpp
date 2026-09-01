@@ -339,6 +339,16 @@ inline Scheme schemeFor(ThemeChoice choice, const QPalette &pal)
 inline const char *const kDockStyleTemplate =
 R"QSS(
 /* ── base ─────────────────────────────────────────────── */
+/* THIS LINE ONLY PAINTS ANYTHING BECAUSE THE DOCK SETS WA_StyledBackground.
+   Qt turns that attribute on by itself for a PLAIN QWidget with a drawable
+   rule, and MultiReplayDock is a SUBCLASS — so for as long as this panel has
+   existed the one rule that says what colour it is has been a no-op, and what
+   showed instead was the window colour of OBS's palette. Invisible while the
+   panel and OBS are both dark; on a light panel it is the dark band behind the
+   control strip and the dark frame down all four margins. The splitter in the
+   middle is a QFrame, which Qt DOES style, and that is exactly why the
+   pictures and the list came out light while everything around them did not.
+   See MultiReplayDock's constructor. */
 #MultiReplayDock { background: @panel@; }
 /* THE PANEL'S OWN CONTAINERS ARE TRANSPARENT, and they have to SAY so: a plain
    QWidget with no rule is styled by OBS, and a theme that paints QWidget paints
@@ -361,8 +371,36 @@ R"QSS(
 	background: @raise1@; color: @text@;
 	border: 1px solid @border@;
 }
+/* THE ITEM, NOT THE MENU, and that distinction is the whole bug. OBS colours
+   `QMenu::item` (Yami: `QMenu::item, QMenu > QWidget, QListView::item,
+   QListWidget::item { color: var(--text) }`), and a rule of ours on QMenu alone
+   never wins for the text drawn on an item, however specific it is — the item
+   is a sub-control with a rule of its own. So a light menu came up carrying
+   OBS's WHITE text: measured 1.3:1, which is not "hard to read", it is blank.
+   The same line covers a plain list's items for the same reason. */
+#MultiReplayDock QMenu::item {
+	color: @text@; background: transparent;
+	padding: 4px 18px; border: 1px solid transparent;
+}
 #MultiReplayDock QMenu::item:selected {
 	background: @rowSel@; color: @rowSelText@;
+}
+/* A DISABLED MENU ROW IS DIMMER, NOT ABSENT — and it is dimmed to @textMuted@
+   rather than to the @textDim@ a disabled KEY uses, which is a distinction
+   worth stating: a key has a frame around it saying a control is there, and a
+   menu row has nothing but its own text. Measured on the light panel, @textDim@
+   on a menu is 1.5:1, which is not "greyed out", it is blank. */
+#MultiReplayDock QMenu::item:disabled { color: @textMuted@; }
+/* The submenu arrow — the gear's menu has one — is another file OBS picks for a
+   dark theme (`image: url(theme:Dark/expand.svg)`), so on a light menu it was a
+   white triangle on paper. Ours, like the other three (dock-assets.hpp). */
+#MultiReplayDock QMenu::right-arrow {
+	image: url("@arrowRight@"); width: 6px; height: 9px;
+	margin-right: 6px;
+}
+#MultiReplayDock QListView::item, #MultiReplayDock QListWidget::item,
+#MultiReplayDock QTreeView::item, #MultiReplayDock QTableView::item {
+	color: @text@;
 }
 #MultiReplayDock QGroupBox { color: @text@; }
 #MultiReplayDock QToolTip {
@@ -498,6 +536,13 @@ QTabBar#mrListTabs::tab:selected {
 	background: @tabBar@; color: @accentText@; border-color: @tabBar@;
 }
 
+)QSS"
+/* MSVC caps a single string literal at 16380 bytes and truncates SILENTLY past
+   it (C2026 is a warning about "trailing characters"), so a sheet that grew one
+   rule too far would simply lose its tail. This break is here because the first
+   chunk had reached 15957 — 423 bytes of headroom, which is one comment. It is
+   the compiler's rule, not a section boundary: the sheet is still one string. */
+R"QSS(
 /* ── settings dialog: side menu + pages ─────────────────────────────── */
 QListWidget#mrSettingsNav {
 	background: @sink1@; color: @textMuted@;
@@ -785,17 +830,19 @@ R"QSS(
 }
 #MultiReplayDock QComboBox:hover, #MultiReplayDock QLineEdit:hover { border-color: @borderHi@; }
 #MultiReplayDock QComboBox::drop-down { border: 0; width: 16px; }
-/* THE ARROW IS DRAWN, not left to the style. Qt paints a selector's arrow from
-   the platform style, which on a light panel under a dark OBS is a white
-   triangle on white. A CSS triangle is a shape we own and can colour. */
+/* THE ARROW IS DRAWN BY US, because Qt paints a selector's arrow from the
+   platform style and on a light panel under a dark OBS that is a white triangle
+   on white paper.
+   IT USED TO BE A "CSS TRIANGLE" — a zero-sized box with two transparent side
+   borders — and that is a BROWSER trick: Qt does not mitre a sub-control's
+   border, it paints the box. Rendered and looked at, every arrow on this panel
+   was a small solid grey RECTANGLE and had been since that rule was written.
+   The mark is now a file we draw ourselves (dock-assets.hpp), so it is a
+   triangle, it is the resting key ink, and it follows a theme change. */
 #MultiReplayDock QComboBox::down-arrow {
-	width: 0; height: 0; image: none;
-	border-left: 4px solid transparent;
-	border-right: 4px solid transparent;
-	border-top: 5px solid @textKey@;
+	image: url("@arrowDown@"); width: 9px; height: 6px; border: 0;
 	margin-right: 5px;
 }
-#MultiReplayDock QComboBox::down-arrow:hover { border-top-color: @text@; }
 /* AN EDITABLE COMBO IS A COMBO WITH A LINE EDIT INSIDE IT, and the rule above
    matches BOTH. So the per-angle speed and tag cells were paying for the box
    twice: the combo's own 3px/7px padding, its border and its min-height, and
@@ -850,10 +897,19 @@ R"QSS(
    the list, typing goes straight into the comment. The frame appears on hover
    and focus, which is where it says something ("this is editable") instead of
    saying it sixty times at once. */
+/* AND THEY ARE THE ROW'S OWN TYPE SIZE. These two cells are widgets and the
+   four columns beside them are plain table items, so they are drawn by two
+   different things — and the widgets were carrying a size of their own while
+   the items were drawn in the table's font. On this rig the table's font is
+   OBS's base size, which is stated in POINTS and follows the operator's font
+   scale, so no number written here could ever have matched it: the comment and
+   the speed read as a footnote beside their own row's id and in-point.
+   @rowFont@ is not a constant — it is the size the table is ACTUALLY drawing
+   its items in, measured and substituted (see dockStyle). */
 QTableWidget#mrEvents QComboBox, QTableWidget#mrEvents QLineEdit {
 	background: transparent; border: 1px solid transparent;
-	min-height: @cellInput@px; padding: 0px 4px;
-	font-size: @cellFont@px;
+	min-height: @cellInput@px; padding: 0px 2px;
+	font-size: @rowFont@px;
 }
 QTableWidget#mrEvents QComboBox::drop-down { width: 0px; border: 0; }
 QTableWidget#mrEvents QComboBox:hover, QTableWidget#mrEvents QLineEdit:hover {
@@ -873,13 +929,14 @@ QTableWidget#mrEvents QWidget#mrNoteCell { background: transparent; }
 QTableWidget#mrEvents QWidget#mrNoteCell:hover {
 	background: @raise1@;
 }
-/* NO font-size HERE. The four columns to the left of these are plain table
-   items drawn in the table's own font; setting a smaller one on the two cells
-   that are widgets made them read as a footnote beside their own row. The only
-   metric they carry is the row height. */
+/* THE ROW'S TYPE SIZE, STATED. It used to say "no font-size here" and rely on
+   inheriting the table's — which is right in intent and did not work, because
+   the rule above matches this line edit too and was setting one. Saying nothing
+   is not the same as saying the right thing when another rule is talking. */
 QTableWidget#mrEvents QLineEdit#mrAngleNote {
 	background: transparent; border: 0; padding: 0px 2px;
 	min-height: @cellInput@px; color: @text@;
+	font-size: @rowFont@px;
 }
 QTableWidget#mrEvents QWidget#mrNoteCell[sel="true"] QLineEdit#mrAngleNote,
 QTableWidget#mrEvents QPushButton#mrAngleSpeed[sel="true"] {
@@ -905,10 +962,15 @@ QTableWidget#mrEvents QPushButton#mrNotePick:hover {
    Grey where the slider decides, the panel's ordinary text where the angle
    overrides it. The only chrome is a tint under the pointer, which says
    "this one" at the moment the question is being asked. */
+/* ...AND IT IS A QPushButton, so without a size of its own it inherits the
+   ELEVEN PIXELS every key on this panel is drawn at — which is a key's size,
+   not a row's, and it is why the speed read smaller than the duration next to
+   it. The row's own size, like the comment beside it. */
 QTableWidget#mrEvents QPushButton#mrAngleSpeed {
 	background: transparent; border: 1px solid transparent;
 	color: @text@; padding: 0px 2px;
 	min-height: @cellInput@px;
+	font-size: @rowFont@px;
 	text-align: center;
 }
 QTableWidget#mrEvents QPushButton#mrAngleSpeed:hover {
@@ -975,8 +1037,12 @@ QTableWidget#mrEvents::indicator:checked {
    the "angle I am watching" cue is a ▶ in the header TEXT (see
    updateCamHeaderHighlight) and not a green fill: a colour we cannot guarantee
    is worse than a glyph we can. */
+/* ...AND ITS MARGIN, which OBS also has an opinion about: Yami leaves
+   `margin-bottom: 2px` under every section, and two pixels of whatever is
+   behind the header is a dark line between the headings and the first row the
+   moment the panel is lighter than OBS. */
 #MultiReplayDock QHeaderView::section {
-	background: @raise1@; color: @text@; padding: 3px 5px;
+	background: @raise1@; color: @text@; padding: 3px 5px; margin: 0px;
 	border: 0; border-bottom: 1px solid @border@;
 	font-size: @headerFont@px; font-weight: 700; letter-spacing: 0.6px;
 }
@@ -1023,13 +1089,25 @@ QTableWidget#mrEvents::indicator:checked {
    is a dark patch in a white panel — a spin box in Settings, the pane behind a
    tab, the well of a list.
 
-   THE MOCKUP CANNOT SHOW THIS. It has no application style sheet at all, so it
-   renders these correctly and always has. Same class as the sections it simply
-   does not build: the tool lies by omission, and only the panel can be asked.
+   THE MOCKUP USED TO BE BLIND TO THIS, and that is why it kept passing while
+   the panel kept being reported. It had no application style sheet at all, so
+   every widget kind we had forgotten rendered correctly in it and always had —
+   the same class of omission as the sections it simply does not build. It now
+   has `--host=obs`, which puts OBS's own palette and the rules below's
+   opponents underneath the panel; the tool can be asked again.
 
    Every rule below is scoped by id, so ours out-ranks a bare type selector
    wherever the panel is the ancestor — the settings dialog included, a QDialog
-   parented to the dock being a descendant in the object tree. */
+   parented to the dock being a descendant in the object tree.
+
+   A SUB-CONTROL IS A SEPARATE RULE AND A SEPARATE FIGHT. Out-ranking OBS on
+   `QSpinBox` says nothing about `QSpinBox::up-arrow`: the properties cascade
+   per selector, so a rule of ours that sets a background while OBS's sets an
+   `image` leaves BOTH in force — OBS's white-on-dark arrow drawn on our white
+   box, OBS's grey tick drawn on our green one. Every sub-control OBS names
+   (Yami.obt: `::menu-indicator`, `::up-arrow`, `::down-arrow`, `::indicator`)
+   has to be named here too, and `image: none` is the half that actually
+   matters. */
 #MultiReplayDock QSpinBox, #MultiReplayDock QDoubleSpinBox,
 #MultiReplayDock QPlainTextEdit, #MultiReplayDock QTextEdit {
 	background: @sink2@; color: @text@;
@@ -1040,9 +1118,79 @@ QTableWidget#mrEvents::indicator:checked {
 #MultiReplayDock QPlainTextEdit:focus, #MultiReplayDock QTextEdit:focus {
 	border-color: @accent@;
 }
+/* THE SPIN BUTTONS, ARROWS AND ALL. OBS draws them with a border in its own
+   grey (Yami: `border-left: 1px solid var(--grey6)`, #272A33) and an arrow that
+   is a FILE picked for a dark theme (`image: url(theme:Dark/up.svg)`) — so on a
+   light panel the settings dialog had two dark hairlines down the middle of
+   every number field and a white arrow on white paper above them. Drawn here
+   the same way the combo's arrow is: a CSS triangle is a shape we own and can
+   colour. */
+#MultiReplayDock QSpinBox::up-button, #MultiReplayDock QSpinBox::down-button,
+#MultiReplayDock QDoubleSpinBox::up-button,
+#MultiReplayDock QDoubleSpinBox::down-button {
+	background: transparent; border: 0; width: 14px;
+	subcontrol-origin: border;
+}
+#MultiReplayDock QSpinBox::up-button, #MultiReplayDock QDoubleSpinBox::up-button {
+	subcontrol-position: top right; margin: 2px 3px 0px 0px;
+}
+#MultiReplayDock QSpinBox::down-button,
+#MultiReplayDock QDoubleSpinBox::down-button {
+	subcontrol-position: bottom right; margin: 0px 3px 2px 0px;
+}
+#MultiReplayDock QSpinBox::up-arrow, #MultiReplayDock QDoubleSpinBox::up-arrow {
+	image: url("@arrowUp@"); width: 9px; height: 6px;
+	border: 0; margin: 0px; padding: 0px;
+}
+#MultiReplayDock QSpinBox::down-arrow,
+#MultiReplayDock QDoubleSpinBox::down-arrow {
+	image: url("@arrowDown@"); width: 9px; height: 6px;
+	border: 0; margin: 0px; padding: 0px;
+}
+/* A FIELD THAT CANNOT BE ANSWERED YET still has to be readable as a field: the
+   B output scene and the A|B picker are disabled until the second bay is on.
+   Left to OBS this is its `--text_disabled`, chosen against ITS background. */
+#MultiReplayDock QSpinBox:disabled, #MultiReplayDock QDoubleSpinBox:disabled,
+#MultiReplayDock QComboBox:disabled, #MultiReplayDock QLineEdit:disabled,
+#MultiReplayDock QLabel:disabled, #MultiReplayDock QCheckBox:disabled,
+#MultiReplayDock QPlainTextEdit:disabled {
+	color: @textDim@;
+}
+#MultiReplayDock QComboBox:disabled, #MultiReplayDock QLineEdit:disabled,
+#MultiReplayDock QSpinBox:disabled, #MultiReplayDock QDoubleSpinBox:disabled {
+	background: @panel@; border-color: @raise2@;
+}
 #MultiReplayDock QCheckBox, #MultiReplayDock QRadioButton,
 #MultiReplayDock QGroupBox {
 	color: @text@; background: transparent;
+}
+/* A TICK WE OWN, OR NONE. OBS names the indicator's mark as a FILE
+   (`image: url(theme:Yami/checkbox_checked.svg)`), drawn light for a dark
+   theme; our rule set the box's fill and its rule set what is printed on it, so
+   both survived and a foreign grey tick came out on our green. A sub-control
+   takes a URL and nothing else, so ours is a URL too — a tick this panel draws
+   and writes out (dock-assets.hpp), white, because the box under it is always
+   the signal green. An EMPTY box is the fall-back when that file could not be
+   written: a solid green square against a hollow one is still read at a glance,
+   which is all the column ever needed. */
+#MultiReplayDock QCheckBox::indicator,
+#MultiReplayDock QGroupBox::indicator,
+#MultiReplayDock QTableView::indicator, QTableWidget#mrEvents::indicator {
+	image: none;
+}
+/* AND ITS MARGINS ARE OURS TOO. Yami leaves `margin-right: 8px` on every
+   indicator, which is right for a box with a word after it and wrong for the
+   ones in Settings, which have none — a form field's label is right-aligned
+   against the field column, so a bare 13 px box came out touching the last
+   letter of its own label. Four pixels the other way instead. Not applied to
+   the TABLE's indicator, which is centred in its cell and would be pushed off
+   centre by exactly that. */
+#MultiReplayDock QCheckBox::indicator { margin: 0px 0px 0px 4px; }
+#MultiReplayDock QCheckBox::indicator:checked,
+#MultiReplayDock QGroupBox::indicator:checked,
+#MultiReplayDock QTableView::indicator:checked,
+QTableWidget#mrEvents::indicator:checked {
+	image: url("@tick@");
 }
 #MultiReplayDock QTabWidget::pane {
 	background: @panel@; border: 1px solid @border@;
@@ -1054,6 +1202,29 @@ QTableWidget#mrEvents::indicator:checked {
 	selection-background-color: @rowSel@;
 	selection-color: @rowSelText@;
 }
+/* THE MENU ARROW IS NOT DEALT WITH HERE, AND THAT IS WHAT THIS NOTE IS FOR.
+   Three keys on this panel open a menu — the gear, the ▾ beside the play key
+   and the ⋯ over the clip list — and each one's mark already says so. Qt drew a
+   SECOND arrow over the top of it, bottom right, larger than our mark and
+   clipped by the key's own edge: that is "the gear has a triangle through it".
+
+   IT CANNOT BE SWITCHED OFF FROM A STYLE SHEET, and that was measured rather
+   than assumed. A loud probe — solid red on a green border — was put on every
+   sub-control Qt could plausibly be asking for: `QPushButton::menu-indicator`,
+   and `::menu-indicator`, `::menu-arrow`, `::menu-button` and `::down-arrow` on
+   QToolButton. NONE of them was ever painted. The arrow keeps coming out of the
+   base style's own PE_IndicatorArrowDown, in the platform's ink — on Windows 11
+   with blue-and-orange ClearType fringing, which is what made it obvious it was
+   not one of ours.
+
+   So it is removed where it comes from instead: those three keys pop their menu
+   on `clicked` rather than handing it to QToolButton::setMenu, so Qt is never
+   told the button has a menu and never draws one for it. See buildGearMenu and
+   the two beside it in multireplay-dock.cpp. */
+#MultiReplayDock QMenu::separator {
+	height: 1px; background: @border@; margin: 3px 6px;
+}
+#MultiReplayDock QMenu::item { padding: 4px 18px; }
 
 /* A KEY WHOSE HEIGHT BELONGS TO THE LAYOUT.
    Every key inside a section of the control strip is pinned by KeyBlock::apply
@@ -1094,10 +1265,15 @@ QTableWidget#mrEvents::indicator:checked {
 // How tight the event list is drawn. Three steps rather than a free number:
 // each one is a set of metrics that agree with each other, and a spin box of
 // pixels would let an operator pick a row shorter than the text in it.
+// THE ROW'S TYPE SIZE IS NOT IN HERE, and that is deliberate. The four fixed
+// columns are plain table items drawn in the table's own font, which on this
+// rig is OBS's base size — stated in POINTS and following the operator's font
+// scale. A number written here could match it only by luck, and while one was
+// (11 px) the comment and the speed were drawn smaller than the id and the
+// in-point on their own row. It is measured instead and passed to dockStyle.
 struct Density {
 	int cellInput; // a table combo's content height
 	int cellPad;   // its vertical padding
-	int cellFont;  // and its type size
 	int headerH;   // the column headings above it, at least
 	int headerFont; // ...and the type they are drawn in, which decides it
 	int rowFloor;  // where the row height starts before the cells raise it
@@ -1107,23 +1283,59 @@ inline Density densityFor(int level)
 {
 	switch (level) {
 	case 1: // compact — about a fifth off, still comfortably clickable
-		return {14, 2, 10, 18, 9, 22};
+		return {14, 2, 18, 9, 22};
 	case 2: // dense — for an operator working from the list on a big screen
-		return {10, 1, 9, 15, 9, 18};
+		return {10, 1, 15, 9, 18};
 	default: // comfortable, and the historic 30 px row
-		return {20, 3, 11, 22, 10, 28};
+		return {20, 3, 22, 10, 28};
 	}
 }
 
-// The sheet with this scheme's colours and this density's metrics in it.
-inline QString dockStyle(const Scheme &s, int densityLevel = 0)
+// The three marks a sub-control can only be handed as a file. Declared here
+// rather than included from dock-assets.hpp so that this header stays the one
+// with no dependencies: the caller writes the files and passes their paths, and
+// a caller that has nowhere to write (or that failed to) passes nothing.
+struct SheetAssetPaths {
+	QString tick;
+	QString arrowUp;
+	QString arrowDown;
+	QString arrowRight; // a submenu
+};
+
+// The sheet with this scheme's colours, this density's metrics and this
+// theme's marks in it.
+//
+// A MISSING MARK IS `none`, NOT AN EMPTY url(). `image: url("")` is a rule Qt
+// accepts and then draws nothing for — which is the same result by accident,
+// and one line of log away from the same result on purpose. `none` says it.
+// `rowFontPx` is the size the EVENT TABLE is actually drawing its items in,
+// measured off the widget by the caller (QFontInfo resolves whatever OBS's
+// point size and font scale come to). The two cells that are widgets rather
+// than items are given the same number, which is the only way they can be the
+// same size as the id and the in-point on their own row. Zero means "nothing
+// measurable yet" — the first pass, before the table exists — and falls back to
+// a sane 12 px rather than writing `font-size: 0px` into the sheet.
+inline QString dockStyle(const Scheme &s, int densityLevel = 0,
+			 const SheetAssetPaths &assets = {}, int rowFontPx = 0)
 {
 	const Density d = densityFor(densityLevel);
 	QString out = QString::fromUtf8(kDockStyleTemplate);
+	const auto mark = [&](const char *token, const QString &path) {
+		if (path.isEmpty())
+			out.replace(QString("url(\"%1\")").arg(token),
+				    QStringLiteral("none"));
+		else
+			out.replace(QLatin1String(token), path);
+	};
+	mark("@tick@", assets.tick);
+	mark("@arrowUp@", assets.arrowUp);
+	mark("@arrowDown@", assets.arrowDown);
+	mark("@arrowRight@", assets.arrowRight);
 	out.replace(QLatin1String("@cellInput@"), QString::number(d.cellInput));
 	out.replace(QLatin1String("@cellPad@"), QString::number(d.cellPad));
 	out.replace(QLatin1String("@headerFont@"), QString::number(d.headerFont));
-	out.replace(QLatin1String("@cellFont@"), QString::number(d.cellFont));
+	out.replace(QLatin1String("@rowFont@"),
+		    QString::number(rowFontPx > 0 ? rowFontPx : 12));
 	const std::pair<const char *, const QString *> tokens[] = {
 		{"@panel@", &s.panel},         {"@raise1@", &s.raise1},
 		{"@raise2@", &s.raise2},       {"@sink1@", &s.sink1},

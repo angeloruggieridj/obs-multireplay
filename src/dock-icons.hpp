@@ -130,7 +130,46 @@ struct IconTints {
 	QColor hover;
 	QColor disabled;
 	QColor on;
+	// ...AND THE SIGNAL INKS, for the keys whose mark is not chrome. See
+	// IconRole below: these are here rather than at the call sites so that a
+	// theme change re-derives them, which a QColor stamped on a widget when
+	// it was built cannot do.
+	QColor rec;    // the mark IS the take
+	QColor warn;   // the health badge, degraded
 };
+
+// ---------------------------------------------------------------------------
+// IconRole — WHICH INK A MARK IS DRAWN IN
+// ---------------------------------------------------------------------------
+//
+// The four tints above are CHROME, and chrome is right for the keys that are
+// chrome. It is wrong, and was wrong on five keys at once, for a key that is
+// itself a signal:
+//
+//   the filled green play key wore a dark grey ▶ (the label rule beside it
+//   says #ffffff, but a style sheet cannot reach a pixmap);
+//   ≫ on the on-air band was a grey mark on a green fill;
+//   REC showed a GREY dot next to the word REC written in red;
+//   Annulla, the one destructive key on the mark row, was drawn as neutral as
+//   the two keys beside it;
+//   and the health badge's mark stayed grey while its border and its number
+//   went amber.
+//
+// So a key states what its mark MEANS and the ink is looked up from the scheme
+// — never written down at the call site, or a theme change would leave it the
+// colour it was born in. Stamped as a dynamic property so `restyleIcons` reads
+// it back on every rebuild.
+enum class IconRole {
+	Chrome = 0, // the default: a key at rest is grey
+	LitWhite,   // white ONCE LIT — a red LIVE key wants a white mark, not
+	            // the panel's green: two signals arguing in one control
+	OnSignal,   // white ALWAYS — the key is a filled signal colour
+	Rec,        // red at rest: the mark is the take
+	Danger,     // red: this key destroys something
+	Warn,       // amber: the badge that says the take is degraded
+};
+
+inline const char *kIconRoleProperty = "mrIconRole";
 
 // The four colours, taken from the panel's own Scheme. One place, so a mark and
 // the label beside it cannot end up different greys — which is precisely what
@@ -142,7 +181,38 @@ inline IconTints tintsFor(const Scheme &s)
 	// key with (see QPushButton#mrToggle:checked and #mrAngle[state=…]).
 	// A mark left at the resting grey on a lit key reads as disabled.
 	return IconTints{QColor(s.textKey), QColor(s.text), QColor(s.textDim),
-			 QColor(s.pvw)};
+			 QColor(s.pvw),      QColor(s.rec),  QColor(s.warn)};
+}
+
+// The four states, for one role. Kept beside tintsFor so the mapping is read
+// next to the colours it maps, and shared by setKeyIcon and the mockup.
+inline IconTints tintsForRole(const IconTints &t, IconRole role)
+{
+	IconTints r = t;
+	switch (role) {
+	case IconRole::LitWhite:
+		r.on = QColor(Qt::white);
+		break;
+	case IconRole::OnSignal:
+		// The key is a solid signal colour and its label is #ffffff; the
+		// mark is the other half of the same label.
+		r.rest = r.hover = r.on = QColor(Qt::white);
+		break;
+	case IconRole::Rec:
+		r.rest = r.hover = t.rec;
+		r.on = QColor(Qt::white);
+		break;
+	case IconRole::Danger:
+		r.rest = r.hover = t.rec;
+		break;
+	case IconRole::Warn:
+		r.rest = r.hover = r.on = t.warn;
+		break;
+	case IconRole::Chrome:
+	default:
+		break;
+	}
+	return r;
 }
 
 // Give a button an icon, and remember which one, so a theme change can redraw
@@ -152,6 +222,13 @@ inline IconTints tintsFor(const Scheme &s)
 // ("● REC"), and a caller that wants icon-only simply passes no text.
 void setKeyIcon(QAbstractButton *b, Icon id, const IconTints &tints,
 		int px = 16);
+
+// Stamp the role and (re)draw the mark in it. Two lines everywhere it is used,
+// and the property has to be on the widget before the icon is built — which is
+// the whole reason this exists rather than an extra argument: `restyleIcons`
+// rebuilds every mark on a theme change and reads the role back off the widget.
+void setKeyIconRole(QAbstractButton *b, Icon id, IconRole role,
+		    const IconTints &tints, int px = 16);
 
 // Re-tint every icon under `root`. Called when the panel's colours are rebuilt:
 // the marks are pixmaps, so unlike everything else on the panel they do not

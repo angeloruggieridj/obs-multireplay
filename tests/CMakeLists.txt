@@ -86,3 +86,9 @@ mr_add_test(obs-multireplay-updater-tests updater "${MR_TESTS}/updater_test.cpp"
 # encoding bug these pin is invisible on Linux and macOS and breaks Windows, so
 # it matters that this target runs on all three.
 mr_add_test(obs-multireplay-paths-tests paths "${MR_TESTS}/paths_test.cpp")
+
+# Which camera slot owns the Branch Output filter/encoder when several slots
+# name the same source. Pins the fix for "eight identical filters on one
+# source, and only the first camera's preview ever shows a picture" — a
+# resource-exhaustion bug that is otherwise only visible on a real GPU.
+mr_add_test(obs-multireplay-camera-dedup-tests camera_dedup "${MR_TESTS}/camera_dedup_test.cpp")

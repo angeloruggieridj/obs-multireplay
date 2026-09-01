@@ -17,7 +17,11 @@
 
 .PARAMETER Sources
   Comma-separated names of EXISTING OBS sources to tap instead of synthetic
-  ones - this is how the gate runs against the real capture cards.
+  ones - this is how the gate runs against the real capture cards. A name may
+  repeat ("Media,Media") to point several camera slots at the SAME source,
+  which is how to exercise the duplicate-camera-source dedup path
+  (camera-dedup.hpp / branch-output-control.hpp) instead of just the ordinary
+  one-source-per-slot case.
 
 .PARAMETER SkipBuild
   Reuse the DLL already in build_x64 instead of rebuilding.
@@ -302,6 +306,15 @@ $collection = [ordered]@{
     sources               = @()
 }
 $copied = @()
+# NAME -> UUID of a source already copied into the test collection, so the
+# SAME name can appear twice in -Sources and still resolve to ONE physical
+# obs_source_t — several camera slots pointed at one source, which is exactly
+# the shape of the "duplicate camera source" bug (eight identical Branch
+# Output filters on one camera): recreating the source a second time under
+# the same name would either collide in libobs' name table or, if OBS
+# silently renamed it, would no longer be the SAME source the first slot
+# points at, so the dedup path this is meant to exercise would never run.
+$sourceUuidByName = @{}
 
 function New-MRScene($name, $items) {
     [ordered]@{
@@ -314,72 +327,87 @@ function New-MRScene($name, $items) {
     }
 }
 foreach ($want in $wantedSources) {
-    $found = $null
-    $foundIn = $null
-    foreach ($cf in $collectionFiles) {
-        $src = Get-Content $cf.FullName -Raw | ConvertFrom-Json
-        $hit = $src.sources | Where-Object { $_.name -eq $want } | Select-Object -First 1
-        if ($hit) { $found = $hit; $foundIn = $cf.BaseName; break }
-    }
-    if (-not $found) {
-        Fail "no scene collection defines a source named '$want'"
+    if ($sourceUuidByName.ContainsKey($want)) {
+        # A REPEATED NAME SHARES THE SOURCE THIS RUN ALREADY COPIED. Not a
+        # second copy: a second obs_source_t under the same name is either a
+        # libobs collision or an OBS-silent-rename, and either way it stops
+        # being the SAME source the earlier slot points at — which is the one
+        # property this branch exists to preserve, so the plugin's dedup
+        # (camera-dedup.hpp) sees one real source behind several camera slots,
+        # exactly like an operator who has pointed N slots at one physical rig.
+        $uuid = $sourceUuidByName[$want]
+        $copied += "$want (shared with an earlier slot)"
+    } else {
+        $found = $null
+        $foundIn = $null
         foreach ($cf in $collectionFiles) {
-            $names = (Get-Content $cf.FullName -Raw | ConvertFrom-Json).sources |
-                     ForEach-Object { $_.name }
-            Write-Host "    $($cf.BaseName): $($names -join ', ')" -ForegroundColor DarkGray
+            $src = Get-Content $cf.FullName -Raw | ConvertFrom-Json
+            $hit = $src.sources | Where-Object { $_.name -eq $want } | Select-Object -First 1
+            if ($hit) { $found = $hit; $foundIn = $cf.BaseName; break }
         }
-        Restore-OperatorEnvironment
-        exit 2
-    }
-    # Without its filters: a Branch Output filter carried over would arm a
-    # recording nobody asked for, writing to a path this run does not own.
-    $found.PSObject.Properties.Remove('filters')
-    # ...and without the operator's hotkey bindings, which belong to his
-    # collection and not to a throwaway one.
-    $found.PSObject.Properties.Remove('hotkeys')
-
-    # A UUID OF ITS OWN. Copying the source verbatim carried the operator's uuid
-    # across, so his collection and this throwaway one both declared a source
-    # with the same one. libobs keeps a process-wide uuid -> source map, and two
-    # collections claiming the same entry across a switch is how a camera comes
-    # up for an instant and then goes black with its file path emptied — which
-    # is exactly what was reported, and it is caused here, not by the plugin.
-    $found | Add-Member -NotePropertyName uuid -NotePropertyValue ([guid]::NewGuid().ToString()) -Force
-
-    # A MEDIA SOURCE IS NORMALISED, NOT JUST COPIED. Copying an OBS source
-    # object verbatim carries whatever the operator's collection happens to
-    # hold, and what it holds is not always complete: C2 came across with
-    # local_file set and NO is_local_file, which leaves the flag to a default
-    # rather than to a statement. A gate that plays the wrong thing — or
-    # nothing — because of an implied default is a gate reporting on something
-    # other than the plugin. If it names a file, it says so explicitly.
-    if ($found.id -eq 'ffmpeg_source' -and $found.settings) {
-        $path = $found.settings.local_file
-        if ($path) {
-            if (-not (Test-Path $path)) {
-                Fail "source '$want' points at a file that is not there: $path"
-                Restore-OperatorEnvironment
-                exit 2
+        if (-not $found) {
+            Fail "no scene collection defines a source named '$want'"
+            foreach ($cf in $collectionFiles) {
+                $names = (Get-Content $cf.FullName -Raw | ConvertFrom-Json).sources |
+                         ForEach-Object { $_.name }
+                Write-Host "    $($cf.BaseName): $($names -join ', ')" -ForegroundColor DarkGray
             }
-            $found.settings | Add-Member -NotePropertyName is_local_file -NotePropertyValue $true -Force
-            # Looping, because the gate records for longer than these clips run
-            # and an angle that reaches its end stops producing packets — which
-            # this gate would report, correctly, as a dead angle.
-            $found.settings | Add-Member -NotePropertyName looping -NotePropertyValue $true -Force
-        } else {
-            Fail "source '$want' is a media source with no file in it — nothing to record"
             Restore-OperatorEnvironment
             exit 2
         }
+        # Without its filters: a Branch Output filter carried over would arm a
+        # recording nobody asked for, writing to a path this run does not own.
+        $found.PSObject.Properties.Remove('filters')
+        # ...and without the operator's hotkey bindings, which belong to his
+        # collection and not to a throwaway one.
+        $found.PSObject.Properties.Remove('hotkeys')
+
+        # A UUID OF ITS OWN. Copying the source verbatim carried the operator's
+        # uuid across, so his collection and this throwaway one both declared a
+        # source with the same one. libobs keeps a process-wide uuid -> source
+        # map, and two collections claiming the same entry across a switch is
+        # how a camera comes up for an instant and then goes black with its
+        # file path emptied — which is exactly what was reported, and it is
+        # caused here, not by the plugin.
+        $found | Add-Member -NotePropertyName uuid -NotePropertyValue ([guid]::NewGuid().ToString()) -Force
+
+        # A MEDIA SOURCE IS NORMALISED, NOT JUST COPIED. Copying an OBS source
+        # object verbatim carries whatever the operator's collection happens to
+        # hold, and what it holds is not always complete: C2 came across with
+        # local_file set and NO is_local_file, which leaves the flag to a default
+        # rather than to a statement. A gate that plays the wrong thing — or
+        # nothing — because of an implied default is a gate reporting on something
+        # other than the plugin. If it names a file, it says so explicitly.
+        if ($found.id -eq 'ffmpeg_source' -and $found.settings) {
+            $path = $found.settings.local_file
+            if ($path) {
+                if (-not (Test-Path $path)) {
+                    Fail "source '$want' points at a file that is not there: $path"
+                    Restore-OperatorEnvironment
+                    exit 2
+                }
+                $found.settings | Add-Member -NotePropertyName is_local_file -NotePropertyValue $true -Force
+                # Looping, because the gate records for longer than these clips run
+                # and an angle that reaches its end stops producing packets — which
+                # this gate would report, correctly, as a dead angle.
+                $found.settings | Add-Member -NotePropertyName looping -NotePropertyValue $true -Force
+            } else {
+                Fail "source '$want' is a media source with no file in it — nothing to record"
+                Restore-OperatorEnvironment
+                exit 2
+            }
+        }
+        $collection.sources += $found
+        $copied += "$want (from $foundIn)"
+        $uuid = $found.uuid
+        $sourceUuidByName[$want] = $uuid
     }
-    $collection.sources += $found
-    $copied += "$want (from $foundIn)"
     # bounds_type 2 (SCALE_INNER) over the full canvas, centred: C1 and C2 are
     # 720p files and the canvas is 1080p, so an item placed at scale 1.0 would
     # sit in the top-left corner at two thirds size. Fitted, they fill the frame
     # the way the operator has them.
     $item = [ordered]@{
-        name = $want; source_uuid = $found.uuid
+        name = $want; source_uuid = $uuid
         visible = $true; locked = $false; rot = 0.0
         scale_ref = @{ x = 1920.0; y = 1080.0 }
         align = 0; bounds_type = 2; bounds_align = 0; bounds_crop = $false
@@ -443,7 +471,19 @@ for ($i = 0; $i -lt 8; $i++) {
     # collection above carries, one per bay.
     outputSceneName    = 'MRReplay A'
     outputSceneNameB   = 'MRReplay B'
-    enableChannelB     = $true
+    # OFF, matching the real default the dock is built under on every fresh
+    # install and most real sessions. Seeding it already-on used to hide a
+    # construction-order bug: applyChannelBVisibility() ran once, very early
+    # in the dock's constructor, before the widgets it hides (the B box, the
+    # A|B/A/B selector, its "OUTPUT" caption) existed yet — so that first
+    # call had nothing to apply the OFF state to, and then never ran for
+    # real again, because its own "already applied" guard believed it had.
+    # Seeded on, the dock was simply never BUILT in the state that bug lives
+    # in, so nothing here could ever have caught it. The plugin's own gate
+    # code (selftest.cpp, right before it turns B on for the checks that
+    # need it) now proves the off-at-construction state directly against
+    # this seed.
+    enableChannelB     = $false
     toOutputOnPlay     = $true
     doubleClickPlays   = $true
     replaySourceName   = ''

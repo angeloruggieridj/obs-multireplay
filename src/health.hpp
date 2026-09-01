@@ -96,7 +96,15 @@ public:
 	// `sessionFolder` is handed in rather than read back from ReplayCore:
 	// this is called from inside startRecording, which holds the core lock,
 	// so asking for the config here is a self-deadlock (it froze OBS).
+	// `canonical` is camera-dedup.hpp's canonicalCameraIndices(): a slot that
+	// duplicates an earlier slot's source shares that slot's PacketTap
+	// channel entirely (see packet-tap.hpp), so its ring bytes must be
+	// counted once, under the canonical index, not once per duplicate —
+	// otherwise the same physical ring would be added into the memory-growth
+	// budget several times over and the "is this actually leaking" check
+	// would be looking at a number nobody's RAM usage ever produces.
 	void takeStarted(const std::array<bool, kMaxCameras> &armed,
+			 const std::array<int, kMaxCameras> &canonical,
 			 int ringSecondsGranted, int64_t requiredBytesPerSec,
 			 const std::string &sessionFolder);
 	void takeStopped();
@@ -148,6 +156,12 @@ private:
 
 	std::array<int64_t, kMaxCameras> armedAtNs_{};
 	std::array<bool, kMaxCameras> armed_{};
+	std::array<int, kMaxCameras> canonical_ = [] {
+		std::array<int, kMaxCameras> id{};
+		for (int i = 0; i < kMaxCameras; i++)
+			id[i] = i;
+		return id;
+	}();
 	bool recording_ = false;
 	int64_t takeStartNs_ = 0;
 	int64_t rssBaselineBytes_ = -1;

@@ -108,8 +108,17 @@ public:
 
 	// Begin watching `folder` for the cameras marked in `cams`. The epoch
 	// pair ties this session's monotonic clock to wall-clock time.
+	//
+	// `canonical` is camera-dedup.hpp's canonicalCameraIndices(): a slot that
+	// only duplicates an earlier slot's source never had its own Branch
+	// Output filter, so it never wrote its own "cam<N>_*.mp4" series either
+	// (see ReplayCore::startRecording). canonical[i] names the slot whose
+	// files actually cover camera i's source, and every camIndex-specific
+	// accessor below redirects through it, so callers may keep passing a
+	// duplicate's own index everywhere.
 	void start(const std::string &folder,
 		   const std::array<bool, kMaxSegmentCameras> &cams,
+		   const std::array<int, kMaxSegmentCameras> &canonical,
 		   int64_t epochMasterNs, int64_t epochWallNs);
 	void stop();
 
@@ -189,9 +198,20 @@ private:
 	void save() const;          // anchors.json, wall-clock based
 	void load();
 
+	// A duplicate camIndex, redirected to the slot whose files actually
+	// exist. Identity for every canonical or unconfigured index, so a call
+	// made before start() ever runs simply reads its own (empty) camera.
+	int owner(int camIndex) const; // mutex_ held
+
 	mutable std::mutex mutex_;
 	std::string folder_;
 	std::array<bool, kMaxSegmentCameras> cams_{};
+	std::array<int, kMaxSegmentCameras> canonical_ = [] {
+		std::array<int, kMaxSegmentCameras> id{};
+		for (int i = 0; i < kMaxSegmentCameras; i++)
+			id[i] = i;
+		return id;
+	}();
 	std::array<std::vector<RecordingSegment>, kMaxSegmentCameras> segments_{};
 	// Files still waiting for a successful anchor, with their attempt count.
 	std::array<std::vector<std::pair<std::string, int>>, kMaxSegmentCameras>

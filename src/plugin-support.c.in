@@ -19,7 +19,11 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <plugin-support.h>
 
 const char *PLUGIN_NAME = "@CMAKE_PROJECT_NAME@";
-const char *PLUGIN_VERSION = "@CMAKE_PROJECT_VERSION@";
+/* The full version, pre-release suffix included -- see PLUGIN_VERSION_FULL in
+   CMakeLists.txt. CMAKE_PROJECT_VERSION cannot carry "-betaN", and a beta that
+   calls itself 1.0.0 is newer than every 1.0.0-betaN, so the updater never
+   offered the next beta to anyone running one. */
+const char *PLUGIN_VERSION = "@PLUGIN_VERSION_FULL@";
 
 void obs_log(int log_level, const char *format, ...)
 {

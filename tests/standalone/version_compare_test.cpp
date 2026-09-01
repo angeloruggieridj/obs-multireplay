@@ -93,9 +93,30 @@ static void test_unreadable_is_never_offered()
 	CHECK(!isNewerVersion("1.0.0-rc1", "1.0.0-beta1"));
 }
 
+// A BETA THAT DOES NOT KNOW IT IS ONE IS OFFERED NOTHING, and that shipped.
+//
+// The comparison above was right the whole time; the version handed to it was
+// not. buildspec's `version` is "1.0.0" because CMake's project(VERSION) will
+// not take a suffix, and for a while the binary reported exactly that — so a
+// build tagged 1.0.0-beta7 called itself "1.0.0" and every later beta looked
+// OLDER than it. Nothing at all was offered until 1.0.1.
+//
+// The first two lines are what the defect looked like. The last two are the
+// fix, which lives in PLUGIN_VERSION_FULL (CMakeLists.txt) and is pinned in CI
+// by push.yaml comparing the tag against buildspec.
+static void test_a_beta_must_declare_that_it_is_one()
+{
+	CHECK(!isNewerVersion("1.0.0-beta8", "1.0.0"));
+	CHECK(!isNewerVersion("1.0.0", "1.0.0"));
+
+	CHECK(isNewerVersion("1.0.0-beta8", "1.0.0-beta7"));
+	CHECK(isNewerVersion("1.0.0", "1.0.0-beta7"));
+}
+
 int main()
 {
 	test_parsing();
+	test_a_beta_must_declare_that_it_is_one();
 	test_a_release_beats_its_own_betas();
 	test_numbers_are_numbers_not_text();
 	test_same_is_not_newer();

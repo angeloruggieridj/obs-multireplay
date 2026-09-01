@@ -20,9 +20,11 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #include <obs-module.h>
 #include <obs-frontend-api.h>
 
+#include <QTimer> // deferred prune on load — see onFrontendEvent
 #include <QWidget> // the dock's parent: OBS's main window (see obs_module_post_load)
 
 #include "plugin-support.h"
+#include "branch-output-control.hpp"
 #include "event-store.hpp"
 #include "export.hpp"
 #include "health.hpp"
@@ -62,9 +64,29 @@ void onFrontendEvent(enum obs_frontend_event event, void *)
 
 	if (event == OBS_FRONTEND_EVENT_FINISHED_LOADING ||
 	    event == OBS_FRONTEND_EVENT_SCENE_COLLECTION_CHANGED) {
-		if (!multireplay::ReplayCore::instance().isRecording())
+		if (!multireplay::ReplayCore::instance().isRecording()) {
 			multireplay::ReplayCore::instance()
 				.disarmPersistedFilters();
+			// PRUNING THE STALE ONES IS DEFERRED — through a Qt TIMER,
+			// not obs_queue_task (measured not late enough; see the long
+			// comment on disarmPersistedFilters()). Deserialising the
+			// scene collection just queued a Qt::QueuedConnection
+			// "filter added" notification on Branch Output's status
+			// dock for every filter it loaded, and that queue only
+			// drains inside a REAL Qt event loop iteration — the first
+			// one during startup is NewYouTubeAppDock's nested loop, a
+			// little further down OBSInit(). A QTimer::singleShot
+			// posted here lands in that same queue, behind Branch
+			// Output's own earlier-posted connections (Qt delivers
+			// queued events in post order), so by the time this fires
+			// every filter BO's dock is about to build a row for is
+			// still alive, and pruning is safe.
+			QTimer::singleShot(0, []() {
+				multireplay::branch_output::pruneFilters(
+					multireplay::ReplayCore::instance()
+						.getConfig());
+			});
+		}
 		// Both channels: A and B are two inputs of one type, and the
 		// second has to be adopted (or created) on exactly the same beat
 		// as the first.

@@ -7,9 +7,11 @@ SPDX-License-Identifier: GPL-2.0-or-later
 #include "multireplay-dock.hpp"
 #include "dock-layout.hpp"
 #include "dock-style.hpp"
+#include "dock-assets.hpp"
 #include "dock-icons.hpp"
 #include "qt-display.hpp"
 #include "branch-output-install.hpp"
+#include "camera-dedup.hpp"
 #include "replay-core.hpp"
 #include "updater.hpp"
 #include "event-store.hpp"
@@ -29,6 +31,8 @@ SPDX-License-Identifier: GPL-2.0-or-later
 #include <QHBoxLayout>
 #include <QGridLayout>
 #include <QSplitter>
+#include <QFontInfo>
+#include <QSplitterHandle>
 #include <QAbstractButton>
 #include <QDateTime>
 #include <QPushButton>
@@ -155,6 +159,28 @@ QPushButton *iconTextBtn(Icon ic, const QString &text, const char *id,
 	setKeyId(b, QString::fromLatin1(id));
 	b->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
 	return b;
+}
+
+// ── A KEY THAT OPENS A MENU, WITHOUT WEARING THE PLATFORM'S ARROW ────────
+//
+// `QToolButton::setMenu` tells Qt the button HAS a menu, and Qt then draws its
+// own arrow for it — bottom right, larger than the mark we drew, and clipped by
+// the key's own edge. Two marks in one key, one of them half drawn: that is the
+// gear with a triangle through it, and the same on the ▾ beside the play key
+// and the ⋯ over the clip list.
+//
+// NO STYLE SHEET REACHES IT, and that was measured rather than assumed. Every
+// sub-control Qt could plausibly be asking for was probed with a solid red rule
+// and none of them was ever painted; the arrow comes out of the base style's
+// PE_IndicatorArrowDown (see the note in dock-style.hpp). So the menu is popped
+// on `clicked` instead — same place and same gesture as InstantPopup, keyboard
+// included, because Space and Enter on a focused button emit clicked() too.
+void popupOnClick(QToolButton *b, QMenu *menu)
+{
+	b->setPopupMode(QToolButton::InstantPopup);
+	QObject::connect(b, &QToolButton::clicked, b, [b, menu]() {
+		menu->popup(b->mapToGlobal(QPoint(0, b->height())));
+	});
 }
 
 // ── A MODE, ON THE STATUS LINE ───────────────────────────────────────────
@@ -337,6 +363,12 @@ void repolish(QWidget *w)
 {
 	w->style()->unpolish(w);
 	w->style()->polish(w);
+	// ...AND PUT THE SECTION'S HEIGHT BACK. Polishing applies the sheet's
+	// min-height by WRITING setMinimumSize on the widget, so a key that its
+	// section pinned to two rows — REC once it is armed, the green play key —
+	// loses that pin every time one of its properties flips. See
+	// kPinnedHeightProperty in dock-layout.hpp.
+	repinKeys(w);
 	w->update();
 }
 
@@ -1373,6 +1405,23 @@ void MultiReplayDock::drawTile(void *data, uint32_t cx, uint32_t cy)
 MultiReplayDock::MultiReplayDock(QWidget *parent) : QWidget(parent)
 {
 	setObjectName("MultiReplayDock");
+	// THE PANEL PAINTS ITS OWN BACKGROUND, and it has to be told to.
+	//
+	// `#MultiReplayDock { background: @panel@; }` is the first line of the
+	// style sheet and until now it did NOTHING. Qt only honours a style
+	// sheet background on a widget that carries WA_StyledBackground, and it
+	// sets that attribute by itself for a PLAIN QWidget (and for QFrame,
+	// QDialog and a short list of others) — not for a subclass, which this
+	// is. So the panel's background was never ours: what showed through was
+	// the window colour of whatever palette OBS had applied.
+	//
+	// That is invisible for as long as the panel and OBS are the same kind
+	// of dark, which is why it survived every screenshot until the day the
+	// panel went light: the control strip sat on a dark band, all four
+	// margins were a dark frame, and the pictures and the event list were
+	// correct — because those two live inside a QSplitter, and a QSplitter
+	// is a QFrame, which Qt does style.
+	setAttribute(Qt::WA_StyledBackground, true);
 	// WIDTH is the only hard floor. A hard minimum HEIGHT is what let the
 	// panel be dragged shorter than its own controls need: an explicit
 	// minimumSize wins over the layout's computed one, so Qt happily handed
@@ -1388,15 +1437,20 @@ MultiReplayDock::MultiReplayDock(QWidget *parent) : QWidget(parent)
 	// sizes at which the strip would have folded instead (see
 	// ControlStrip::minimumSizeHint).
 	setMinimumWidth(300);
-	// THE SHEET IS BUILT, NOT A CONSTANT. It carries the operator's theme choice
-	// and the colours OBS is currently themed with; applyTheme() is called again
-	// whenever either changes. A first pass here, before any child exists, so
-	// every widget is polished into the right colours as it is created.
-	{
-		const Config &c0 = ReplayCore::instance().getConfig();
-		sc() = schemeFor((ThemeChoice)c0.uiTheme, qApp->palette());
-		setStyleSheet(dockStyle(sc(), c0.tableDensity));
-	}
+	// THE SHEET IS BUILT, NOT A CONSTANT. It carries the operator's theme
+	// choice and the colours OBS is currently themed with; applyTheme() is
+	// called again whenever either changes. A first pass here, before any
+	// child exists, so every widget is polished into the right colours as it
+	// is created.
+	//
+	// AND IT IS THE SAME CALL, not a second copy of it. It used to be three
+	// lines that built the sheet WITHOUT the marks a sub-control can only be
+	// handed as a file (dock-assets.hpp) — so at start-up the panel had no
+	// drop-down arrows, no spin arrows and no tick anywhere, and they only
+	// appeared the first time the operator changed theme and the real
+	// applyTheme() ran. Everything applyTheme does is safe here: it null-checks
+	// every widget it touches and there are none yet.
+	applyTheme();
 
 	auto *root = new QVBoxLayout(this);
 	root->setContentsMargins(4, 4, 4, 4);
@@ -1525,6 +1579,15 @@ MultiReplayDock::MultiReplayDock(QWidget *parent) : QWidget(parent)
 	applyPanelMode(panelModeFor(size(), panelMode_, wideFloorH_),
 		       /*force*/ true);
 
+	// ...AND THE COLOURS AGAIN, NOW THAT THE TABLE EXISTS. The first pass ran
+	// from the top of this constructor, before any child, so the size it gave
+	// the two cells that are widgets was the APPLICATION font — the table it
+	// needed to measure had not been built. Once it has, and once OBS's own
+	// `QWidget { font-size }` has been resolved onto it, the number can be
+	// asked of the thing that will actually draw the row. applyTheme is
+	// idempotent and notices when nothing moved.
+	applyTheme();
+
 	poll();
 }
 
@@ -1610,11 +1673,13 @@ QWidget *MultiReplayDock::buildToolbar()
 	// Emoji_Presentation=Yes, so Windows painted it in full colour from Segoe
 	// UI Emoji — a bright blue blob beside a grey search box, on a panel
 	// whose every other mark is a grey line.
-	auto *mag = new QLabel(box);
-	mag->setPixmap(iconFor(Icon::Search, QColor(sc().textMuted), 13,
-			       devicePixelRatioF())
-			       .pixmap(13, 13));
-	h->addWidget(mag);
+	// A LABEL, so restyleIcons cannot reach it — it only walks buttons. Kept
+	// so applyTheme can redraw it: it is the one mark on this panel that is
+	// not on a key, and it was the one that stayed the old grey after a theme
+	// change.
+	searchIcon_ = new QLabel(box);
+	h->addWidget(searchIcon_);
+	restyleSearchIcon();
 	search_ = new QLineEdit(box);
 	search_->setPlaceholderText(obs_module_text("Dock.Search"));
 	search_->setClearButtonEnabled(true);
@@ -1637,8 +1702,8 @@ QWidget *MultiReplayDock::buildToolbar()
 	// ...AND ITS MARK STAYS WHITE WHEN THE KEY IS LIT. The lit tint is the
 	// panel's green, which on a red key is a green dot inside a red rectangle:
 	// two signals arguing in one control. White is what the word beside it is.
-	liveBtn_->setProperty("mrIconOnWhite", true);
-	setKeyIcon(liveBtn_, Icon::Live, tintsFor(sc()), 12);
+	setKeyIconRole(liveBtn_, Icon::Live, IconRole::LitWhite, tintsFor(sc()),
+		       12);
 	liveBtn_->setCheckable(true);
 	liveBtn_->setCursor(Qt::PointingHandCursor);
 	liveBtn_->setToolTip(obs_module_text("Dock.LiveModeHint"));
@@ -1835,9 +1900,26 @@ QWidget *MultiReplayDock::buildPreview()
 	monitorSplit_->setHandleWidth(5);
 	monitorSplit_->addWidget(bays_);
 	monitorSplit_->addWidget(multiviewBox_);
+	// ── DRAGGING THIS DIVIDER IS THE OPERATOR'S, AND IT HAS TO FILL ──────
+	//
+	// It was briefly disabled, on the argument that the row is one piece of
+	// algebra — A, B and every tile row 16:9 at ONE height, solved so the row
+	// is exactly as wide as the pane — and that any other split can only
+	// letterbox. The argument is right about the ALGEBRA and wrong about the
+	// panel: deciding how much of the row goes to the bays and how much to
+	// the cameras is a real thing to want, and taking the handle away is not
+	// an answer to it.
+	//
+	// What makes a drag fill instead of band is honouring it on BOTH sides:
+	// the bays take the width they were given and the cameras take theirs,
+	// each at 16:9 and each at its own height, and the row is as tall as the
+	// taller of the two. That is what applyPreviewAspect does below when
+	// monitorSplitChosen() — and it is what was missing, because the width
+	// was honoured for the cameras and not for the bays.
 	connect(monitorSplit_, &QSplitter::splitterMoved, this, [this](int, int) {
 		userMonitorSplit_[(int)panelMode_] = true;
 		savedMonitorSplit_[(int)panelMode_] = monitorSplit_->saveState();
+		applyPreviewAspect();
 	});
 	monitorsRow_ = monitorSplit_; // the Monitors key hides this whole block
 	v->addWidget(monitorSplit_, 1);
@@ -1867,15 +1949,78 @@ QWidget *MultiReplayDock::buildPreview()
 // key exists to put down.
 void MultiReplayDock::applyMonitorsVisible(bool on)
 {
+	monitorsOn_ = on;
 	if (monitorsRow_)
 		monitorsRow_->setVisible(on);
 	if (monitorsStrip_)
 		monitorsStrip_->setVisible(on);
 	if (previewPane_)
 		previewPane_->setVisible(on);
-	if (on)
+	applyMonitorsRoom();
+	if (on) {
+		// The divider he chose for this arrangement, put back. While the
+		// pictures were down it described nothing, and in Short it was
+		// deliberately overridden to give the list the whole width.
+		if (splitter_ && splitChosen() &&
+		    !savedSplit_[(int)panelMode_].isEmpty())
+			splitter_->restoreState(savedSplit_[(int)panelMode_]);
 		applyPreviewAspect();
+	}
 	obs_log(LOG_INFO, "[dock] monitors %s", on ? "shown" : "hidden");
+}
+
+// ── AND THE SPLITTER HAS TO BE TOLD, BECAUSE ITS CHILD IS NOT THE PANE ──────
+//
+// The rule above — hide the splitter's child, not the rows inside it — was
+// right and stopped being true underneath itself. previewPane_ WAS that child;
+// then the Short arrangement wrapped it in leftCol_, which in that shape also
+// carries the key strip. From that commit on, putting the monitors down hid the
+// pictures and left leftCol_ visible and EMPTY, still holding the height the
+// splitter had given it — so the table did not grow by a pixel and a maximised
+// panel showed a band of nothing where the pictures had been. That is the
+// report, and it is the same defect the comment above describes, one level up.
+//
+// Two cases, because leftCol_ holds two different things:
+//
+//   - WIDE and TALL: the pictures are all it has, so it goes with them. A
+//     hidden splitter child contributes nothing and its handle goes too, which
+//     is exactly the height the list wanted.
+//   - SHORT: the strip lives in that column, so the column must stay. There the
+//     splitter divides WIDTH, and asking for zero is how a QSplitter is told
+//     "as little as this child will accept" — it clamps to the child's own
+//     minimum, so the keys keep their width and the list takes the rest.
+//
+// No minimumSizeHint() is asked for anywhere in here, deliberately: this runs
+// from applyPanelMode, which runs from resizeEvent, and asking a widget for
+// that inside the resize cascade does not read a number — it forces a pass, and
+// the pass it forces is the one that stays on screen.
+void MultiReplayDock::applyMonitorsRoom()
+{
+	if (!splitter_ || !leftCol_)
+		return;
+	// In Short the key strip has been moved into this column, so it is never
+	// empty and must never be hidden.
+	const bool colHasKeys = panelMode_ == PanelMode::Short;
+
+	if (monitorsOn_) {
+		if (!leftCol_->isVisible())
+			leftCol_->setVisible(true);
+		return;
+	}
+
+	// A cap written for the pictures outlives them, and on the way back in it
+	// would hold the pane at whatever the last visible pass computed.
+	if (previewPane_)
+		previewPane_->setMaximumHeight(QWIDGETSIZE_MAX);
+
+	if (!colHasKeys) {
+		leftCol_->setVisible(false);
+		return;
+	}
+	leftCol_->setVisible(true);
+	const int total = splitter_->width();
+	if (total > 0)
+		splitter_->setSizes({0, total});
 }
 
 // ---------------------------------------------------------------------------
@@ -1902,54 +2047,42 @@ void MultiReplayDock::applyMonitorsVisible(bool on)
 // for the same reason: it stops being derived from anything.
 int MultiReplayDock::monitorRoomH() const
 {
-	// IT MUST NOT BE READ OFF THE PANE, not even once the operator has moved
-	// the divider. It used to be, and that is why maximising the window left
-	// the pictures the size they were: the ceiling on the picture pane is set
-	// FROM this number, so taking it from the pane made the ceiling equal to
-	// the height the pane already had - a pane that could never grow, however
-	// big the window got. What the operator chose is WHERE the divider sits,
-	// and applyPreviewSplit still leaves that alone; how tall the block may be
-	// is a question about the panel.
-	const int total = splitter_ ? splitter_->height() : height();
-	int room = total - kListPaneFloor;
-	// ...AND THE PICTURES MAY NOT HAVE MORE THAN HALF THE PANEL. Past that the
-	// list stops being a list. The cap belongs HERE, with the rest of the
-	// answer, because the tile arithmetic asks the same question and the two
-	// answers have to be the same one - they were two, and the cameras came out
-	// sized for a block a third taller than the one they were given.
-	if (panelMode_ == PanelMode::Wide)
-		room = std::min(room, height() / 2);
-	return std::max(40, room);
+	// ONE COPY OF THIS ARITHMETIC, in dock-layout, shared with the mockup.
+	// There were two, and they disagreed about the one thing that mattered:
+	// the mockup honoured the divider the operator had dragged between the
+	// pictures and the list, and this did not. At 1090x811 on a two-camera
+	// rig the mockup drew 357 px cameras filling the row and the panel drew
+	// 237 px ones with a 240 px band beside them — and the mockup is what
+	// every layout decision here is judged on.
+	return monitorRoomFor({height(),
+			       splitter_ ? splitter_->height() : height(),
+			       previewPane_ ? previewPane_->height() : 0,
+			       0,
+			       kListPaneFloor,
+			       splitChosen(),
+			       panelMode_ == PanelMode::Wide});
 }
 
 int MultiReplayDock::tileColumns(int tileCount) const
 {
 	const int n = std::max(1, tileCount);
-	// Beside a big A output the tiles are a tall narrow strip: two columns up
-	// to four tiles, three beyond. That was tuned against the picture next to
-	// it and stays.
-	if (panelMode_ != PanelMode::Tall) {
-		// FROM THE SAME ARITHMETIC THE SIZES COME FROM. Hardcoded as
-		// "two up to four, three beyond", it could disagree with the
-		// block that was actually measured - and a column count that
-		// disagrees with the tile size is a block with a hole in it.
-		const int paneW = std::max(80, monitorSplit_ ? monitorSplit_->width()
-							     : width());
-		const Config cfg = ReplayCore::instance().getConfig();
-		const int bays = cfg.enableChannelB ? 2 : 1;
-		const int roomH = monitorRoomH();
-		return std::max(1, tileBlockFor(paneW, bays, n, 5, roomH).cols);
-	}
-	// In a COLUMN the same two columns build a block as tall as the picture
-	// above them, and the picture is what the operator is looking at. So the
-	// tiles go as wide as the panel can carry them at a size still worth
-	// looking at — a filmstrip rather than a grid.
+	// THE SAME COLUMN RULE IN EVERY ARRANGEMENT — one row up to three
+	// cameras, ceil(n/2) columns beyond — so the grid the operator learned in
+	// the Wide layout is the same grid down a side (Tall) or under the OBS
+	// preview (Short). It used to be a one-row filmstrip in Tall on the
+	// argument that a narrow column cannot carry a 4-wide grid at a size
+	// worth looking at; the operator asked for the consistent shape instead,
+	// small tiles and all.
 	//
-	// std::min(2, n) rather than 2: on a ONE-CAMERA rig the bounds would be
-	// clamp(x, 2, 1), whose behaviour is undefined when lo > hi — and one
-	// camera is the configuration this plugin is most often installed on.
-	const int avail = std::max(1, width() - 16);
-	return std::clamp(avail / kTileMinWidth, std::min(2, n), n);
+	// FROM THE SAME ARITHMETIC THE SIZES COME FROM (tileBlockFor): a column
+	// count that disagrees with the measured tile size is a block with a hole
+	// in it. tileBlockFor's cols does not depend on the width or the room, so
+	// passing rough values here is fine.
+	const int paneW =
+		std::max(80, monitorSplit_ ? monitorSplit_->width() : width());
+	const Config cfg = ReplayCore::instance().getConfig();
+	const int bays = cfg.enableChannelB ? 2 : 1;
+	return std::max(1, tileBlockFor(paneW, bays, n, 5, monitorRoomH()).cols);
 }
 
 void MultiReplayDock::applyPanelMode(PanelMode m, bool force)
@@ -2032,6 +2165,12 @@ void MultiReplayDock::applyPanelMode(PanelMode m, bool force)
 	// OBS the panel is a child of a QDockWidget rather than a top-level, so
 	// there is no window manager clamping the first size at all.
 
+	// AFTER applyControlsColumn, never before: in Short that call moves the key
+	// strip INTO leftCol_, and this decides whether leftCol_ may be hidden. Run
+	// the other way round on a mode change with the monitors down, the strip
+	// would be added to a column that is still hidden.
+	applyMonitorsRoom();
+
 	applyPreviewAspect();
 
 	// THE FLOOR IS IN THE LOG, because a mode that cannot be reached looks
@@ -2072,6 +2211,184 @@ int MultiReplayDock::aspectHeight(int width)
 	return std::max(1, (int)std::lround(width * ratio));
 }
 
+// ── TEMP DIAGNOSTIC ─────────────────────────────────────────────────────────
+//
+// Everything a deterministic read of the "resizing sizes the C1..C8 tiles wrong
+// and leaves unused space" report needs: the panel and monitoring-pane sizes,
+// the room the row may have (and what the last real pass computed it from), how
+// many tiles are VISIBLE against how many cameras are CONFIGURED, the column and
+// row split chosen, the TileBlock arithmetic re-run against the current
+// geometry, the resulting bay/tile widths, the SLACK left on each axis, the live
+// splitter sizes, and every tile box's on-screen geometry plus the maximum that
+// was written onto it. Deduplicated on its payload, so a drag emits one line per
+// distinct settled state instead of thirty a second.
+void MultiReplayDock::queueMonitorDump(const char *why)
+{
+	// Verbose diagnostic only — Settings ▸ Advanced ▸ Verbose log, or the
+	// OBS_MULTIREPLAY_DEBUG env var. Off, this costs nothing: no timer, no dump.
+	if (!debugLoggingEnabled())
+		return;
+	// `why` is a string literal at every call site, so holding the pointer in
+	// the closure is safe. Coalesced: many calls in one event-loop turn (a
+	// resize fires applyPanelMode + applyPreviewAspect + the poll re-settle)
+	// produce ONE dump, read after Qt has re-laid the children.
+	if (monitorDiagQueued_)
+		return;
+	monitorDiagQueued_ = true;
+	QTimer::singleShot(0, this, [this, why]() {
+		monitorDiagQueued_ = false;
+		dumpMonitorLayout(why);
+	});
+}
+
+void MultiReplayDock::dumpMonitorLayout(const char *why)
+{
+	if (!debugLoggingEnabled())
+		return;
+	if (!monitorSplit_ || !multiviewBox_ || !previewPane_)
+		return;
+
+	const Config cfg = ReplayCore::instance().getConfig();
+	const int bays = cfg.enableChannelB ? 2 : 1;
+	int cfgCams = 0;
+	for (int i = 0; i < kMaxCameras; i++)
+		if (!cfg.cameras[i].sourceName.empty())
+			cfgCams++;
+
+	int visTiles = 0;
+	QString visList;
+	for (int i = 0; i < kMaxPreviewTiles; i++)
+		if (tiles_[i].box && tiles_[i].box->isVisible()) {
+			visTiles++;
+			if (!visList.isEmpty())
+				visList += ',';
+			visList += QString::number(i);
+		}
+
+	const int paneW = std::max(80, monitorSplit_->width());
+	const int paneH = monitorSplit_->height();
+	const int roomH = monitorRoomH();
+	const int gap = monitorSplit_->handleWidth();
+	const int cols = visTiles > 0 ? std::max(1, tileColumns(visTiles)) : 0;
+	const int rows = cols > 0 ? (visTiles + cols - 1) / cols : 0;
+	const TileBlock tb =
+		visTiles > 0
+			? tileBlockFor(paneW, bays, visTiles, gap, roomH)
+			: TileBlock{};
+
+	QString split;
+	for (int v : monitorSplit_->sizes()) {
+		if (!split.isEmpty())
+			split += ',';
+		split += QString::number(v);
+	}
+	QString outerSplit;
+	if (splitter_)
+		for (int v : splitter_->sizes()) {
+			if (!outerSplit.isEmpty())
+				outerSplit += ',';
+			outerSplit += QString::number(v);
+		}
+
+	const auto geo = [](QWidget *w) -> QString {
+		if (!w)
+			return QStringLiteral("null");
+		const QRect r = w->geometry();
+		return QString("%1,%2,%3x%4%5")
+			.arg(r.x())
+			.arg(r.y())
+			.arg(r.width())
+			.arg(r.height())
+			.arg(w->isVisible() ? "" : "/HID");
+	};
+	const auto cap = [](int v) {
+		return v >= QWIDGETSIZE_MAX ? QStringLiteral("-")
+					   : QString::number(v);
+	};
+
+	QString tileGeo;
+	for (int i = 0; i < kMaxPreviewTiles; i++) {
+		const PreviewTile &t = tiles_[i];
+		if (!t.box)
+			continue;
+		const QRect r = t.box->geometry();
+		tileGeo += QString(" [%1 cam%2 %3 %4,%5,%6x%7 max=%8x%9 disp=%10x%11]")
+				   .arg(i)
+				   .arg(t.cam0)
+				   .arg(t.box->isVisible() ? "V" : "h")
+				   .arg(r.x())
+				   .arg(r.y())
+				   .arg(r.width())
+				   .arg(r.height())
+				   .arg(cap(t.box->maximumWidth()))
+				   .arg(cap(t.box->maximumHeight()))
+				   .arg(t.display ? t.display->width() : -1)
+				   .arg(t.display ? t.display->height() : -1);
+	}
+
+	// What the wide-arrangement arithmetic in applyPreviewAspect would use.
+	const int bayWfromTb = (visTiles > 0 && tb.bayW > 0)
+				       ? tb.bayW
+				       : aspectHeight(paneW / bays) + AspectBox::kTagH;
+	const int usedW = bays * bayWfromTb + tb.blockW + gap * bays;
+	const int slackW = paneW - usedW;
+	const int bayH = aspectHeight((bayWfromTb - 3 * (bays - 1)) / bays) +
+			 AspectBox::kTagH;
+	const int wantH = std::min(std::max(bayH, tb.blockH), roomH);
+	const int slackV = paneH - wantH;
+
+	const QString payload =
+		QString("mode=%1 panel=%2x%3 pane=%4x%5 room=%6 (lastPass paneW=%7 "
+			"roomH=%8) bays=%9 gap=%10 | cfgCams=%11 visTiles=%12[%13] "
+			"cols=%14 rows=%15 splitChosen=%16 | tb: tw=%17 th=%18 "
+			"blockW=%19 blockH=%20 bayW=%21 rowH=%22 | bayH=%23 "
+			"wantH=%24 usedW=%25 SLACK_W=%26 SLACK_V=%27 | mSplit=[%28] "
+			"oSplit=[%29] mvBox=%30 bays=%31 aBox=%32 bBox=%33 "
+			"prevPane=%34 maxH=%35 |%36")
+			.arg(QString::fromUtf8(panelModeName(panelMode_)))
+			.arg(width())
+			.arg(height())
+			.arg(paneW)
+			.arg(paneH)
+			.arg(roomH)
+			.arg(aspectPaneW_)
+			.arg(aspectRoomH_)
+			.arg(bays)
+			.arg(gap)
+			.arg(cfgCams)
+			.arg(visTiles)
+			.arg(visList)
+			.arg(cols)
+			.arg(rows)
+			.arg(monitorSplitChosen() ? 1 : 0)
+			.arg(tb.tileW)
+			.arg(tb.tileH)
+			.arg(tb.blockW)
+			.arg(tb.blockH)
+			.arg(tb.bayW)
+			.arg(tb.rowH)
+			.arg(bayH)
+			.arg(wantH)
+			.arg(usedW)
+			.arg(slackW)
+			.arg(slackV)
+			.arg(split)
+			.arg(outerSplit)
+			.arg(geo(multiviewBox_))
+			.arg(geo(bays_))
+			.arg(geo(aBox_))
+			.arg(geo(bBox_))
+			.arg(geo(previewPane_))
+			.arg(cap(previewPane_->maximumHeight()))
+			.arg(tileGeo);
+
+	if (payload == lastMonitorDiag_)
+		return;
+	lastMonitorDiag_ = payload;
+	obs_log(LOG_INFO, "[mondiag] (%s) %s", why,
+		payload.toUtf8().constData());
+}
+
 // ── THE MONITORING BLOCK, in three steps ─────────────────────────────────
 //
 //  1. pick the camera block's shape for the room there is;
@@ -2084,8 +2401,32 @@ void MultiReplayDock::applyPreviewAspect()
 {
 	if (!previewPane_ || !monitorSplit_)
 		return;
+	// NOTHING IS SIZED WHILE THE MONITORS ARE DOWN. Every number below is a
+	// maximum written onto a box, and a maximum written for a block nobody can
+	// see is a maximum that is still there when it comes back — and, through
+	// applyPreviewSplit, a share of the splitter handed to a pane the operator
+	// has just switched off.
+	if (!monitorsOn_)
+		return;
 
+	// WHAT THIS PASS WAS COMPUTED FROM, remembered so that poll() can notice
+	// it has gone stale.
+	//
+	// The row's arithmetic reads two geometries — how wide the pane is and
+	// how tall the row may be — and both of them are settling while a resize
+	// is in flight. Read a beat early they are smaller than they will be, and
+	// the answer STICKS: the tile ceiling is a MAXIMUM written onto the
+	// boxes, so a pass that ran against a half-settled panel leaves the
+	// cameras small and the room they should have had shows as empty panel.
+	// That is "resizing generates unused space", and it is not any one
+	// resize path — it is every path that ends without one more pass.
+	//
+	// So the inputs are recorded here and poll() re-runs this when they no
+	// longer match. It converges by construction: a pass that agrees with the
+	// geometry changes nothing, so there is nothing to re-trigger it.
 	const int paneW = std::max(80, monitorSplit_->width());
+	aspectPaneW_ = paneW;
+	aspectRoomH_ = monitorRoomH();
 	const Config cfg = ReplayCore::instance().getConfig();
 	const int bays = cfg.enableChannelB ? 2 : 1;
 
@@ -2118,17 +2459,18 @@ void MultiReplayDock::applyPreviewAspect()
 
 	int want = 0;
 	if (panelMode_ == PanelMode::Tall) {
-		// A COLUMN: the bays across the top, the cameras under them.
+		// A COLUMN: the bays across the top (A full width, or A|B side by
+		// side), then the SAME grid of cameras as the Wide layout under
+		// them — ceil(n/2) columns, up to two rows.
 		const int bayH =
 			aspectHeight((paneW - 3 * (bays - 1)) / bays) + tagH;
 		int stripH = 0;
 		if (haveTiles) {
-			// THE STRIP FILLS THE ROW. The 150 px ceiling is there
-			// to stop ONE camera drawing itself as big as the
+			// THE TILES FILL THE ROW. The kTileMaxShare ceiling is
+			// there to stop ONE camera drawing itself as big as the
 			// picture being watched; from two upwards the row is
-			// already divided, and holding the ceiling there just
-			// left a band of empty panel down the right-hand side of
-			// every filmstrip.
+			// already divided between the columns, so the ceiling is
+			// not applied and the grid spans the pane.
 			const int share = (paneW - 2 * (cols - 1)) / cols;
 			const int tileW =
 				cols >= 2 ? share
@@ -2139,7 +2481,7 @@ void MultiReplayDock::applyPreviewAspect()
 				 (rows - 1) * 2;
 		}
 		want = bayH + (haveTiles ? gap + stripH : 0);
-		if (!monitorSplitChosen() && haveTiles)
+		if (haveTiles)
 			monitorSplit_->setSizes({bayH, stripH});
 	} else {
 		// ONE PIECE OF ARITHMETIC, SHARED WITH THE MOCKUP (tileBlockFor,
@@ -2165,21 +2507,6 @@ void MultiReplayDock::applyPreviewAspect()
 			tilesW = tb.blockW;
 			blockH = tb.blockH;
 			tileCap_ = tb.tileW;
-			// THE DIVIDER IS THE OPERATOR'S ANSWER once he has moved
-			// it: the block above is what the panel would choose, and
-			// holding it after he has dragged the handle leaves the
-			// cameras small while the room he just gave them shows as
-			// empty panel.
-			const QList<int> have = monitorSplit_->sizes();
-			if (monitorSplitChosen() && have.size() > 1 &&
-			    have[1] > 0) {
-				tilesW = have[1];
-				tileCap_ = std::max(
-					kTileMinWidth,
-					(tilesW - (cols - 1) * kTileGap) / cols);
-				blockH = rows * (aspectHeight(tileCap_) + tagH) +
-					 (rows - 1) * kTileGap;
-			}
 		}
 		// THE PANES ARE SIZED FROM THE PICTURES, not the other way round:
 		// tileBlockFor settled one height for the whole row, so a bay is
@@ -2192,11 +2519,33 @@ void MultiReplayDock::applyPreviewAspect()
 		int baysW = std::max(60, bays * bayW + 3 * (bays - 1));
 		if (haveTiles && baysW + tilesW + gap > paneW)
 			baysW = std::max(60, paneW - tilesW - gap);
+		// ── THE OPERATOR'S DIVIDER, HONOURED ON BOTH SIDES ───────────
+		//
+		// Once he has dragged it, the two widths are his and the algebra
+		// above is only a starting point. What matters is that BOTH sides
+		// then fill what they were given: the bays at 16:9 in their pane,
+		// the cameras at 16:9 in theirs, each at its own height, and the
+		// row as tall as the taller of the two.
+		//
+		// Honouring one side and not the other is what banded: the
+		// cameras took the width they were given and the bays kept the
+		// width the algebra had picked, so the difference came back as
+		// empty panel down the middle of the row.
+		const QList<int> have = monitorSplit_->sizes();
+		if (haveTiles && monitorSplitChosen() && have.size() > 1 &&
+		    have[0] > 0 && have[1] > 0) {
+			baysW = std::max(60, have[0]);
+			tilesW = std::max(kTileMinWidth, have[1]);
+			tileCap_ = std::max(kTileMinWidth,
+					    (tilesW - (cols - 1) * kTileGap) / cols);
+			blockH = rows * (aspectHeight(tileCap_) + tagH) +
+				 (rows - 1) * kTileGap;
+		}
 		const int bayH = aspectHeight((baysW - 3 * (bays - 1)) / bays) + tagH;
 		// monitorRoomH() is the ONE authority on how tall this block may be,
 		// and the tile arithmetic above was given the same number.
 		want = std::min(std::max(bayH, blockH), monitorRoomH());
-		if (!monitorSplitChosen() && haveTiles) {
+		if (haveTiles && !monitorSplitChosen()) {
 			// Anything the row cannot fill is split between the two
 			// panes, so each picture is centred in its own rather than
 			// the whole block hugging one edge.
@@ -2237,6 +2586,7 @@ void MultiReplayDock::applyPreviewAspect()
 		}
 
 	applyPreviewSplit(want);
+	queueMonitorDump("applyPreviewAspect");
 }
 
 // ── WHERE THE KEYS LIVE ──────────────────────────────────────────────────
@@ -2282,17 +2632,25 @@ void MultiReplayDock::applyPreviewSplit(int want)
 	// A CAP, so the pane can never be GIVEN more room than its pictures can
 	// fill — every pixel over is panel showing through where a picture was
 	// expected, and the list wanted it.
+	//
+	// ...AND NO CAP AT ALL ONCE THE OPERATOR HAS DRAGGED THE DIVIDER, which
+	// is not a nicety — it is what stops this from being a one-way handle.
+	// From that moment the room the row may have IS the pane's height (see
+	// monitorRoomFor), so `want` is computed from the pane and then written
+	// back onto it as a maximum: the pane can be dragged shorter and never
+	// taller again, and each pass can only ratchet it further down. His
+	// divider is the answer; the pictures fill what it gives them.
+	if (splitChosen()) {
+		if (previewPane_->maximumHeight() != QWIDGETSIZE_MAX)
+			previewPane_->setMaximumHeight(QWIDGETSIZE_MAX);
+		return;
+	}
 	if (previewPane_->maximumHeight() != want)
 		previewPane_->setMaximumHeight(want);
 	// …AND THE SPLITTER HAS TO BE TOLD, which the cap alone does not do: a
 	// QSplitter hands out height by stretch factor and capped at the top it
 	// can still give the pane LESS than the pictures need.
-	//
-	// UNTIL THE OPERATOR SAYS OTHERWISE. The moment he drags the handle he has
-	// stated a preference, and it is not overruled until the arrangement
-	// changes under him.
-	if (splitChosen())
-		return;
+	// (The operator's own choice returned above.)
 	const int total = splitter_->height();
 	// As much as the pictures need, or as much as is left once the list has
 	// its floor — whichever is smaller. A perfect picture over two visible
@@ -2329,12 +2687,57 @@ void MultiReplayDock::resizeEvent(QResizeEvent *event)
 	// proportionally by the layout that follows. Measured: asking for 286/110
 	// produced 91/305, which is the squashed picture again by a different
 	// route. A zero-delay timer runs once the layout has settled.
-	QTimer::singleShot(0, this, [this]() { applyPreviewAspect(); });
+	QTimer::singleShot(0, this, [this]() {
+		// With the monitors down the left column has to be told again:
+		// applyPanelMode early-outs when the arrangement has not changed,
+		// so nothing else re-asserts it, and a QSplitter rescales its
+		// children proportionally on a resize — which would hand a hidden
+		// or empty column a growing share of a growing panel.
+		applyMonitorsRoom();
+		applyPreviewAspect();
+	});
 }
 
 // ---------------------------------------------------------------------------
 // THE PANEL'S COLOURS
 // ---------------------------------------------------------------------------
+
+// Where the sub-control marks live, and what they are for this scheme.
+//
+// obs_module_config_path() is the plugin's own directory — the one config.json
+// is already written to — so this adds no new place for the plugin to own and
+// nothing outside it can be reached. A null path (no module context, which is
+// the case in a unit test) is an empty directory and the sheet falls back.
+// The size the event table is really drawing its items in.
+//
+// QFontInfo, not QFont: OBS states its base size in POINTS and scales it by the
+// operator's font-scale setting, so QFont::pixelSize() on that font is -1 and
+// the only way to get the number the painter will use is to ask what it
+// resolved to. Before the table exists (the first pass, from the constructor)
+// the application font is the same answer, because that is what the table will
+// inherit.
+int MultiReplayDock::rowFontPx() const
+{
+	const QFont f = events_ ? events_->font() : qApp->font();
+	return std::max(8, QFontInfo(f).pixelSize());
+}
+
+SheetAssetPaths MultiReplayDock::sheetAssets() const
+{
+	char *dir = obs_module_config_path("");
+	const QString where = dir ? QString::fromUtf8(dir) : QString();
+	bfree(dir);
+	return writeSheetAssets(where, sc());
+}
+
+void MultiReplayDock::restyleSearchIcon()
+{
+	if (!searchIcon_)
+		return;
+	searchIcon_->setPixmap(iconFor(Icon::Search, QColor(sc().textMuted), 13,
+				       devicePixelRatioF())
+				       .pixmap(13, 13));
+}
 
 void MultiReplayDock::applyTheme()
 {
@@ -2344,7 +2747,26 @@ void MultiReplayDock::applyTheme()
 	// palette to the APPLICATION, and a widget's own palette is a copy that
 	// may have been resolved before the theme changed.
 	sc() = schemeFor((ThemeChoice)choice, qApp->palette());
-	setStyleSheet(dockStyle(sc(), cfg.tableDensity));
+	// THE MARKS A SUB-CONTROL CAN ONLY BE HANDED AS A FILE — the tick in a
+	// check box, the two arrows on a spin box, the one on a selector. They are
+	// drawn by us like every other mark on this panel (see dock-assets.hpp for
+	// why they cannot simply be a QIcon), written into the plugin's own config
+	// directory, and re-drawn here so that they follow a theme change like the
+	// key marks do. If the write fails the sheet says `image: none` and the
+	// panel is plainer, not broken.
+	const SheetAssetPaths marks = sheetAssets();
+	setStyleSheet(dockStyle(sc(), cfg.tableDensity, marks, rowFontPx()));
+	// ...AND THE ROW FONT IS ONLY KNOWN ONCE THE SHEET HAS BEEN APPLIED.
+	// Qt writes a style sheet's font-size onto the widget during polish, and
+	// the size the table draws its items in comes from OBS's own
+	// `QWidget { font-size: … }` — so the number handed to the sheet a line
+	// above was measured BEFORE that landed and can be a pass behind. Asked
+	// again and re-applied once if it moved; it converges, because nothing in
+	// our sheet sets a font on the table itself.
+	if (const int settled = rowFontPx(); settled != rowFont_) {
+		rowFont_ = settled;
+		setStyleSheet(dockStyle(sc(), cfg.tableDensity, marks, settled));
+	}
 	applyTableDensity(cfg.tableDensity);
 
 	// THE MARKS ARE PIXMAPS, so unlike every label on this panel they do not
@@ -2353,6 +2775,14 @@ void MultiReplayDock::applyTheme()
 	// is a row of keys with invisible marks on them. Each one remembers which
 	// mark it is (see dock-icons.hpp) and is redrawn from the new scheme.
 	restyleIcons(this, tintsFor(sc()));
+	restyleSearchIcon();
+	// ...AND THE HEIGHTS THE SECTIONS PINNED. Applying a style sheet writes
+	// its min-height onto every widget it matches, and this panel has a rule
+	// that stands the pinned keys' min-height down to nothing on purpose — so
+	// re-applying the sheet drops the two-row height off REC and the green
+	// play key. Measured: 56 px at start-up, 46 px after a theme change. See
+	// kPinnedHeightProperty in dock-layout.hpp.
+	repinKeys(this);
 
 	// The two painted widgets read sc() directly and are not restyled by the
 	// sheet, so they have to be told to redraw. Everything else Qt repolishes
@@ -2763,6 +3193,15 @@ void MultiReplayDock::rebuildMultiview()
 			    QString::number((int)panelMode_) + '|' +
 			    QString::number(cols) + '|' + sigParts.join(',') +
 			    '|' + captions.join(',');
+	// TEMP DIAGNOSTIC — which slots become tiles, and whether this call is
+	// about to do nothing. "C1..C8 shown on a two-camera rig" would surface
+	// here as a tileSlots list with more than the configured cameras in it,
+	// or as an early-out that never re-hides slots an earlier pass showed.
+	MR_DLOG("[mondiag] rebuildMultiview: mode=%s show=%d cfgSlots=[%s] cols=%d "
+		"earlyOut=%d sig=%s",
+		panelModeName(panelMode_), show ? 1 : 0,
+		sigParts.join(',').toUtf8().constData(), cols,
+		(sig == multiviewSig_) ? 1 : 0, sig.toUtf8().constData());
 	if (sig == multiviewSig_)
 		return;
 	multiviewSig_ = sig;
@@ -2784,6 +3223,15 @@ void MultiReplayDock::rebuildMultiview()
 	for (int i = 0; i < kMaxPreviewTiles; i++)
 		if (tiles_[i].box)
 			tiles_[i].box->setVisible(false);
+	// PURGE EVERY EXISTING ITEM FIRST. QGridLayout::addWidget on a widget the
+	// layout ALREADY tracks appends a second item for it rather than moving
+	// it, so re-laying on each mode change silently accumulates stale items
+	// at old cells. takeAt() removes the layout item without re-parenting the
+	// widget, so the OBSQTDisplay under each tile — and the obs_display bound
+	// to its native window — is untouched. The tiles are all re-added below;
+	// nothing else lives in this grid.
+	while (multiviewGrid_->count() > 0)
+		delete multiviewGrid_->takeAt(0);
 	for (size_t k = 0; k < tileSlots.size(); k++) {
 		PreviewTile &t = tiles_[tileSlots[k]];
 		if (!t.box)
@@ -2823,7 +3271,14 @@ void MultiReplayDock::rebuildMultiview()
 	// capped at the width its own picture may have (see applyPreviewAspect):
 	// it stays as trailing space, so a filmstrip of two on a rig of two still
 	// starts at the left edge instead of floating in the middle of the row.
-	for (int c = 0; c <= cols; c++)
+	// COVER EVERY COLUMN THAT HAS EVER EXISTED, not just 0..cols. A
+	// QGridLayout's columnCount() never comes back down, so the filmstrip
+	// arrangement (up to eight columns) leaves columns 5-7 stretched, and a
+	// later Wide pass that only reset 0..4 would split the pane among seven
+	// stretched columns instead of four — the tiles come back at half width.
+	// This is the column twin of the usedRows/rowCount() guard just below.
+	for (int c = 0; c < std::max(cols + 1, multiviewGrid_->columnCount());
+	     c++)
 		multiviewGrid_->setColumnStretch(c, c < cols ? 1 : 0);
 	// THE ROWS IN USE SHARE THE BLOCK; the rest hold nothing. A
 	// QGridLayout remembers the stretch of a row it no longer has anything
@@ -2847,6 +3302,7 @@ void MultiReplayDock::rebuildMultiview()
 	tileTallyPvw_ = -2; // captions were just rewritten
 	tileTallyPgm_ = -2;
 	updateMultiviewTally();
+	queueMonitorDump("rebuildMultiview");
 	// A tile appeared or went away, so the pane needs a different height: its
 	// cap is the sum of the pictures actually in it.
 	applyPreviewAspect();
@@ -2855,6 +3311,14 @@ void MultiReplayDock::rebuildMultiview()
 void MultiReplayDock::refreshTileSources()
 {
 	const Config cfg = ReplayCore::instance().getConfig();
+	// Which slot's FEED a tile actually reads during review — see
+	// ensureTileFeeds(): a duplicate slot (camera-dedup.hpp) has no feed of
+	// its own, so its tile shows the canonical slot's, the same decoded
+	// texture as every other tile naming that source.
+	std::array<std::string, kMaxCameras> srcNames{};
+	for (int i = 0; i < kMaxCameras; i++)
+		srcNames[i] = cfg.cameras[i].sourceName;
+	const auto canonical = canonicalCameraIndices(srcNames);
 	// LIVE OR REVIEW — the same question the big preview asks, and the same
 	// answer.
 	//
@@ -2883,18 +3347,24 @@ void MultiReplayDock::refreshTileSources()
 					cfg.cameras[t.cam0].sourceName;
 				if (!nm.empty())
 					next = obs_get_source_by_name(nm.c_str());
-			} else if (t.cam0 < (int)tileFeed_.size() &&
-				   tileFeed_[t.cam0]) {
-				// The STICKY flag, not the feed's hasPosition().
-				// "Has this feed ever shown a picture" is the
-				// question; hasPosition() answers "has THIS clip
-				// pushed a frame yet", and play() zeroes the
-				// stats at the start of every clip — so asking it
-				// blacked the tile out at every cue and left it
-				// black until the next 4 Hz beat. See
-				// tileFeedHadPicture_.
-				if (tileFeedHadPicture_[t.cam0])
-					next = tileFeed_[t.cam0]->acquireSource();
+			} else if (t.cam0 < kMaxCameras) {
+				// Redirected through the owning slot (see the note
+				// above): a duplicate camera has no feed of its own.
+				const int owner = canonical[t.cam0];
+				if (owner < (int)tileFeed_.size() &&
+				    tileFeed_[owner]) {
+					// The STICKY flag, not the feed's hasPosition().
+					// "Has this feed ever shown a picture" is the
+					// question; hasPosition() answers "has THIS clip
+					// pushed a frame yet", and play() zeroes the
+					// stats at the start of every clip — so asking it
+					// blacked the tile out at every cue and left it
+					// black until the next 4 Hz beat. See
+					// tileFeedHadPicture_.
+					if (tileFeedHadPicture_[owner])
+						next = tileFeed_[owner]
+							       ->acquireSource();
+				}
 			}
 		}
 		obs_source_t *prev = nullptr;
@@ -2918,19 +3388,56 @@ void MultiReplayDock::refreshTileSources()
 void MultiReplayDock::ensureTileFeeds()
 {
 	const Config cfg = ReplayCore::instance().getConfig();
+
+	// Which slot owns the feed for its source (camera-dedup.hpp). Several
+	// slots pointed at one physical source is the same picture, and
+	// decoding it once per slot — eight independent ReplayChannel
+	// instances, eight decode threads racing each other — is exactly what
+	// made the tiles desynchronise: each caught up with a newly cued clip
+	// at its own pace, so for a while some tiles still showed the
+	// PREVIOUS event's last frame while others already showed the new
+	// one. Only the canonical slot gets a feed; refreshTileSources() reads
+	// a duplicate's picture from the canonical slot's feed instead, which
+	// is not just the same footage but the very same decoded texture — so
+	// duplicate tiles cannot show anything but each other, in lockstep.
+	std::array<std::string, kMaxCameras> srcNames{};
+	for (int i = 0; i < kMaxCameras; i++)
+		srcNames[i] = cfg.cameras[i].sourceName;
+	const auto canonical = canonicalCameraIndices(srcNames);
+
+	// A feed exists for a camera the operator has configured AND whose
+	// tile is on screen. Monitors off, the multiview switched off, an
+	// unconfigured slot: no feed, no decoder, no source. That is the
+	// whole cost control, and it is the same one the tiles themselves
+	// already use.
+	std::array<bool, kMaxCameras> wanted{};
+	for (int cam = 0; cam < kMaxCameras; cam++)
+		wanted[cam] = !cfg.cameras[cam].sourceName.empty() &&
+			      cam < kMaxPreviewTiles && tiles_[cam].box &&
+			      tiles_[cam].box->isVisible();
+
 	for (int cam = 0; cam < (int)tileFeed_.size(); cam++) {
-		// A feed exists for a camera the operator has configured AND whose
-		// tile is on screen. Monitors off, the multiview switched off, an
-		// unconfigured slot: no feed, no decoder, no source. That is the
-		// whole cost control, and it is the same one the tiles themselves
-		// already use.
-		const bool wanted =
-			!cfg.cameras[cam].sourceName.empty() &&
-			cam < kMaxPreviewTiles && tiles_[cam].box &&
-			tiles_[cam].box->isVisible();
-		if (wanted == (bool)tileFeed_[cam])
+		if (cam < kMaxCameras && canonical[cam] != cam) {
+			// A duplicate slot never gets a feed of its own.
+			tileFeed_[cam].reset();
+			tileFeedHadPicture_[cam] = false;
 			continue;
-		if (!wanted) {
+		}
+
+		// The canonical slot's feed is wanted if its OWN tile wants one,
+		// or a duplicate slot sharing its source does — the lens is still
+		// on screen even if it is the duplicate's box that shows it.
+		bool feedWanted = cam < kMaxCameras && wanted[cam];
+		if (!feedWanted && cam < kMaxCameras)
+			for (int j = 0; j < kMaxCameras; j++)
+				if (canonical[j] == cam && wanted[j]) {
+					feedWanted = true;
+					break;
+				}
+
+		if (feedWanted == (bool)tileFeed_[cam])
+			continue;
+		if (!feedWanted) {
 			// Destroying it stops and joins its worker; the private
 			// input goes with it.
 			tileFeed_[cam].reset();
@@ -3308,6 +3815,15 @@ KeyBlock *MultiReplayDock::buildAngleMatrix()
 	// bays do the keys drive. The caption is the answer.
 	auto *blk = new KeyBlock(obs_module_text("Dock.ZoneOutput"), this);
 	channelBWidgets_.clear();
+	// The CAPTION collapses with channel B through KeyBlock::
+	// setSectionVisible() (see applyChannelBVisibility()), NOT through
+	// channelBWidgets_ like the keys below it: a caption hidden by poking
+	// captionLabel()->setVisible(false) from outside only stayed hidden
+	// until the next time anything remeasured this section — which
+	// applyChannelBVisibility() itself triggers a few lines after hiding
+	// it — because KeyBlock::apply() used to decide the caption's
+	// visibility unconditionally on every pass. setSectionVisible() is
+	// what apply() actually consults now.
 	QWidget *sel = buildChannelRow();
 	QVector<Cell> row;
 	row << Cell(sel, 1, false);
@@ -3429,6 +3945,14 @@ void MultiReplayDock::applyChannelBVisibility()
 		w->setSizePolicy(sp);
 		w->setVisible(on);
 	}
+	// ...and its CAPTION, through the section itself rather than by poking
+	// the label directly: apply() decides cap_'s visibility on every
+	// relayout (setFlat(), setShapes(), the measure() a few lines below
+	// triggers), so telling the section once and having it forgotten by the
+	// next pass is exactly the bug this method exists to fix. See
+	// KeyBlock::setSectionVisible().
+	if (angleBlock_)
+		angleBlock_->setSectionVisible(on);
 	// The section is a row shorter or a row longer, which the strip only
 	// learns when the block is re-measured.
 	if (strip_ && angleBlock_)
@@ -3536,27 +4060,33 @@ KeyBlock *MultiReplayDock::buildTransport()
 	auto *playSel = iconBtn(Icon::Play, "playEvents",
 				obs_module_text("Dock.PlaySelected"), this,
 				"mrAccent");
-	setKeyIcon(playSel, Icon::Play, tintsFor(sc()), 22);
+	// WHITE, because the key is a filled green rectangle. #mrAccent already
+	// says `color: #ffffff` for the label; the mark is the rest of it, and a
+	// style sheet cannot reach a pixmap — so on a light panel this was a dark
+	// grey ▶ sitting on the one key that takes the Program.
+	setKeyIconRole(playSel, Icon::Play, IconRole::OnSignal, tintsFor(sc()), 22);
 	playSel->setMinimumWidth(64);
 	connect(playSel, &QPushButton::clicked, this,
 		&MultiReplayDock::playSelected);
 
 	auto *more = new QToolButton(this);
 	more->setObjectName("mrGear");
-	more->setIcon(iconFor(Icon::Menu, QColor(sc().textKey), 14,
-			      devicePixelRatioF()));
-	more->setIconSize(QSize(14, 14));
+	// setKeyIcon, NOT setIcon: a mark handed straight to the widget carries no
+	// record of which mark it is, so restyleIcons cannot find it and the three
+	// menu keys kept the ink of the theme they were BUILT in for the rest of
+	// the session. Invisible until the operator changes theme, which is the one
+	// moment it is guaranteed to be looked at.
+	setKeyIcon(more, Icon::Menu, tintsFor(sc()), 14);
 	more->setCursor(Qt::PointingHandCursor);
 	more->setToolTip(obs_module_text("Dock.PlayOptions"));
 	setKeyId(more, QStringLiteral("playOptions"));
-	more->setPopupMode(QToolButton::InstantPopup);
 	{
 		auto *menu = new QMenu(more);
 		auto *actOut = menu->addAction(obs_module_text("Dock.PlayToOutput"));
 		auto *actLast = menu->addAction(obs_module_text("Dock.PlayLast"));
 		menu->addSeparator();
 		auto *actStop = menu->addAction(obs_module_text("Dock.Stop"));
-		more->setMenu(menu);
+		popupOnClick(more, menu);
 		connect(actOut, &QAction::triggered, this, [this]() {
 			// Explicitly the EVENT, so an unmarked stretch armed on
 			// the bar stops being what the play keys are about. This
@@ -3795,7 +4325,11 @@ QWidget *MultiReplayDock::buildStatusBar(QWidget *parent)
 	healthBtn_->setProperty("dense", true);
 	healthBtn_->setMinimumHeight(0);
 	healthBtn_->setFixedHeight(kStatusBarH - 6);
-	setKeyIcon(healthBtn_, Icon::Health, tintsFor(sc()), 11);
+	// AMBER, like the border and the number beside it. The badge is only ever
+	// on screen when it has something to report (it is hidden outright when it
+	// has not), so its mark has no resting chrome state to be drawn in.
+	setKeyIconRole(healthBtn_, Icon::Health, IconRole::Warn, tintsFor(sc()),
+		       11);
 	setKeyId(healthBtn_, QStringLiteral("health"));
 	h->addWidget(healthBtn_);
 
@@ -3926,6 +4460,12 @@ QWidget *MultiReplayDock::buildBottomBar()
 		nextClipBtn_ = iconBtn(Icon::SkipNext, "skipNext",
 				       obs_module_text("Dock.NextClip"), clipBar_,
 				       "mrSkip");
+		// ...AND ITS MARK IS WHITE, because this key never sits on chrome:
+		// it lives on the green band, at every theme and in every state.
+		// #mrSkip already writes its label in #ffffff; drawn in the panel's
+		// resting grey the chevrons were a grey-on-green smudge.
+		setKeyIconRole(nextClipBtn_, Icon::SkipNext, IconRole::OnSignal,
+			       tintsFor(sc()));
 		// Four less than the band, which is 28: the key needs room for its
 		// own bottom border inside it.
 		nextClipBtn_->setFixedSize(30, 22);
@@ -4046,13 +4586,10 @@ QToolButton *MultiReplayDock::buildGearMenu()
 	// read as part of arming a take.
 	auto *gear = new QToolButton(this);
 	gear->setObjectName("mrGear");
-	gear->setIcon(iconFor(Icon::Gear, QColor(sc().textKey), 15,
-			      devicePixelRatioF()));
-	gear->setIconSize(QSize(15, 15));
+	setKeyIcon(gear, Icon::Gear, tintsFor(sc()), 15);
 	setKeyId(gear, QStringLiteral("settings"));
 	gear->setCursor(Qt::PointingHandCursor);
 	gear->setToolTip(obs_module_text("Dock.Settings"));
-	gear->setPopupMode(QToolButton::InstantPopup);
 	gear->setFixedHeight(kKeyH);
 	{
 		auto *menu = new QMenu(gear);
@@ -4071,7 +4608,7 @@ QToolButton *MultiReplayDock::buildGearMenu()
 		menu->addSeparator();
 		auto *actChapters =
 			menu->addAction(obs_module_text("Dock.YouTubeChapters"));
-		gear->setMenu(menu);
+		popupOnClick(gear, menu);
 		connect(actTagsImport, &QAction::triggered, this,
 			[this]() { importTags(); });
 		connect(actTagsExport, &QAction::triggered, this,
@@ -4112,6 +4649,11 @@ KeyBlock *MultiReplayDock::buildRecBlock()
 	// the other says where a mark lands, and they were the same drawing.
 	recBtn_ = iconTextBtn(Icon::Rec, QStringLiteral("REC"), "rec", this,
 			      "mrRec", 13);
+	// ...AND THE DOT IS RED, like the word beside it. It was the panel's
+	// resting grey, so the key that arms a take showed a grey dot next to the
+	// letters REC written in the signal colour — the two halves of one key
+	// disagreeing about what the key is.
+	setKeyIconRole(recBtn_, Icon::Rec, IconRole::Rec, tintsFor(sc()), 13);
 	recBtn_->setProperty("recording", false);
 	recBtn_->setMinimumWidth(78);
 	connect(recBtn_, &QPushButton::clicked, this, [this]() {
@@ -4276,20 +4818,17 @@ KeyBlock *MultiReplayDock::buildExportBlock()
 	// click away, and on the table's right-click menu as well.
 	auto *edit = new QToolButton(this);
 	edit->setObjectName("mrGear");
-	edit->setIcon(iconFor(Icon::More, QColor(sc().textKey), 14,
-			      devicePixelRatioF()));
-	edit->setIconSize(QSize(14, 14));
+	setKeyIcon(edit, Icon::More, tintsFor(sc()), 14);
 	edit->setCursor(Qt::PointingHandCursor);
 	edit->setToolTip(obs_module_text("Dock.ClipActions"));
 	setKeyId(edit, QStringLiteral("clipActions"));
-	edit->setPopupMode(QToolButton::InstantPopup);
 	{
 		auto *menu = new QMenu(edit);
 		auto *actDup = menu->addAction(obs_module_text("Dock.Duplicate"));
 		auto *actDel = menu->addAction(obs_module_text("Dock.Delete"));
 		menu->addSeparator();
 		auto *actAll = menu->addAction(obs_module_text("Dock.DeleteAll"));
-		edit->setMenu(menu);
+		popupOnClick(edit, menu);
 		connect(actDup, &QAction::triggered, this, [this]() {
 			for (int id : selectedEventIds())
 				EventStore::instance().duplicate(id);
@@ -4478,6 +5017,11 @@ KeyBlock *MultiReplayDock::buildMarkers()
 	// at the far end, five keys away from the thing it cancels.
 	auto *cancel = iconBtn(Icon::Cancel, "markCancel",
 			       obs_module_text("Dock.Cancel"), this, "mrDanger");
+	// #mrDanger colours the LABEL, and this key has no label — only the ✕. So
+	// the whole of "this one destroys something" lived in a property that
+	// reached nothing, and the key was drawn exactly as neutral as the two it
+	// undoes.
+	setKeyIconRole(cancel, Icon::Cancel, IconRole::Danger, tintsFor(sc()));
 	connect(cancel, &QPushButton::clicked, this, [this]() {
 		EventStore::instance().markCancel();
 		refreshEvents();
@@ -6861,8 +7405,12 @@ void MultiReplayDock::poll()
 	recBtn_->setText(rec ? QStringLiteral("STOP") : QStringLiteral("REC"));
 	if (recIcon_ != (rec ? 1 : 0)) {
 		recIcon_ = rec ? 1 : 0;
-		setKeyIcon(recBtn_, rec ? Icon::Stop : Icon::Rec, tintsFor(sc()),
-			   13);
+		// ARMED, THE KEY IS FILLED RED and its label is white, so the mark
+		// is white too; at rest the key is chrome with a red label, so the
+		// mark is red. Two states of one key, and the role says which.
+		setKeyIconRole(recBtn_, rec ? Icon::Stop : Icon::Rec,
+			       rec ? IconRole::OnSignal : IconRole::Rec,
+			       tintsFor(sc()), 13);
 	}
 	if (recBtn_->property("recording").toBool() != rec) {
 		recBtn_->setProperty("recording", rec);
@@ -6908,6 +7456,40 @@ void MultiReplayDock::poll()
 		// reason: pulling a dock out of OBS is a deliberate gesture, and
 		// this early-outs unless the answer changed.
 		refreshFullScreenKey();
+		// ...AND WHETHER THE MONITORING ROW WAS SIZED AGAINST A PANEL
+		// THAT HAS SINCE SETTLED.
+		//
+		// applyPreviewAspect reads two geometries — the pane's width and
+		// the room the row may have — and during a resize both are still
+		// moving. Read a beat early they come out smaller than they end
+		// up, and the answer STICKS, because the tile ceiling it writes
+		// is a maximum: the cameras stay small and the room they should
+		// have had is drawn as empty panel. That is the "resizing leaves
+		// unused space" report, and it is not one resize path — it is
+		// every path that ends without one more pass.
+		//
+		// Cheap and self-limiting: a pass that agrees with the geometry
+		// changes nothing, so it cannot re-trigger itself.
+		//
+		// A TOLERANCE, and it is not politeness: once the operator has
+		// dragged the pictures/list divider, the room IS the pane's
+		// height — and this pass writes a maximum onto that pane. A
+		// difference of one pixel between the two is a limit cycle at
+		// 4 Hz. Two pixels of slack cannot start one, and a stale pass
+		// is never off by two.
+		//
+		// ...and only while the pictures are up. With the monitors down
+		// monitorRoomH() reads a hidden pane's stale height, so the two
+		// numbers never agree again and this would run every beat to no
+		// effect.
+		if (monitorsOn_ && previewPane_ && monitorSplit_ &&
+		    (std::abs(std::max(80, monitorSplit_->width()) - aspectPaneW_) > 2 ||
+		     std::abs(monitorRoomH() - aspectRoomH_) > 2)) {
+			MR_DLOG("[mondiag] poll re-settle: paneW %d vs %d, roomH %d vs %d",
+				std::max(80, monitorSplit_->width()), aspectPaneW_,
+				monitorRoomH(), aspectRoomH_);
+			applyPreviewAspect();
+		}
 	}
 
 	// The other prime suspect: statusJson() calls std::filesystem::space() on
@@ -7131,19 +7713,27 @@ void MultiReplayDock::accountUiTick(uint64_t tickStartNs, uint64_t tickEndNs)
 	const uint64_t clipReq = g_clipCensus.requested - uiClipReqAtWindow_;
 	const uint64_t clipSrv = g_clipCensus.served - uiClipServedAtWindow_;
 
-	obs_log(LOG_INFO,
-		"[ui] %.1f tick/s | late avg %lld ms max %lld ms | poll avg %.1f ms "
-		"max %lld ms (worst phase: %s %lld ms) | repaints/s seek %.1f "
-		"(served %.1f, suppressed %.1f) clip %.1f (served %.1f)",
-		(double)uiTicks_ / secs,
-		(long long)(uiTicks_ ? uiLateSumNs_ / uiTicks_ / 1'000'000 : 0),
-		(long long)(uiLateMaxNs_ / 1'000'000),
-		uiTicks_ ? (double)uiCostSumNs_ / (double)uiTicks_ / 1e6 : 0.0,
-		(long long)(uiCostMaxNs_ / 1'000'000),
-		uiWorstPhase_.name[0] ? uiWorstPhase_.name : "-",
-		(long long)(uiWorstPhase_.ns / 1'000'000), (double)seekReq / secs,
-		(double)seekSrv / secs, (double)seekSup / secs,
-		(double)clipReq / secs, (double)clipSrv / secs);
+	// Periodic telemetry — verbose diagnostic only (Settings ▸ Advanced ▸
+	// Verbose log). The window counters below are reset either way, so turning
+	// it off stops the log line without letting the accumulators run away.
+	if (debugLoggingEnabled())
+		obs_log(LOG_INFO,
+			"[ui] %.1f tick/s | late avg %lld ms max %lld ms | poll avg "
+			"%.1f ms max %lld ms (worst phase: %s %lld ms) | repaints/s "
+			"seek %.1f (served %.1f, suppressed %.1f) clip %.1f "
+			"(served %.1f)",
+			(double)uiTicks_ / secs,
+			(long long)(uiTicks_ ? uiLateSumNs_ / uiTicks_ / 1'000'000
+					     : 0),
+			(long long)(uiLateMaxNs_ / 1'000'000),
+			uiTicks_ ? (double)uiCostSumNs_ / (double)uiTicks_ / 1e6
+				 : 0.0,
+			(long long)(uiCostMaxNs_ / 1'000'000),
+			uiWorstPhase_.name[0] ? uiWorstPhase_.name : "-",
+			(long long)(uiWorstPhase_.ns / 1'000'000),
+			(double)seekReq / secs, (double)seekSrv / secs,
+			(double)seekSup / secs, (double)clipReq / secs,
+			(double)clipSrv / secs);
 
 	uiWindowStartNs_ = tickStartNs;
 	uiTicks_ = 0;
@@ -9418,6 +10008,13 @@ void MultiReplayDock::openSettings()
 	}
 	advPage->addRow(obs_module_text("Dock.Encoder"), enc);
 
+	// VERBOSE DIAGNOSTIC LOG. Off in normal use; turned on to capture the
+	// deterministic layout/resize traces when something needs reporting.
+	auto *verbose = new QCheckBox(obs_module_text("Dock.VerboseLog"), &dlg);
+	verbose->setChecked(cfg.verboseLog);
+	verbose->setToolTip(obs_module_text("Dock.VerboseLogHint"));
+	advPage->addRow(QString(), verbose);
+
 	// ── Updates ───────────────────────────────────────────────────────
 	// Deliberately the LAST page, and deliberately a page rather than a
 	// button somewhere: an operator comes here on purpose, between matches,
@@ -9596,6 +10193,7 @@ void MultiReplayDock::openSettings()
 			cfg.commentPresets.push_back(t.toStdString());
 	}
 	cfg.videoEncoderId = enc->currentData().toString().toStdString();
+	cfg.verboseLog = verbose->isChecked();
 	cfg.updateChannel = chan->currentData().toString().toStdString();
 	cfg.outputSceneName = outScene->currentData().toString().toStdString();
 	cfg.outputSceneNameB = outSceneB->currentData().toString().toStdString();

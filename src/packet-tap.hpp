@@ -136,7 +136,17 @@ public:
 	// Branch Output starts its output asynchronously after the filter is
 	// enabled, so attaching is retried on a background thread until each BO
 	// output goes active or the attempt budget runs out.
+	//
+	// `canonical` is camera-dedup.hpp's canonicalCameraIndices(): for a
+	// channel whose slot merely duplicates an earlier slot's source,
+	// canonical[i] names the slot that actually owns a Branch Output filter
+	// (and so an encoder to attach to). `wanted` must only be true for
+	// canonical channels — a duplicate has no filter of its own to find — and
+	// every read accessor below (resolveRange, streamConfig, ...) redirects a
+	// duplicate's camIndex through `canonical` before touching its channel, so
+	// callers may keep passing a duplicate's own index everywhere else.
 	void armAsync(const std::array<bool, kMaxTapChannels> &wanted,
+		      const std::array<int, kMaxTapChannels> &canonical,
 		      const RingBudget &budget = {});
 
 	// --- live ring access (M1) ---
@@ -174,7 +184,11 @@ public:
 	int64_t crossAngleSkewNs() const;
 
 private:
-	PacketTap() = default;
+	PacketTap()
+	{
+		for (int i = 0; i < kMaxTapChannels; i++)
+			canonical_[i].store(i, std::memory_order_relaxed);
+	}
 	~PacketTap();
 	PacketTap(const PacketTap &) = delete;
 	PacketTap &operator=(const PacketTap &) = delete;
@@ -282,6 +296,12 @@ private:
 		bool empty() const { return !tapOutput && !boOutput; }
 	};
 
+	// A duplicate channel's index, redirected to the channel that actually
+	// holds data (itself, for every canonical or unarmed index). Every public
+	// read accessor calls this first so callers never need to know which
+	// slots are duplicates.
+	int owner(int camIndex) const;
+
 	void armLoop();
 	bool attachLocked(int camIndex); // mutex_ held
 	// Unhooks the channel and hands back what still has to be stopped and
@@ -293,6 +313,16 @@ private:
 	mutable std::mutex mutex_;
 	std::array<Channel, kMaxTapChannels> channels_{};
 	std::array<bool, kMaxTapChannels> wanted_{};
+	// Identity by default (every index owns itself) until the first armAsync()
+	// says otherwise — so a camIndex asked about before any REC simply reads
+	// its own (empty) channel, exactly as before this existed. Seeded to
+	// identity in the constructor (std::atomic has no copy/move, so it cannot
+	// be bulk-initialized here). Atomic, not guarded by mutex_: every read
+	// accessor below (resolveRange and the rest) reads this WITHOUT taking
+	// mutex_, on purpose — they never have, and adding that lock to a path a
+	// decode thread calls for every clip would be new contention against the
+	// encoder thread for no reason a handful of plain ints is worth.
+	std::array<std::atomic<int>, kMaxTapChannels> canonical_{};
 
 	std::thread armThread_;
 	std::atomic<bool> armRunning_{false};

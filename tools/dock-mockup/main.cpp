@@ -28,30 +28,53 @@
 // A MOCKUP THAT ARRANGES ITS KEYS DIFFERENTLY IS MEASURING A PANEL THAT DOES
 // NOT EXIST. Whenever this file and multireplay-dock.cpp disagree about where
 // something goes, this one is wrong.
+#include "../../src/dock-assets.hpp"
 #include "../../src/dock-icons.hpp"
 #include "../../src/dock-layout.hpp"
 #include "../../src/dock-style.hpp"
 
 #include <QAbstractButton>
+#include <QAbstractItemModel>
+#include <QAbstractItemView>
 #include <QApplication>
+#include <QCheckBox>
+#include <QComboBox>
+#include <QDialog>
+#include <QDialogButtonBox>
 #include <QDir>
+#include <QDoubleSpinBox>
+#include <QFontInfo>
+#include <QFormLayout>
+#include <QFrame>
 #include <QGridLayout>
 #include <QHBoxLayout>
 #include <QHeaderView>
+#include <QImage>
 #include <QLabel>
+#include <QLineEdit>
+#include <QMenu>
+#include <QListWidget>
+#include <QPainter>
 #include <QPixmap>
+#include <QPlainTextEdit>
 #include <QPushButton>
 #include <QResizeEvent>
 #include <QSet>
 #include <QSlider>
+#include <QSpinBox>
+#include <QStyleOption>
 #include <QSplitter>
+#include <QSplitterHandle>
+#include <QStackedWidget>
 #include <QTableWidget>
 #include <QTimer>
+#include <QToolButton>
 #include <QVBoxLayout>
 
 #include <algorithm>
 #include <climits>
 #include <cmath>
+#include <functional>
 #include <cstdio>
 #include <cstdlib>
 
@@ -88,6 +111,16 @@ ThemeChoice g_theme = ThemeChoice::Broadcast;
 QPalette g_pal;
 Scheme g_sc;
 IconTints g_tints;
+// The marks a sub-control can only be handed as a file, written into a temp
+// directory. The dock writes them into its own config directory; both draw them
+// from the same scheme with the same code (src/dock-assets.hpp).
+SheetAssetPaths g_assets;
+
+void refreshSheetAssets()
+{
+	g_assets = writeSheetAssets(
+		QDir::temp().filePath(QStringLiteral("mr-mock-assets")), g_sc);
+}
 
 QPushButton *key(const QString &text, const char *role = "")
 {
@@ -103,6 +136,50 @@ QPushButton *key(const QString &text, const char *role = "")
 // A key that is a MARK and nothing else. `id` is the stable identity the gate
 // finds it by (see dock-icons.hpp): it survives a locale, a font and this
 // redesign, which the literal text it replaced did not.
+// THE THREE KEYS THAT OPEN A MENU ARE QToolButtons WITH A MENU, which is what
+// the panel builds and what this tool used to fake with a plain key.
+//
+// Both halves of that matter, and both were measured here. Without a menu Qt
+// never draws a menu arrow at all, so the mockup could not see the SECOND mark
+// that was landing on the gear, the ▾ beside the play key and the ⋯ over the
+// clip list. And the CLASS matters twice over: a QPushButton with a menu
+// reserves 24 px for the arrow whatever the style sheet says (measured) while a
+// QToolButton reserves none, and the two draw the arrow through different code
+// — so a stand-in of the wrong class is measuring a key the panel does not have.
+//
+// The menu is popped on `clicked` rather than given to setMenu, exactly as the
+// panel does it, because no style-sheet rule reaches that arrow. See the note
+// in dock-style.hpp for the probe that established it.
+QToolButton *menuKey(Icon ic, const QString &id, const QString &tip,
+		     const char *role = "mrGear", int px = 14)
+{
+	auto *b = new QToolButton();
+	b->setObjectName(QString::fromLatin1(role));
+	setKeyIcon(b, ic, g_tints, px);
+	setKeyId(b, id);
+	b->setToolTip(tip);
+	b->setMinimumHeight(kKeyH);
+	b->setMaximumHeight(kKeyH);
+	b->setPopupMode(QToolButton::InstantPopup);
+	auto *m = new QMenu(b);
+	m->addAction(QStringLiteral("Una voce"));
+	m->addAction(QStringLiteral("Un'altra"));
+	// A SEPARATOR AND A SUBMENU, because the gear's menu has both and each
+	// is a sub-control OBS has an opinion about — the separator's colour and
+	// the submenu's arrow, which OBS draws from a file picked for a dark
+	// theme. A menu without them measures two thirds of a menu.
+	m->addSeparator();
+	QMenu *sub = m->addMenu(QStringLiteral("Un sottomenu"));
+	sub->addAction(QStringLiteral("Dentro"));
+	m->addSeparator();
+	QAction *off = m->addAction(QStringLiteral("Non disponibile"));
+	off->setEnabled(false);
+	QObject::connect(b, &QToolButton::clicked, b, [b, m]() {
+		m->popup(b->mapToGlobal(QPoint(0, b->height())));
+	});
+	return b;
+}
+
 QPushButton *iconKey(Icon ic, const QString &id, const QString &tip,
 		     const char *role = "mrTransport")
 {
@@ -187,6 +264,12 @@ private:
 };
 
 class Mock : public QWidget {
+	// Q_OBJECT so this is the same KIND of thing the dock is — a moc'd
+	// QWidget subclass. It is not what made the mockup blind to the light
+	// panel's dark band; that was measured and it was the containment (see
+	// runHostChecks). Being honest about the class is worth a macro anyway.
+	Q_OBJECT
+
 public:
 	// A stand-in for one of the panel's pictures, with the band that names
 	// it underneath. The real ones are OBSQTDisplay widgets with a swap
@@ -204,8 +287,13 @@ public:
 	Mock()
 	{
 		setObjectName(QStringLiteral("MultiReplayDock"));
+		// THE SAME LINE THE DOCK NOW CARRIES, and for the same reason:
+		// Qt honours a style sheet background only on a widget with this
+		// attribute, and it does not set it for a subclass. Without it a
+		// CHILD panel paints nothing and shows whatever OBS painted.
+		setAttribute(Qt::WA_StyledBackground, true);
 		sc_ = g_sc;
-		setStyleSheet(dockStyle(sc_));
+		setStyleSheet(dockStyle(sc_, 0, g_assets, rowFontPx()));
 		setMinimumWidth(300);
 
 		auto *v = new QVBoxLayout(this);
@@ -238,6 +326,80 @@ public:
 		table_->setMinimumHeight(50);
 		table_->setSizePolicy(QSizePolicy::Expanding,
 				      QSizePolicy::Expanding);
+		table_->setAlternatingRowColors(true);
+		// WITH ROWS IN IT, and a TICKED angle among them. An empty table
+		// is the largest area of this panel rendering nothing, and the
+		// tick in an angle cell is drawn from the same file the settings
+		// dialog's check boxes use (dock-assets.hpp) — so an empty table
+		// is one more thing this tool could not be asked about.
+		table_->setHorizontalHeaderLabels(
+			{QStringLiteral("#"), QStringLiteral("In"),
+			 QStringLiteral("Out"), QStringLiteral("Durata"),
+			 QStringLiteral("Commento"), QStringLiteral("1 C1")});
+		for (int r = 0; r < table_->rowCount(); r++) {
+			const QString id = QStringLiteral("%1").arg(r + 1, 4,
+								   10,
+								   QLatin1Char('0'));
+			table_->setItem(r, 0, new QTableWidgetItem(id));
+			table_->setItem(r, 1,
+					new QTableWidgetItem(QStringLiteral(
+						"00:%1.733").arg(11 + r * 7, 2,
+								 10,
+								 QLatin1Char('0'))));
+			table_->setItem(r, 2,
+					new QTableWidgetItem(QStringLiteral(
+						"00:%1.733").arg(21 + r * 7, 2,
+								 10,
+								 QLatin1Char('0'))));
+			table_->setItem(r, 3,
+					new QTableWidgetItem(
+						QStringLiteral("00:10.000")));
+			// THE TWO CELLS THAT ARE WIDGETS, built the way the panel
+			// builds them — a comment cell with a flat line edit and
+			// a chooser beside it, and an angle cell with a tick and
+			// the speed as a label. They are the reason the row's type
+			// size can drift: the four columns above are items drawn
+			// by the table and these are widgets drawn by the sheet.
+			{
+				auto *nc = new QWidget;
+				nc->setObjectName(QStringLiteral("mrNoteCell"));
+				auto *nh = new QHBoxLayout(nc);
+				nh->setContentsMargins(2, 0, 2, 0);
+				nh->setSpacing(2);
+				auto *note = new QLineEdit(
+					r % 2 ? QStringLiteral("Gol")
+					      : QStringLiteral("Esultanza"),
+					nc);
+				note->setObjectName(QStringLiteral("mrAngleNote"));
+				note->setFrame(false);
+				nh->addWidget(note, 1);
+				auto *pick = new QPushButton(nc);
+				pick->setObjectName(QStringLiteral("mrNotePick"));
+				setKeyIcon(pick, Icon::More, g_tints, 10);
+				pick->setFixedWidth(16);
+				nh->addWidget(pick);
+				table_->setCellWidget(r, 4, nc);
+			}
+			{
+				auto *cell = new QWidget;
+				auto *ch = new QHBoxLayout(cell);
+				ch->setContentsMargins(2, 0, 2, 0);
+				ch->setSpacing(2);
+				ch->addStretch(1);
+				auto *box = new QCheckBox(cell);
+				box->setChecked(r % 2 == 0);
+				ch->addWidget(box);
+				auto *sp = new QPushButton(cell);
+				sp->setObjectName(QStringLiteral("mrAngleSpeed"));
+				sp->setText(r % 3 ? QStringLiteral("--")
+						  : QStringLiteral("50%"));
+				sp->setProperty("mrNoOverride", r % 3 != 0);
+				sp->setFixedWidth(44);
+				ch->addWidget(sp);
+				ch->addStretch(1);
+				table_->setCellWidget(r, 5, cell);
+			}
+		}
 		lv->addWidget(table_, 1);
 
 		// THE BODY IS ONE SPLITTER of two panes, and which way it divides
@@ -263,6 +425,32 @@ public:
 		v->addWidget(controls_);
 
 		applyPanelMode(PanelMode::Wide, /*force*/ true);
+	}
+
+	// ── CHANGING THE THEME WHILE THE PANEL IS UP ─────────────────────────
+	//
+	// The same sequence MultiReplayDock::applyTheme() runs, in the same
+	// order, and this tool did not have it — every picture it has ever taken
+	// was of a panel whose colours were set ONCE, in the constructor, before
+	// a single child existed. Three faults were reported from the other path:
+	// the marks a sub-control is handed as a file were missing until the
+	// operator switched theme, a menu came out white on white, and the green
+	// play key stopped being two rows tall. None of them can happen on the
+	// path this tool was exercising, which is why none of them was ever seen
+	// here.
+	void retheme(ThemeChoice choice, const QPalette &pal)
+	{
+		g_theme = choice;
+		g_sc = schemeFor(choice, pal);
+		g_tints = tintsFor(g_sc);
+		refreshSheetAssets();
+		sc_ = g_sc;
+		setStyleSheet(dockStyle(sc_, 0, g_assets, rowFontPx()));
+		restyleIcons(this, g_tints);
+		// The heights the sections pinned, which applying a sheet drops:
+		// see kPinnedHeightProperty. Measured here first — the green play
+		// key went 56 px to 46 px on the second line above.
+		repinKeys(this);
 	}
 
 	ControlStrip *strip_ = nullptr;
@@ -318,19 +506,19 @@ public:
 		// back. A restore has to happen after the orientations are set,
 		// or the saved state is applied to a splitter that is still
 		// dividing the other way round.
-		if (was != m) {
-			if (bodyChosen())
-				bodySplit_->restoreState(savedBody_[modeIdx()]);
-			if (monitorChosen())
-				monitorSplit_->restoreState(
-					savedMonitor_[modeIdx()]);
-		}
+		// (Only the body divider: the monitor one is derived, never chosen.)
+		if (was != m && bodyChosen())
+			bodySplit_->restoreState(savedBody_[modeIdx()]);
 		// The tile block is laid out from applyPreviewAspect, which is the
 		// only place that knows how wide the pane really is. Doing it here
 		// computed the column count from a pane that had not been given a
 		// width yet — one column, eight rows, and a monitoring block
 		// taller than the panel.
 		tileCols_ = 0;
+		// AFTER the controls have been moved, never before: in Short they
+		// live in leftCol_, and this decides whether leftCol_ may be
+		// hidden at all.
+		applyMonitorsRoom();
 		applyPreviewAspect();
 
 	}
@@ -381,7 +569,13 @@ public:
 		// AFTER the layout pass: a resizeEvent arrives before the children
 		// are re-laid, so the splitter still reports its OLD height and a
 		// split computed from it gets rescaled by the layout that follows.
-		QTimer::singleShot(0, this, [this]() { applyPreviewAspect(); });
+		// With the monitors down the left column has to be told again:
+		// applyPanelMode early-outs when the arrangement has not changed,
+		// and a QSplitter rescales its children proportionally on a resize.
+		QTimer::singleShot(0, this, [this]() {
+			applyMonitorsRoom();
+			applyPreviewAspect();
+		});
 	}
 
 private:
@@ -394,10 +588,68 @@ public:
 	QWidget *leftCol_ = nullptr;
 	int tileCols_ = 2;
 	QSize tileSize() const { return tile_[0] ? tile_[0]->size() : QSize(); }
+	// The event list, so a check can read the size its rows are drawn at.
+	QTableWidget *eventTable() const { return table_; }
 	QSize tileBlockSize() const { return tiles_ ? tiles_->size() : QSize(); }
 	QSize monitorSize() const
 	{
 		return monitorSplit_ ? monitorSplit_->size() : QSize();
+	}
+	// The pane the whole monitoring row lives in, so a check can ask how much
+	// of it the pictures actually cover.
+	const QWidget *monitorPane() const { return monitorSplit_; }
+
+	// The size the event table really draws its items in — the same question
+	// the panel asks, and the same answer, so the two cells that are widgets
+	// can be given it. QFontInfo because a point size resolves to -1 pixels.
+	int rowFontPx() const
+	{
+		const QFont f = table_ ? table_->font() : qApp->font();
+		return std::max(8, QFontInfo(f).pixelSize());
+	}
+
+	// THE OPERATOR DRAGS THE DIVIDERS, and until now nothing in this tool ever
+	// did — every measurement it has ever taken was of a panel whose dividers
+	// were still where the arithmetic had put them. That is not the panel an
+	// operator has after five minutes, and it is not the one the report came
+	// from.
+	void simulateMonitorDrag(int bayShare)
+	{
+		if (!monitorSplit_)
+			return;
+		const int total = monitorSplit_->width();
+		monitorSplit_->setSizes({bayShare, qMax(40, total - bayShare)});
+		userMonitorSplit_[modeIdx()] = true;
+		savedMonitor_[modeIdx()] = monitorSplit_->saveState();
+		applyPreviewAspect();
+	}
+
+	// ...and the OTHER divider, the one between the pictures and the list.
+	// Dragging it is how the cameras are made bigger, and it is the state the
+	// reported panel was in.
+	void simulateBodyDrag(int picturesH)
+	{
+		if (!bodySplit_)
+			return;
+		const int total = bodySplit_->height();
+		bodySplit_->setSizes({picturesH, qMax(40, total - picturesH)});
+		userSplit_[modeIdx()] = true;
+		savedBody_[modeIdx()] = bodySplit_->saveState();
+		applyPreviewAspect();
+	}
+
+	// The divider inside the monitoring row is the operator's to drag, so a
+	// check can assert it is reachable rather than trust the line that builds
+	// it: it was taken away once, and taking it away was the wrong answer.
+	bool monitorHandleUsable() const
+	{
+		if (!monitorSplit_)
+			return false;
+		for (int i = 1; i < monitorSplit_->count(); i++)
+			if (QSplitterHandle *h = monitorSplit_->handle(i))
+				if (h->isEnabled())
+					return true;
+		return false;
 	}
 	// The picture boxes, for the aspect check. Published rather than found by
 	// class from outside: a QWidget with a black QLabel in it is not
@@ -416,6 +668,23 @@ public:
 		return v;
 	}
 	static int tagHeight() { return 0; }
+
+	// The camera block and the pictures in it, on their own: A filling the row
+	// while the cameras beside it do not is exactly what was reported, and a
+	// measure that unions all five pictures cannot see it.
+	const QWidget *tilePane() const { return tiles_; }
+	// THE BOXES, not the pictures inside them: a tile is its picture AND the
+	// band that names it, and the band is 12 px of every tile. Measured on
+	// the pictures, every arrangement looks 13 px short on the height for a
+	// reason that is not a fault.
+	QVector<const QWidget *> tileBoxes() const
+	{
+		QVector<const QWidget *> v;
+		for (int i = 0; i < kTiles; i++)
+			if (tile_[i]->isVisible())
+				v << tile_[i];
+		return v;
+	}
 
 private:
 	QVBoxLayout *root_ = nullptr;
@@ -442,13 +711,21 @@ private:
 	// (In the panel these are written to the project's settings. Here they
 	// live as long as the process, which is as long as anything else does.)
 	QByteArray savedBody_[3], savedMonitor_[3];
-	bool userSplit_[3] = {false, false, false};
 	bool userMonitorSplit_[3] = {false, false, false};
+	bool monitorChosen() const { return userMonitorSplit_[modeIdx()]; }
+	bool userSplit_[3] = {false, false, false};
 	bool controlsInColumn_ = false;
+	// Whether the pictures are up. The Monitors key writes it.
+	bool monitorsOn_ = true;
 
 	int modeIdx() const { return (int)mode_; }
 	bool bodyChosen() const { return userSplit_[modeIdx()]; }
-	bool monitorChosen() const { return userMonitorSplit_[modeIdx()]; }
+	// ONLY WHILE THE PANE IS THE ONE IT WAS DRAGGED IN. The row's widths are
+	// a function of its height (tileBlockFor solves for the height that makes
+	// the row fill the pane), so a remembered divider is a width that answers
+	// a question about one pane size and no other. Measured here: after a drag
+	// and a resize to 1920x1040, 220 px of the row was not a picture.
+	// Same rule as the panel — see MultiReplayDock::monitorSplitChosen.
 
 	// The controls whose LABEL is optional — see applyCompactChrome. The text
 	// and the laid-out width are kept here rather than read back off the
@@ -537,11 +814,16 @@ private:
 		monitorSplit_->setHandleWidth(5);
 		monitorSplit_->addWidget(bays_);
 		monitorSplit_->addWidget(tiles_);
+		// DRAGGABLE, like the panel: how much of the row goes to the bays
+		// and how much to the cameras is a real thing to want. What makes
+		// a drag FILL rather than band is honouring it on both sides -
+		// see applyPreviewAspect.
 		connect(monitorSplit_, &QSplitter::splitterMoved, this,
 			[this](int, int) {
 				userMonitorSplit_[modeIdx()] = true;
 				savedMonitor_[modeIdx()] =
 					monitorSplit_->saveState();
+				applyPreviewAspect();
 			});
 		leftColLayout_->addWidget(monitorSplit_, 1);
 	}
@@ -578,6 +860,9 @@ private:
 
 		auto *live = iconTextKey(Icon::Live, QStringLiteral("Live"),
 					 QStringLiteral("live"), "mrLive", 12);
+		// White once lit: the key goes solid red and a green dot inside it
+		// would be two signals arguing in one control.
+		setKeyIconRole(live, Icon::Live, IconRole::LitWhite, g_tints, 12);
 		live->setCheckable(true);
 		live->setToolTip(QStringLiteral("Le marcature cadono sul fronte live"));
 		remember(live);
@@ -590,14 +875,21 @@ private:
 					QStringLiteral("monitors"), "mrToggle", 12);
 		mon->setCheckable(true);
 		mon->setChecked(true);
-		mon->setToolTip(QStringLiteral("Mostra o nascondi le immagini"));
+		mon->setToolTip(QStringLiteral(
+			"Mostra o nasconde baie e anteprime camera"));
+		// WIRED, and it was not. A key drawn and connected to nothing is a
+		// key this tool cannot judge — which is why the fault it hides
+		// (the pictures go away, the room does not) was only ever found in
+		// the real panel.
+		connect(mon, &QAbstractButton::toggled, this,
+			[this](bool on) { setMonitorsVisible(on); });
 		remember(mon);
 		h->addWidget(mon);
 		// THE GEAR LIVES WITH THE OTHER PANEL-WIDE KEYS, not down in the
 		// record section. What it opens is Settings for the whole panel;
 		// beside REC it read as part of arming a take.
-		auto *gear = iconKey(Icon::Gear, QStringLiteral("settings"),
-				     QStringLiteral("Impostazioni"), "mrToggle");
+		auto *gear = menuKey(Icon::Gear, QStringLiteral("settings"),
+				     QStringLiteral("Impostazioni"), "mrGear", 15);
 		h->addWidget(gear);
 		auto *full = iconKey(Icon::FullScreen, QStringLiteral("fullscreen"),
 				     QStringLiteral("Schermo intero"), "mrToggle");
@@ -654,6 +946,9 @@ private:
 		clip->setMinimumWidth(60);
 		auto *skip = iconKey(Icon::SkipNext, QStringLiteral("skipNext"),
 				     QStringLiteral("Clip successiva"), "mrSkip");
+		// It lives ON the green band, always: its mark is the other half
+		// of a label the sheet already writes in white.
+		setKeyIconRole(skip, Icon::SkipNext, IconRole::OnSignal, g_tints);
 		skip->setFixedSize(30, kClipBarH - 6);
 		skip->setMinimumHeight(0);
 		auto *cl = new QHBoxLayout(clip);
@@ -704,7 +999,7 @@ private:
 		health->setProperty("dense", true);
 		health->setMinimumHeight(0);
 		health->setFixedHeight(kStatusH - 6);
-		setKeyIcon(health, Icon::Health, g_tints, 11);
+		setKeyIconRole(health, Icon::Health, IconRole::Warn, g_tints, 11);
 		setKeyId(health, QStringLiteral("health"));
 		h->addWidget(health);
 		auto *notice = new QLabel(QStringLiteral("Lista 01 · evento 0003"),
@@ -787,6 +1082,10 @@ private:
 		auto *cancel = iconKey(Icon::Cancel, QStringLiteral("markCancel"),
 				       QStringLiteral("Annulla la marcatura"),
 				       "mrDanger");
+		// #mrDanger colours a LABEL and this key has none — only the ✕ —
+		// so without a role the one destructive key on the row was drawn
+		// exactly as neutral as the two it undoes.
+		setKeyIconRole(cancel, Icon::Cancel, IconRole::Danger, g_tints);
 		auto *tin = iconKey(Icon::TrimIn, QStringLiteral("trimIn"),
 				    QStringLiteral("Porta l'IN qui"));
 		auto *tout = iconKey(Icon::TrimOut, QStringLiteral("trimOut"),
@@ -861,6 +1160,15 @@ private:
 		auto *blk = new KeyBlock(QString(), this);
 		auto *rec = iconTextKey(Icon::Rec, QStringLiteral("REC"),
 					QStringLiteral("rec"), "mrRec", 13);
+		// The dot is red, like the word beside it. At rest the key is
+		// chrome with a red label; armed it is filled red and the mark
+		// turns white with it (see poll() in the dock).
+		setKeyIconRole(rec, Icon::Rec, IconRole::Rec, g_tints, 13);
+		// The property the sheet keys its two states off. Unset, NEITHER
+		// #mrRec[recording="false"] nor ["true"] matched and the key fell
+		// back to the ordinary key colour — so the mockup was drawing a
+		// REC key in grey and calling it drawn.
+		rec->setProperty("recording", false);
 		rec->setMaximumHeight(QWIDGETSIZE_MAX);
 		rec->setMinimumWidth(78);
 
@@ -914,9 +1222,14 @@ private:
 				   QStringLiteral("Un fotogramma indietro"));
 		auto *sf = iconKey(Icon::StepFwd, QStringLiteral("stepFwd"),
 				   QStringLiteral("Un fotogramma avanti"));
-		auto *more = iconKey(Icon::Menu, QStringLiteral("playOptions"),
-				     QStringLiteral("Altre opzioni"), "mrGear");
-		more->setMaximumWidth(22);
+		auto *more = menuKey(Icon::Menu, QStringLiteral("playOptions"),
+				     QStringLiteral("Altre opzioni"));
+		// NO WIDTH CAP. The panel's ▾ has none — its section sizes it,
+		// which comes to the mark plus the key's own padding. Capped at
+		// 22 here it had SIX pixels of content for a 14 px chevron, so
+		// this tool was rendering a smudge on a key the panel draws
+		// properly. A stand-in narrower than the real key measures a
+		// mark that was never clipped.
 
 		auto *now = key(QStringLiteral("NOW"), "mrNow");
 		setKeyId(now, QStringLiteral("now"));
@@ -925,6 +1238,9 @@ private:
 		auto *play = iconKey(Icon::Play, QStringLiteral("playEvents"),
 				     QStringLiteral("Riproduci gli eventi selezionati"),
 				     "mrAccent");
+		// The one filled key on the panel: white mark on solid green,
+		// which is what the sheet already says about its label.
+		setKeyIconRole(play, Icon::Play, IconRole::OnSignal, g_tints, 22);
 		play->setMaximumHeight(QWIDGETSIZE_MAX);
 		// WIDE AS WELL AS TALL. Two rows of height alone made it a green
 		// stripe; the key that takes Program should be the one rectangle
@@ -967,8 +1283,8 @@ private:
 				   QStringLiteral("Sposta l'evento su"));
 		auto *dn = iconKey(Icon::MoveDown, QStringLiteral("moveDown"),
 				   QStringLiteral("Sposta l'evento giù"));
-		auto *more = iconKey(Icon::More, QStringLiteral("clipActions"),
-				     QStringLiteral("Duplica · Elimina"), "mrGear");
+		auto *more = menuKey(Icon::More, QStringLiteral("clipActions"),
+				     QStringLiteral("Duplica · Elimina"));
 		const BlockShape shape{{Cell(up), Cell(dn), Cell(more)}};
 		blk->setShapes(shape, shape);
 		strip_->addBlock(blk, lane, false, rank);
@@ -1065,12 +1381,11 @@ private:
 	// can actually fill and the splitter hands the rest to the list.
 	static int aspectHeight(int w) { return std::max(1, w * 9 / 16); }
 
-	// How many columns the camera block wears in the arrangement it is in.
+	// How many columns the camera block wears — the SAME rule in every
+	// arrangement now (ceil(n/2) past three), so the grid down a side matches
+	// the grid in the Wide layout. It used to be a one-row filmstrip in Tall.
 	int tileColsFor(int paneW, int bays) const
 	{
-		if (mode_ == PanelMode::Tall)
-			return std::clamp(paneW / kTileMinWidth, 1,
-					  std::max(1, g_cams));
 		return std::max(1, tileBlockFor(paneW, bays, g_cams, 3, roomH()).cols);
 	}
 
@@ -1080,20 +1395,18 @@ private:
 	// the widget happened to be mid-settle - measured, 100 px, which picked an
 	// arrangement of 78 px stamps. What the splitter is willing to give depends
 	// only on the panel and a constant, so it is the same on every pass.
+	// ONE COPY, shared with the panel (dock-layout). It was two, and the two
+	// disagreed about the divider the operator had dragged - which is how the
+	// panel came to draw 237 px cameras where this drew 357 px ones.
 	int roomH() const
 	{
-		if (bodyChosen() && leftCol_)
-			return std::max(40, leftCol_->height() - controlsHeight());
-		const int total = bodySplit_ ? bodySplit_->height() : height();
-		int room = total - kListFloor - controlsHeight();
-		// ...AND THE PICTURES MAY NOT HAVE MORE THAN HALF THE PANEL. Past
-		// that the list stops being a list. The cap belongs HERE and not at
-		// the point the divider is set, because the tile arithmetic asks the
-		// same question and the two answers have to be one: they were two,
-		// and the cameras were sized for 674 px of block that then got 517.
-		if (mode_ == PanelMode::Wide)
-			room = std::min(room, height() / 2);
-		return std::max(40, room);
+		return monitorRoomFor({height(),
+				       bodySplit_ ? bodySplit_->height() : height(),
+				       leftCol_ ? leftCol_->height() : 0,
+				       controlsHeight(),
+				       kListFloor,
+				       bodyChosen(),
+				       mode_ == PanelMode::Wide});
 	}
 
 	int controlsHeight() const
@@ -1112,8 +1425,57 @@ private:
 	// up with rather than the geometry they were asked for, so a divider the
 	// operator dragged is honoured by the pictures instead of being argued
 	// with on the next tick.
+	// ── THE MONITORS KEY, AND WHERE THE ROOM GOES ────────────────────────
+	//
+	// This tool was blind to the whole thing until now: the key was drawn and
+	// wired to nothing, so "the pictures go away" was never even exercised,
+	// let alone "the list gets the room". In the panel it did the first and
+	// not the second — bodySplit_'s child is leftCol_, not the picture row, so
+	// hiding the row left an empty visible child holding exactly the height
+	// the key was pressed to reclaim. Same shape here, same rule.
+	//
+	// Two cases, because leftCol_ holds two different things: in Wide and Tall
+	// the pictures are all it has, so it goes with them; in Short the key
+	// strip is down here too, so the column stays and the splitter is asked
+	// for zero — which a QSplitter reads as "as little as this child accepts".
+	void applyMonitorsRoom()
+	{
+		if (!bodySplit_ || !leftCol_)
+			return;
+		if (monitorsOn_) {
+			leftCol_->setVisible(true);
+			return;
+		}
+		leftCol_->setMaximumHeight(QWIDGETSIZE_MAX);
+		if (!controlsInColumn_) {
+			leftCol_->setVisible(false);
+			return;
+		}
+		leftCol_->setVisible(true);
+		if (bodySplit_->width() > 0)
+			bodySplit_->setSizes({0, bodySplit_->width()});
+	}
+
+	void setMonitorsVisible(bool on)
+	{
+		monitorsOn_ = on;
+		if (monitorSplit_)
+			monitorSplit_->setVisible(on);
+		applyMonitorsRoom();
+		if (on) {
+			if (bodyChosen() && !savedBody_[modeIdx()].isEmpty())
+				bodySplit_->restoreState(savedBody_[modeIdx()]);
+			applyPreviewAspect();
+		}
+	}
+
 	void applyPreviewAspect()
 	{
+		// Nothing is sized while the monitors are down: every number below
+		// is a maximum written onto a box, and one written for a block
+		// nobody can see is still there when it comes back.
+		if (!monitorsOn_)
+			return;
 		const int paneW = std::max(80, leftCol_->width());
 		const int bays = g_haveB ? 2 : 1;
 		const int gap = monitorSplit_->handleWidth();
@@ -1145,8 +1507,7 @@ private:
 			const int stripH = rows * (aspectHeight(tileW) + kTagH) +
 					   (rows - 1) * kTileGap;
 			want = bayH + gap + stripH;
-			if (!monitorChosen())
-				monitorSplit_->setSizes({bayH, stripH});
+			monitorSplit_->setSizes({bayH, stripH});
 		} else {
 			// THE HEIGHT THE BLOCK WILL ACTUALLY HAVE, in every wide
 			// arrangement and not only the short one. Left at 0 the
@@ -1165,13 +1526,32 @@ private:
 			baysW = std::max(60, bays * tb.bayW + 3 * (bays - 1));
 			if (baysW + tilesW + gap > paneW)
 				baysW = std::max(60, paneW - tilesW - gap);
+			int blockH = tb.blockH;
+			// THE OPERATOR'S DIVIDER, HONOURED ON BOTH SIDES — the
+			// same as the panel, and this is what this tool did not
+			// have: it skipped setSizes after a drag but went on
+			// using the DERIVED widths for the pictures, so the
+			// cameras stayed the size the algebra wanted inside a
+			// pane the operator had made bigger. That is the 162 px
+			// band this check used to measure.
+			const QList<int> have = monitorSplit_->sizes();
+			if (monitorChosen() && have.size() > 1 && have[0] > 0 &&
+			    have[1] > 0) {
+				baysW = std::max(60, have[0]);
+				tilesW = std::max(kTileMinWidth, have[1]);
+				tileCap = std::max(kTileMinWidth,
+						   (tilesW - (cols - 1) * kTileGap) /
+							   cols);
+				blockH = rows * (aspectHeight(tileCap) + kTagH) +
+					 (rows - 1) * kTileGap;
+			}
 			const int bayH =
 				aspectHeight((baysW - 3 * (bays - 1)) / bays) +
 				kTagH;
 			// roomH() is the ONE authority on how tall this block may
 			// be, and the tile arithmetic above was given the same
 			// number.
-			want = std::min(std::max(bayH, tb.blockH), roomH());
+			want = std::min(std::max(bayH, blockH), roomH());
 			if (!monitorChosen()) {
 				const int slack =
 					std::max(0, paneW - baysW - tilesW - gap);
@@ -1184,7 +1564,14 @@ private:
 		// In Short that divider is a WIDTH and `want` — a height — means
 		// nothing to it.
 		if (mode_ != PanelMode::Short) {
-			leftCol_->setMaximumHeight(want);
+			// NO CAP ONCE HE HAS DRAGGED IT, and that is what keeps
+			// the handle two-way: from that moment the room the row
+			// may have IS this pane's height, so a cap computed from
+			// the pane and written back onto it can only ratchet the
+			// pane down — dragged shorter and never taller again.
+			// Same rule as the panel (applyPreviewSplit).
+			leftCol_->setMaximumHeight(bodyChosen() ? QWIDGETSIZE_MAX
+								: want);
 			if (!bodyChosen()) {
 				const int total = bodySplit_->height();
 				const int give = std::min(want, total - kListFloor);
@@ -1229,12 +1616,16 @@ namespace {
 
 int g_fail = 0;
 
-void check(bool ok, const QString &what, const QString &detail = QString())
+// Returns what it was told, so a check that is a PRECONDITION for the next one
+// can be written as one: measuring the mark on a key that is not on the panel
+// produces a number, and the number is meaningless.
+bool check(bool ok, const QString &what, const QString &detail = QString())
 {
 	if (!ok)
 		g_fail++;
 	std::printf("%-52s %s%s%s\n", qUtf8Printable(what), ok ? "OK" : "FAIL",
 		    detail.isEmpty() ? "" : "  ", qUtf8Printable(detail));
+	return ok;
 }
 
 // WCAG relative luminance, so "can this be read" is a number rather than an
@@ -1256,6 +1647,26 @@ double contrast(const QColor &a, const QColor &b)
 }
 
 // Everything visible has to be ON the panel.
+// ── A CELL OF THE EVENT LIST IS NOT A KEY OF THIS PANEL ──────────────────
+//
+// The four checks below are about the control strip and the toolbar: is every
+// key big enough to hit, does every icon-only key say what it is, does every
+// key carry its id, is anything drawn off the panel. None of that is true of
+// the widgets inside the event table, and none of it should be: the chooser
+// beside a comment is 16 px wide because it sits in a table row, a cell has no
+// mrKey because the gate finds cells by column, and a row below the fold IS
+// outside the panel — that is what a scrolling list is.
+//
+// They never came up before because this tool's table was EMPTY. The panel's
+// has always had them.
+bool inEventList(const QWidget *c)
+{
+	for (const QWidget *p = c; p; p = p->parentWidget())
+		if (p->objectName() == QStringLiteral("mrEvents"))
+			return true;
+	return false;
+}
+
 void checkNothingClipped(Mock *w, const QString &label)
 {
 	const QRect panel(QPoint(0, 0), w->size());
@@ -1267,6 +1678,8 @@ void checkNothingClipped(Mock *w, const QString &label)
 		if (!c->isVisible() || c->width() <= 0 || c->height() <= 0)
 			continue;
 		if (!c->findChildren<QWidget *>().isEmpty())
+			continue;
+		if (inEventList(c))
 			continue;
 		const QRect r(c->mapTo(w, QPoint(0, 0)), c->size());
 		if (panel.contains(r))
@@ -1294,7 +1707,7 @@ void checkHitTargets(Mock *w, const QString &label)
 	int small = 0;
 	QString worst;
 	for (QAbstractButton *b : w->findChildren<QAbstractButton *>()) {
-		if (!b->isVisible())
+		if (!b->isVisible() || inEventList(b))
 			continue;
 		// The status line's own keys are shorter by design — they are
 		// pressed while being looked at, not reached for blind.
@@ -1357,7 +1770,8 @@ void checkTooltips(Mock *w, const QString &label)
 	int mute = 0;
 	QString worst;
 	for (QAbstractButton *b : w->findChildren<QAbstractButton *>()) {
-		if (b->objectName().startsWith(QStringLiteral("qt_")))
+		if (b->objectName().startsWith(QStringLiteral("qt_")) ||
+		    inEventList(b))
 			continue;
 		// A key with a word on it says what it is by saying it.
 		if (!b->text().isEmpty() || !b->toolTip().isEmpty())
@@ -1379,6 +1793,90 @@ void checkTooltips(Mock *w, const QString &label)
 // cannot tell whether the black edge is the framing or the panel. It is also
 // the thing that silently comes back — every arrangement change is a chance for
 // one box to be given a cell of the wrong shape.
+// ── HOW MUCH OF THE MONITORING ROW IS NOT A PICTURE ──────────────────────
+//
+// The row is A (and B) plus the camera tiles, all 16:9 and all one height, and
+// the arithmetic in tileBlockFor solves for the height that makes it exactly
+// as wide as the pane. When something clamps that height — the room the
+// splitter can give, the per-tile ceiling — the row comes out SHORT and what
+// is left over is drawn as panel: a band down the right of the pictures, which
+// is the "the angles stop filling the space, they leave borders" report.
+//
+// Measured as the gap between the rightmost picture edge and the pane, in
+// pixels and as a share, because "there is a border" and "there are four
+// pixels of border" are different bugs and only the number tells them apart.
+// ONE AXIS HAS TO BE FULL, and that is the whole invariant — not "the row fills
+// its width", which is not always possible and was the wrong thing to assert.
+//
+// The pictures are 16:9 and the pane is whatever shape the operator's two
+// dividers make it. There is exactly ONE pane height at which pictures of that
+// aspect fill both axes; give the row more and the slack is vertical, give it
+// less and the slack is horizontal. So a band on one axis is geometry and is
+// the direct consequence of a drag.
+//
+// A band on BOTH axes is not geometry. It means the pictures were sized for a
+// pane other than the one they got — which is exactly what was reported: a 1082
+// x 224 row whose cameras were drawn 237 x 133, short on the width AND short on
+// the height, because the arithmetic had read a half-settled panel and the
+// ceiling it wrote is a maximum that sticks.
+struct RowFit {
+	int paneW = 0, coveredW = 0, gapW = 0;
+	int paneH = 0, coveredH = 0, gapH = 0;
+	// ...and the same question asked of the CAMERA block on its own, which is
+	// the half the report was about: A can fill the row while the cameras
+	// beside it do not.
+	int tilePaneW = 0, tileCoveredW = 0, tileGapW = 0;
+	int tilePaneH = 0, tileCoveredH = 0, tileGapH = 0;
+};
+
+RowFit rowFit(Mock *w)
+{
+	RowFit f;
+	const QWidget *pane = w->monitorPane();
+	if (!pane)
+		return f;
+	f.paneW = pane->width();
+	f.paneH = pane->height();
+	int right = 0, bottom = 0, left = INT_MAX, top = INT_MAX;
+	for (const QWidget *box : w->pictureBoxes()) {
+		if (!box->isVisible())
+			continue;
+		const QPoint at = box->mapTo(pane, QPoint(0, 0));
+		left = qMin(left, at.x());
+		top = qMin(top, at.y());
+		right = qMax(right, at.x() + box->width());
+		bottom = qMax(bottom, at.y() + box->height());
+	}
+	if (left == INT_MAX)
+		return f;
+	f.coveredW = right - left;
+	f.coveredH = bottom - top;
+	f.gapW = f.paneW - f.coveredW;
+	f.gapH = f.paneH - f.coveredH;
+
+	if (const QWidget *tp = w->tilePane(); tp && tp->isVisible()) {
+		f.tilePaneW = tp->width();
+		f.tilePaneH = tp->height();
+		int r = 0, b = 0, l = INT_MAX, t = INT_MAX;
+		for (const QWidget *box : w->tileBoxes()) {
+			if (!box->isVisible())
+				continue;
+			const QPoint at = box->mapTo(tp, QPoint(0, 0));
+			l = qMin(l, at.x());
+			t = qMin(t, at.y());
+			r = qMax(r, at.x() + box->width());
+			b = qMax(b, at.y() + box->height());
+		}
+		if (l != INT_MAX) {
+			f.tileCoveredW = r - l;
+			f.tileCoveredH = b - t;
+			f.tileGapW = f.tilePaneW - f.tileCoveredW;
+			f.tileGapH = f.tilePaneH - f.tileCoveredH;
+		}
+	}
+	return f;
+}
+
 void checkAspect(Mock *w, const QString &label)
 {
 	int bad = 0;
@@ -1415,8 +1913,10 @@ void checkKeyIds(Mock *w)
 	QStringList seen;
 	for (QAbstractButton *b : w->findChildren<QAbstractButton *>()) {
 		// Qt builds buttons of its own inside its widgets (a table
-		// view's corner button). They are not this panel's keys.
-		if (b->objectName().startsWith(QStringLiteral("qt_")))
+		// view's corner button), and the event list's cells are cells
+		// rather than keys. Neither is one of this panel's keys.
+		if (b->objectName().startsWith(QStringLiteral("qt_")) ||
+		    inEventList(b))
 			continue;
 		const QString id = b->property(kKeyProperty).toString();
 		if (id.isEmpty()) {
@@ -1481,7 +1981,1272 @@ QString widestMinimum(Mock *w)
 		.arg(top.join(", "));
 }
 
-int runChecks(QPalette pal)
+
+// ---------------------------------------------------------------------------
+// THE HOST UNDERNEATH — what OBS is painting while the panel sits in it
+// ---------------------------------------------------------------------------
+//
+// THIS IS THE THIRD THING THIS TOOL LIED ABOUT BY OMISSION, and it is the one
+// that cost the most. It omitted a section the panel hides, then the tile
+// arithmetic, and then an entire APPLICATION STYLE SHEET: a widget kind the
+// panel uses and has no rule for is not unstyled, it is styled by OBS. With no
+// application sheet at all, every one of those rendered correctly here and
+// always had — so a panel that came out perfect in six PNGs came out with a
+// dark band across it in the operator's OBS.
+//
+// So `--host=obs` puts the opponent on the field: OBS's own Qt palette (Yami's
+// palette_* block, which is the only route a plugin has to a theme's colours)
+// and the rules from Yami.obt that actually contend with ours. It is an
+// EXCERPT and says so — the whole sheet needs var() and calc() resolved, which
+// is why parsing .obt was rejected in the first place — but every rule in it
+// was copied out of that file rather than remembered.
+//
+// The marks OBS prints (a menu arrow, a tick, a spin arrow) are `url(theme:…)`
+// SVGs and this tool links no SVG support, so they are redrawn here as PNGs in
+// the same near-white a dark theme draws them in. That is the part that
+// matters: the bug is a foreign LIGHT mark landing on our light surface.
+QString drawHostAsset(const QString &dir, const QString &name,
+		      const std::function<void(QPainter &, QSize)> &paint)
+{
+	const QString path = QDir(dir).filePath(name + QStringLiteral(".png"));
+	QImage img(16, 16, QImage::Format_ARGB32_Premultiplied);
+	img.fill(Qt::transparent);
+	{
+		QPainter p(&img);
+		p.setRenderHint(QPainter::Antialiasing, true);
+		paint(p, img.size());
+	}
+	img.save(path);
+	return path;
+}
+
+void installObsHost(QApplication &app, const QString &assetDir)
+{
+	QDir().mkpath(assetDir);
+	// Yami's near-white: the colour every one of these marks is drawn in for
+	// a dark theme, which is exactly why it is invisible on ours.
+	const QColor ink(QStringLiteral("#FFFFFF"));
+	const auto triangle = [&](bool pointingDown) {
+		return [&, pointingDown](QPainter &p, QSize s) {
+			p.setBrush(ink);
+			p.setPen(Qt::NoPen);
+			const double a = pointingDown ? 0.34 : 0.66;
+			const double b = pointingDown ? 0.70 : 0.30;
+			const QPointF tri[3] = {
+				QPointF(3, s.height() * a),
+				QPointF(s.width() - 3, s.height() * a),
+				QPointF(s.width() / 2.0, s.height() * b)};
+			p.drawPolygon(tri, 3);
+		};
+	};
+	const QString collapse =
+		drawHostAsset(assetDir, QStringLiteral("collapse"), triangle(true));
+	const QString up =
+		drawHostAsset(assetDir, QStringLiteral("up"), triangle(false));
+	const QString down =
+		drawHostAsset(assetDir, QStringLiteral("down"), triangle(true));
+	const QString right = drawHostAsset(
+		assetDir, QStringLiteral("right"), [&](QPainter &p, QSize s) {
+			p.setBrush(ink);
+			p.setPen(Qt::NoPen);
+			const QPointF tri[3] = {QPointF(s.width() * 0.36, 3),
+						QPointF(s.width() * 0.36,
+							s.height() - 3.0),
+						QPointF(s.width() * 0.70,
+							s.height() / 2.0)};
+			p.drawPolygon(tri, 3);
+		});
+	const QString tick = drawHostAsset(
+		assetDir, QStringLiteral("tick"), [&](QPainter &p, QSize s) {
+			QPen pen(ink);
+			pen.setWidthF(2.0);
+			pen.setCapStyle(Qt::RoundCap);
+			p.setPen(pen);
+			p.drawLine(QPointF(3, s.height() * 0.55),
+				   QPointF(s.width() * 0.42, s.height() - 4.0));
+			p.drawLine(QPointF(s.width() * 0.42, s.height() - 4.0),
+				   QPointF(s.width() - 3.0, 4.0));
+		});
+	const QString box = drawHostAsset(
+		assetDir, QStringLiteral("box"), [&](QPainter &p, QSize s) {
+			p.setPen(QPen(ink, 1.0));
+			p.setBrush(Qt::NoBrush);
+			p.drawRect(QRectF(2.5, 2.5, s.width() - 5.0,
+					  s.height() - 5.0));
+		});
+
+	// Yami's palette_* block, resolved. Window is grey7 #1D1F26 — the exact
+	// dark that showed through the panel in the report.
+	QPalette pal = app.palette();
+	pal.setColor(QPalette::Window, QColor(QStringLiteral("#1D1F26")));
+	pal.setColor(QPalette::WindowText, QColor(QStringLiteral("#FFFFFF")));
+	pal.setColor(QPalette::Base, QColor(QStringLiteral("#272A33")));
+	pal.setColor(QPalette::AlternateBase, QColor(QStringLiteral("#272A33")));
+	pal.setColor(QPalette::Text, QColor(QStringLiteral("#FFFFFF")));
+	pal.setColor(QPalette::Button, QColor(QStringLiteral("#3C404D")));
+	pal.setColor(QPalette::ButtonText, QColor(QStringLiteral("#FFFFFF")));
+	pal.setColor(QPalette::Highlight, QColor(QStringLiteral("#284CB8")));
+	pal.setColor(QPalette::HighlightedText, QColor(QStringLiteral("#FFFFFF")));
+	pal.setColor(QPalette::ToolTipBase, QColor(QStringLiteral("#272A33")));
+	pal.setColor(QPalette::ToolTipText, QColor(QStringLiteral("#FFFFFF")));
+	app.setPalette(pal);
+
+	// The excerpt. Selectors verbatim from Yami.obt — a selector we paraphrase
+	// is a fight we are not actually having.
+	const QString sheet =
+		QStringLiteral(
+			"QWidget { alternate-background-color: #272A33; color: #FFFFFF;"
+			" selection-background-color: #284CB8; selection-color: #FFFFFF; }\n"
+			"QWidget:disabled { color: #8A8F9E; }\n"
+			"QDialog, QMainWindow { background-color: #1D1F26; }\n"
+			"QPushButton { background-color: #3C404D; color: #FFFFFF;"
+			" border: 1px solid #5B6273; border-radius: 4px; padding: 3px 9px; }\n"
+			"QPushButton::menu-indicator { image: url(%1);"
+			" subcontrol-position: right; subcontrol-origin: content;"
+			" margin-left: 8px; right: -2px; }\n"
+			"QToolButton { border: 1px solid #5B6273; background-color: #3C404D; }\n"
+			"QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QPlainTextEdit {"
+			" background-color: #3C404D; color: #FFFFFF;"
+			" border: 1px solid #5B6273; border-radius: 4px; padding: 3px 6px; }\n"
+			"QSpinBox::up-button, QDoubleSpinBox::up-button {"
+			" subcontrol-origin: padding; subcontrol-position: top right;"
+			" width: 26px; height: 12px; border-left: 1px solid #272A33; }\n"
+			"QSpinBox::down-button, QDoubleSpinBox::down-button {"
+			" subcontrol-origin: padding; subcontrol-position: bottom right;"
+			" width: 26px; height: 12px; border-left: 1px solid #272A33;"
+			" border-top: 1px solid #272A33; }\n"
+			"QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {"
+			" image: url(%2); width: 100%; margin: 2px; }\n"
+			"QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {"
+			" image: url(%3); width: 100%; padding: 2px; }\n"
+			"QCheckBox::indicator, QGroupBox::indicator, QTableView::indicator {"
+			" width: 16px; height: 16px; margin-right: 8px; }\n"
+			"QCheckBox::indicator:unchecked, QGroupBox::indicator:unchecked,"
+			"QTableView::indicator:unchecked { image: url(%4); }\n"
+			"QCheckBox::indicator:checked, QGroupBox::indicator:checked,"
+			"QTableView::indicator:checked { image: url(%5); }\n"
+			"QHeaderView::section { background-color: #3C404D; color: #FFFFFF;"
+			" border: none; border-left: 1px solid #1D1F26;"
+			" border-right: 1px solid #1D1F26; padding: 3px 0px;"
+			" margin-bottom: 2px; }\n"
+			"QTabWidget::pane { border-top: 4px solid #272A33; }\n"
+			"QListView, QTreeView, QTableView { background-color: #272A33;"
+			" color: #FFFFFF; }\n"
+			"QMenu { background-color: #1D1F26; }\n"
+			// THE ITEM RULE, and leaving it out is what let this tool
+			// call a white-on-white menu readable. Yami colours the
+			// ITEM, not the menu — so a rule of ours on QMenu alone
+			// never wins for the text drawn on it, however specific
+			// it is. Same rule, same line, for a list's items.
+			"QMenu::item, QMenu > QWidget, QListView::item,"
+			"QListWidget::item { color: #FFFFFF;"
+			" border: 1px solid transparent; padding: 4px 8px; }\n"
+			"QMenu::item:disabled { color: #8A8F9E; }\n"
+			"QMenu::separator { background: #3C404D; height: 1px; }\n"
+			// A submenu arrow, drawn white for a dark theme.
+			"QMenu::right-arrow { image: url(%6); }\n"
+			"QSplitter::handle { background-color: #1D1F26; }\n"
+			"QScrollBar { background-color: #272A33; }\n")
+			.arg(collapse, up, down, box, tick).arg(right);
+	app.setStyleSheet(sheet);
+}
+
+// ---------------------------------------------------------------------------
+// THE SETTINGS DIALOG, as a set of WIDGET KINDS
+// ---------------------------------------------------------------------------
+//
+// Not the fields — the KINDS. Everything that has ever gone wrong in that
+// dialog went wrong because a kind of widget had no rule of ours and got OBS's
+// instead: a spin box with two dark hairlines down it and a white arrow on
+// white paper, a tick drawn for a dark theme landing on our green, a navigation
+// list with no colour at all. So this builds one of each, in the same
+// containers and with the same object names as openSettings(), and the picture
+// is judged on whether anything in it belongs to a different panel.
+//
+// IT IS A STAND-IN AND CANNOT BE ANYTHING ELSE: the real dialog needs a
+// ReplayCore, a scene list and an updater. What it CAN be is complete about the
+// kinds, and that list is short enough to keep true by reading openSettings.
+QDialog *buildSettingsMock(QWidget *parent)
+{
+	auto *dlg = new QDialog(parent);
+	dlg->setWindowTitle(QStringLiteral("Impostazioni"));
+	dlg->setMinimumSize(760, 480);
+
+	auto *root = new QVBoxLayout(dlg);
+	auto *body = new QHBoxLayout();
+	body->setSpacing(0);
+
+	auto *nav = new QListWidget(dlg);
+	nav->setObjectName(QStringLiteral("mrSettingsNav"));
+	nav->setFixedWidth(172);
+	nav->setFocusPolicy(Qt::NoFocus);
+	auto *pages = new QStackedWidget(dlg);
+	body->addWidget(nav, 0);
+	body->addWidget(pages, 1);
+	root->addLayout(body, 1);
+
+	const auto addPage = [&](const QString &title,
+				 const QString &blurb) -> QFormLayout * {
+		auto *page = new QWidget(pages);
+		auto *v = new QVBoxLayout(page);
+		v->setContentsMargins(14, 12, 14, 12);
+		v->setSpacing(2);
+		auto *t = new QLabel(title, page);
+		t->setObjectName(QStringLiteral("mrSettingsTitle"));
+		v->addWidget(t);
+		auto *b = new QLabel(blurb, page);
+		b->setObjectName(QStringLiteral("mrSettingsBlurb"));
+		b->setWordWrap(true);
+		v->addWidget(b);
+		auto *form = new QFormLayout();
+		form->setContentsMargins(0, 10, 0, 0);
+		form->setLabelAlignment(Qt::AlignRight | Qt::AlignVCenter);
+		form->setFieldGrowthPolicy(QFormLayout::ExpandingFieldsGrow);
+		v->addLayout(form);
+		v->addStretch(1);
+		pages->addWidget(page);
+		nav->addItem(title);
+		return form;
+	};
+	QObject::connect(nav, &QListWidget::currentRowChanged, pages,
+			 &QStackedWidget::setCurrentIndex);
+
+	// Session: the two cards, a path with a browse key, three spin boxes.
+	QFormLayout *rec = addPage(QStringLiteral("Session"),
+				   QStringLiteral("Dove finisce il girato, e con che qualita."));
+	{
+		const auto card = [&](const QString &cap, const QString &val,
+				      const QString &unit) -> QWidget * {
+			auto *f = new QFrame(dlg);
+			f->setObjectName(QStringLiteral("mrStatCard"));
+			f->setFrameShape(QFrame::NoFrame);
+			auto *cv = new QVBoxLayout(f);
+			cv->setContentsMargins(12, 8, 12, 8);
+			cv->setSpacing(1);
+			auto *c = new QLabel(cap, f);
+			c->setObjectName(QStringLiteral("mrStatCaption"));
+			cv->addWidget(c);
+			auto *row = new QHBoxLayout();
+			row->setContentsMargins(0, 0, 0, 0);
+			row->setSpacing(4);
+			auto *value = new QLabel(val, f);
+			value->setObjectName(QStringLiteral("mrStatValue"));
+			row->addWidget(value, 0, Qt::AlignBottom);
+			auto *u = new QLabel(unit, f);
+			u->setObjectName(QStringLiteral("mrStatUnit"));
+			row->addWidget(u, 0, Qt::AlignBottom);
+			row->addStretch(1);
+			cv->addLayout(row);
+			return f;
+		};
+		auto *cards = new QWidget(dlg);
+		auto *ch = new QHBoxLayout(cards);
+		ch->setContentsMargins(0, 0, 0, 6);
+		ch->setSpacing(8);
+		ch->addWidget(card(QStringLiteral("SPAZIO LIBERO"),
+				   QStringLiteral("743.2"), QStringLiteral("GiB")),
+			      1);
+		ch->addWidget(card(QStringLiteral("GIRATO"), QStringLiteral("9:12"),
+				   QStringLiteral("ore")),
+			      1);
+		rec->addRow(cards);
+	}
+	{
+		auto *row = new QHBoxLayout();
+		auto *edit = new QLineEdit(QStringLiteral("D:/Partite"), dlg);
+		auto *browse = new QPushButton(QStringLiteral("..."), dlg);
+		browse->setFixedWidth(34);
+		row->addWidget(edit, 1);
+		row->addWidget(browse);
+		rec->addRow(QStringLiteral("Cartella di sessione"), row);
+	}
+	{
+		const char *labels[] = {"Split", "Bitrate video", "Bitrate audio"};
+		const char *suffixes[] = {" min", " kbps", " kbps"};
+		const int values[] = {20, 12000, 160};
+		for (int i = 0; i < 3; i++) {
+			auto *s = new QSpinBox(dlg);
+			s->setRange(0, 200000);
+			s->setSuffix(QString::fromLatin1(suffixes[i]));
+			s->setValue(values[i]);
+			rec->addRow(QString::fromLatin1(labels[i]), s);
+		}
+	}
+
+	// Cameras: the 4x2 grid of source picker + name.
+	QFormLayout *cams = addPage(QStringLiteral("Telecamere"),
+				    QStringLiteral("Quale sorgente OBS e quale angolo."));
+	{
+		auto *grid = new QGridLayout();
+		grid->setHorizontalSpacing(14);
+		grid->setVerticalSpacing(4);
+		for (int i = 0; i < 8; i++) {
+			auto *c = new QComboBox(dlg);
+			c->addItem(QStringLiteral("(nessuna)"));
+			c->addItem(QStringLiteral("Media"));
+			c->addItem(QStringLiteral("C2"));
+			c->setCurrentIndex(i < 2 ? i + 1 : 0);
+			c->setMinimumWidth(120);
+			auto *name = new QLineEdit(dlg);
+			name->setPlaceholderText(
+				QStringLiteral("CAM %1").arg(i + 1));
+			if (i < 2)
+				name->setText(QStringLiteral("C%1").arg(i + 1));
+			name->setFixedWidth(96);
+			auto *cell = new QHBoxLayout();
+			cell->setContentsMargins(0, 0, 0, 0);
+			cell->addWidget(new QLabel(QString::number(i + 1), dlg));
+			cell->addWidget(c, 1);
+			cell->addWidget(name);
+			grid->addLayout(cell, i % 4, i / 4);
+		}
+		cams->addRow(grid);
+	}
+
+	// Replay: combos, check boxes, a spin box, and a DISABLED pair — the
+	// second bay's fields, which is the only place in this dialog where a
+	// disabled colour is on screen.
+	QFormLayout *out = addPage(QStringLiteral("Replay / Messa in onda"),
+				   QStringLiteral("Come il replay prende il Program."));
+	{
+		auto *useB = new QCheckBox(dlg);
+		out->addRow(QStringLiteral("Seconda baia"), useB);
+		auto *sceneA = new QComboBox(dlg);
+		sceneA->addItem(QStringLiteral("(nessuna)"));
+		sceneA->addItem(QStringLiteral("REPLAY A"));
+		sceneA->setCurrentIndex(1);
+		out->addRow(QStringLiteral("Scena di output"), sceneA);
+		auto *sceneB = new QComboBox(dlg);
+		sceneB->addItem(QStringLiteral("(nessuna)"));
+		sceneB->setEnabled(false);
+		out->addRow(QStringLiteral("Scena di output B"), sceneB);
+		auto *fit = new QCheckBox(dlg);
+		fit->setChecked(true);
+		out->addRow(QStringLiteral("Adatta alla canvas"), fit);
+		auto *ms = new QSpinBox(dlg);
+		ms->setRange(0, 20000);
+		ms->setSuffix(QStringLiteral(" ms"));
+		ms->setValue(300);
+		out->addRow(QStringLiteral("Durata transizione"), ms);
+		auto *note = new QLabel(
+			QStringLiteral("La sequenza esportata non usa queste "
+				       "transizioni: e una stream copy."),
+			dlg);
+		note->setObjectName(QStringLiteral("mrSettingsBlurb"));
+		note->setWordWrap(true);
+		out->addRow(QString(), note);
+	}
+
+	// Events: the double spin boxes, more check boxes, the tag box.
+	QFormLayout *ev = addPage(QStringLiteral("Eventi"),
+				  QStringLiteral("Come cade una marcatura, e cosa si scrive sopra."));
+	{
+		const char *labels[] = {"Pre-roll", "Post-roll",
+					"Continua oltre l'OUT"};
+		const double values[] = {3.0, 1.5, 0.0};
+		for (int i = 0; i < 3; i++) {
+			auto *s = new QDoubleSpinBox(dlg);
+			s->setRange(0.0, 60.0);
+			s->setDecimals(1);
+			s->setSuffix(QStringLiteral(" s"));
+			s->setValue(values[i]);
+			ev->addRow(QString::fromUtf8(labels[i]), s);
+		}
+		auto *sortBy = new QCheckBox(dlg);
+		sortBy->setChecked(true);
+		ev->addRow(QStringLiteral("Ordina per tempo"), sortBy);
+		auto *dbl = new QCheckBox(dlg);
+		dbl->setChecked(true);
+		ev->addRow(QStringLiteral("Doppio click riproduce"), dbl);
+		auto *digits = new QSpinBox(dlg);
+		digits->setRange(1, 8);
+		digits->setValue(4);
+		ev->addRow(QStringLiteral("Cifre ID"), digits);
+		auto *tags = new QPlainTextEdit(dlg);
+		tags->setPlainText(QStringLiteral("Gol\nFallo\nEsultanza\n"));
+		tags->setMaximumHeight(96);
+		ev->addRow(QStringLiteral("Tag"), tags);
+	}
+
+	// Interface: where the theme itself is chosen.
+	QFormLayout *ui = addPage(QStringLiteral("Interfaccia"),
+				  QStringLiteral("Che aspetto ha il pannello."));
+	{
+		auto *mv = new QCheckBox(dlg);
+		mv->setChecked(true);
+		ui->addRow(QStringLiteral("Mostra multiview"), mv);
+		auto *theme = new QComboBox(dlg);
+		theme->addItem(QStringLiteral("Segui il tema di OBS"));
+		theme->addItem(QStringLiteral("Broadcast scuro"));
+		theme->addItem(QStringLiteral("Alto contrasto"));
+		theme->addItem(QStringLiteral("Chiaro"));
+		theme->setCurrentIndex(3);
+		ui->addRow(QStringLiteral("Tema"), theme);
+		auto *rows = new QComboBox(dlg);
+		rows->addItem(QStringLiteral("Comode"));
+		rows->addItem(QStringLiteral("Compatte"));
+		rows->addItem(QStringLiteral("Dense"));
+		ui->addRow(QStringLiteral("Righe"), rows);
+	}
+
+	// Updates: the read-only changelog and the three keys under it.
+	QFormLayout *upd = addPage(QStringLiteral("Aggiornamenti"),
+				   QStringLiteral("Fra una partita e l'altra."));
+	{
+		upd->addRow(QStringLiteral("Versione installata"),
+			    new QLabel(QStringLiteral("1.0.0-beta6"), dlg));
+		auto *chan = new QComboBox(dlg);
+		chan->addItem(QStringLiteral("Stabile"));
+		chan->addItem(QStringLiteral("Beta"));
+		upd->addRow(QStringLiteral("Canale"), chan);
+		auto *btnRow = new QWidget(dlg);
+		auto *bl = new QHBoxLayout(btnRow);
+		bl->setContentsMargins(0, 0, 0, 0);
+		bl->addWidget(new QPushButton(QStringLiteral("Controlla"), dlg));
+		auto *get = new QPushButton(QStringLiteral("Scarica"), dlg);
+		get->setEnabled(false);
+		bl->addWidget(get);
+		auto *inst = new QPushButton(QStringLiteral("Installa"), dlg);
+		inst->setEnabled(false);
+		bl->addWidget(inst);
+		bl->addStretch(1);
+		upd->addRow(QString(), btnRow);
+		auto *notes = new QPlainTextEdit(dlg);
+		notes->setReadOnly(true);
+		notes->setMinimumHeight(120);
+		notes->setPlainText(QStringLiteral(
+			"- il pannello chiaro dipinge il proprio fondo\n"
+			"- niente piu freccia di OBS sopra i nostri marchi\n"));
+		upd->addRow(QStringLiteral("Novita"), notes);
+	}
+
+	auto *buttons = new QDialogButtonBox(
+		QDialogButtonBox::Save | QDialogButtonBox::Cancel, dlg);
+	root->addWidget(buttons, 0);
+	nav->setCurrentRow(0);
+	return dlg;
+}
+
+// ---------------------------------------------------------------------------
+// THE CHECKS THAT NEEDED A HOST — measured in PIXELS, not in colour arithmetic
+// ---------------------------------------------------------------------------
+//
+// Everything above this line reasons about the SCHEME: is this hex readable on
+// that hex. That catches a colour chosen badly and is blind to a colour that
+// never reaches the screen — which is what every fault in the light-panel
+// report turned out to be. The panel's own background rule was a no-op for as
+// long as the panel has existed; the mark on the filled play key was drawn in
+// chrome grey by a pixmap no style sheet can reach; OBS printed its own arrow
+// over three of our marks and its own tick over our tick.
+//
+// So these render the panel and READ IT BACK. With `--host=obs` underneath —
+// OBS's dark palette and the rules from Yami.obt that contend with ours — a
+// light panel that fails to paint something comes back dark, and that is a
+// number.
+
+// The most common colour in a region: the fill, whatever it happens to be.
+QColor dominant(const QImage &img, const QRect &r)
+{
+	QHash<QRgb, int> counts;
+	for (int y = r.top(); y <= r.bottom(); y++)
+		for (int x = r.left(); x <= r.right(); x++)
+			counts[img.pixel(x, y)]++;
+	QRgb best = 0;
+	int most = -1;
+	for (auto it = counts.constBegin(); it != counts.constEnd(); ++it)
+		if (it.value() > most) {
+			most = it.value();
+			best = it.key();
+		}
+	return QColor::fromRgb(best);
+}
+
+// The pixel in `r` that stands furthest off `from`: the mark, if there is one.
+QColor boldest(const QImage &img, const QRect &r, const QColor &from)
+{
+	QColor best = from;
+	double worst = 0;
+	for (int y = r.top(); y <= r.bottom(); y++)
+		for (int x = r.left(); x <= r.right(); x++) {
+			const QColor c = QColor::fromRgb(img.pixel(x, y));
+			const double d = contrast(c, from);
+			if (d > worst) {
+				worst = d;
+				best = c;
+			}
+		}
+	return best;
+}
+
+bool sameColour(const QColor &a, const QColor &b, int tol = 6)
+{
+	return qAbs(a.red() - b.red()) <= tol && qAbs(a.green() - b.green()) <= tol &&
+	       qAbs(a.blue() - b.blue()) <= tol;
+}
+
+QAbstractButton *keyById(QWidget *root, const QString &id)
+{
+	for (QAbstractButton *b : root->findChildren<QAbstractButton *>())
+		if (b->property(kKeyProperty).toString() == id)
+			return b;
+	return nullptr;
+}
+
+// PUTTING THE MONITORS DOWN HAS TO GIVE THE ROOM TO THE LIST.
+//
+// "The pictures went away" and "the room came back" are two claims, and for a
+// while only the first was true: the splitter's child is the left COLUMN, not
+// the picture row, so hiding the row left an empty visible child holding
+// exactly the height the key was pressed to reclaim. On a maximised panel that
+// is a band of nothing where the pictures were, and a table no taller than it
+// was — which is the report this check exists for.
+//
+// Asserted on the GROWTH against the room that was there, not on a threshold:
+// "the table got bigger" passes on a panel that hands back a third of it.
+// Measured on the ELASTIC axis of the arrangement, because Short divides width
+// and the other two divide height.
+void checkMonitorsGiveRoom(Mock *w, const QString &label)
+{
+	QAbstractButton *mon = keyById(w, QStringLiteral("monitors"));
+	if (!check(mon && mon->isChecked(),
+		   label + ": the Monitors key is up to press"))
+		return;
+	const bool wide = w->mode_ != PanelMode::Short;
+	const auto listSize = [&]() {
+		QTableWidget *t = w->eventTable();
+		return t ? (wide ? t->height() : t->width()) : 0;
+	};
+	const auto pictureRoom = [&]() {
+		if (!w->leftCol_ || !w->leftCol_->isVisible())
+			return 0;
+		return (wide ? w->leftCol_->height() : w->leftCol_->width()) +
+		       w->bodySplit_->handleWidth();
+	};
+	const auto settle = [&]() {
+		for (int i = 0; i < 6; i++) {
+			QApplication::processEvents();
+			QApplication::sendPostedEvents();
+		}
+	};
+
+	const int before = listSize();
+	const int roomBefore = pictureRoom();
+	mon->click();
+	settle();
+	const int after = listSize();
+	const int roomAfter = pictureRoom();
+	const int gaveUp = roomBefore - roomAfter;
+	// EVERYTHING THE COLUMN GAVE UP LANDED ON THE LIST. Not "the table got
+	// bigger", which passes on a panel that hands back a third of it, and not
+	// "the list got the whole column" either — in Short the key strip lives
+	// down there too and the column keeps the width the keys need. Sixteen
+	// pixels of slack: layout spacing and a splitter handle, not a share.
+	check(roomBefore > 0 && gaveUp > 0 && after - before >= gaveUp - 16,
+	      label + ": Monitors down gives the room to the list",
+	      QString("list %1 -> %2, pictures %3 -> %4")
+		      .arg(before)
+		      .arg(after)
+		      .arg(roomBefore)
+		      .arg(roomAfter));
+	// ...AND WHERE THE PICTURES WERE ALL IT HELD, THE COLUMN GOES WITH THEM.
+	// This is the half that shipped broken: an empty but VISIBLE splitter
+	// child keeps the share it was given, so the pictures vanished and the
+	// band of panel where they had been did not.
+	if (wide)
+		check(roomAfter == 0,
+		      label + ": the empty column goes with the pictures",
+		      QString("%1 px still held").arg(roomAfter));
+	mon->click(); // put them back: everything after this looks at pictures
+	settle();
+	check(w->leftCol_ && w->leftCol_->isVisible() && listSize() > 0,
+	      label + ": Monitors up brings the pictures back",
+	      QString("list back to %1 px").arg(listSize()));
+}
+
+// 1. THE PANEL PAINTS ITS OWN BACKGROUND — the fault that produced the report.
+//
+// Not everywhere: the parts of the panel inside the splitter were always
+// right, because a QSplitter is a QFrame and Qt styles those. It is the band
+// under the control strip and the four margins — everything the dock itself is
+// behind — that came back as OBS's window colour.
+void checkPanelSurface(Mock *w, const QImage &shot, const QString &label)
+{
+	const QColor want(g_sc.panel);
+	struct Spot {
+		const char *what;
+		QPoint at;
+	};
+	// Two margins and the gap between two sections of the strip. Sampled
+	// from the panel's own geometry rather than from numbers typed here, so
+	// the check follows the layout instead of pinning it.
+	const int stripY = w->strip_->mapTo(w, QPoint(0, 0)).y() +
+			   w->strip_->height() / 2;
+	const Spot spots[] = {
+		{"left margin", QPoint(1, w->height() / 2)},
+		{"right margin", QPoint(w->width() - 2, w->height() / 2)},
+		{"under the strip", QPoint(1, stripY)},
+		{"bottom margin", QPoint(w->width() / 2, w->height() - 2)},
+	};
+	for (const Spot &s : spots) {
+		if (!shot.rect().contains(s.at))
+			continue;
+		const QColor got = QColor::fromRgb(shot.pixel(s.at));
+		check(sameColour(got, want),
+		      label + QString(": the panel owns its %1").arg(s.what),
+		      QString("%1, wanted %2").arg(got.name(), want.name()));
+	}
+}
+
+// 2. A MARK ON A SIGNAL KEY IS DRAWN IN THAT KEY'S INK.
+//
+// The play key is a filled green rectangle carrying nothing but a ▶, and the
+// ▶ came out the panel's resting grey — a style sheet says `color: #ffffff`
+// for the label and cannot reach a pixmap. Read off the picture: whatever the
+// key is filled with, the mark on it has to stand off it.
+void checkMarkOnKey(Mock *w, const QString &id, const QString &what)
+{
+	QAbstractButton *b = keyById(w, id);
+	if (!check(b && b->isVisible(), what + ": the key is on the panel"))
+		return;
+	const QImage shot = b->grab().toImage().convertToFormat(
+		QImage::Format_ARGB32);
+	// Inside the border, so the frame is not mistaken for the mark.
+	const QRect inner = shot.rect().adjusted(3, 3, -3, -3);
+	if (inner.width() < 4 || inner.height() < 4)
+		return;
+	const QColor fill = dominant(shot, inner);
+	const QColor mark = boldest(shot, inner, fill);
+	check(contrast(mark, fill) >= 3.0, what + ": its mark reads on it",
+	      QString("%1 on %2 = %3:1")
+		      .arg(mark.name(), fill.name())
+		      .arg(contrast(mark, fill), 0, 'f', 1));
+}
+
+// 2b. ...AND IT IS THE RIGHT INK, not merely a legible one.
+//
+// Legibility alone passes REC with a grey dot next to the word REC written in
+// red, and passes Annulla drawn exactly as neutral as the two keys it undoes.
+// Those are the faults; both keys read perfectly well. What was wrong is that
+// the mark and the label of one key disagreed about what the key is.
+void checkMarkInk(Mock *w, const QString &id, const QColor &want,
+		  const QString &what)
+{
+	QAbstractButton *b = keyById(w, id);
+	if (!check(b && b->isVisible(), what + ": the key is on the panel"))
+		return;
+	const QImage shot = b->grab().toImage().convertToFormat(
+		QImage::Format_ARGB32);
+	const QRect inner = shot.rect().adjusted(3, 3, -3, -3);
+	if (inner.width() < 4 || inner.height() < 4)
+		return;
+	const QColor fill = dominant(shot, inner);
+	const QColor mark = boldest(shot, inner, fill);
+	// Generous: the mark is antialiased, so even its boldest pixel is a few
+	// steps short of the ink it was drawn with.
+	check(sameColour(mark, want, 40), what + ": its mark is the key's ink",
+	      QString("%1, wanted %2").arg(mark.name(), want.name()));
+}
+
+// 3. NOBODY ELSE'S MARK IS ON OUR KEYS.
+//
+// OBS prints a menu arrow over any button that has a menu, bottom right and
+// clipped by the key's own edge, so the gear wore a gear AND a triangle. There
+// is no way to ask Qt "did another sheet draw here", but there is a property
+// that tells the two apart: our marks are CENTRED, and a second one hanging off
+// the right edge moves the centre of everything drawn on the key.
+void checkOneMarkOnly(Mock *w, const QString &id, const QString &what,
+		      const QString &outDir = QString())
+{
+	QAbstractButton *b = keyById(w, id);
+	if (!check(b && b->isVisible(), what + ": the key is on the panel"))
+		return;
+	const QImage shot = b->grab().toImage().convertToFormat(
+		QImage::Format_ARGB32);
+	// Kept when a folder was named: a mark that is off centre by three
+	// pixels is answered by looking at it, not by reading the number again.
+	if (!outDir.isEmpty())
+		shot.scaled(shot.width() * 8, shot.height() * 8,
+			    Qt::IgnoreAspectRatio, Qt::FastTransformation)
+			.save(QDir(outDir).filePath(
+				QString("mock-key-%1.png").arg(id)));
+	const QRect inner = shot.rect().adjusted(3, 3, -3, -3);
+	if (inner.width() < 6 || inner.height() < 6)
+		return;
+	const QColor fill = dominant(shot, inner);
+	int lo = INT_MAX, hi = INT_MIN;
+	for (int y = inner.top(); y <= inner.bottom(); y++)
+		for (int x = inner.left(); x <= inner.right(); x++)
+			if (contrast(QColor::fromRgb(shot.pixel(x, y)), fill) >=
+			    1.6) {
+				lo = qMin(lo, x);
+				hi = qMax(hi, x);
+			}
+	{
+		QStyleOptionButton so;
+		so.initFrom(b);
+		std::printf("   [%s] key %dx%d  menu indicator %d px\n",
+			    qUtf8Printable(what), b->width(), b->height(),
+			    b->style()->pixelMetric(QStyle::PM_MenuButtonIndicator,
+						    &so, b));
+	}
+	// SIX PIXELS OF INK, not one. "Is anything drawn" passes on a mark that
+	// has been clipped by its own key down to a smudge — which is exactly
+	// what the ▾ was, and what nobody noticed for as long as the platform
+	// was printing a second, bigger arrow over the top of it.
+	if (!check(hi - lo >= 5, what + ": its mark is actually drawn",
+		   QString("%1 px of ink").arg(hi >= lo ? hi - lo + 1 : 0)))
+		return;
+	const double centre = (lo + hi) / 2.0;
+	const double want = (inner.left() + inner.right()) / 2.0;
+	check(qAbs(centre - want) <= 3.0, what + ": one mark, centred",
+	      QString("ink spans %1..%2, centre %3, key centre %4")
+		      .arg(lo)
+		      .arg(hi)
+		      .arg(centre, 0, 'f', 1)
+		      .arg(want, 0, 'f', 1));
+}
+
+// 3b. A POPUP IS A WINDOW OF ITS OWN, AND NOBODY HAD EVER RENDERED ONE.
+//
+// A drop-down list and a menu are top-level windows parented to the widget that
+// opened them — so the panel's rules DO reach them, and so does everything of
+// OBS's that we have not out-ranked. Nothing in this tool ever opened one, so
+// "the menus are white on white" was invisible to it while being the first
+// thing an operator sees.
+//
+// Read as a pair, not as one colour: what is wrong with a menu is never the
+// background on its own, it is the background AGAINST the text on it.
+//
+// AND ROW BY ROW, not over the whole popup. The first version took the boldest
+// pixel anywhere inside it, which is the MOST readable thing on screen — so a
+// menu of white-on-white entries passed on the strength of its one greyed-out
+// row. What has to be true is that every row is readable, so every row is
+// measured, and the answer is the worst of them.
+void checkPopupReadable(QWidget *popup, const QVector<QPair<QRect, bool>> &rows,
+			const QString &what, const QString &outDir,
+			const QString &name)
+{
+	if (!check(popup != nullptr, what + ": it opened"))
+		return;
+	const QImage shot =
+		popup->grab().toImage().convertToFormat(QImage::Format_ARGB32);
+	if (!outDir.isEmpty())
+		shot.save(QDir(outDir).filePath(
+			QString("mock-popup-%1.png").arg(name)));
+	if (!check(!rows.isEmpty(), what + ": it has rows to read"))
+		return;
+
+	double worst = 1e9;   // the least readable row, whatever its bar
+	QString detail;
+	bool allPass = true;
+	for (const auto &[rect, enabled] : rows) {
+		const QRect r = rect.intersected(shot.rect()).adjusted(1, 1, -1, -1);
+		if (r.width() < 4 || r.height() < 4)
+			continue;
+		const QColor paper = dominant(shot, r);
+		const QColor ink = boldest(shot, r, paper);
+		const double c = contrast(ink, paper);
+		// A DISABLED ROW IS MEANT TO BE DIM, so it answers a lower bar —
+		// but it answers one: "greyed out" and "not there" are two
+		// different things to an operator.
+		const double want = enabled ? 4.0 : 2.0;
+		if (c < worst) {
+			worst = c;
+			detail = QString("%1 on %2 = %3:1")
+					 .arg(ink.name(), paper.name())
+					 .arg(c, 0, 'f', 1);
+		}
+		if (c < want)
+			allPass = false;
+	}
+	check(allPass, what + ": every row reads on it",
+	      QString("worst row %1").arg(detail));
+}
+
+// The rows of an open menu, with whether each one is meant to be readable.
+QVector<QPair<QRect, bool>> menuRows(QMenu *m)
+{
+	QVector<QPair<QRect, bool>> rows;
+	for (QAction *a : m->actions()) {
+		if (a->isSeparator())
+			continue;
+		rows << qMakePair(m->actionGeometry(a), a->isEnabled());
+	}
+	return rows;
+}
+
+// 3c. THE ROW IS ONE SIZE OF TYPE.
+//
+// Four of the columns are plain table items and two of them are widgets — the
+// comment and the per-angle speed — so they are drawn by two different things
+// and had drifted apart: the widgets were carrying a size written into the
+// sheet while the items used the table's own font, which is OBS's base size in
+// POINTS. The comment and the speed came out smaller than the id and the
+// in-point on their own row.
+//
+// Measured off the widgets, not off the rules: what a rule asks for and what
+// the painter uses are the same thing only when nothing else is talking, and
+// something else was.
+void checkRowTypeIsOneSize(Mock *w, const QString &label)
+{
+	QTableWidget *t = w->eventTable();
+	if (!check(t && t->rowCount() > 0 && t->columnCount() > 4,
+		   label + ": there is a row to read"))
+		return;
+	const int itemPx = QFontInfo(t->font()).pixelSize();
+	int worst = 0;
+	QString detail;
+	const auto compare = [&](QWidget *cell, const char *what) {
+		if (!cell)
+			return;
+		const int px = QFontInfo(cell->font()).pixelSize();
+		if (std::abs(px - itemPx) > worst) {
+			worst = std::abs(px - itemPx);
+			detail = QString("%1 %2 px against the row's %3")
+					 .arg(QString::fromLatin1(what))
+					 .arg(px)
+					 .arg(itemPx);
+		}
+	};
+	compare(t->findChild<QWidget *>(QStringLiteral("mrAngleNote")), "comment");
+	compare(t->findChild<QWidget *>(QStringLiteral("mrAngleSpeed")), "speed");
+	check(worst == 0, label + ": the comment and the speed are the row's size",
+	      detail.isEmpty() ? QString("both %1 px").arg(itemPx) : detail);
+}
+
+// 4. THE SETTINGS DIALOG IS THE SAME PANEL.
+//
+// It is a separate top-level window and every widget kind in it is a kind the
+// strip does not use — spin boxes, check boxes, a navigation list, a stacked
+// pane. Each of those was OBS's until it was named here. Rendered and read
+// back: the dialog's own surface, the arrow on a spin box, and a ticked box
+// that is our green rather than somebody else's tick.
+void checkSettingsDialog(Mock *w, const QString &outDir)
+{
+	QDialog *dlg = buildSettingsMock(w);
+	dlg->resize(820, 560);
+	dlg->show();
+
+	auto *nav = dlg->findChild<QListWidget *>(QStringLiteral("mrSettingsNav"));
+	if (!check(nav != nullptr, "settings: the dialog has its side menu"))
+		return;
+
+	// EVERY PAGE, because only one is on screen at a time and the kinds are
+	// spread across them: the spin boxes are on the first, the check boxes on
+	// the third. Looking at one page and calling the dialog checked is the
+	// same omission the whole tool has just been fixed for.
+	QSpinBox *spinSeen = nullptr;
+	QCheckBox *tickSeen = nullptr;
+	QCheckBox *clearSeen = nullptr;
+	QImage spinShot, tickShot;
+	QColor paper;
+
+	for (int page = 0; page < nav->count(); page++) {
+		nav->setCurrentRow(page);
+		for (int i = 0; i < 4; i++) {
+			QApplication::processEvents();
+			QApplication::sendPostedEvents();
+		}
+		const QImage shot = dlg->grab().toImage().convertToFormat(
+			QImage::Format_ARGB32);
+		if (!outDir.isEmpty())
+			shot.save(QDir(outDir).filePath(
+				QString("mock-settings-%1.png").arg(page)));
+		// The dialog's own paper, sampled under the buttons where nothing
+		// else is drawn.
+		if (page == 0)
+			paper = QColor::fromRgb(
+				shot.pixel(shot.width() / 2, shot.height() - 3));
+		for (QSpinBox *s : dlg->findChildren<QSpinBox *>())
+			if (s->isVisible() && !spinSeen) {
+				spinSeen = s;
+				spinShot = shot;
+			}
+		for (QCheckBox *c : dlg->findChildren<QCheckBox *>()) {
+			if (!c->isVisible())
+				continue;
+			if (c->isChecked() && !tickSeen) {
+				tickSeen = c;
+				tickShot = shot;
+			}
+			if (!c->isChecked() && !clearSeen)
+				clearSeen = c;
+		}
+	}
+
+	check(sameColour(paper, QColor(g_sc.panel), 10),
+	      "settings: the dialog is the panel's colour",
+	      QString("%1, wanted %2").arg(paper.name(), g_sc.panel));
+
+	// A SPIN BOX, arrows and all. OBS draws them from a file chosen for a
+	// dark theme — a white arrow, on our white field.
+	if (check(spinSeen != nullptr, "settings: there is a spin box to look at")) {
+		const QPoint at = spinSeen->mapTo(dlg, QPoint(0, 0));
+		const QRect r(at, spinSeen->size());
+		if (spinShot.rect().contains(r)) {
+			const QColor field =
+				dominant(spinShot, r.adjusted(2, 2, -2, -2));
+			// The right-hand third, where the buttons live.
+			const QRect btns(r.left() + r.width() * 2 / 3, r.top() + 2,
+					 r.width() / 3 - 2, r.height() - 4);
+			const QColor mark = boldest(spinShot, btns, field);
+			check(contrast(mark, field) >= 3.0,
+			      "settings: a spin box's arrows are visible",
+			      QString("%1 on %2 = %3:1")
+				      .arg(mark.name(), field.name())
+				      .arg(contrast(mark, field), 0, 'f', 1));
+		}
+	}
+
+	// A TICKED BOX IS OUR GREEN. Not "has a tick in it": the tick was OBS's
+	// asset and there is no way to hand a QSS sub-control a mark we drew, so
+	// the fill carries the state and what is checked is that the fill is ours.
+	if (check(tickSeen && clearSeen,
+		  "settings: there is a ticked box and a clear one")) {
+		const auto boxOf = [&](QCheckBox *c) {
+			const QPoint at = c->mapTo(dlg, QPoint(0, 0));
+			return QRect(at.x() + 1, at.y() + (c->height() - 13) / 2,
+				     13, 13);
+		};
+		const QColor on = dominant(tickShot, boxOf(tickSeen));
+		check(sameColour(on, QColor(g_sc.pvw), 30),
+		      "settings: a ticked box is the panel's green",
+		      QString("%1, wanted %2").arg(on.name(), g_sc.pvw));
+	}
+	dlg->hide();
+	delete dlg;
+}
+
+// ── THE ROW, SWEPT ───────────────────────────────────────────────────────
+//
+// One size is an anecdote. The report is about RESIZING — the row fills at some
+// sizes and not at others — so it is swept, and the worst is what is checked.
+enum class Drag { None, Monitor, Body };
+
+void checkMonitorRowFills(const QString &label, Drag drag = Drag::None)
+{
+	struct S {
+		int w, h;
+	};
+	const S sizes[] = {{1479, 894}, {1400, 900}, {1280, 800}, {1100, 700},
+			   {1000, 980}, {900, 620},  {1600, 1000}, {1200, 1040},
+			   {1920, 1040}, {820, 560}};
+	int worstGap = -1;
+	QString worstAt;
+	for (const S &s : sizes) {
+		auto *host = new QWidget();
+		auto *hl = new QVBoxLayout(host);
+		hl->setContentsMargins(0, 0, 0, 0);
+		auto *w = new Mock();
+		hl->addWidget(w);
+		// Three passes: a mode change rewrites the floor, and the split
+		// settles a pass behind the resize that caused it.
+		const auto settle = [&](int cw, int ch) {
+			for (int pass = 0; pass < 3; pass++) {
+				host->resize(cw, ch);
+				host->show();
+				for (int i = 0; i < 3; i++) {
+					QApplication::processEvents();
+					QApplication::sendPostedEvents();
+				}
+			}
+		};
+		// AT ONE SIZE, DRAGGED, THEN RESIZED — the order an operator does
+		// it in, and the state the reported panel was in. 1357x881 is
+		// deliberately not one of the swept sizes, so every measurement
+		// below follows a real resize.
+		//
+		// BOTH DIVIDERS, because they fail differently: the one between
+		// the pictures and the list decides how much room the row has
+		// (and the panel used to ignore it, which is why it drew 237 px
+		// cameras where this drew 357), and the one inside the row
+		// decides how that room is shared.
+		if (drag != Drag::None) {
+			settle(1357, 881);
+			if (drag == Drag::Monitor) {
+				check(w->monitorHandleUsable(),
+				      label + ": the divider can be dragged");
+				w->simulateMonitorDrag(
+					w->monitorPane()->width() / 3);
+			} else {
+				w->simulateBodyDrag(200);
+			}
+			for (int i = 0; i < 3; i++) {
+				QApplication::processEvents();
+				QApplication::sendPostedEvents();
+			}
+		}
+		settle(s.w, s.h);
+		const RowFit f = rowFit(w);
+		std::printf("   fit %4dx%-4d pane %4dx%-4d pictures %4dx%-4d"
+			    "  gap %3d x %3d   tiles %3dx%-3d in %3dx%-3d\n",
+			    s.w, s.h, f.paneW, f.paneH, f.coveredW, f.coveredH,
+			    f.gapW, f.gapH, w->tileSize().width(),
+			    w->tileSize().height(), w->tileBlockSize().width(),
+			    w->tileBlockSize().height());
+		// THE SMALLER OF THE TWO AXES, because only one of them can be
+		// full: see the note on RowFit. Short on BOTH is the fault.
+		// Asked of the CAMERA block, which is the half that was reported
+		// — A can fill the row while the cameras beside it do not.
+		if (f.tilePaneW > 0) {
+			const int bound = qMin(f.tileGapW, f.tileGapH);
+			if (bound > worstGap) {
+				worstGap = bound;
+				worstAt = QString("%1x%2: cameras %3x%4 in a "
+						  "%5x%6 pane (short %7 x %8)")
+						  .arg(s.w)
+						  .arg(s.h)
+						  .arg(f.tileCoveredW)
+						  .arg(f.tileCoveredH)
+						  .arg(f.tilePaneW)
+						  .arg(f.tilePaneH)
+						  .arg(f.tileGapW)
+						  .arg(f.tileGapH);
+			}
+		}
+		host->hide();
+		delete host;
+	}
+	// TWELVE PIXELS, derived rather than chosen: the block is integer 16:9
+	// arithmetic over up to four columns, so each column can lose a pixel to
+	// the division, and the gaps between them are integers too. A BAND — what
+	// the report was about — is nothing like it: the reported panel drew its
+	// cameras 237x133 in a pane 722x224, short 485 px on one axis and 91 on
+	// the other at the same time.
+	check(worstGap <= 12, label + ": the cameras fill one axis of their pane",
+	      worstAt.isEmpty() ? QStringLiteral("no camera block") : worstAt);
+}
+
+// ── A DIVIDER HAS TO GO BOTH WAYS ────────────────────────────────────────
+//
+// Once the operator has dragged the pictures/list divider, the room the
+// monitoring row may have IS that pane's height — and the row's arithmetic
+// writes a maximum back onto the same pane. Left that way the handle is
+// one-way: the pane can be dragged shorter and never taller again, and each
+// pass can only ratchet it further down. Nearly shipped; caught by asking the
+// obvious question of it.
+void checkDividerGoesBothWays(const QString &label)
+{
+	auto *host = new QWidget();
+	auto *hl = new QVBoxLayout(host);
+	hl->setContentsMargins(0, 0, 0, 0);
+	auto *w = new Mock();
+	hl->addWidget(w);
+	const auto settle = [&]() {
+		for (int i = 0; i < 6; i++) {
+			QApplication::processEvents();
+			QApplication::sendPostedEvents();
+		}
+	};
+	for (int pass = 0; pass < 3; pass++) {
+		host->resize(1400, 900);
+		host->show();
+		settle();
+	}
+	w->simulateBodyDrag(200);
+	settle();
+	const int shrunk = w->monitorPane()->height();
+	w->simulateBodyDrag(420);
+	settle();
+	const int grown = w->monitorPane()->height();
+	check(grown > shrunk + 100,
+	      label + ": the pictures/list divider goes both ways",
+	      QString("dragged to 200 gave %1, dragged back to 420 gave %2")
+		      .arg(shrunk)
+		      .arg(grown));
+	host->hide();
+	delete host;
+}
+
+// The whole host pass: a LIGHT panel inside a DARK OBS, which is the
+// configuration every one of these faults was reported from.
+void runHostChecks(QApplication &app, const QString &outDir)
+{
+	installObsHost(app, QDir::temp().filePath(QStringLiteral("mr-mock-host")));
+	g_theme = ThemeChoice::Light;
+	g_sc = schemeFor(g_theme, app.palette());
+	refreshSheetAssets();
+	g_tints = tintsFor(g_sc);
+
+	// INSIDE A WINDOW, and this is the whole reason the mockup could not see
+	// the fault. A top-level widget with no WA_StyledBackground still paints
+	// its palette's Window brush — and QStyleSheetStyle copies a matched
+	// background rule INTO that palette, so the panel came out the right
+	// colour by a route the real dock does not have. The dock is a CHILD of
+	// OBS's QDockWidget: a child that paints nothing simply shows its parent,
+	// and its parent is OBS.
+	//
+	// Measured on the mockup before this window existed: `styled background:
+	// no, palette window #efefef` — not painting, and passing anyway.
+	auto *host = new QWidget();
+	host->setAutoFillBackground(true);
+	{
+		QPalette hp = host->palette();
+		hp.setColor(QPalette::Window, QColor(QStringLiteral("#1D1F26")));
+		host->setPalette(hp);
+	}
+	auto *hl = new QVBoxLayout(host);
+	hl->setContentsMargins(0, 0, 0, 0);
+	auto *w = new Mock();
+	hl->addWidget(w);
+	for (int pass = 0; pass < 3; pass++) {
+		host->resize(1500, 900);
+		host->show();
+		for (int i = 0; i < 3; i++) {
+			QApplication::processEvents();
+			QApplication::sendPostedEvents();
+		}
+	}
+	const QImage full =
+		host->grab().toImage().convertToFormat(QImage::Format_ARGB32);
+	const QImage shot = full.copy(w->geometry());
+	if (!outDir.isEmpty())
+		shot.save(QDir(outDir).filePath(QStringLiteral("mock-host.png")));
+
+	// Reported as a fact rather than inferred from the picture: "the panel is
+	// light" and "the panel is painting" are two different claims, and for
+	// three years only the first one was being checked.
+	std::printf("   styled background: %s, palette window %s\n",
+		    w->testAttribute(Qt::WA_StyledBackground) ? "yes" : "no",
+		    qUtf8Printable(
+			    w->palette().color(QPalette::Window).name()));
+	checkPanelSurface(w, shot, QStringLiteral("host"));
+	// The two keys whose mark sits on a signal fill, and the one that is a
+	// mark and a word in the signal colour.
+	checkMarkOnKey(w, QStringLiteral("playEvents"), QStringLiteral("play key"));
+	checkMarkOnKey(w, QStringLiteral("skipNext"), QStringLiteral("skip key"));
+	// These two are chrome-coloured keys with a SIGNAL label, so legibility
+	// was never the problem — the mark simply belonged to a different key.
+	checkMarkInk(w, QStringLiteral("rec"), QColor(g_sc.rec),
+		     QStringLiteral("rec key"));
+	checkMarkInk(w, QStringLiteral("markCancel"), QColor(g_sc.danger),
+		     QStringLiteral("cancel key"));
+	// The three that open a menu, which is where OBS printed a second one.
+	checkOneMarkOnly(w, QStringLiteral("settings"), QStringLiteral("gear"),
+			 outDir);
+	checkOneMarkOnly(w, QStringLiteral("playOptions"),
+			 QStringLiteral("play options"), outDir);
+	checkOneMarkOnly(w, QStringLiteral("clipActions"),
+			 QStringLiteral("clip actions"), outDir);
+
+	checkRowTypeIsOneSize(w, QStringLiteral("list"));
+	checkSettingsDialog(w, outDir);
+
+	// ── AND NOW THE SAME PANEL AFTER A THEME CHANGE ──────────────────────
+	//
+	// Not a repeat: it is a DIFFERENT code path, and it is the one three
+	// reports came from. Everything above measured a panel whose colours
+	// were set once, in the constructor, before a child existed. This
+	// measures one that was up and running when they changed.
+	//
+	// Light → contrast → light, because the fault reported was "it comes
+	// back after a round trip": a state that only settles on the second
+	// application is a state the first application did not produce.
+	const auto measurePlayKey = [&]() {
+		QAbstractButton *play = keyById(w, QStringLiteral("playEvents"));
+		QAbstractButton *step = keyById(w, QStringLiteral("stepFwd"));
+		return play && step ? QPair<int, int>(play->height(), step->height())
+				    : QPair<int, int>(0, 0);
+	};
+	const QPair<int, int> before = measurePlayKey();
+	check(before.first >= before.second * 2,
+	      "theme: the play key is two rows before",
+	      QString("%1 px against %2").arg(before.first).arg(before.second));
+
+	w->retheme(ThemeChoice::HighContrast, app.palette());
+	w->retheme(ThemeChoice::Light, app.palette());
+	for (int i = 0; i < 4; i++) {
+		QApplication::processEvents();
+		QApplication::sendPostedEvents();
+	}
+
+	const QPair<int, int> after = measurePlayKey();
+	// THE ONE THE OPERATOR REPORTED: it is two rows at startup and one after
+	// a theme change. A fixed height is not supposed to move, so the fault is
+	// in something that re-runs the section's layout with the folded shape.
+	check(after.first >= after.second * 2,
+	      "theme: ...and still two rows after",
+	      QString("%1 px against %2 (was %3)")
+		      .arg(after.first)
+		      .arg(after.second)
+		      .arg(before.first));
+
+	const QImage reshot =
+		host->grab().toImage().convertToFormat(QImage::Format_ARGB32);
+	if (!outDir.isEmpty())
+		reshot.copy(w->geometry())
+			.save(QDir(outDir).filePath(
+				QStringLiteral("mock-host-rethemed.png")));
+	checkPanelSurface(w, reshot.copy(w->geometry()),
+			  QStringLiteral("theme"));
+	checkMarkOnKey(w, QStringLiteral("playEvents"),
+		       QStringLiteral("theme: play key"));
+	checkRowTypeIsOneSize(w, QStringLiteral("theme"));
+
+	// The two popups, opened for real. A combo's list and a menu are the two
+	// kinds of window this panel puts on top of itself, and neither had ever
+	// been rendered by anything.
+	{
+		QDialog *dlg = buildSettingsMock(w);
+		dlg->resize(820, 560);
+		dlg->show();
+		auto *nav = dlg->findChild<QListWidget *>(
+			QStringLiteral("mrSettingsNav"));
+		if (nav)
+			nav->setCurrentRow(nav->count() - 2); // Interfaccia
+		for (int i = 0; i < 4; i++) {
+			QApplication::processEvents();
+			QApplication::sendPostedEvents();
+		}
+		QComboBox *combo = nullptr;
+		for (QComboBox *c : dlg->findChildren<QComboBox *>())
+			if (c->isVisible() && !combo)
+				combo = c;
+		if (combo) {
+			combo->showPopup();
+			for (int i = 0; i < 4; i++) {
+				QApplication::processEvents();
+				QApplication::sendPostedEvents();
+			}
+			QVector<QPair<QRect, bool>> rows;
+			for (int i = 0; i < combo->count(); i++)
+				rows << qMakePair(
+					combo->view()->visualRect(
+						combo->model()->index(i, 0)),
+					true);
+			checkPopupReadable(combo->view(), rows,
+					   QStringLiteral("combo list"), outDir,
+					   QStringLiteral("combo"));
+			combo->hidePopup();
+		} else {
+			check(false, "combo list: there is one to open");
+		}
+		dlg->hide();
+		delete dlg;
+	}
+	{
+		QAbstractButton *gear = keyById(w, QStringLiteral("settings"));
+		QMenu *menu = gear ? gear->findChild<QMenu *>() : nullptr;
+		if (menu) {
+			menu->popup(QPoint(80, 80));
+			for (int i = 0; i < 4; i++) {
+				QApplication::processEvents();
+				QApplication::sendPostedEvents();
+			}
+			checkPopupReadable(menu, menuRows(menu),
+					   QStringLiteral("menu"), outDir,
+					   QStringLiteral("menu"));
+			menu->hide();
+		} else {
+			check(false, "menu: there is one to open");
+		}
+	}
+
+	host->hide();
+	delete host;
+}
+
+int runChecks(QPalette pal, QApplication &app, const QString &outDir)
 {
 	struct Want {
 		const char *name;
@@ -1543,6 +3308,7 @@ int runChecks(QPalette pal)
 		checkLabelsFit(w, label);
 		checkTooltips(w, label);
 		checkAspect(w, label);
+		checkMonitorsGiveRoom(w, label);
 		if (label == QStringLiteral("wide"))
 			checkKeyIds(w);
 		w->hide();
@@ -1590,6 +3356,17 @@ int runChecks(QPalette pal)
 					  1));
 	checkIconContrast(light, "light");
 	checkIconContrast(schemeFor(ThemeChoice::Broadcast, pal), "dark");
+	checkMonitorRowFills(QStringLiteral("monitors"));
+	checkMonitorRowFills(QStringLiteral("monitors, row divider dragged"),
+			     Drag::Monitor);
+	checkMonitorRowFills(QStringLiteral("monitors, list divider dragged"),
+			     Drag::Body);
+	checkDividerGoesBothWays(QStringLiteral("monitors"));
+
+	// LAST, because it replaces the application palette and style sheet for
+	// the rest of the process: from here on the panel is a LIGHT one sitting
+	// in a DARK OBS, which is where every fault in the report was seen.
+	runHostChecks(app, outDir);
 
 	std::printf("\n%s  (%d failed)\n", g_fail ? "FAIL" : "PASS", g_fail);
 	return g_fail ? 1 : 0;
@@ -1601,6 +3378,12 @@ int main(int argc, char **argv)
 {
 	QApplication app(argc, argv);
 	QStringList args = app.arguments();
+	// THE HOST FIRST, because it replaces the application palette and the
+	// panel's scheme is derived from it. Done after g_sc was computed it
+	// would style the panel against a palette nothing on screen is wearing.
+	if (args.contains(QStringLiteral("--host=obs")))
+		installObsHost(app, QDir::temp().filePath(
+					    QStringLiteral("mr-mock-host")));
 	for (const QString &a : args) {
 		if (a.startsWith(QStringLiteral("--cams=")))
 			g_cams = qBound(1, a.mid(7).toInt(), 8);
@@ -1624,6 +3407,12 @@ int main(int argc, char **argv)
 		g_theme = ThemeChoice::FollowObs;
 	else if (args.contains(QStringLiteral("--theme=contrast")))
 		g_theme = ThemeChoice::HighContrast;
+	// OUR light theme, which is a different thing from "OBS is light" below:
+	// this is the one the operator picks in Settings ▸ Interfaccia, and with
+	// --host=obs it is the reported configuration exactly — a light panel in
+	// a dark OBS.
+	else if (args.contains(QStringLiteral("--theme=ourlight")))
+		g_theme = ThemeChoice::Light;
 	g_pal = app.palette();
 	if (args.contains(QStringLiteral("--theme=light"))) {
 		// A LIGHT theme by hand, because the only way to know the derived
@@ -1636,6 +3425,7 @@ int main(int argc, char **argv)
 		g_pal.setColor(QPalette::HighlightedText, QColor("#ffffff"));
 	}
 	g_sc = schemeFor(g_theme, g_pal);
+	refreshSheetAssets();
 	g_tints = tintsFor(g_sc);
 
 	if (args.contains(QStringLiteral("--check"))) {
@@ -1645,7 +3435,37 @@ int main(int argc, char **argv)
 		lp.setColor(QPalette::Base, QColor("#ffffff"));
 		lp.setColor(QPalette::Highlight, QColor("#2f6fd0"));
 		lp.setColor(QPalette::HighlightedText, QColor("#ffffff"));
-		return runChecks(lp);
+		// The pictures the host pass reads back are worth keeping when a
+		// folder was named: a failed pixel check is answered by looking.
+		const QString shots = args.size() > 1 && !args[1].startsWith("--")
+					      ? args[1]
+					      : QString();
+		if (!shots.isEmpty())
+			QDir().mkpath(shots);
+		return runChecks(lp, app, shots);
+	}
+
+	// The settings dialog on its own, which is the half of the panel no
+	// resize sweep has ever rendered.
+	if (args.contains(QStringLiteral("--settings"))) {
+		auto *host = new Mock();
+		QDialog *dlg = buildSettingsMock(host);
+		dlg->resize(820, 560);
+		dlg->show();
+		if (args.contains(QStringLiteral("--show")))
+			return app.exec();
+		for (int i = 0; i < 6; i++) {
+			QApplication::processEvents();
+			QApplication::sendPostedEvents();
+		}
+		const QString outDir = args.size() > 1 && !args[1].startsWith("--")
+					       ? args[1]
+					       : QStringLiteral(".");
+		QDir().mkpath(outDir);
+		dlg->grab().save(
+			QDir(outDir).filePath(QStringLiteral("mock-settings.png")));
+		std::printf("wrote mock-settings.png\n");
+		return 0;
 	}
 
 	auto *w = new Mock();
@@ -1715,3 +3535,7 @@ int main(int argc, char **argv)
 	}
 	return 0;
 }
+
+// A Q_OBJECT in a single-file program: moc writes main.moc and it is included
+// here. See the macro on Mock for why that class needs one at all.
+#include "main.moc"

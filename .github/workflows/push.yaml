@@ -34,6 +34,36 @@ jobs:
       run:
         shell: bash
     steps:
+      # THE TAG AND THE BINARY HAVE TO AGREE ON WHAT THIS BUILD IS.
+      #
+      # The DLL reports buildspec's `version` + `prerelease` (see
+      # PLUGIN_VERSION_FULL in CMakeLists.txt); the release is named by the tag.
+      # If those two ever diverge, the updater compares the wrong pair of
+      # versions and silently stops offering updates to everyone running this
+      # build — which is exactly what happened while the binary said "1.0.0" and
+      # the tag said "1.0.0-beta7". So they are compared here, and a release
+      # whose tag disagrees is not published at all.
+      - name: Check Out Sources 📥
+        if: github.ref_type == 'tag'
+        uses: actions/checkout@v4
+
+      - name: Check Tag Matches buildspec 🧾
+        if: github.ref_type == 'tag'
+        run: |
+          : Check Tag Matches buildspec 🧾
+          if [[ "${RUNNER_DEBUG}" ]]; then set -x; fi
+
+          version="$(jq -r '.version' buildspec.json)"
+          pre="$(jq -r '.prerelease // ""' buildspec.json)"
+          declared="${version}"
+          [[ -n "${pre}" ]] && declared="${version}-${pre}"
+
+          if [[ "${GITHUB_REF_NAME}" != "${declared}" ]]; then
+            echo "::error::tag '${GITHUB_REF_NAME}' does not match the version this build reports ('${declared}'). Update buildspec.json's version/prerelease, or retag."
+            exit 1
+          fi
+          echo "tag and buildspec agree on ${declared}"
+
       - name: Check Release Tag ☑️
         id: check
         run: |

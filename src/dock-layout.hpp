@@ -39,6 +39,8 @@
 #include <QVector>
 #include <QWidget>
 
+#include <algorithm>
+
 #include <functional>
 
 class QGridLayout;
@@ -68,6 +70,80 @@ inline constexpr int kKeyH = 26;
 inline constexpr int kKeyFoldedH = 22;
 // Between two rows of one section.
 inline constexpr int kBandVGap = 4;
+
+// ---------------------------------------------------------------------------
+// THE HEIGHT A SECTION PINNED ON A KEY, AND WHY IT HAS TO BE WRITTEN DOWN
+// ---------------------------------------------------------------------------
+//
+// KeyBlock::apply() calls setFixedHeight() on every key it places, so that a
+// key spanning two rows is two rows tall. That looks like it should hold: a
+// fixed height is a minimum and a maximum, and nothing in a style sheet is
+// supposed to reach it.
+//
+// A STYLE SHEET REACHES IT. Qt applies a rule's `min-height` by calling
+// setMinimumSize() ON THE WIDGET during polish — it is not a hint, it is a
+// write. And this panel has a rule that deliberately stands the pinned keys'
+// min-height DOWN to zero (see the note beside it in dock-style.hpp), because
+// the role rules state 26 px worth of content and a folded key owns 22. So the
+// first time the sheet is re-applied — a theme change, or a re-polish after a
+// property like `recording` flips — every pinned key's minimum drops to the
+// padding, the maximum stays where the section put it, and the layout settles
+// it somewhere in between.
+//
+// Measured: the green play key 56 px at start-up and 46 px after a theme
+// change, which is the "the play key is not two rows any more" report.
+//
+// So the height is stamped on the key as well as set, and restored after
+// anything that re-polishes. One number, one place that computes it.
+inline const char *kPinnedHeightProperty = "mrPinnedH";
+
+// Put back the height its section gave each key under `root`. Cheap and
+// idempotent: a key with no stamp is left alone.
+void repinKeys(QWidget *root);
+
+// ---------------------------------------------------------------------------
+// HOW TALL THE MONITORING ROW MAY BE — ONE COPY OF IT
+// ---------------------------------------------------------------------------
+//
+// It was two: the panel had one and the mockup had another, and they had drifted
+// apart in a way that mattered — the mockup honoured the divider the operator
+// had dragged between the pictures and the list, and the panel did not. At the
+// same size and on the same rig the two produced 357 px cameras and 237 px
+// cameras. The mockup is what every layout decision is judged on, so the panel
+// was being judged against a panel that did not exist.
+//
+// IT MUST NOT BE READ OFF THE ROW ITSELF. The row's height is DERIVED from the
+// arrangement this number chooses, so feeding it back makes a pass decide from
+// whatever the widget happened to be mid-settle — measured once at 100 px, which
+// picked an arrangement of 78 px stamps. What the splitter is willing to give
+// depends on the panel and a constant, so it is the same answer on every pass.
+//
+// ...BUT ONCE THE OPERATOR HAS MOVED THE DIVIDER, that IS the answer, and it is
+// stable for the same reason: it has stopped being derived from anything.
+struct MonitorRoom {
+	int panelH;    // the whole panel
+	int splitterH; // the body splitter: pictures + list
+	int leftColH;  // what the picture side actually has
+	int controlsH; // the keys, when they are in that column (Short)
+	int listFloor; // how much list is kept whatever the pictures ask for
+	bool bodyChosen; // has the operator dragged the pictures/list divider
+	bool wide;       // the half-the-panel cap applies only to the wide shape
+};
+
+inline int monitorRoomFor(const MonitorRoom &m)
+{
+	if (m.bodyChosen && m.leftColH > 0)
+		return std::max(40, m.leftColH - m.controlsH);
+	int room = m.splitterH - m.listFloor - m.controlsH;
+	// ...AND THE PICTURES MAY NOT HAVE MORE THAN HALF THE PANEL. Past that
+	// the list stops being a list. The cap belongs HERE, with the rest of the
+	// answer, because the tile arithmetic asks the same question and the two
+	// answers have to be one — they were two, and the cameras came out sized
+	// for a block a third taller than the one they were given.
+	if (m.wide)
+		room = std::min(room, m.panelH / 2);
+	return std::max(40, room);
+}
 // A SECTION'S CAPTION, and it has two heights because it is worth two different
 // amounts. Side by side, a caption is how the eye tells six groups apart at a
 // glance and it is cheap — one line across the whole strip. STACKED, there is
@@ -408,6 +484,38 @@ class KeyBlock : public QWidget {
 public:
 	KeyBlock(const QString &caption, QWidget *parent);
 
+	// The caption label, or nullptr for a section built with an empty one
+	// (most of them).
+	QLabel *captionLabel() const { return cap_; }
+
+	// TELL THE SECTION IT HAS NOTHING TO SHOW, RIGHT NOW, FOR A REASON THAT
+	// IS NOT ITS SHAPE — channel B switched off, and the bay-selector
+	// section (camera-dedup.hpp's matching case one layer up) is meant to
+	// be entirely absent rather than merely empty underneath.
+	//
+	// This is NOT the same question as `flatActive_`, and apply() used to
+	// treat it as though it were: its caption line was `cap_->setVisible(
+	// !flatActive_)`, on the (correct, but incomplete) theory that a
+	// stacked panel drops captions to save the line — see the comment on
+	// that line for why. A caller outside this class hiding cap_() directly
+	// (captionLabel()->setVisible(false), the first attempt at this) works
+	// for exactly one frame: the very next time anything reapplies this
+	// section's shape — ControlStrip::measure() does, on every resize,
+	// every theme change, every poll tick that touches ANY section — apply()
+	// runs again and that unconditional line puts the caption right back,
+	// with no idea a caller had ever asked for anything else. The keys
+	// inside the section do not have this problem: the cell-placement loop
+	// a little further down apply() explicitly reads a cell widget's
+	// visibility before touching it and restores it afterward ("VISIBILITY
+	// IS THE CALLER'S") — the caption line never got the same treatment
+	// because nothing outside this class needed to touch a caption before
+	// channel B did.
+	//
+	// So the section needs to be able to say so ITSELF, in a way apply()
+	// consults on every pass, not a property an outsider pokes at once and
+	// hopes survives the next relayout.
+	void setSectionVisible(bool visible);
+
 	// Both arrangements are declared by hand — see the note at the top.
 	// `flat` may be empty, which means "this section has only one shape".
 	void setShapes(const BlockShape &tall, const BlockShape &flat);
@@ -457,6 +565,7 @@ private:
 	BlockShape tall_, flat_;
 	std::function<void(bool)> onShape_;
 	bool flatActive_ = false;
+	bool sectionHidden_ = false;
 	bool applied_ = false;
 	int stretchFrom_ = -1, stretchTo_ = -1;
 };

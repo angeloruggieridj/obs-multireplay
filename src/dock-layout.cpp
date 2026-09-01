@@ -440,12 +440,40 @@ TileBlock tileBlockFor(int paneW, int bays, int n, int gap, int maxH)
 	int th = std::max(1, (h - (rows - 1) * kTileGap) / rows - tagH);
 	int tw = std::clamp(th * 16 / 9, kTileMinWidth, ceiling);
 	th = aspect(tw);
+	const int blockW = cols * tw + (cols - 1) * kTileGap;
+
+	// THE ROW STILL SPANS THE PANE AFTER h HAS BEEN CLAMPED.
+	//
+	// h is solved so that bays*aw(h) + block(h) == paneW — the row is exactly
+	// as wide as the pane. maxH (monitorRoomH: the list's floor, and the
+	// half-panel rule) then caps h, and finalBayW/blockW below are taken from
+	// the CAPPED h. At that shorter height a 16:9 row of this composition is
+	// narrower than the pane, and the difference used to come back as dead
+	// panel — the bays' AspectBox letterboxed it and the tile grid left it
+	// trailing. The note under the clamp called this out ("the row simply
+	// stops short of the pane's width") and accepted it; on a tall Wide panel
+	// with two tile rows it is a band up to ~185 px wide (measured: eight
+	// cameras at 1456).
+	//
+	// The tiles are confidence monitors and keep the size their height gives
+	// them; the freed width goes to the BAYS, which are what is being watched.
+	// Their AspectBox still centres a 16:9 picture, so A/B sit centred in a
+	// slightly wider slot instead of the row falling short of the edge. Only
+	// ever a widen: a bay narrower than aw(h) would letterbox vertically,
+	// which is worse, and the caller already clamps an over-wide block.
+	int finalBayW = std::max(40, (h - tagH) * 16 / 9);
+	if (bays > 0) {
+		const int filled = (paneW - blockW - gap * bays) / bays;
+		if (filled > finalBayW)
+			finalBayW = filled;
+	}
+
 	best = {cols,
 		tw,
 		th,
-		cols * tw + (cols - 1) * kTileGap,
+		blockW,
 		rows * (th + tagH) + (rows - 1) * kTileGap,
-		std::max(40, (h - tagH) * 16 / 9),
+		finalBayW,
 		h};
 	return best;
 }
@@ -565,6 +593,15 @@ void KeyBlock::setOnShape(std::function<void(bool flat)> fn)
 	apply();
 }
 
+void KeyBlock::setSectionVisible(bool visible)
+{
+	if (sectionHidden_ == !visible)
+		return;
+	sectionHidden_ = !visible;
+	applied_ = false;
+	apply();
+}
+
 void KeyBlock::apply()
 {
 	if (applied_)
@@ -590,7 +627,13 @@ void KeyBlock::apply()
 		// Six labelled boxes down a narrow panel is also what "too
 		// fragmented" looks like from the operator's chair: the labels were
 		// part of the fragmentation, not the cure for it.
-		cap_->setVisible(!flatActive_);
+		// !sectionHidden_ too: an outsider who has told this section it
+		// has nothing to show right now (channel B off — see
+		// setSectionVisible()) means it on every relayout, not just the
+		// one where it asked. Folding still wins on its own terms when
+		// the section is NOT hidden: a stacked panel drops captions to
+		// save the line regardless of channel B.
+		cap_->setVisible(!flatActive_ && !sectionHidden_);
 		cap_->setFixedHeight(kCaptionH);
 	}
 
@@ -643,8 +686,13 @@ void KeyBlock::apply()
 			// rule at the end of the sheet stands the min-height down.
 			if (auto *btn = qobject_cast<QAbstractButton *>(cell.w)) {
 				const int h = flatActive_ ? kKeyFoldedH : kKeyH;
-				btn->setFixedHeight(cell.rowSpan * h +
-						    (cell.rowSpan - 1) * kBandVGap);
+				const int pinned = cell.rowSpan * h +
+						   (cell.rowSpan - 1) * kBandVGap;
+				// STAMPED AS WELL AS SET: a style sheet's
+				// min-height is written onto the widget by Qt,
+				// so the next re-polish drops this. See
+				// kPinnedHeightProperty.
+				btn->setProperty(kPinnedHeightProperty, pinned);
 				if (!btn->property("mrPinned").toBool()) {
 					btn->setProperty("mrPinned", true);
 					if (btn->style()) {
@@ -652,6 +700,9 @@ void KeyBlock::apply()
 						btn->style()->polish(btn);
 					}
 				}
+				// AFTER the polish, never before: polishing is
+				// one of the things that drops this.
+				btn->setFixedHeight(pinned);
 			}
 			const bool wantVisible = !cell.w->isHidden();
 			cell.w->setParent(body_);
@@ -679,6 +730,32 @@ void KeyBlock::apply()
 // ---------------------------------------------------------------------------
 // ControlStrip
 // ---------------------------------------------------------------------------
+
+void repinKeys(QWidget *root)
+{
+	if (!root)
+		return;
+	const auto restore = [](QWidget *w) {
+		auto *b = qobject_cast<QAbstractButton *>(w);
+		if (!b)
+			return;
+		const QVariant h = b->property(kPinnedHeightProperty);
+		if (!h.isValid())
+			return;
+		const int px = h.toInt();
+		// Only when it has actually been lost. setFixedHeight on a
+		// widget that already has it is not free — it invalidates the
+		// layout — and this runs over every key on the panel.
+		if (px > 0 && (b->minimumHeight() != px || b->maximumHeight() != px))
+			b->setFixedHeight(px);
+	};
+	// ROOT INCLUDED, because the two callers want different halves of that:
+	// a theme change hands over the whole panel, and a property flip hands
+	// over the one key whose property flipped.
+	restore(root);
+	for (QAbstractButton *b : root->findChildren<QAbstractButton *>())
+		restore(b);
+}
 
 ControlStrip::ControlStrip(QWidget *parent) : QWidget(parent)
 {

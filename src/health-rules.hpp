@@ -260,8 +260,13 @@ inline PreflightResult preflight(const PreflightInput &in)
 				in.camerasConfigured - in.camerasWithSource,
 				in.camerasConfigured));
 
+	// Info, not Warning: a later slot naming an earlier one's source shares
+	// that slot's filter and encoder rather than building a second one
+	// (camera-dedup.hpp / branch-output-control.hpp), so this is no longer a
+	// resource cost — it is only worth telling the operator that two angle
+	// buttons will show the same picture.
 	if (in.duplicateSourceSlots > 0)
-		add(Level::Warning, "duplicate_camera_source",
+		add(Level::Info, "duplicate_camera_source",
 		    detail::fmt("%d", in.duplicateSourceSlots));
 
 	if (!in.encoderAvailable)
