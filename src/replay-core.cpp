@@ -1354,6 +1354,9 @@ void ReplayCore::loadConfigFile(const char *path, bool projectScoped)
 	config_.toOutputOnPlay = !obs_data_has_user_value(data, "toOutputOnPlay") ||
 				 obs_data_get_bool(data, "toOutputOnPlay");
 	config_.abOutputUsesB = obs_data_get_bool(data, "abOutputUsesB");
+	// Missing means OFF here — a replay that used to play with sound must not
+	// come back silent for anyone who opens a config.json written before this.
+	config_.muteReplayAudio = obs_data_get_bool(data, "muteReplayAudio");
 	config_.replaySourceName =
 		obs_data_get_string(data, "replaySourceName");
 	config_.musicSourceName =
@@ -1537,6 +1540,7 @@ void ReplayCore::saveConfigFile(const char *path) const
 	obs_data_set_bool(data, "doubleClickPlays", config_.doubleClickPlays);
 	obs_data_set_bool(data, "toOutputOnPlay", config_.toOutputOnPlay);
 	obs_data_set_bool(data, "abOutputUsesB", config_.abOutputUsesB);
+	obs_data_set_bool(data, "muteReplayAudio", config_.muteReplayAudio);
 	obs_data_set_string(data, "replaySourceName",
 			    config_.replaySourceName.c_str());
 	obs_data_set_string(data, "musicSourceName",

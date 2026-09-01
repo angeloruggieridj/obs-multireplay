@@ -483,6 +483,27 @@ obs_source_t *ReplayChannel::acquireSource()
 	return source_ ? obs_source_get_ref(source_) : nullptr;
 }
 
+void ReplayChannel::setMuted(bool muted)
+{
+	obs_source_t *src = acquireSource();
+	if (!src)
+		return;
+	if (obs_source_muted(src) != muted)
+		obs_source_set_muted(src, muted);
+	obs_source_release(src);
+}
+
+bool ReplayChannel::muted() const
+{
+	obs_source_t *src =
+		const_cast<ReplayChannel *>(this)->acquireSource();
+	if (!src)
+		return false;
+	const bool m = obs_source_muted(src);
+	obs_source_release(src);
+	return m;
+}
+
 void ReplayChannel::setOnFinished(std::function<void()> fn)
 {
 	std::lock_guard<std::mutex> lock(mutex_);

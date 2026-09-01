@@ -4180,6 +4180,19 @@ KeyBlock *MultiReplayDock::buildTransport()
 			showNotice(QString::fromStdString(why));
 	});
 
+	// MUTE — the replay input(s) sit muted in the OBS mixer, so every replay
+	// plays silent. It LATCHES: a new replay does not clear it, NOW/Live do
+	// not, only the operator does (this key, its hotkey, or the Settings
+	// checkbox that seeds it). Follows the A|B / A / B selector, exactly like
+	// music. Music on + mute on = the clips play under the music track alone.
+	muteBtn_ = statusToggle(Icon::Mute, obs_module_text("Dock.Mute"), "muteAudio",
+				obs_module_text("Dock.MuteHint"), this);
+	muteBtn_->setChecked(ReplayCore::instance().getConfig().muteReplayAudio);
+	connect(muteBtn_, &QPushButton::toggled, this, [this](bool on) {
+		for (Which w : targetChannels())
+			ReplayChannel::instance(w).setMuted(on);
+	});
+
 	toOutputBtn_ = statusToggle(Icon::ToOutput,
 				    obs_module_text("Dock.ToOutput"), "toOutput",
 				    obs_module_text("Dock.ToOutput"), this);
@@ -4345,7 +4358,7 @@ QWidget *MultiReplayDock::buildStatusBar(QWidget *parent)
 	sep->setObjectName(QStringLiteral("mrStatSep"));
 	sep->setFixedWidth(1);
 	h->addWidget(sep);
-	for (QPushButton *b : {loopBtn_, musicBtn_, toOutputBtn_}) {
+	for (QPushButton *b : {loopBtn_, musicBtn_, muteBtn_, toOutputBtn_}) {
 		b->setParent(statusBar_);
 		b->setFixedHeight(kStatusBarH - 4);
 		// THE LAYOUT OWNS THE HEIGHT, so the style sheet must not also have
@@ -5437,6 +5450,14 @@ void MultiReplayDock::registerDockHotkeys()
 		 [](MultiReplayDock *d) {
 			 EventStore::instance().markCancel();
 			 d->refreshEvents();
+		 }},
+		// Mute / unmute the replay audio in the OBS mixer. Calls the key
+		// of the same name, so a Stream Deck runs the same path as a
+		// click — and the mute latches: nothing but this clears it.
+		{"ReplayMuteAudio", "Hotkey.MuteAudio",
+		 [](MultiReplayDock *d) {
+			 if (d->muteBtn_)
+				 d->muteBtn_->toggle();
 		 }},
 		// Speed presets: the same path as the chips, so they re-cue the
 		// current clip at the new speed instead of only changing a number.
@@ -7451,6 +7472,16 @@ void MultiReplayDock::poll()
 	// off the fast path.
 	if (refreshStatus) {
 		applyChannelBVisibility();
+		// ...AND HOLD THE REPLAY AUDIO WHERE THE MUTE KEY SAYS. A source
+		// re-created on a collection reload comes back unmuted, and OBS's
+		// own mixer must not be the thing that lifts a mute the operator
+		// set here — so the key's state is re-asserted onto the bay(s) it
+		// targets. setMuted() early-outs when the source already agrees.
+		if (muteBtn_) {
+			const bool want = muteBtn_->isChecked();
+			for (Which w : targetChannels())
+				ReplayChannel::instance(w).setMuted(want);
+		}
 		// ...and whether the panel is floating, which is the only state
 		// in which there is a screen for it to take. Same beat, same
 		// reason: pulling a dock out of OBS is a deliberate gesture, and
@@ -9841,6 +9872,14 @@ void MultiReplayDock::openSettings()
 	});
 	outPage->addRow(obs_module_text("Dock.MusicFile"), musicRow);
 
+	// The starting position of the panel's Mute key. On, and every replay
+	// plays silent until the operator lifts it — the key never lifts itself.
+	// Global, like the theme: a habit of the operator's, not of the match.
+	auto *muteAudio = new QCheckBox(&dlg);
+	muteAudio->setChecked(cfg.muteReplayAudio);
+	muteAudio->setToolTip(obs_module_text("Dock.MuteReplayAudioHint"));
+	outPage->addRow(obs_module_text("Dock.MuteReplayAudio"), muteAudio);
+
 	// ── Events ────────────────────────────────────────────────────────
 	QFormLayout *evPage = addPage("Dock.SetEvents", "Dock.SetEventsBlurb");
 
@@ -10201,6 +10240,7 @@ void MultiReplayDock::openSettings()
 	cfg.abOutputUsesB = abOut->currentData().toBool();
 	cfg.musicSourceName = music->currentData().toString().toStdString();
 	cfg.musicFilePath = musicFile->text().trimmed().toStdString();
+	cfg.muteReplayAudio = muteAudio->isChecked();
 	cfg.transitionInName = transIn->currentData().toString().toStdString();
 	cfg.transitionOutName = transOut->currentData().toString().toStdString();
 	cfg.transitionMs = transMs->value();
@@ -10225,6 +10265,10 @@ void MultiReplayDock::openSettings()
 	// Applies immediately, so the operator sees the answer to the checkbox he
 	// just ticked without waiting for the next replay.
 	ReplayChannel::instance().applyCanvasFit(cfg.fitReplayToCanvas);
+	// Same: move the panel's Mute key to the new default now. Its toggled
+	// handler only calls setMuted(), never setConfig(), so there is no loop.
+	if (muteBtn_ && muteBtn_->isChecked() != cfg.muteReplayAudio)
+		muteBtn_->setChecked(cfg.muteReplayAudio);
 	// The colours, immediately: a theme picked in a dialog and applied on the
 	// next restart is a setting the operator cannot judge.
 	applyTheme();

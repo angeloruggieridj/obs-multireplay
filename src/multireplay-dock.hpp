@@ -1475,6 +1475,7 @@ private:
 	QPushButton *toOutputBtn_ = nullptr;
 	QPushButton *loopBtn_ = nullptr;
 	QPushButton *musicBtn_ = nullptr;
+	QPushButton *muteBtn_ = nullptr;
 	// Which camera each per-camera table column PAIR stands for (0-based), in
 	// column order starting at kColFirstCam. Empty = no camera configured.
 	std::vector<int> camCols_;

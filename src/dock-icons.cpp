@@ -371,6 +371,23 @@ void buildPaths(Icon id, QPainterPath &fill, QPainterPath &line)
 		fill.addEllipse(QPointF(15.6, 14.6), 3.0, 2.5);
 		break;
 
+	case Icon::Mute:
+		// A speaker with an X where the sound waves would be — the mark
+		// every mixer uses for a muted channel. The replay audio is held
+		// muted in the OBS mixer; nothing but the operator clears it.
+		fill.moveTo(5, 9.5);
+		fill.lineTo(8.5, 9.5);
+		fill.lineTo(12.5, 5.5);
+		fill.lineTo(12.5, 18.5);
+		fill.lineTo(8.5, 14.5);
+		fill.lineTo(5, 14.5);
+		fill.closeSubpath();
+		line.moveTo(15.5, 9.5);
+		line.lineTo(19.5, 14.5);
+		line.moveTo(19.5, 9.5);
+		line.lineTo(15.5, 14.5);
+		break;
+
 	case Icon::ToOutput:
 		// Out of the panel and into the programme: a screen with the
 		// picture leaving it.

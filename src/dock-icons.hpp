@@ -99,6 +99,7 @@ enum class Icon {
 	Live,
 	Loop,
 	Music,
+	Mute, // speaker with a slash — the replay audio sits muted in the mixer
 	ToOutput,
 	Zoom,
 	Health,

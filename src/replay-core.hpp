@@ -93,6 +93,13 @@ struct Config {
 	// With A|B linked, only ONE scene can be in Program, so "to output" has to
 	// be told which bay's scene it means. false = A's, true = B's.
 	bool abOutputUsesB = false;
+	// Start the panel's Mute key held? When it is held, the replay input
+	// source(s) sit muted in the OBS mixer, so every replay plays silent —
+	// and NOTHING clears it but the operator (the key, its hotkey, or this
+	// checkbox). GLOBAL, like uiTheme: whether an operator runs muted replays
+	// is a habit of his, not a fact of the match. Same seed rule as
+	// toOutputOnPlay — the key is the live state, this is the default.
+	bool muteReplayAudio = false;
 	// Legacy: the replay is a plugin-provided OBS input the operator places
 	// himself, so nothing drives a Media Source any more. Kept so an existing
 	// config.json round-trips unchanged.

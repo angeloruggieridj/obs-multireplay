@@ -337,6 +337,12 @@ struct DockChecks {
 	bool idPadded = false;
 	bool doubleClickPlays = false;
 	bool frameStepAdvances = false;
+	// The Mute key holds the replay input muted in the OBS mixer, and it
+	// LATCHES: what is checked is that turning it on mutes the source, that
+	// starting a replay afterwards leaves it muted (no auto-unmute), and that
+	// turning it off unmutes. The state is read off the real source, not the
+	// button.
+	bool muteKeySilencesReplay = false;
 	// v1.3: the two backwards keys, on the real widgets. A step back is the
 	// one transport gesture that can look like it worked while doing nothing —
 	// played forwards from one frame back it would come to rest on the frame
@@ -3404,6 +3410,76 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 		pc.stopEvents();
 	}
 
+	// --- the Mute key silences the replay, and it latches -----------------
+	// Found by mrKey, not by label. On => the replay input is muted in the
+	// mixer; a replay started afterwards stays muted (nothing auto-unmutes);
+	// off => unmuted. The truth is read off the real source.
+	{
+		auto &pc = PlaybackCoordinator::instance();
+		auto &chan = ReplayChannel::instance();
+		pc.stopEvents();
+		chan.stop();
+
+		QPushButton *muteKey = nullptr;
+		runOnUi([&]() {
+			for (QPushButton *b :
+			     dock->findChildren<QPushButton *>()) {
+				if (b->property(kKeyProperty).toString() ==
+				    QStringLiteral("muteAudio"))
+					muteKey = b;
+			}
+			// Start from a known state.
+			if (muteKey && muteKey->isChecked())
+				muteKey->setChecked(false);
+		});
+		std::this_thread::sleep_for(std::chrono::milliseconds(120));
+		const bool unmutedAtRest = muteKey && !chan.muted();
+
+		runOnUi([&]() {
+			if (muteKey)
+				muteKey->setChecked(true);
+		});
+		std::this_thread::sleep_for(std::chrono::milliseconds(120));
+		const bool mutedAfterKey = muteKey && chan.muted();
+
+		// A replay must NOT lift it.
+		std::string perr;
+		runOnUi([&]() {
+			PlaybackCoordinator::instance().playEvents(
+				{evId}, 0, false, perr,
+				PlaybackCoordinator::AngleMode::AllEnabled);
+		});
+		bool stillMutedWhilePlaying = false;
+		for (int i = 0; i < 40; i++) {
+			std::this_thread::sleep_for(
+				std::chrono::milliseconds(50));
+			if (pc.playState().active) {
+				stillMutedWhilePlaying = chan.muted();
+				break;
+			}
+		}
+		pc.stopEvents();
+		chan.stop();
+		std::this_thread::sleep_for(std::chrono::milliseconds(120));
+		const bool stillMutedAfterStop = chan.muted();
+
+		runOnUi([&]() {
+			if (muteKey)
+				muteKey->setChecked(false);
+		});
+		std::this_thread::sleep_for(std::chrono::milliseconds(120));
+		const bool unmutedAfterKey = muteKey && !chan.muted();
+
+		c.muteKeySilencesReplay = unmutedAtRest && mutedAfterKey &&
+					  stillMutedWhilePlaying &&
+					  stillMutedAfterStop && unmutedAfterKey;
+		obs_log(c.muteKeySilencesReplay ? LOG_INFO : LOG_ERROR,
+			"[selftest] dock: mute key — rest %d, after key %d, "
+			"while playing %d, after stop %d, unmuted %d",
+			unmutedAtRest, mutedAfterKey, stillMutedWhilePlaying,
+			stillMutedAfterStop, unmutedAfterKey);
+	}
+
 	// --- the running order is the operator's ------------------------------
 	// The ▲/▼ keys have to move the ROW, not just a field nobody draws: the
 	// order the table shows IS the order a sequence plays in. Checked on the
@@ -5918,6 +5994,7 @@ void runSelfTest()
 			  dockChecks.markInheritsAngle && dockChecks.idPadded &&
 			  dockChecks.doubleClickPlays &&
 			  dockChecks.frameStepAdvances &&
+			  dockChecks.muteKeySilencesReplay &&
 			  dockChecks.multiviewBuilt &&
 			  dockChecks.multiviewDisplaysLive &&
 			  dockChecks.previewsNeverStarved &&
@@ -6074,6 +6151,8 @@ void runSelfTest()
 			  dockChecks.doubleClickPlays);
 	obs_data_set_bool(checks, "dock_frame_step_advances",
 			  dockChecks.frameStepAdvances);
+	obs_data_set_bool(checks, "mute_key_silences_replay_source",
+			  dockChecks.muteKeySilencesReplay);
 	// v1.3: and the two backwards keys, clicked for real. The step back is
 	// measured against the frame the forward steps left on screen — the naive
 	// implementation lands on that very frame, and would pass a check that only

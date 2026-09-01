@@ -1022,6 +1022,10 @@ private:
 					QStringLiteral("music"),
 					QStringLiteral("Musica sotto il replay"));
 		h->addWidget(music);
+		auto *mute = statusKey(Icon::Mute, QStringLiteral("MUTO"),
+				       QStringLiteral("muteAudio"),
+				       QStringLiteral("Replay mutato nel mixer"));
+		h->addWidget(mute);
 		auto *out = statusKey(Icon::ToOutput, QStringLiteral("IN OUTPUT"),
 				      QStringLiteral("toOutput"),
 				      QStringLiteral("Il replay prende il Program"));

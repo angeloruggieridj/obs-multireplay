@@ -108,6 +108,13 @@ public:
 	// reported in a dialog, on the way out. ensureSource() re-adopts afterwards.
 	void releaseSource();
 
+	// Mute this replay input in the OBS mixer. LATCHES: the panel's Mute key
+	// drives it and nothing else touches it — not a new clip, not NOW/Live.
+	// No-op with no source yet; the dock re-asserts on its slow beat so a
+	// source re-created on a collection reload comes back in the right state.
+	void setMuted(bool muted);
+	bool muted() const;
+
 	Which which() const { return which_; }
 	// The OBS input name the operator will look for.
 	const char *sourceName() const;
