@@ -366,29 +366,13 @@ TileBlock tileBlockFor(int paneW, int bays, int n, int gap, int maxH)
 	// Proportional, not a constant: see kTileMaxShare.
 	const int ceiling =
 		std::max(kTileMinWidth, (int)(paneW * kTileMaxShare));
-	// A first guess at the bays' width, only so their height can be had.
-	const int aw0 = std::max(
-		40, (paneW - (int)(paneW * kTileShare) - gap * bays) / bays);
-	int bayH = aspect(aw0);
-	if (maxH > 0)
-		bayH = std::min(bayH, maxH);
 
-	// THE TARGET IS WHAT IS LEFT AFTER THE BAYS, not a flat share of the pane.
-	//
-	// It was `paneW * 22%`, and on a maximised panel that is the whole of "the
-	// cameras are small and there is a lot of empty space": the bays are
-	// limited by the HEIGHT the block was given, so at 1920x517 a 16:9 A comes
-	// out 898 px wide and leaves 1017 - while a 22% target asked for 422 and
-	// got a narrow stacked column with nearly 600 px of black beside it.
-	//
-	// Aiming at the leftover, the same two cameras go side by side and the
-	// block fills the width. What cannot be filled is the height: three 16:9
-	// pictures do not tile a 3.7:1 rectangle, and the arrangement that wastes
-	// least is the one that is chosen rather than the one that was written
-	// down.
-	const int bayW = std::max(40, (bayH - AspectBox::kTagH) * 16 / 9);
-	const int target = std::max(kTileMinWidth,
-				    paneW - bays * bayW - gap * bays);
+	// THE CAMERAS FILL THE WIDTH; the height is what cannot always be filled —
+	// three 16:9 pictures do not tile a 3.7:1 rectangle — so the arrangement
+	// that wastes least is the one chosen rather than one written down. Aiming
+	// at a flat share of the pane instead (it was 22%) starved them: beside a
+	// height-bound 16:9 A on a maximised panel that share was a narrow stacked
+	// column with hundreds of px of black next to it.
 
 	// ONE ROW UP TO THREE, TWO ROWS BEYOND — DECLARED, NOT SCORED.
 	//

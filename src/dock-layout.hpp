@@ -437,10 +437,7 @@ struct TileBlock {
 
 // A tile below this is not a confidence monitor any more.
 inline constexpr int kTileMinWidth = 78;
-// The share of the monitoring pane the camera block is aimed at. They are
-// confidence monitors: the bays are what is being watched.
-inline constexpr double kTileShare = 0.22;
-// ...AND THE CEILING IS A SHARE TOO, which is the whole of "the cameras are
+// THE CEILING IS A SHARE, which is the whole of "the cameras are
 // still much smaller than A". It was a constant 150 px while every other number
 // in this block was proportional, so on a 1000 px panel beside an 840 px A the
 // cameras came out as two stamps with 270 px of empty panel under them. A
