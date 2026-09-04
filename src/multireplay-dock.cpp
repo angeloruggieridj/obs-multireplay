@@ -1659,9 +1659,12 @@ QWidget *MultiReplayDock::buildToolbar()
 
 	projectLbl_ = new QLabel(box);
 	projectLbl_->setObjectName("mrMuted");
-	projectLbl_->setStyleSheet(
-		QString("color: %1; font-size: 9px; padding: 0 4px;")
-			.arg(sc().accent));
+	// A PROPERTY, not a per-widget style sheet: see the mrProject rule in
+	// dock-style.hpp. setStyleSheet() on one widget opens a separate style
+	// context and forces a re-polish of its subtree — measured elsewhere on
+	// this panel at >100 ms — and it does not follow a theme change on its
+	// own, which is why this used to be set twice, here and in applyTheme().
+	projectLbl_->setProperty("mrProject", true);
 	projectLbl_->hide();
 	h->addWidget(projectLbl_);
 	// Search and Live sit in the MIDDLE of their row, as they do on the
@@ -2785,16 +2788,14 @@ void MultiReplayDock::applyTheme()
 	repinKeys(this);
 
 	// The two painted widgets read sc() directly and are not restyled by the
-	// sheet, so they have to be told to redraw. Everything else Qt repolishes
-	// for us when the style sheet is replaced.
+	// sheet, so they have to be told to redraw. Everything else — projectLbl_
+	// included, now that its colour comes from the mrProject property rule in
+	// dock-style.hpp rather than a per-widget style sheet — Qt repolishes for
+	// us when the style sheet is replaced.
 	if (seek_)
 		seek_->update();
 	if (clipBar_)
 		clipBar_->update();
-	if (projectLbl_)
-		projectLbl_->setStyleSheet(
-			QString("color: %1; font-size: 9px; padding: 0 4px;")
-				.arg(sc().accent));
 	obs_log(LOG_INFO, "[dock] theme %d applied (panel %s, text %s)", choice,
 		qUtf8Printable(sc().panel), qUtf8Printable(sc().text));
 }

@@ -839,6 +839,10 @@ private:
 		h->setSpacing(5);
 		auto *proj = new QLabel(QStringLiteral("Partita"), box);
 		proj->setObjectName(QStringLiteral("mrMuted"));
+		// Same property the real dock sets (multireplay-dock.cpp): the
+		// project name is the theme's accent, not the plain muted grey
+		// other #mrMuted labels get.
+		proj->setProperty("mrProject", true);
 		projectLbl_ = proj;
 		h->addWidget(proj);
 		h->addStretch(1);
