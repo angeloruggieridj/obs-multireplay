@@ -4852,11 +4852,20 @@ KeyBlock *MultiReplayDock::buildExportBlock()
 			refreshEvents();
 		});
 		connect(actAll, &QAction::triggered, this, [this]() {
-			if (QMessageBox::question(
-				    this, "obs-multireplay",
-				    obs_module_text("Dock.DeleteAllConfirm"),
-				    QMessageBox::Yes | QMessageBox::No,
-				    QMessageBox::No) != QMessageBox::Yes)
+			// The buttons are OURS, not Qt's: QMessageBox::Yes/No
+			// follow Qt's own locale, not OBS's, so a panel in
+			// Italian showed English "Yes/No" on the one confirm
+			// this panel still has.
+			QMessageBox box(this);
+			box.setWindowTitle("obs-multireplay");
+			box.setText(obs_module_text("Dock.DeleteAllConfirm"));
+			QPushButton *yes = box.addButton(
+				obs_module_text("Dock.Yes"),
+				QMessageBox::YesRole);
+			box.addButton(obs_module_text("Dock.No"),
+				      QMessageBox::NoRole);
+			box.exec();
+			if (box.clickedButton() != yes)
 				return;
 			pc().stopEvents();
 			EventStore::instance().clearAll();
@@ -10172,10 +10181,14 @@ void MultiReplayDock::openSettings()
 		// replaces the plugin the moment OBS closes, and an operator who
 		// did not expect that would find a different build running at the
 		// next match.
-		if (QMessageBox::question(
-			    &dlg, "obs-multireplay",
-			    obs_module_text("Dock.UpdateInstallConfirm")) !=
-		    QMessageBox::Yes)
+		QMessageBox box(&dlg);
+		box.setWindowTitle("obs-multireplay");
+		box.setText(obs_module_text("Dock.UpdateInstallConfirm"));
+		QPushButton *yes = box.addButton(obs_module_text("Dock.Yes"),
+						  QMessageBox::YesRole);
+		box.addButton(obs_module_text("Dock.No"), QMessageBox::NoRole);
+		box.exec();
+		if (box.clickedButton() != yes)
 			return;
 		std::string err;
 		if (Updater::instance().installStaged(err)) {
