@@ -4919,9 +4919,30 @@ QPushButton *MultiReplayDock::buildExportKey()
 			return;
 		std::string err;
 		if (picked == one) {
-			for (int id : ids)
-				ExportManager::instance().exportEvent(
-					id, 0, folder.toStdString(), err);
+			// exportEvent's return value used to be thrown away here: a
+			// rejection on one clip out of a multi-selection (a bad
+			// folder mid-run, an event whose OUT never got marked)
+			// never reached the operator, and only the LAST error of
+			// the batch would have survived even if it had been kept.
+			int failed = 0;
+			std::string lastErr;
+			for (int id : ids) {
+				std::string e;
+				if (!ExportManager::instance().exportEvent(
+					    id, 0, folder.toStdString(), e)) {
+					failed++;
+					lastErr = e;
+				}
+			}
+			if (failed > 0)
+				showNotice(
+					QString("%1/%2 %3: %4")
+						.arg(failed)
+						.arg(ids.size())
+						.arg(obs_module_text(
+							"Dock.ExportClipsFailed"))
+						.arg(QString::fromStdString(
+							lastErr)));
 			return;
 		}
 		if (picked != reel)
