@@ -1060,6 +1060,12 @@ public:
 	QStringList sessionComments() const { return sessionComments_; }
 	void rememberComment(const QString &text);
 	static void restyleDock(); // reaches the live dock from the module
+	// A channel's OWN angle (1-based), regardless of which one is active.
+	// Public for the gate: currentAngle1() only ever answers for the
+	// active channel, and the fault this exists to catch — switching
+	// bays silently resetting the one being switched TO — is invisible
+	// to a check that cannot ask about the inactive one.
+	int angleOnChannel(Which which) const { return angle1_[(int)which]; }
 
 private:
 	// How many columns the camera tiles get. Two were cabled in, which is

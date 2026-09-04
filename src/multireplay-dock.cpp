@@ -5,6 +5,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
 */
 
 #include "multireplay-dock.hpp"
+#include "angle-channels.hpp"
 #include "dock-layout.hpp"
 #include "dock-style.hpp"
 #include "dock-assets.hpp"
@@ -8486,6 +8487,17 @@ void MultiReplayDock::setActiveChannel(Which which, bool linked)
 {
 	activeChannel_ = which;
 	linkedAB_ = linked;
+	// PUSH THIS CHANNEL'S OWN ANGLE INTO THE SHARED VALUE, before poll()
+	// below (or the next tick) copies that shared value back onto
+	// angle1_[activeChannel_] — see angle-channels.hpp. Without this, a
+	// bare bay switch made the copy run backwards: switch to B, prepare
+	// it on some angle with a hotkey, switch to A and touch its angle,
+	// switch back to B, and the very next tick silently reset B's angle
+	// to whatever A had just left in the shared value. Two bays exist so
+	// one can be lined up while the other is on air; an angle that does
+	// not survive being looked away from defeats that.
+	ReplayCore::instance().setCurrentAngle(
+		angle_channels::sharedAngleOnActivate(angle1_[(int)which]));
 	// The preview, the badge and the transport all read these on the next
 	// tick; nothing is stopped or started by CHOOSING a channel, because in
 	// the reference controller the selector picks where the keys go, not what is on air.

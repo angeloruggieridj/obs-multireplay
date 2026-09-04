@@ -92,3 +92,8 @@ mr_add_test(obs-multireplay-paths-tests paths "${MR_TESTS}/paths_test.cpp")
 # source, and only the first camera's preview ever shows a picture" — a
 # resource-exhaustion bug that is otherwise only visible on a real GPU.
 mr_add_test(obs-multireplay-camera-dedup-tests camera_dedup "${MR_TESTS}/camera_dedup_test.cpp")
+
+# Which angle a numbered hotkey means when two bays exist, and what a bay
+# switch must do to the value they share so switching AWAY from a bay does
+# not leave the value the OTHER bay reads from stale.
+mr_add_test(obs-multireplay-angle-channels-tests angle_channels "${MR_TESTS}/angle_channels_test.cpp")

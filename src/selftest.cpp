@@ -283,6 +283,9 @@ struct DockChecks {
 	// through the status notice instead — same channel every other rejected
 	// mark/play key on the strip already uses.
 	bool markOutWithoutOpenEventUsesNotice = false;
+	// §2.4: switching the A|B / A / B selector must not silently reset the
+	// angle of the bay being switched TO (see angle-channels.hpp).
+	bool channelSwitchKeepsAngle = false;
 	bool pollRuns = false;
 	bool pollQuiet = false;
 	bool pollResponsive = false;
@@ -1656,6 +1659,7 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 		c.channelBIsOptional = true;
 		c.releasesSourcesOnCleanup = true;
 		c.channelBIndependent = true;
+		c.channelSwitchKeepsAngle = true;
 		c.setupNotNeededWhenConfigured = true;
 		c.swapMovesClip = true;
 		c.trimMovedIn = true;
@@ -2518,6 +2522,66 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 
 			pcB.stopEvents();
 			pc.stopEvents();
+
+			// --- A BAY SWITCH MUST NOT LOSE THE ANGLE IT LEFT BEHIND --
+			// Numbered angle hotkeys know nothing about A/B: they only
+			// move the ONE shared value ReplayCore::currentAngle(),
+			// and poll() copies that onto whichever bay is active.
+			// Prepare B on one angle, touch A on a different one, come
+			// back to B and demand it is still the angle it was left
+			// on — see angle-channels.hpp for the fault this closes.
+			{
+				QPushButton *selA = nullptr;
+				runOnUi([&]() {
+					for (QPushButton *b :
+					     dock->findChildren<QPushButton *>())
+						if (b->property(kKeyProperty)
+							    .toString() ==
+						    QStringLiteral("bay0"))
+							selA = b;
+				});
+				if (selA && selB) {
+					runOnUi([&]() {
+						selB->click();
+						ReplayCore::instance()
+							.setCurrentAngle(
+								secondCam);
+					});
+					std::this_thread::sleep_for(
+						std::chrono::milliseconds(200));
+					runOnUi([&]() {
+						selA->click();
+						ReplayCore::instance()
+							.setCurrentAngle(
+								firstCam);
+					});
+					std::this_thread::sleep_for(
+						std::chrono::milliseconds(200));
+					int bAngleAfterReturn = -1;
+					runOnUi([&]() {
+						selB->click();
+						bAngleAfterReturn =
+							dock->angleOnChannel(
+								Which::B);
+					});
+					c.channelSwitchKeepsAngle =
+						bAngleAfterReturn == a2;
+					obs_log(c.channelSwitchKeepsAngle
+							? LOG_INFO
+							: LOG_ERROR,
+						"[selftest] dock: switched "
+						"A -> B, B's angle reads %d "
+						"(wanted %d, the angle it "
+						"was left on)",
+						bAngleAfterReturn, a2);
+				} else {
+					obs_log(LOG_ERROR,
+						"[selftest] dock: channel-switch "
+						"angle check skipped — bay "
+						"buttons not found");
+				}
+			}
+
 			// Hand the panel back to A, or every check after this one
 			// would be driving a channel it does not know about.
 			runOnUi([&]() {
@@ -6128,6 +6192,8 @@ void runSelfTest()
 	obs_data_set_bool(checks, "dock_registered", dockChecks.found);
 	obs_data_set_bool(checks, "mark_out_without_open_event_uses_notice",
 			  dockChecks.markOutWithoutOpenEventUsesNotice);
+	obs_data_set_bool(checks, "dock_channel_switch_keeps_angle",
+			  dockChecks.channelSwitchKeepsAngle);
 	obs_data_set_bool(checks, "dock_poll_runs", dockChecks.pollRuns);
 	obs_data_set_bool(checks, "dock_repaint_rate_sane",
 			  dockChecks.repaintRateSane);
