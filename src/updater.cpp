@@ -25,6 +25,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
 #include <fstream>
 #include <functional>
 #include <mutex>
+#include <sstream>
 #include <system_error>
 #include <vector>
 
@@ -36,6 +37,9 @@ SPDX-License-Identifier: GPL-2.0-or-later
 #define NOMINMAX
 #endif
 #include <windows.h>
+#else
+#include <sys/stat.h>
+#include <unistd.h>
 #endif
 
 namespace multireplay {
@@ -161,6 +165,14 @@ bool httpGet(const std::string &url, long timeoutSec, BodySink *body,
 	curl_easy_setopt(curl, CURLOPT_USERAGENT, kUserAgent);
 	curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
 	curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 5L);
+	// This chooses which binary an operator installs; FOLLOWLOCATION on its
+	// own follows a redirect to whatever scheme curl was built to support,
+	// which on some builds still includes file:// and legacy ftp. Both the
+	// initial request and any redirect it follows are held to https, so a
+	// compromised or misconfigured server cannot hand this process a local
+	// path or an unauthenticated transfer to read from instead.
+	curl_easy_setopt(curl, CURLOPT_PROTOCOLS_STR, "https");
+	curl_easy_setopt(curl, CURLOPT_REDIR_PROTOCOLS_STR, "https");
 	// NOT negotiable. This chooses which binary an operator installs, so a
 	// certificate that does not check out is a refusal, never a warning.
 	curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
@@ -248,8 +260,71 @@ bool pickAsset(obs_data_array_t *assets, ReleaseInfo &out)
 std::filesystem::path stagingDir()
 {
 	std::error_code ec;
-	return std::filesystem::temp_directory_path(ec) /
-	       "obs-multireplay-update";
+	const std::filesystem::path base =
+		std::filesystem::temp_directory_path(ec);
+#if defined(_WIN32)
+	// %TEMP% is already per-user (C:\Users\<user>\AppData\Local\Temp): a
+	// fixed name under it is not the cross-account collision it would be
+	// on a shared /tmp.
+	return base / "obs-multireplay-update";
+#else
+	// /tmp is shared between every account on the machine, and a fixed
+	// name in it is a directory any other local user can pre-create — or
+	// replace with a symlink pointing outside /tmp — before this process
+	// ever gets to it. Scoping the name by uid is what keeps two accounts
+	// from contesting the same path at all; ensureStagingDir() below
+	// covers the case where the name was still grabbed first.
+	return base / ("obs-multireplay-update-" + std::to_string(geteuid()));
+#endif
+}
+
+// Creates stagingDir() if needed, and refuses to hand it back if it is not
+// safe to write through. On POSIX that means: not a symlink, and owned by
+// this account — a directory download/install code goes on to write files
+// into and (on Windows) execute a script out of, so anything else it could
+// be is exactly what a local attacker plants ahead of a predictable path.
+// Windows gets owner-only permissions applied for depth, but not the
+// ownership check itself: %TEMP% being per-user already rules out the
+// cross-account race this exists for.
+bool ensureStagingDir(std::filesystem::path &dir, std::string &errorOut)
+{
+	dir = stagingDir();
+	if (dir.empty()) {
+		errorOut = "could not resolve a temp directory";
+		return false;
+	}
+	std::error_code ec;
+#if !defined(_WIN32)
+	struct stat st{};
+	if (lstat(dir.c_str(), &st) == 0) {
+		if (S_ISLNK(st.st_mode)) {
+			errorOut = pathToUtf8(dir) +
+				   " is a symlink, not a directory — refusing "
+				   "to use it";
+			return false;
+		}
+		if (!S_ISDIR(st.st_mode)) {
+			errorOut = pathToUtf8(dir) +
+				   " exists and is not a directory";
+			return false;
+		}
+		if (st.st_uid != geteuid()) {
+			errorOut = pathToUtf8(dir) +
+				   " exists and is not owned by this account";
+			return false;
+		}
+	}
+#endif
+	std::filesystem::create_directories(dir, ec);
+	if (ec) {
+		errorOut = "cannot create " + pathToUtf8(dir) + ": " +
+			   ec.message();
+		return false;
+	}
+	std::filesystem::permissions(dir, std::filesystem::perms::owner_all,
+				      std::filesystem::perm_options::replace,
+				      ec);
+	return true;
 }
 
 // The SHA-256 of a file, read in blocks: the archive must not be pulled into
@@ -341,6 +416,20 @@ bool writeUtf8File(const std::filesystem::path &p, const std::string &text)
 	out.write(text.data(), (std::streamsize)text.size());
 	out.close();
 	return out.good();
+}
+
+// The other half of writeUtf8File, for reading the same bytes back — see
+// its call site in installStaged() for why the installer re-reads what it
+// just wrote instead of trusting its own write call.
+bool readUtf8File(const std::filesystem::path &p, std::string &textOut)
+{
+	std::ifstream in(p, std::ios::binary);
+	if (!in)
+		return false;
+	std::ostringstream ss;
+	ss << in.rdbuf();
+	textOut = ss.str();
+	return true;
 }
 #endif // _WIN32
 
@@ -581,10 +670,7 @@ void Updater::downloadAsync()
 
 	worker_ = std::thread([this, rel]() {
 		std::error_code ec;
-		const std::filesystem::path dir = stagingDir();
-		std::filesystem::create_directories(dir, ec);
-		const std::filesystem::path target =
-			dir / utf8ToPath(rel.assetName);
+		std::filesystem::path dir;
 
 		auto fail = [&](const std::string &why) {
 			Status f;
@@ -596,6 +682,14 @@ void Updater::downloadAsync()
 				why.c_str());
 			busy_.store(false);
 		};
+
+		std::string dirErr;
+		if (!ensureStagingDir(dir, dirErr)) {
+			fail(dirErr);
+			return;
+		}
+		const std::filesystem::path target =
+			dir / utf8ToPath(rel.assetName);
 
 		// WHAT IS THIS FILE SUPPOSED TO BE? Asked BEFORE a byte is
 		// fetched, because the answer decides whether fetching is worth
@@ -705,9 +799,9 @@ bool Updater::installStaged(std::string &errorOut)
 	//
 	// NOTHING is interpolated into the script (see update-installer.hpp).
 	// It is a constant; the three paths travel in a file beside it.
-	const std::filesystem::path dir = stagingDir();
-	std::error_code ec;
-	std::filesystem::create_directories(dir, ec);
+	std::filesystem::path dir;
+	if (!ensureStagingDir(dir, errorOut))
+		return false;
 	const std::filesystem::path script =
 		dir / update_installer::kScriptFileName;
 	const std::filesystem::path params =
@@ -723,6 +817,23 @@ bool Updater::installStaged(std::string &errorOut)
 	if (!writeUtf8File(params, update_installer::paramFile(p)) ||
 	    !writeUtf8File(script, update_installer::script())) {
 		errorOut = "cannot write the installer to " + pathToUtf8(dir);
+		return false;
+	}
+
+	// READ BACK WHAT WAS JUST WRITTEN. ensureStagingDir() has already
+	// confirmed the directory is ours, but a window remains between this
+	// write and the moment the detached helper reads these two files back
+	// — long enough, on a loaded machine, for anything else with write
+	// access to this account's files to substitute one. The script has no
+	// path inside it to tamper with, but the params file names the plugin
+	// folder the helper overwrites.
+	std::string paramsBack, scriptBack;
+	if (!readUtf8File(params, paramsBack) ||
+	    !readUtf8File(script, scriptBack) ||
+	    paramsBack != update_installer::paramFile(p) ||
+	    scriptBack != update_installer::script()) {
+		errorOut =
+			"the installer files changed right after being written — refusing to run them";
 		return false;
 	}
 
