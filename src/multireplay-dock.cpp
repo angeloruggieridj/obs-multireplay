@@ -4040,8 +4040,7 @@ KeyBlock *MultiReplayDock::buildTransport()
 		if (!pc().playLastEvent(
 			    currentAngle1() - 1,
 			    toOutputBtn_ && toOutputBtn_->isChecked(), err))
-			QMessageBox::warning(this, "obs-multireplay",
-					     QString::fromStdString(err));
+			showNotice(QString::fromStdString(err));
 	});
 
 	// ── PLAY: the biggest key on the panel ───────────────────────────────
@@ -4979,9 +4978,7 @@ KeyBlock *MultiReplayDock::buildMarkers()
 		if (!markable(t))
 			return;
 		if (!EventStore::instance().markOut(t))
-			QMessageBox::information(
-				this, "obs-multireplay",
-				obs_module_text("Dock.NoOpenEvent"));
+			showNotice(obs_module_text("Dock.NoOpenEvent"));
 		refreshEvents();
 	});
 
@@ -5381,8 +5378,7 @@ bool MultiReplayDock::markable(int64_t tNs)
 	// than the machine's last boot looks like.
 	if (tNs != 0 && tNs != kNoInstant)
 		return true;
-	QMessageBox::information(this, "obs-multireplay",
-				 obs_module_text("Dock.NothingToMark"));
+	showNotice(obs_module_text("Dock.NothingToMark"));
 	return false;
 }
 
@@ -5768,8 +5764,7 @@ void MultiReplayDock::playSelected()
 	std::string err;
 	if (!playOnTargets(selectedEventIds(),
 			   ReplayChannel::Direction::Forward, err))
-		QMessageBox::warning(this, "obs-multireplay",
-				     QString::fromStdString(err));
+		showNotice(QString::fromStdString(err));
 }
 
 void MultiReplayDock::setAngle(int angle1Based)

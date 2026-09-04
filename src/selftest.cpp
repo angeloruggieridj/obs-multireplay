@@ -54,6 +54,7 @@ extern "C" {
 #include <QFontMetrics>
 #include <QTabBar>
 #include <QTableWidget>
+#include <QApplication>
 #include <QCoreApplication>
 #include <QTimer>
 #include <QWheelEvent>
@@ -277,6 +278,11 @@ obs_source_t *createSyntheticCamera(int idx, uint32_t cx, uint32_t cy)
 
 struct DockChecks {
 	bool found = false;
+	// Mark Out with no event open used to seize the operator's input with a
+	// QMessageBox in the middle of a take. The rejection has to reach him
+	// through the status notice instead — same channel every other rejected
+	// mark/play key on the strip already uses.
+	bool markOutWithoutOpenEventUsesNotice = false;
 	bool pollRuns = false;
 	bool pollQuiet = false;
 	bool pollResponsive = false;
@@ -931,6 +937,7 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 	MultiReplayDock *dock = nullptr;
 	QTimer *pollTimer = nullptr;
 	QPushButton *markBtn = nullptr;     // the "-5s" preset
+	QPushButton *markOutBtn = nullptr;  // "Out"
 	QPushButton *playBtn = nullptr;     // "play selected"
 	QPushButton *stepBtn = nullptr;     // "one frame forward"
 	QPushButton *stepBackBtn = nullptr; // "one frame back"
@@ -973,6 +980,8 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 			const QString id = b->property(kKeyProperty).toString();
 			if (id == QLatin1String("mark5"))
 				markBtn = b;
+			else if (id == QLatin1String("markOut"))
+				markOutBtn = b;
 			else if (id == QLatin1String("playEvents"))
 				playBtn = b;
 			else if (id == QLatin1String("stepFwd"))
@@ -984,17 +993,44 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 		}
 	});
 
-	c.found = dock && pollTimer && markBtn && playBtn && stepBtn &&
-		  stepBackBtn && revBtn && revBtn->isEnabled();
+	c.found = dock && pollTimer && markBtn && markOutBtn && playBtn &&
+		  stepBtn && stepBackBtn && revBtn && revBtn->isEnabled();
 	if (!c.found) {
 		obs_log(LOG_ERROR,
 			"[selftest] dock not usable (dock=%p timer=%p mark=%p "
-			"play=%p step=%p stepBack=%p reverse=%p%s)",
+			"markOut=%p play=%p step=%p stepBack=%p reverse=%p%s)",
 			(void *)dock, (void *)pollTimer, (void *)markBtn,
-			(void *)playBtn, (void *)stepBtn, (void *)stepBackBtn,
-			(void *)revBtn,
+			(void *)markOutBtn, (void *)playBtn, (void *)stepBtn,
+			(void *)stepBackBtn, (void *)revBtn,
 			(revBtn && !revBtn->isEnabled()) ? " DISABLED" : "");
 		return c;
+	}
+
+	// Mark Out with nothing open: the rejection must land on the status
+	// notice, never seize the panel with a QMessageBox (see multireplay-dock
+	// "MODIFICARE UN COMMENTO NON PUò MANDARE IN ONDA" family of rules — same
+	// principle, a dialog anywhere live is an edit that does not get made).
+	// Run before anything below opens an event without closing it, so
+	// markOut() has nothing open to find.
+	runOnUi([&]() { markOutBtn->click(); });
+	{
+		const bool noModal = QApplication::activeModalWidget() == nullptr;
+		QString notice;
+		runOnUi([&]() {
+			if (auto *nl = dock->findChild<QLabel *>(
+				    QStringLiteral("mrChanStrip")))
+				notice = nl->text();
+		});
+		c.markOutWithoutOpenEventUsesNotice =
+			noModal &&
+			notice.contains(QString::fromUtf8(
+				obs_module_text("Dock.NoOpenEvent")));
+		obs_log(c.markOutWithoutOpenEventUsesNotice ? LOG_INFO
+							     : LOG_ERROR,
+			"[selftest] mark-out-without-open-event: modal=%s "
+			"notice='%s'",
+			noModal ? "none" : "OPEN",
+			qUtf8Printable(notice));
 	}
 
 	// --- Is the timer running, and does it hand the GUI thread back? -----
@@ -6090,6 +6126,8 @@ void runSelfTest()
 	obs_data_set_int(root, "reverse_cache_peak_mib", reversePeakMiB);
 	// The dock: found and clicked, not just compiled (see runDockChecks).
 	obs_data_set_bool(checks, "dock_registered", dockChecks.found);
+	obs_data_set_bool(checks, "mark_out_without_open_event_uses_notice",
+			  dockChecks.markOutWithoutOpenEventUsesNotice);
 	obs_data_set_bool(checks, "dock_poll_runs", dockChecks.pollRuns);
 	obs_data_set_bool(checks, "dock_repaint_rate_sane",
 			  dockChecks.repaintRateSane);
