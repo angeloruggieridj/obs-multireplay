@@ -64,6 +64,8 @@ struct Config {
 	// nobody is opted into pre-releases by a config file that does not
 	// mention them.
 	std::string updateChannel = "stable";
+	// Legacy: no server has listened on this since the HTTP layer was
+	// removed. Kept so an existing config.json round-trips unchanged.
 	int port = kDefaultPort;
 	int splitMinutes = kDefaultSplitMinutes;
 	int videoBitrateKbps = kDefaultVideoBitrateKbps;

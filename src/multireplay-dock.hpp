@@ -780,27 +780,9 @@ private:
 	// described only the ring — see the span assembly in poll().
 	int64_t takeAnchorNs_ = kNoInstant;
 
-	// The camera key at its full size — a renamed camera cannot stretch it,
-	// so the row never moves out from under the operator's fingers…
-	static constexpr int kAngleKeyWidth = 64;
-	// …and the size it will compress to when the dock is narrow. Eight fixed
-	// 64 px slots are 560 px this panel could never give back, which is what
-	// stopped the dock from being made narrower at all; with a floor instead,
-	// the matrix keeps all eight columns and simply draws them tighter. The
-	// name is re-elided at the width the key actually got (refreshAngleRows).
-	static constexpr int kAngleKeyMinWidth = 38;
 	// The bay selector and the swap: narrower than a camera key, because they
 	// carry one or two characters rather than a camera's name.
 	static constexpr int kChanKeyWidth = 38;
-	// The "A" / "B" prefix column. Fixed too, and for the same reason one
-	// step out: it is the lead-in of all three rows of the matrix (A, B, and
-	// the A|B / A / B selector under them), so the keys of the three rows
-	// stand on one set of columns.
-	static constexpr int kAngleLabelWidth = 12;
-	// 8 = kMaxCameras (replay-core.hpp, which this header does not include —
-	// the .cpp static_asserts the two agree).
-	// What the rows were last built for; refreshAngleRows() compares against it
-	// rather than rewriting eight labels thirty times a second.
 
 	// Centre every row of a combo's dropdown, in both directions. Needs code
 	// rather than a stylesheet: item text goes through the view's delegate.
