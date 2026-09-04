@@ -10,6 +10,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
 #include "path-utf8.hpp"
 #include "plugin-support.h"
 #include "sha256.hpp"
+#include "size-guard.hpp"
 #include "update-asset.hpp"
 #include "update-installer.hpp"
 #include "version-compare.hpp"
@@ -59,6 +60,12 @@ constexpr long kDownloadTimeoutSec = 600;
 // An archive far bigger than any release of this plugin is not a release of
 // this plugin. The build is a couple of megabytes; this sits two orders above
 // it so a redirect to something enormous cannot fill a recording disk.
+//
+// Enforced on BYTES WRITTEN (see FileSink/appendToFile below and
+// size-guard.hpp), not only on CURLOPT_MAXFILESIZE_LARGE: that option only
+// ever looks at a DECLARED Content-Length, so a chunked response — which has
+// none — could otherwise be written to this disk for the whole of
+// kDownloadTimeoutSec.
 constexpr int64_t kMaxAssetBytes = 200ll * 1024 * 1024;
 
 // And the same idea for the JSON. CURLOPT_MAXFILESIZE_LARGE only acts on a
@@ -97,12 +104,27 @@ size_t appendToString(void *data, size_t size, size_t nmemb, void *user)
 	return n;
 }
 
+// Unlike BodySink, this one is handed a DECLARED Content-Length by nothing:
+// CURLOPT_MAXFILESIZE_LARGE watches that header, not the bytes actually
+// arriving, so a chunked response — which never sends one — used to be
+// written to this disk for as long as the server kept talking.
+struct FileSink {
+	std::ofstream *out = nullptr;
+	int64_t written = 0;
+	bool overflowed = false;
+};
+
 size_t appendToFile(void *data, size_t size, size_t nmemb, void *user)
 {
-	auto *out = static_cast<std::ofstream *>(user);
-	out->write(static_cast<const char *>(data),
-		   (std::streamsize)(size * nmemb));
-	return out->good() ? size * nmemb : 0;
+	auto *s = static_cast<FileSink *>(user);
+	const size_t n = size * nmemb;
+	if (size_guard::wouldOverflow(s->written, n, kMaxAssetBytes)) {
+		s->overflowed = true;
+		return 0; // a short write aborts the transfer (CURLE_WRITE_ERROR)
+	}
+	s->out->write(static_cast<const char *>(data), (std::streamsize)n);
+	s->written += (int64_t)n;
+	return s->out->good() ? n : 0;
 }
 
 struct ProgressCtx {
@@ -125,7 +147,7 @@ int onProgress(void *user, curl_off_t total, curl_off_t now, curl_off_t,
 // decides about redirects, timeouts and certificate verification — three
 // settings it is very easy to get wrong once per call site.
 bool httpGet(const std::string &url, long timeoutSec, BodySink *body,
-	     std::ofstream *file, ProgressCtx *progress, std::string &errorOut)
+	     FileSink *file, ProgressCtx *progress, std::string &errorOut)
 {
 	ensureCurlGlobalInit();
 
@@ -174,6 +196,10 @@ bool httpGet(const std::string &url, long timeoutSec, BodySink *body,
 
 	if (body && body->overflowed) {
 		errorOut = "the server sent more than this plugin will read";
+		return false;
+	}
+	if (file && file->overflowed) {
+		errorOut = "the server is sending more than this plugin will keep";
 		return false;
 	}
 	if (rc == CURLE_ABORTED_BY_CALLBACK) {
@@ -379,9 +405,10 @@ bool Updater::fetchFile(const std::string &url, const std::string &destPathUtf8,
 		errorOut = "could not open the download for writing";
 		return false;
 	}
+	FileSink sink{&out};
 	ProgressCtx ctx;
 	ctx.abort = abort;
-	const bool ok = httpGet(url, kDownloadTimeoutSec, nullptr, &out, &ctx,
+	const bool ok = httpGet(url, kDownloadTimeoutSec, nullptr, &sink, &ctx,
 				errorOut);
 	out.close();
 	if (!ok) {
@@ -592,6 +619,7 @@ void Updater::downloadAsync()
 				fail("cannot write to " + pathToUtf8(dir));
 				return;
 			}
+			FileSink sink{&out};
 			ProgressCtx ctx;
 			ctx.abort = &abort_;
 			ctx.report = [this, rel](int pct) {
@@ -603,7 +631,7 @@ void Updater::downloadAsync()
 			};
 			std::string err;
 			if (!httpGet(rel.assetUrl, kDownloadTimeoutSec, nullptr,
-				     &out, &ctx, err)) {
+				     &sink, &ctx, err)) {
 				out.close();
 				std::filesystem::remove(target, ec);
 				fail(err);

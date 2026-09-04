@@ -14,10 +14,13 @@ The properties pinned, one per audit finding:
   B2  the installer script contains NO path, so an operator called O'Brien
       does not get a syntactically invalid PowerShell file; and the command
       line that launches it is quoted the way Windows parses it back;
-  A2  an asset belonging to another platform is REFUSED, never fallen back to.
+  A2  an asset belonging to another platform is REFUSED, never fallen back to;
+  --  the size cap on a download acts on bytes WRITTEN, not on a declared
+      Content-Length a chunked response never sends (size-guard.hpp).
 */
 
 #include "sha256.hpp"
+#include "size-guard.hpp"
 #include "update-asset.hpp"
 #include "update-installer.hpp"
 
@@ -512,6 +515,25 @@ static void test_only_windows_claims_it_can_install()
 	CHECK(!isInstallableHere(Platform::Linux));
 }
 
+// --- the download size cap (chunked responses have no Content-Length) ------
+
+static void test_size_guard()
+{
+	using size_guard::wouldOverflow;
+	CHECK(!wouldOverflow(0, 1024, 200 * 1024 * 1024));
+	// Exactly at the cap: still allowed, the last legal byte.
+	CHECK(!wouldOverflow(199, 1, 200));
+	// One byte past it.
+	CHECK(wouldOverflow(199, 2, 200));
+	// A single chunk larger than the whole cap, from nothing written yet —
+	// the case an infinite chunked stream produces on its very first read.
+	CHECK(wouldOverflow(0, 300, 200));
+	// Already at the cap: even a zero-sized chunk would not push past it,
+	// so it does not overflow, but the very next byte does.
+	CHECK(!wouldOverflow(200, 0, 200));
+	CHECK(wouldOverflow(200, 1, 200));
+}
+
 int main()
 {
 	test_sha256_known_vectors();
@@ -532,6 +554,7 @@ int main()
 	test_the_installer_wins_over_the_archive();
 	test_an_installer_for_another_platform_is_not_a_fallback();
 	test_the_digest_github_reports_is_read_or_refused();
+	test_size_guard();
 
 	if (g_fail) {
 		std::printf("%d check(s) FAILED\n", g_fail);
