@@ -54,9 +54,12 @@ extern "C" {
 #include <QFontMetrics>
 #include <QTabBar>
 #include <QTableWidget>
+#include <QAction>
 #include <QApplication>
 #include <QCoreApplication>
+#include <QMenu>
 #include <QTimer>
+#include <QToolButton>
 #include <QWheelEvent>
 
 #include <algorithm>
@@ -286,6 +289,9 @@ struct DockChecks {
 	// §2.4: switching the A|B / A / B selector must not silently reset the
 	// angle of the bay being switched TO (see angle-channels.hpp).
 	bool channelSwitchKeepsAngle = false;
+	// §2.3: the Angolo entry in the play-options menu changes the angle
+	// even when a multiview tile cannot be clicked.
+	bool angleFallbackMenuWorks = false;
 	bool pollRuns = false;
 	bool pollQuiet = false;
 	bool pollResponsive = false;
@@ -1034,6 +1040,75 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 			"notice='%s'",
 			noModal ? "none" : "OPEN",
 			qUtf8Printable(notice));
+	}
+
+	// --- §2.3: the Angolo fallback is reachable with the mouse EVEN WHEN
+	// clicking a multiview tile is not an option (Monitors off, showMultiview
+	// off, or a filmstrip too narrow for every configured camera). It lives
+	// in the play-options menu (▾, mrKey "playOptions"), a QToolButton whose
+	// menu is opened by popupOnClick rather than QAbstractButton::setMenu —
+	// found as a QMenu child of the button, not via ->menu(). The angle
+	// submenu populates lazily on QMenu::aboutToShow (a camera can be
+	// renamed in Settings without this dock being rebuilt), so it is invoked
+	// directly here rather than actually popping the menu open on screen.
+	{
+		QToolButton *moreBtn = nullptr;
+		runOnUi([&]() {
+			for (QToolButton *b : dock->findChildren<QToolButton *>())
+				if (b->property(kKeyProperty).toString() ==
+				    QLatin1String("playOptions"))
+					moreBtn = b;
+		});
+		QMenu *angleMenu = nullptr;
+		if (moreBtn) {
+			runOnUi([&]() {
+				if (QMenu *menu = moreBtn->findChild<QMenu *>()) {
+					const QString wanted =
+						QString::fromUtf8(obs_module_text(
+							"Dock.Angle"));
+					for (QAction *a : menu->actions())
+						if (a->menu() &&
+						    a->text() == wanted)
+							angleMenu = a->menu();
+				}
+			});
+		}
+		bool angleFallbackMenuWorks = false;
+		int firstCam1 = -1;
+		if (angleMenu) {
+			runOnUi([&]() {
+				angleMenu->aboutToShow();
+				if (!angleMenu->actions().isEmpty()) {
+					QAction *a = angleMenu->actions().first();
+					firstCam1 =
+						a->text()
+							.section(QStringLiteral("  "),
+								 0, 0)
+							.toInt();
+					a->trigger();
+				}
+			});
+			std::this_thread::sleep_for(std::chrono::milliseconds(150));
+			int after = -1;
+			// The active channel at this point in the pass is
+			// still A: nothing before this has switched it (the
+			// channel-B section runs later, and hands the panel
+			// back to A when it is done).
+			runOnUi([&]() { after = dock->angleOnChannel(Which::A); });
+			angleFallbackMenuWorks = firstCam1 > 0 && after == firstCam1;
+			obs_log(angleFallbackMenuWorks ? LOG_INFO : LOG_ERROR,
+				"[selftest] dock: Angolo fallback menu set the "
+				"angle to %d (menu offered %d entries, first "
+				"was cam %d)",
+				after, (int)angleMenu->actions().size(),
+				firstCam1);
+		} else {
+			obs_log(LOG_ERROR,
+				"[selftest] dock: Angolo fallback menu not found "
+				"under play options (moreBtn=%p)",
+				(void *)moreBtn);
+		}
+		c.angleFallbackMenuWorks = angleFallbackMenuWorks;
 	}
 
 	// --- Is the timer running, and does it hand the GUI thread back? -----
@@ -6194,6 +6269,8 @@ void runSelfTest()
 			  dockChecks.markOutWithoutOpenEventUsesNotice);
 	obs_data_set_bool(checks, "dock_channel_switch_keeps_angle",
 			  dockChecks.channelSwitchKeepsAngle);
+	obs_data_set_bool(checks, "angle_fallback_menu_works",
+			  dockChecks.angleFallbackMenuWorks);
 	obs_data_set_bool(checks, "dock_poll_runs", dockChecks.pollRuns);
 	obs_data_set_bool(checks, "dock_repaint_rate_sane",
 			  dockChecks.repaintRateSane);

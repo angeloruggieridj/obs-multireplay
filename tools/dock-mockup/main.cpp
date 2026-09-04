@@ -858,6 +858,13 @@ private:
 			QString("background:%1;border:1px solid %2;border-radius:3px;"
 				"padding:2px 7px;color:%3;")
 				.arg(sc_.raise1, sc_.border, sc_.textDim));
+		// A fixed stand-in on purpose, NOT the real search_'s min/max-em
+		// formula (multireplay-dock.cpp): this is a QLabel with no layout
+		// stretch of its own, so pinning it to that formula's upper bound
+		// renders it wider than the real QLineEdit ever settles at inside
+		// its actual layout — measured to overflow Short's toolbar row on
+		// the offscreen (minimal) platform's font metrics, a false alarm
+		// this stand-in has no business raising.
 		search->setFixedWidth(150);
 		search_ = search;
 		h->addWidget(search);
@@ -3392,6 +3399,21 @@ int main(int argc, char **argv)
 	if (args.contains(QStringLiteral("--host=obs")))
 		installObsHost(app, QDir::temp().filePath(
 					    QStringLiteral("mr-mock-host")));
+	// --font-scale=N (percent, default 100): Settings > Appearance in OBS
+	// lets an operator run the whole app at 125-150%. Every fixed-pixel
+	// width in this panel was sized for the default; this is how §2.6-class
+	// faults (a control sized in px instead of em, clipped once the font
+	// grows) get judged without changing Windows' own display scale.
+	// BEFORE any widget is built: it has to be the font every metric below
+	// is computed from, not one applied after the fact.
+	for (const QString &a : args) {
+		if (a.startsWith(QStringLiteral("--font-scale="))) {
+			const int pct = qBound(50, a.mid(13).toInt(), 300);
+			QFont f = app.font();
+			f.setPointSizeF(f.pointSizeF() * pct / 100.0);
+			app.setFont(f);
+		}
+	}
 	for (const QString &a : args) {
 		if (a.startsWith(QStringLiteral("--cams=")))
 			g_cams = qBound(1, a.mid(7).toInt(), 8);

@@ -1687,8 +1687,15 @@ QWidget *MultiReplayDock::buildToolbar()
 	search_ = new QLineEdit(box);
 	search_->setPlaceholderText(obs_module_text("Dock.Search"));
 	search_->setClearButtonEnabled(true);
-	search_->setMaximumWidth(190);
-	search_->setMinimumWidth(90);
+	// IN EM, not fixed pixels: 190/90 px was sized for OBS's default font.
+	// At Settings > Appearance font-scale 125-150% the same box stayed 190
+	// px while the placeholder and the clear button grew, so the text was
+	// clipped and the button sat outside the visible field. The clock
+	// label's kClockW already derives its width from fontMetrics for the
+	// same reason; the search box did not.
+	const int searchEm = fontMetrics().horizontalAdvance(QLatin1Char('M'));
+	search_->setMaximumWidth(qMax(140, 13 * searchEm));
+	search_->setMinimumWidth(qMax(80, 7 * searchEm));
 	connect(search_, &QLineEdit::textChanged, this,
 		[this](const QString &) { refreshEvents(); });
 	h->addWidget(search_, 0);
@@ -2144,9 +2151,15 @@ void MultiReplayDock::applyPanelMode(PanelMode m, bool force)
 		strip_->setStacked(m == PanelMode::Wide ? 0 : 1);
 
 	// The search box is the one control that can be asked to give width back:
-	// in a column, 90 px of it is 90 px the Live and Monitors keys do not have.
-	if (search_)
-		search_->setMinimumWidth(m == PanelMode::Tall ? 54 : 90);
+	// in a column, its normal minimum is width the Live and Monitors keys do
+	// not have. In em, like the box's own construction, so a larger OBS font
+	// does not clip it back down to a fixed pixel count.
+	if (search_) {
+		const int em =
+			search_->fontMetrics().horizontalAdvance(QLatin1Char('M'));
+		search_->setMinimumWidth(m == PanelMode::Tall ? qMax(40, 4 * em)
+							       : qMax(80, 7 * em));
+	}
 
 	// OUT COLUMN: the one column of the table that is inferable. IN and
 	// DURATA together say where the clip is and how long it runs, so OUT is
@@ -4110,6 +4123,40 @@ KeyBlock *MultiReplayDock::buildTransport()
 		});
 		connect(actStop, &QAction::triggered, this,
 			[this]() { pc().stopEvents(); });
+
+		// ALWAYS-PRESENT FALLBACK: the per-camera angle matrix is gone —
+		// the mouse picks an angle by clicking a multiview tile — and
+		// with Monitors off, showMultiview off, or a filmstrip too
+		// narrow to show every configured camera, clicking a picture is
+		// not an option at all. This menu is reachable regardless of
+		// any of that, so it is where "change the angle with the
+		// mouse" always has an answer. Rebuilt on every open
+		// (aboutToShow), not once at construction, because a camera can
+		// be renamed or added in Settings without this dock being
+		// rebuilt.
+		menu->addSeparator();
+		auto *angleMenu = menu->addMenu(obs_module_text("Dock.Angle"));
+		connect(angleMenu, &QMenu::aboutToShow, this, [this, angleMenu]() {
+			angleMenu->clear();
+			const Config cfg = ReplayCore::instance().getConfig();
+			for (int i = 0; i < kNCams; i++) {
+				if (cfg.cameras[i].sourceName.empty())
+					continue;
+				const std::string &dn =
+					cfg.cameras[i].displayName;
+				const QString label =
+					QString("%1  %2")
+						.arg(i + 1)
+						.arg(dn.empty()
+							     ? QString("C%1").arg(
+								       i + 1)
+							     : QString::fromStdString(
+								       dn));
+				QAction *act = angleMenu->addAction(label);
+				connect(act, &QAction::triggered, this,
+					[this, i]() { setAngle(i + 1); });
+			}
+		});
 	}
 
 	// NOW IS A DESTINATION, not a modifier: it drops the replay and puts the
