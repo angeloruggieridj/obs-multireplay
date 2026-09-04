@@ -151,7 +151,8 @@ int onProgress(void *user, curl_off_t total, curl_off_t now, curl_off_t,
 // decides about redirects, timeouts and certificate verification — three
 // settings it is very easy to get wrong once per call site.
 bool httpGet(const std::string &url, long timeoutSec, BodySink *body,
-	     FileSink *file, ProgressCtx *progress, std::string &errorOut)
+	     FileSink *file, ProgressCtx *progress, std::string &errorOut,
+	     long *httpStatusOut = nullptr)
 {
 	ensureCurlGlobalInit();
 
@@ -205,6 +206,8 @@ bool httpGet(const std::string &url, long timeoutSec, BodySink *body,
 	long http = 0;
 	curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http);
 	curl_easy_cleanup(curl);
+	if (httpStatusOut)
+		*httpStatusOut = http;
 
 	if (body && body->overflowed) {
 		errorOut = "the server sent more than this plugin will read";
@@ -551,8 +554,23 @@ void Updater::checkAsync(UpdateChannel channel)
 		// act through: a check has no percentage worth showing.
 		ProgressCtx ctx;
 		ctx.abort = &abort_;
+		long httpStatus = 0;
 		if (!httpGet(kReleasesApi, kCheckTimeoutSec, &body, nullptr,
-			     &ctx, err)) {
+			     &ctx, err, &httpStatus)) {
+			// GitHub's anonymous API quota is 60 requests per hour per
+			// address (github.com/en/rest/using-the-rest-api/
+			// rate-limits-for-the-rest-api), and it answers a request
+			// over quota with 403 rather than a dedicated status —
+			// indistinguishable, to httpGet's generic "the server
+			// answered N", from an access error on the same endpoint.
+			// An operator behind a shared address (a campus, a NAT)
+			// hits this before ever touching this plugin's own
+			// traffic, and "answered 403" does not say why or what to
+			// do about it.
+			if (httpStatus == 403)
+				err = "GitHub is limiting update checks from this "
+				      "address for now — this is common behind a "
+				      "shared network; try again in an hour";
 			Status f;
 			f.phase = Phase::Failed;
 			f.message = err;
