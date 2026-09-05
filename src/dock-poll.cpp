@@ -7,7 +7,8 @@ Split out of multireplay-dock.cpp (pure move, no behaviour change): the 30 Hz
 poll() tick and everything it drives directly -- the green channel strip,
 seeking, the dead-recording watchdog, the UI-thread accounting, and the
 angle/event/list-name refreshes -- used to sit in the same 10k+ line file as
-the widget assembly and the Settings dialog. See CLAUDE.md's §4.2 for why.
+the widget assembly and the Settings dialog. Splitting them into their own
+translation units keeps each concern reviewable on its own.
 */
 
 #include "multireplay-dock.hpp"

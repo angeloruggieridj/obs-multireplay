@@ -7,7 +7,8 @@ Split out of multireplay-dock.cpp (pure move, no behaviour change): the
 QDockWidget-as-a-window plumbing — hostDock(), full screen, the floating
 window's Minimize/Maximize boxes — is one coherent concern that used to sit
 in the same 10k+ line file as the settings dialog, the poll loop and the
-widget assembly. See CLAUDE.md's §4.2 for why.
+widget assembly. Splitting them into their own translation units keeps each
+concern reviewable on its own.
 */
 
 #include "multireplay-dock.hpp"

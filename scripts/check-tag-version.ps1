@@ -5,8 +5,8 @@ in CI ("Check Tag Matches buildspec"): the DLL reports buildspec.json's
 release is named by the tag, and if those two ever diverge the updater
 compares the wrong pair of versions and silently stops offering updates to
 everyone already running that build -- which is exactly what happened once
-while the binary said "1.0.0" and the tag said "1.0.0-beta7" (see CLAUDE.md,
-2026-08-27). CI still has the last word; this just says so before a push
+while the binary said "1.0.0" and the tag said "1.0.0-beta7" (2026-08-27).
+CI still has the last word; this just says so before a push
 instead of after one, when a wrong tag is still one command away from fixed.
 
 Usage:

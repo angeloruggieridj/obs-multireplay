@@ -7,8 +7,8 @@ Split out of multireplay-dock.cpp (pure move, no behaviour change): everything
 reached through the gear menu or the project menu -- Settings itself, the
 guided first-run setup, the "Branch Output is missing" prompt, tag
 import/export and the new/open/rename project dialogs -- used to sit in the
-same 10k+ line file as the widget assembly and the poll loop. See CLAUDE.md's
-§4.2 for why.
+same 10k+ line file as the widget assembly and the poll loop. Splitting them
+into their own translation units keeps each concern reviewable on its own.
 */
 
 #include "multireplay-dock.hpp"

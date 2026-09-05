@@ -7,8 +7,8 @@ Split out of multireplay-dock.cpp (pure move, no behaviour change): the
 one-time widget construction for the toolbar, the preview pane, the
 multiview tiles, the bay selector, the control-strip sections (marks, the
 transport, REC, speed, export) and the event table used to sit in the same
-10k+ line file as the poll loop and the Settings dialog. See CLAUDE.md's
-§4.2 for why.
+10k+ line file as the poll loop and the Settings dialog. Splitting them
+into their own translation units keeps each concern reviewable on its own.
 */
 
 #include "multireplay-dock.hpp"

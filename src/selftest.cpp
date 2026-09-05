@@ -27,7 +27,7 @@ extern "C" {
 #include "dock-icons.hpp"
 #include "packet-tap.hpp"
 // pathToUtf8: a path handed to FFmpeg is UTF-8, never path::string() (which is
-// the ANSI code page on MSVC). See the rule in CLAUDE.md.
+// the ANSI code page on MSVC).
 #include "path-utf8.hpp"
 #include "playback-coordinator.hpp"
 #include "plugin-support.h"
