@@ -1081,12 +1081,25 @@ QWidget *MultiReplayDock::buildBottomBar()
 	// come last.
 	strip_ = new ControlStrip(box);
 	strip_->setObjectName(QStringLiteral("mrStrip"));
-	strip_->addBlock(buildMarkers(), Lane::Left, false, 1);
-	strip_->addBlock(buildAngleMatrix(), Lane::Centre, false, 3);
-	strip_->addBlock(buildSpeedBlock(), Lane::Right, false, 5);
-	strip_->addBlock(buildRecBlock(), Lane::Left, /*startsLine*/ true, 0);
-	strip_->addBlock(buildTransport(), Lane::Centre, false, 2);
-	strip_->addBlock(buildExportBlock(), Lane::Right, false, 4);
+	// REARRANGED (§6.2): row 1 is PREPARE (arm, mark, pile the clip up), row
+	// 2 is SEND IT LIVE (which bay, drive it, how fast). REC anchors row 1;
+	// MARK moves to the centre lane so it is the first thing the eye lands
+	// on after the picture, where the bay selector used to sit centred in a
+	// lane that went empty the moment channel B was off. The ranks are the
+	// order the strip folds into on a narrow dock: REC, mark, bay,
+	// transport, speed, clips — export (inside clips now) stays last there,
+	// "the one thing nobody touches while the ball is in play".
+	//
+	// buildAngleMatrix carries startsLine for row 2 unconditionally: with
+	// one bay it is not omitted, only collapsed to zero width by
+	// applyChannelBVisibility (see its own comment), so it stays the
+	// correct place for a new line to start whether or not it is drawn.
+	strip_->addBlock(buildRecBlock(), Lane::Left, /*startsLine*/ false, 0);
+	strip_->addBlock(buildMarkers(), Lane::Centre, false, 1);
+	strip_->addBlock(buildExportBlock(), Lane::Right, false, 5);
+	strip_->addBlock(buildAngleMatrix(), Lane::Left, /*startsLine*/ true, 2);
+	strip_->addBlock(buildTransport(), Lane::Centre, false, 3);
+	strip_->addBlock(buildSpeedBlock(), Lane::Right, false, 4);
 	addStrip(v, strip_);
 
 	// ── THE STATUS LINE, ABOVE THE GREEN BAND ────────────────────────
@@ -1432,24 +1445,20 @@ KeyBlock *MultiReplayDock::buildSpeedBlock()
 	// control at two resolutions, and side by side the dial is a strip of
 	// nothing between two groups of keys.
 	//
-	// AND THE EXPORT KEY UNDER BOTH. There were two of them in a section of
-	// their own — one clip, or the whole selection as one file — and that is a
-	// QUESTION, not two keys. One key that asks it takes half the room and
-	// stops the operator having to know the difference before he has decided
-	// he wants to export at all.
-	auto *exportKey = buildExportKey();
+	// EXPORT MOVED TO THE CLIPS SECTION (§6.2): "what do I do with a clip
+	// once it is marked" used to have two answers in two corners of the
+	// panel — reorder it here under the speed dial, export it one section
+	// over. One section answers it now (buildExportBlock).
 	blk->setShapes({{Cell(chips[0]), Cell(chips[1]), Cell(chips[2]),
 			 Cell(chips[3]), Cell(chips[4]), Cell(chips[5])},
-			{Cell(speed_, 5), Cell(speedLbl_, 1, false)},
-			{Cell(exportKey, 6)}},
+			{Cell(speed_, 5), Cell(speedLbl_, 1, false)}},
 		       // The six presets stay on ONE row folded as well. They are
 		       // the narrowest keys on the panel and splitting them across
 		       // two rows bought nothing but a line — and it broke the run
 		       // of values an operator reads left to right.
 		       {{Cell(chips[0]), Cell(chips[1]), Cell(chips[2]),
 			 Cell(chips[3]), Cell(chips[4]), Cell(chips[5])},
-			{Cell(speed_, 5), Cell(speedLbl_, 1, false)},
-			{Cell(exportKey, 6)}});
+			{Cell(speed_, 5), Cell(speedLbl_, 1, false)}});
 	return blk;
 }
 
@@ -1535,8 +1544,30 @@ KeyBlock *MultiReplayDock::buildExportBlock()
 	edit->setMinimumWidth(orderKeyW);
 	edit->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
 
-	blk->setShapes({{Cell(order[0]), Cell(order[1]), Cell(edit)}},
-		       {{Cell(order[0]), Cell(order[1]), Cell(edit)}});
+	// EXPORT LIVES HERE NOW (§6.2): everything done to an event AFTER it is
+	// marked, in one section instead of two. It used to sit under the speed
+	// dial, which made "what do I do with a clip once it is marked" a
+	// question with two different answers in two different corners of the
+	// panel.
+	auto *exportKey = buildExportKey();
+	// TALL: order/actions, then export on its own line so it reads as the
+	// section's second question rather than a fourth key crowded onto the
+	// first row's end. FLAT: one row, all four side by side — this section
+	// is short enough that folding it costs a line for no reason.
+	blk->setShapes({{Cell(order[0]), Cell(order[1]), Cell(edit)},
+			{Cell(exportKey, 3)}},
+		       {{Cell(order[0]), Cell(order[1]), Cell(edit), Cell(exportKey)}});
+	// EXPORT DROPS ITS WORD WHEN THE STRIP FOLDS, joining its three
+	// neighbours as an icon the tooltip still names. Folded is exactly
+	// where this section sits closest to the panel's own edge — a stacked
+	// side dock, a Short arrangement's left column — and a labelled key
+	// there is the one thing in the row asking for more width than the
+	// other three combined (measured on the mockup: it moved the toolbar's
+	// own "Live" key down to its CSS floor, clipped, at 1400x340).
+	const QString exportLabel = exportKey->text();
+	blk->setOnShape([exportKey, exportLabel](bool flat) {
+		exportKey->setText(flat ? QString() : exportLabel);
+	});
 	return blk;
 }
 

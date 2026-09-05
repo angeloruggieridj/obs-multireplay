@@ -921,17 +921,29 @@ private:
 					 QSizePolicy::Minimum);
 
 		strip_ = new ControlStrip(controls_);
-		// Two macro-rows. The first is what you do to the FOOTAGE, the
-		// second is the take and the transport; the numbers are the order
-		// when the strip folds into a stack on a narrow dock, which is
-		// what an operator reaches for through a whole match.
-		buildMark(Lane::Left, /*rank*/ 1);
+		// Two macro-rows, REARRANGED (§6.2): row 1 is PREPARE (arm, mark,
+		// pile the clip up), row 2 is SEND IT LIVE (which bay, drive it,
+		// how fast). REC anchors row 1 the way it always did; MARK moves
+		// to the centre lane so it is the first thing the eye lands on
+		// after the picture, where a bay selector used to sit centred in
+		// a lane that went empty the moment channel B was off (§2.10).
+		// The numbers are still the order the strip folds into a stack
+		// on a narrow dock: REC, mark, bay, transport, speed, clips —
+		// export stays last there, "the one thing nobody touches while
+		// the ball is in play".
+		buildRec(Lane::Left, /*startsLine*/ false, /*rank*/ 0);
+		buildMark(Lane::Centre, /*rank*/ 1);
+		buildClips(Lane::Right, /*rank*/ 5);
+		// Whichever of these is inserted FIRST is what has to carry
+		// startsLine: layoutLanes breaks a new line on the entry that
+		// asks for it, in insertion order, not by lane. With B off there
+		// is no bay block at all (absent, not disabled) so the transport
+		// carries it instead.
 		if (g_haveB)
-			buildBaySelector(Lane::Centre, /*rank*/ 3);
-		buildSpeed(Lane::Right, /*rank*/ 5);
-		buildRec(Lane::Left, /*startsLine*/ true, /*rank*/ 0);
-		buildPlayback(Lane::Centre, /*rank*/ 2);
-		buildClips(Lane::Right, /*rank*/ 4);
+			buildBaySelector(Lane::Left, /*startsLine*/ true,
+					 /*rank*/ 2);
+		buildPlayback(Lane::Centre, /*startsLine*/ !g_haveB, /*rank*/ 3);
+		buildSpeed(Lane::Right, /*rank*/ 4);
 		addStrip(v, strip_);
 
 		// THE STATUS LINE SITS ABOVE THE GREEN BAND. The band says what is
@@ -1135,7 +1147,7 @@ private:
 	// C5 is pointing at.
 	//
 	// With one bay the section is not here at all — not disabled, absent.
-	void buildBaySelector(Lane lane, int rank)
+	void buildBaySelector(Lane lane, bool startsLine, int rank)
 	{
 		auto *blk = new KeyBlock(QString(), this);
 		QVector<Cell> row;
@@ -1156,7 +1168,7 @@ private:
 		// mistake it puts the wrong clip on air.
 		row << Cell(nullptr, 1) << Cell(swap);
 		blk->setShapes({row}, {row});
-		strip_->addBlock(blk, lane, false, rank);
+		strip_->addBlock(blk, lane, startsLine, rank);
 	}
 
 	// ── REC: the take, and every number about it ─────────────────────────
@@ -1222,7 +1234,7 @@ private:
 	// Program, and NOW is the widest because it is the way back. They were a
 	// text button and a small key in a row of eight, the same weight as a
 	// frame step, so the eye had to read the whole strip to find either.
-	void buildPlayback(Lane lane, int rank)
+	void buildPlayback(Lane lane, bool startsLine, int rank)
 	{
 		auto *blk = new KeyBlock(QString(), this);
 		auto *pp = iconKey(Icon::Play, QStringLiteral("playPause"),
@@ -1272,25 +1284,19 @@ private:
 			 Cell(sf), Cell(more)},
 			{Cell(now, 4), Cell(play, 3)}};
 		blk->setShapes(wide, flat);
-		strip_->addBlock(blk, lane, false, rank);
+		strip_->addBlock(blk, lane, startsLine, rank);
 	}
 
-	// ── THE RUNNING ORDER, and the actions that have no key of their own ─
+	// ── CLIPS, UNIFIED (§6.2): everything done to an event AFTER it is ───
+	// ── marked, in one section instead of two ─────────────────────────────
 	//
-	// ▲ ▼ move the selected event in its list's running order — which is the
-	// order the sequence export writes and the order a queue plays, so it is
-	// not a tidying-up gesture, it is the edit. They were lost in the first
-	// pass of this redesign, which is exactly the kind of thing a mockup is
-	// for.
-	//
-	// TWO KEYS RATHER THAN DRAG AND DROP: a drag inside a table whose cells
-	// are all editable is one slip away from starting an edit instead, and
-	// during a match that is the wrong thing to risk.
-	//
-	// They sit in the RIGHT lane of the second macro-row, under the speed
-	// dial and the export key — which is where the rest of "what is done with
-	// the clips once they are marked" already lives, and which fills the one
-	// lane the arrangement had left empty.
+	// ▲ ▼ move the selected event in its list's running order — the order
+	// the sequence export writes and the order a queue plays, so it is not
+	// a tidying-up gesture, it is the edit. ⋯ duplicates or deletes it.
+	// Export used to sit one section over, under the speed dial, which
+	// made "what do I do with a clip once it is marked" a question with two
+	// different answers in two different corners of the panel. One section
+	// answers it now: reorder it, act on it, or get it out.
 	void buildClips(Lane lane, int rank)
 	{
 		auto *blk = new KeyBlock(QString(), this);
@@ -1300,22 +1306,35 @@ private:
 				   QStringLiteral("Sposta l'evento giù"));
 		auto *more = menuKey(Icon::More, QStringLiteral("clipActions"),
 				     QStringLiteral("Duplica · Elimina"));
-		const BlockShape shape{{Cell(up), Cell(dn), Cell(more)}};
-		blk->setShapes(shape, shape);
+		auto *exp = iconTextKey(Icon::ExportClip, QStringLiteral("Export"),
+					QStringLiteral("export"));
+		exp->setToolTip(QStringLiteral("Esporta la clip o l'intera sequenza"));
+		remember(exp);
+		// TALL: two rows — order/actions, then export on its own line so
+		// it reads as the section's second question rather than a fourth
+		// key crowded onto the first row's end.
+		const BlockShape tall{{Cell(up), Cell(dn), Cell(more)},
+				      {Cell(exp, 3)}};
+		// FLAT: one row, all four side by side — this section is short
+		// enough that folding it costs a line for no reason.
+		const BlockShape flat{{Cell(up), Cell(dn), Cell(more), Cell(exp)}};
+		blk->setShapes(tall, flat);
+		// EXPORT DROPS ITS WORD WHEN THE STRIP FOLDS, joining its three
+		// neighbours as an icon the tooltip still names. Folded is exactly
+		// where this section sits closest to the panel's own edge — a
+		// stacked side dock, a Short arrangement's left column — and a
+		// labelled key there is the one thing in the row asking for more
+		// width than the other three combined.
+		blk->setOnShape([exp](bool flat) {
+			exp->setText(flat ? QString() : QStringLiteral("Export"));
+		});
 		strip_->addBlock(blk, lane, false, rank);
 	}
 
-	// ── VELOCITA, and what is done with the clips once they are marked ───
+	// ── VELOCITA — just the speed now that export has its own section ────
 	//
 	//   25 33 50 75 100 2×
 	//   [ the dial ]
-	//   [ Export ▾ ]
-	//
-	// The export keys were a section of their own in the far corner. There
-	// were two of them — one clip, or the whole selection as one file — and
-	// that is a QUESTION, not two keys: one key that asks it takes half the
-	// room and stops the operator having to know the difference before he
-	// has decided he wants to export at all.
 	void buildSpeed(Lane lane, int rank)
 	{
 		auto *blk = new KeyBlock(QString(), this);
@@ -1336,14 +1355,8 @@ private:
 		dial->setValue(100);
 		dial->setMinimumWidth(110);
 		dial->setFixedHeight(kKeyH);
-		auto *exp = iconTextKey(Icon::ExportClip, QStringLiteral("Export"),
-					QStringLiteral("export"));
-		exp->setToolTip(QStringLiteral("Esporta la clip o l'intera sequenza"));
-		remember(exp);
 
-		const BlockShape shape{row,
-				       {Cell(dial, 6)},
-				       {Cell(exp, 6)}};
+		const BlockShape shape{row, {Cell(dial, 6)}};
 		blk->setShapes(shape, shape);
 		strip_->addBlock(blk, lane, false, rank);
 	}
@@ -1597,6 +1610,21 @@ private:
 			}
 		} else {
 			leftCol_->setMaximumHeight(QWIDGETSIZE_MAX);
+			// shortSplitLeftWidth (dock-layout.hpp) — see the note there.
+			// Only until he has dragged it, same as the divider above.
+			if (!bodyChosen() && bodySplit_->width() > 0) {
+				const int total =
+					bodySplit_->width() - bodySplit_->handleWidth();
+				const int rightWant = listPane_->sizeHint().width();
+				const QList<int> now = bodySplit_->sizes();
+				if (now.size() > 1 && now[1] < rightWant) {
+					const int give = shortSplitLeftWidth(
+						total,
+						leftCol_->minimumSizeHint().width(),
+						rightWant);
+					bodySplit_->setSizes({give, total - give});
+				}
+			}
 		}
 
 		// --- 3. the only size the boxes are told ---------------------
