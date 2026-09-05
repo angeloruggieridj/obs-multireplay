@@ -88,6 +88,16 @@ struct Config {
 	// but it is also two pixels from the cells an operator edits, so he gets to
 	// switch it off.
 	bool doubleClickPlays = true;
+	// §7.3.11 — Space plays the selected event, for an operator who never
+	// leaves the keyboard. OFF by default, unlike doubleClickPlays and
+	// toOutputOnPlay above: those both need a deliberate mouse action
+	// first (a double click, a key press aimed at a specific button), but
+	// the panel's own Space key already does nothing when focus is on a
+	// button or the table (see handleTransportKey's eventFilter guard) —
+	// so with this on, Space on the bare panel becomes a way to put
+	// something on Program with no click at all, which is not a gesture
+	// to hand out without the operator asking for it first.
+	bool spacebarPlays = false;
 	// Does playing an event take Program? On by default, and it is the SAME
 	// state as the "To output" key on the panel: two switches for one behaviour
 	// is a switch that gets left in the wrong place.

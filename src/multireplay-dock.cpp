@@ -3780,6 +3780,16 @@ bool MultiReplayDock::handleTransportKey(QKeyEvent *event)
 	case Qt::Key_Enter:
 		playSelected();
 		return true;
+	// §7.3.11 — opt-in (Config.spacebarPlays): the eventFilter below
+	// never forwards Space here while focus is on a button or the table
+	// (it is the click / nothing there), so reaching this case at all
+	// already means focus is on the bare panel — the one place Space did
+	// nothing before this setting existed.
+	case Qt::Key_Space:
+		if (!ReplayCore::instance().getConfig().spacebarPlays)
+			return false;
+		playSelected();
+		return true;
 	default:
 		return false;
 	}

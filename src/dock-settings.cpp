@@ -1010,6 +1010,14 @@ void MultiReplayDock::openSettings()
 	toOut->setToolTip(obs_module_text("Dock.ToOutputOnPlayHint"));
 	evPage->addRow(obs_module_text("Dock.ToOutputOnPlay"), toOut);
 
+	// §7.3.11 — OFF by default, unlike the two above: this one needs no
+	// mouse action first, so it is the only one of the three that can put
+	// something on Program from a bare keypress.
+	auto *spaceBar = new QCheckBox(&dlg);
+	spaceBar->setChecked(cfg.spacebarPlays);
+	spaceBar->setToolTip(obs_module_text("Dock.SpacebarPlaysHint"));
+	evPage->addRow(obs_module_text("Dock.SpacebarPlays"), spaceBar);
+
 	auto *idDigits = new QSpinBox(&dlg);
 	idDigits->setRange(1, 8);
 	idDigits->setValue(cfg.eventIdDigits);
@@ -1297,6 +1305,7 @@ void MultiReplayDock::openSettings()
 	cfg.continuePastOutMs = (int)std::lround(pastOut->value() * 1000.0);
 	cfg.doubleClickPlays = dblPlay->isChecked();
 	cfg.toOutputOnPlay = toOut->isChecked();
+	cfg.spacebarPlays = spaceBar->isChecked();
 	cfg.eventIdDigits = idDigits->value();
 	cfg.eventListCount = listCount->value();
 	cfg.commentPresets.clear();
