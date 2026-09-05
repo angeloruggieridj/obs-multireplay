@@ -4404,6 +4404,11 @@ void runReopenPass(const std::string &outPath)
 	bool fsRestoresTheWindow = false;
 	bool fsWindowOffersMaximise = false;
 	bool fsDoubleClickIsInert = false;
+	// §6.5 — GALLERY SCALES A SECTION KEY WHEN FULLSCREEN. Every other
+	// fullscreen check here is about the WINDOW; this is the one that
+	// asks whether the panel actually noticed and grew its own keys for
+	// an operator now 1-2 m away instead of ~60 cm.
+	bool galleryGrowsInFullscreen = false;
 	{
 		QDockWidget *host = nullptr;
 		QPushButton *fsKey = nullptr;
@@ -4457,10 +4462,24 @@ void runReopenPass(const std::string &outPath)
 			});
 			std::this_thread::sleep_for(
 				std::chrono::milliseconds(900));
+			// Found by mrKey, same as every other check on this panel:
+			// a local lambda since this is the only place in this
+			// pass that needs it.
+			const auto findRecButton = [&]() -> QAbstractButton * {
+				for (QAbstractButton *b :
+				     dock->findChildren<QAbstractButton *>())
+					if (b->property(kKeyProperty).toString() ==
+					    QStringLiteral("rec"))
+						return b;
+				return nullptr;
+			};
+			int recHBefore = -1, recHAfter = -1;
 			runOnUi([&]() {
 				fsKeyShownWhenFloating =
 					fsKey->isVisibleTo(fsKey->parentWidget());
 				windowed = host->geometry();
+				if (QAbstractButton *rec = findRecButton())
+					recHBefore = rec->height();
 				fsKey->click();
 			});
 			std::this_thread::sleep_for(
@@ -4475,8 +4494,17 @@ void runReopenPass(const std::string &outPath)
 					fullGeom.width() >= screenGeom.width() &&
 					fullGeom.height() >=
 						screenGeom.height();
+				if (QAbstractButton *rec = findRecButton())
+					recHAfter = rec->height();
+				galleryGrowsInFullscreen =
+					recHBefore > 0 && recHAfter > recHBefore;
 				fsKey->click();
 			});
+			obs_log(galleryGrowsInFullscreen ? LOG_INFO : LOG_ERROR,
+				"[selftest] reopen: gallery scale in fullscreen — "
+				"REC key %d px windowed, %d px fullscreen: %s",
+				recHBefore, recHAfter,
+				galleryGrowsInFullscreen ? "grew" : "DID NOT GROW");
 			std::this_thread::sleep_for(
 				std::chrono::milliseconds(700));
 			runOnUi([&]() {
@@ -4870,7 +4898,8 @@ void runReopenPass(const std::string &outPath)
 	const bool pass = sameBoot.ok && rebooted.ok && fsKeyHiddenWhenDocked &&
 			  fsWindowOffersMaximise && fsDoubleClickIsInert &&
 			  fsKeyShownWhenFloating && fsCoversTheScreen &&
-			  fsRestoresTheWindow && tilesWideOk && tilesTallOk &&
+			  fsRestoresTheWindow && galleryGrowsInFullscreen &&
+			  tilesWideOk && tilesTallOk &&
 			  shortReachable && shortPacksLines && keysCentred &&
 			  tallCollapsesToMore && playKeyIsTall &&
 			  panelPaintsItself && panelMarksAreDrawn &&
@@ -4916,6 +4945,8 @@ void runReopenPass(const std::string &outPath)
 			  fsKeyShownWhenFloating);
 	obs_data_set_bool(checks, "fullscreen_covers_the_screen",
 			  fsCoversTheScreen);
+	obs_data_set_bool(checks, "gallery_scale_grows_in_fullscreen",
+			  galleryGrowsInFullscreen);
 	obs_data_set_bool(checks, "fullscreen_restores_the_window",
 			  fsRestoresTheWindow);
 	obs_data_set_bool(checks, "floating_window_offers_maximise",

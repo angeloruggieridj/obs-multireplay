@@ -336,6 +336,27 @@ void MultiReplayDock::refreshFullScreenKey()
 		QSignalBlocker block(fullScreenBtn_);
 		fullScreenBtn_->setChecked(full);
 	}
+
+	// §6.5 — GALLERY: either way the panel ends up owning the whole screen.
+	// Fullscreen is the ⛶ key; maximised is a floating window the operator
+	// dragged to fill it by hand (the title bar's own button, or a double
+	// click — see title_double_click_leaves_the_panel_alone) without ever
+	// pressing ⛶. Both put the operator 1-2 m from the screen instead of the
+	// ~60 cm a docked panel assumes, and the section keys should read from
+	// there the same way either time.
+	const bool gallery = floating && (host->isFullScreen() || host->isMaximized());
+	if (strip_ && galleryScale() != gallery) {
+		setGalleryScale(gallery);
+		// refreshAllBlocks(), NOT applyPanelMode(force=true): the
+		// arrangement itself (Wide/Short/Tall) has not changed, only the
+		// metrics inside it, and ControlStrip::setStacked's own first
+		// line — "if (forcedStack_ == on) return" — means asking for the
+		// SAME arrangement again is a no-op that never reaches
+		// KeyBlock::apply() at all. Measured: without this, entering
+		// fullscreen flipped the flag and did nothing else — every key
+		// stayed exactly the size it already was.
+		strip_->refreshAllBlocks();
+	}
 }
 
 } // namespace multireplay
