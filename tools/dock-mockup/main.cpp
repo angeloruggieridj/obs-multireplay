@@ -1920,6 +1920,54 @@ RowFit rowFit(Mock *w)
 	return f;
 }
 
+// §6.4 — SHORT PACKS THE FOLDED SECTIONS ONTO SHARED LINES, not one per
+// section. The plan for this asked for a new `ControlStrip::setStacked(2)`
+// that lays every section's FLAT shape and packs several to a line; reading
+// `layoutStack` shows that mechanism already exists — its greedy pass keeps
+// adding blocks to the current line while they fit the width, and only
+// starts a new one when the next block would not. What did not exist was
+// anything that LOCKED that in: a regression back to one section per line
+// changes nothing else about the checks, since every section still fits,
+// still has its keys, still folds — it just costs a dock the height of six
+// rows instead of two or three, on the one arrangement whose whole point is
+// staying short. So this measures lines, not looks.
+void checkShortStripPacks(Mock *w, const QString &label)
+{
+	if (w->mode_ != PanelMode::Short)
+		return;
+	QVector<int> lines;
+	int naiveSum = 0, count = 0;
+	for (QObject *ch : w->strip_->children()) {
+		auto *kb = dynamic_cast<KeyBlock *>(ch);
+		if (!kb || !kb->isVisible() || kb->width() <= 0 ||
+		    kb->height() <= 0)
+			continue;
+		count++;
+		naiveSum += kb->height();
+		bool onKnownLine = false;
+		for (int y : lines)
+			if (std::abs(y - kb->y()) <= 2) {
+				onKnownLine = true;
+				break;
+			}
+		if (!onKnownLine)
+			lines << kb->y();
+	}
+	if (count == 0)
+		return;
+	check(lines.size() < count,
+	      label + ": short packs sections onto shared lines",
+	      QString("%1 sections on %2 lines").arg(count).arg(lines.size()));
+	// Not just "shares a line somewhere" — the strip's OWN measured height
+	// has to actually be shorter than what one row per section would have
+	// cost, or the sharing bought nothing worth keeping.
+	check(w->strip_->height() < naiveSum,
+	      label + ": short's packed strip beats one row per section",
+	      QString("%1 px packed vs %2 px stacked one per line")
+		      .arg(w->strip_->height())
+		      .arg(naiveSum));
+}
+
 void checkAspect(Mock *w, const QString &label)
 {
 	int bad = 0;
@@ -3351,6 +3399,7 @@ int runChecks(QPalette pal, QApplication &app, const QString &outDir)
 		checkLabelsFit(w, label);
 		checkTooltips(w, label);
 		checkAspect(w, label);
+		checkShortStripPacks(w, label);
 		checkMonitorsGiveRoom(w, label);
 		if (label == QStringLiteral("wide"))
 			checkKeyIds(w);

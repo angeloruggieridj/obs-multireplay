@@ -4334,6 +4334,14 @@ void runReopenPass(const std::string &outPath)
 	// to tell them apart is to ask for a wide, shallow window and read back
 	// both the arrangement AND the height that was actually granted.
 	bool shortReachable = false;
+	// §6.4 — SHORT MUST PACK ITS FOLDED SECTIONS ONTO SHARED LINES, not one
+	// per section. The width is generous there (1400 px) and the height is
+	// the scarce resource, which is exactly backwards from what a strip
+	// that puts one section per line assumes. A regression here changes
+	// nothing else this gate checks — every section still folds, still has
+	// its keys — it just costs the dock the height of six rows instead of
+	// two or three.
+	bool shortPacksLines = false;
 	// PUTTING THE MONITORS DOWN HAS TO GIVE THE ROOM TO THE LIST, and this is
 	// the one check that can tell the difference between the pictures going
 	// away and the room coming back. They are not the same thing, and for a
@@ -4740,11 +4748,43 @@ void runReopenPass(const std::string &outPath)
 				const char *shortMode = "?";
 				measure(1400, 340, ignored, iw, it, shortMode);
 				int gotH = 0, floorH = 0;
+				int stripSections = 0, stripLines = 0;
+				int stripH = 0, naiveH = 0;
 				runOnUi([&]() {
 					gotH = host->height();
 					floorH = dock->minimumSizeHint().height();
 					shortReachable = dock->panelMode() ==
 							 PanelMode::Short;
+					QWidget *strip = dock->findChild<QWidget *>(
+						QStringLiteral("mrStrip"));
+					if (!strip)
+						return;
+					stripH = strip->height();
+					QVector<int> lines;
+					for (QWidget *b :
+					     strip->findChildren<QWidget *>(
+						     QStringLiteral("mrBlock"))) {
+						if (!b->isVisible() ||
+						    b->height() <= 0)
+							continue;
+						stripSections++;
+						naiveH += b->height();
+						bool onKnownLine = false;
+						for (int y : lines)
+							if (std::abs(y - b->y()) <=
+							    2) {
+								onKnownLine =
+									true;
+								break;
+							}
+						if (!onKnownLine)
+							lines << b->y();
+					}
+					stripLines = lines.size();
+					shortPacksLines =
+						stripSections > 0 &&
+						stripLines < stripSections &&
+						stripH < naiveH;
 				});
 				obs_log(shortReachable ? LOG_INFO : LOG_ERROR,
 					"[selftest] reopen: asked for a 1400x340 "
@@ -4752,6 +4792,13 @@ void runReopenPass(const std::string &outPath)
 					"panel's own floor is %d): %s",
 					gotH, shortMode, floorH,
 					shortReachable ? "short" : "NOT SHORT");
+				obs_log(shortPacksLines ? LOG_INFO : LOG_ERROR,
+					"[selftest] reopen: short's strip packed "
+					"%d sections onto %d lines (%d px vs %d "
+					"px if stacked one per line): %s",
+					stripSections, stripLines, stripH, naiveH,
+					shortPacksLines ? "packed"
+							: "NOT PACKED");
 			}
 			runOnUi([&]() {
 				host->setFloating(wasFloating);
@@ -4790,9 +4837,9 @@ void runReopenPass(const std::string &outPath)
 			  fsWindowOffersMaximise && fsDoubleClickIsInert &&
 			  fsKeyShownWhenFloating && fsCoversTheScreen &&
 			  fsRestoresTheWindow && tilesWideOk && tilesTallOk &&
-			  shortReachable && keysCentred && playKeyIsTall &&
-			  panelPaintsItself && panelMarksAreDrawn &&
-			  monitorsGiveRoom;
+			  shortReachable && shortPacksLines && keysCentred &&
+			  playKeyIsTall && panelPaintsItself &&
+			  panelMarksAreDrawn && monitorsGiveRoom;
 
 	// --- Put everything back ----------------------------------------------
 	// The operator's project first (so nothing is pointing into the test one),
@@ -4843,6 +4890,8 @@ void runReopenPass(const std::string &outPath)
 	obs_data_set_bool(checks, "camera_tiles_have_width_when_wide", tilesWideOk);
 	obs_data_set_bool(checks, "camera_tiles_have_width_in_a_column", tilesTallOk);
 	obs_data_set_bool(checks, "short_arrangement_is_reachable", shortReachable);
+	obs_data_set_bool(checks, "short_packs_sections_onto_shared_lines",
+			   shortPacksLines);
 	obs_data_set_bool(checks, "monitors_key_gives_the_room_to_the_list",
 			  monitorsGiveRoom);
 	obs_data_set_bool(checks, "stacked_keys_are_centred", keysCentred);
