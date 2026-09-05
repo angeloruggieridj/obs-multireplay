@@ -1409,6 +1409,9 @@ KeyBlock *MultiReplayDock::buildSpeedBlock()
 			     // non-portable
 		auto *b = compactBtn(QString::fromUtf8(lbl), this, "mrSpeedChip");
 		setKeyId(b, QString("speed%1").arg(p));
+		// §7.3.12 — the slider next to these already has its own hint
+		// (Dock.SpeedSliderHint); the six chips never did.
+		b->setToolTip(obs_module_text("Dock.SpeedChipHint"));
 		speedChips_->addButton(b, p);
 		connect(b, &QPushButton::clicked, this, [this, p]() {
 			QSignalBlocker block(speed_);
