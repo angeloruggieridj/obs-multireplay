@@ -1340,11 +1340,25 @@ private:
 	// Stop and destroy every feed, and forget the cue. Called when the panel
 	// goes back to live and on the way out.
 	void releaseTileFeeds();
-	// Longest range a feed is ever asked for. A clip is COMPRESSED packets in
-	// RAM (~2.5 MB for five seconds at 4 Mbit/s), so a minute per angle is the
-	// order of 30 MB — bounded, and far more footage than anyone chooses an
-	// angle over. A longer review simply holds its last frame on the tiles.
+	// Longest range a feed is EVER asked for, before the budget below can
+	// shrink it further. A longer review simply holds its last frame on
+	// the tiles.
 	static constexpr int64_t kTileReviewMaxNs = 60'000'000'000LL;
+	// §7.1.4 — the RAM every tile feed's review packets are allowed to add
+	// up to, TOGETHER, not each. The old fixed 60 s was bounded only at
+	// the bitrate the comment here used to assume (4 Mbit/s: ~30 MB for a
+	// minute) — a rig with more cameras, or with
+	// Config.videoBitrateKbps left at its 12 Mbit/s default, was never
+	// checked against that assumption. Eight cameras at the default is
+	// closer to 90 MB PER FEED, ~700 MB of packets in review at once.
+	// cueTiles() derives the per-feed cap from the CONFIGURED bitrate and
+	// the number of feeds actually active, so the total stays under this
+	// no matter how many cameras are armed or how they are encoded; a
+	// heavy rig gives every tile less of the past instead of holding as
+	// much of it as a light rig would. Floored at kTileReviewMinNs so the
+	// cap never shrinks to something that shows nothing.
+	static constexpr int64_t kTileFeedBudgetBytes = 256 * 1024 * 1024;
+	static constexpr int64_t kTileReviewMinNs = 5'000'000'000LL;
 
 	std::array<std::unique_ptr<ReplayChannel>, 8> tileFeed_{};
 	// HAS THIS FEED EVER SHOWN A PICTURE? Sticky for the life of the feed, and

@@ -2591,7 +2591,44 @@ void MultiReplayDock::cueTiles(int64_t inNs, int64_t outNs, int speedPct,
 	// review can ask for a whole session. Past the cap the tiles simply hold
 	// the last frame they were given, which is still the reviewed moment on
 	// that lens.
-	outNs = std::min(outNs, inNs + kTileReviewMaxNs);
+	//
+	// §7.1.4 — the cap is derived from how many feeds WILL be active and
+	// what bitrate they were configured at, so the total across every tile
+	// stays under kTileFeedBudgetBytes instead of only being bounded per
+	// feed. Counted the same way ensureTileFeeds() decides who gets a
+	// feed (configured source + visible tile + canonical slot) rather
+	// than read off tileFeed_ itself: this runs BEFORE ensureTileFeeds()
+	// below, so on the very first cue of a review tileFeed_ is still all
+	// null and would read back zero feeds — under-capping the one cue
+	// that then gets CACHED (see the early-return above) and never
+	// revisited until inNs/outNs move again.
+	int64_t effectiveMaxNs = kTileReviewMaxNs;
+	const Config tileCfg = ReplayCore::instance().getConfig();
+	std::array<std::string, kMaxCameras> tileSrcNames{};
+	for (int i = 0; i < kMaxCameras; i++)
+		tileSrcNames[i] = tileCfg.cameras[i].sourceName;
+	const auto tileCanonical = canonicalCameraIndices(tileSrcNames);
+	int activeFeeds = 0;
+	for (int cam = 0; cam < kMaxCameras; cam++)
+		if (!tileCfg.cameras[cam].sourceName.empty() &&
+		    cam < kMaxPreviewTiles && tiles_[cam].box &&
+		    tiles_[cam].box->isVisible() && tileCanonical[cam] == cam)
+			activeFeeds++;
+	if (activeFeeds > 0) {
+		const int64_t bytesPerSec =
+			(int64_t)(tileCfg.videoBitrateKbps +
+				  tileCfg.audioBitrateKbps) *
+			1000 / 8;
+		if (bytesPerSec > 0) {
+			const int64_t perFeedBudget =
+				kTileFeedBudgetBytes / activeFeeds;
+			const int64_t capNs = perFeedBudget * 1'000'000'000LL /
+					      bytesPerSec;
+			effectiveMaxNs = std::clamp(capNs, kTileReviewMinNs,
+						    kTileReviewMaxNs);
+		}
+	}
+	outNs = std::min(outNs, inNs + effectiveMaxNs);
 	const int pct = std::clamp(speedPct > 0 ? speedPct : 100, 5, 400);
 	// CALLED FROM poll(), thirty times a second. Re-issuing the same cue would
 	// restart every feed on every tick — eight decoders started and joined
