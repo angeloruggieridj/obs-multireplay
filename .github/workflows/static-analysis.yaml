@@ -1,0 +1,33 @@
+# §4.4 — advisory static analysis, never blocking. cppcheck needs no OBS/Qt
+# dependency fetch to say something useful about src/ (unlike clang-tidy,
+# which needs a real compile_commands.json to avoid drowning in
+# missing-include noise from obs-frontend-api/libobs/Qt6 — that would need
+# the full buildspec dependency fetch this job deliberately skips to stay
+# fast and zero-risk, so clang-tidy is not run here).
+name: Static Analysis 🔬
+on:
+  workflow_call:
+jobs:
+  cppcheck:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Install cppcheck 🛍️
+        run: sudo apt-get update && sudo apt-get install -y cppcheck
+      - name: cppcheck 🔍
+        # Advisory only — a warning here is something to look at, not
+        # something that should stop a merge. Missing-include noise from
+        # obs-frontend-api/libobs/Qt6 is suppressed because this job never
+        # fetches them (that is what build-project.yaml is for); the value
+        # here is the checks that do not need a resolved include path at
+        # all (uninitialized memory, null derefs, obviously dead branches).
+        continue-on-error: true
+        run: |
+          : cppcheck 🔍
+          cppcheck --enable=warning,performance,portability \
+            --inline-suppr --std=c++17 --language=c++ \
+            --suppress=missingInclude --suppress=missingIncludeSystem \
+            --suppress=unmatchedSuppression \
+            -I src src

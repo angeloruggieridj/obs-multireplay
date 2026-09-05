@@ -95,3 +95,11 @@ jobs:
     secrets: inherit
     permissions:
       contents: read
+
+  static-analysis:
+    name: Static Analysis 🔬
+    needs: check-duplicate
+    if: needs.check-duplicate.outputs.run == 'true'
+    uses: ./.github/workflows/static-analysis.yaml
+    permissions:
+      contents: read
