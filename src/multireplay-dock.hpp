@@ -1109,6 +1109,11 @@ private:
 	QVBoxLayout *rootLayout_ = nullptr;
 	QWidget *leftCol_ = nullptr;
 	QVBoxLayout *leftColLayout_ = nullptr;
+	// The splitter's other child (toolbar + event list). Read by
+	// applyPreviewSplit's Short branch (shortSplitLeftWidth, dock-layout.hpp)
+	// to keep the toolbar's own words from being squeezed toward their CSS
+	// floor by a divider nothing else was minding on that axis.
+	QWidget *listPane_ = nullptr;
 	QWidget *bottomBar_ = nullptr;
 	QWidget *bottomSep_ = nullptr;
 	// Height of a picture that wide, in the canvas's own ratio.

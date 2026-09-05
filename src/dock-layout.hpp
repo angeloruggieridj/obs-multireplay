@@ -144,6 +144,34 @@ inline int monitorRoomFor(const MonitorRoom &m)
 		room = std::min(room, m.panelH / 2);
 	return std::max(40, room);
 }
+
+// ---------------------------------------------------------------------------
+// SHORT'S OTHER DIVIDER — the one nobody was minding
+// ---------------------------------------------------------------------------
+//
+// `monitorRoomFor` above exists because a HEIGHT split had two copies that
+// drifted. This is the same lesson on the other axis: in Short the body
+// splitter divides WIDTH, not height, and until this function existed NOTHING
+// gave that divider an opinion — the height-management in applyPreviewSplit
+// explicitly hands Short back with "a height means nothing here" and stops,
+// leaving a QSplitter with only its stretch factors (3:2) to go on. Content
+// changes on the LEFT side (a section gaining a row, a rank moving a block
+// onto a different packed line) can shift where that stretch-driven default
+// converges even though nothing on the right changed at all — measured: a
+// height-only edit to the key strip moved this divider 28 px, enough to push
+// "Live" in the toolbar down to its CSS floor (44 px) instead of its own
+// word's width (85), rendering it clipped rather than merely tight.
+//
+// So this divider gets the same treatment as the height one: left alone once
+// the operator has dragged it (that check happens at the call site, same as
+// bodyChosen/splitChosen elsewhere), it otherwise guarantees the RIGHT pane
+// (the toolbar + event list) its own preferred width before the left column
+// gets whatever is left — floored at the left column's own minimum, since
+// giving away more than exists is not "guaranteeing" anything.
+inline int shortSplitLeftWidth(int totalW, int leftMinW, int rightWantW)
+{
+	return std::max(leftMinW, totalW - rightWantW);
+}
 // A SECTION'S CAPTION, and it has two heights because it is worth two different
 // amounts. Side by side, a caption is how the eye tells six groups apart at a
 // glance and it is cheap — one line across the whole strip. STACKED, there is

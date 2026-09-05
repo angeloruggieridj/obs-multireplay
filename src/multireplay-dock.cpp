@@ -1098,6 +1098,7 @@ MultiReplayDock::MultiReplayDock(QWidget *parent) : QWidget(parent)
 		lv->addWidget(buildToolbar());
 		lv->addWidget(buildEvents(), 1);
 		splitter_->addWidget(listPane);
+		listPane_ = listPane;
 
 		connect(splitter_, &QSplitter::splitterMoved, this,
 			[this](int, int) {
@@ -1909,6 +1910,20 @@ void MultiReplayDock::applyPreviewSplit(int want)
 {
 	if (panelMode_ == PanelMode::Short) {
 		previewPane_->setMaximumHeight(QWIDGETSIZE_MAX);
+		// shortSplitLeftWidth (dock-layout.hpp) — the width divider `want`
+		// (a height) means nothing to. Only until he has dragged it, same
+		// rule as the height case below.
+		if (!splitChosen() && splitter_->width() > 0 && listPane_) {
+			const int total = splitter_->width() - splitter_->handleWidth();
+			const int rightWant = listPane_->sizeHint().width();
+			const QList<int> now = splitter_->sizes();
+			if (now.size() > 1 && now[1] < rightWant) {
+				const int give = shortSplitLeftWidth(
+					total, leftCol_->minimumSizeHint().width(),
+					rightWant);
+				splitter_->setSizes({give, total - give});
+			}
+		}
 		return;
 	}
 	// A CAP, so the pane can never be GIVEN more room than its pictures can
