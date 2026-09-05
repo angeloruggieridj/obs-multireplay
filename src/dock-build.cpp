@@ -1504,7 +1504,10 @@ KeyBlock *MultiReplayDock::buildExportBlock()
 			refreshEvents();
 		});
 		connect(actDel, &QAction::triggered, this, [this]() {
-			for (int id : selectedEventIds())
+			const auto ids = selectedEventIds();
+			if (!confirmDelete(ids))
+				return;
+			for (int id : ids)
 				EventStore::instance().remove(id);
 			refreshEvents();
 		});
@@ -1726,10 +1729,14 @@ QPushButton *MultiReplayDock::buildExportKey()
 			exp->mapToGlobal(QPoint(0, exp->height())));
 		if (!picked)
 			return;
+		// §7.3.9: opens on the last folder THIS project exported to,
+		// rather than starting the picker over from zero every time.
 		const QString folder = QFileDialog::getExistingDirectory(
-			this, obs_module_text("Dock.ExportFolder"));
+			this, obs_module_text("Dock.ExportFolder"),
+			lastExportFolder());
 		if (folder.isEmpty())
 			return;
+		setLastExportFolder(folder);
 		std::string err;
 		if (picked == one) {
 			// exportEvent's return value used to be thrown away here: a
@@ -2033,17 +2040,24 @@ QWidget *MultiReplayDock::buildEvents()
 					EventStore::instance().duplicate(id);
 				refreshEvents();
 			} else if (chosen == actDel) {
-				for (int id : selectedEventIds())
+				const auto delIds = selectedEventIds();
+				if (!confirmDelete(delIds))
+					return;
+				for (int id : delIds)
 					EventStore::instance().remove(id);
 				refreshEvents();
 			} else if (chosen == actExp) {
 				auto ids = selectedEventIds();
 				if (ids.empty())
 					return;
+				// §7.3.9: same remembered folder as the other
+				// export entry point — one habit, not two.
 				QString folder = QFileDialog::getExistingDirectory(
-					this, obs_module_text("Dock.ExportFolder"));
+					this, obs_module_text("Dock.ExportFolder"),
+					lastExportFolder());
 				if (folder.isEmpty())
 					return;
+				setLastExportFolder(folder);
 				std::string err;
 				for (int id : ids)
 					ExportManager::instance().exportEvent(

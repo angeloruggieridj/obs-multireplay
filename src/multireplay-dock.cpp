@@ -3410,6 +3410,14 @@ bool MultiReplayDock::playFreeReview(bool toOutput)
 		showNotice(obs_module_text("Dock.NoFootageHere"));
 		return false;
 	}
+	// §7.2.7 — SAID BEFORE IT HAPPENS, not discovered when the picture
+	// just stops. Hitting the chunk cap exactly is indistinguishable here
+	// from footage that happens to end on a chunk boundary, which is
+	// close enough to never for continuously time-stamped packets that
+	// treating "exactly the cap" as "capped" costs nothing in practice.
+	// Queued (§7.3.8) behind the "reviewing" notice a few lines down, so
+	// both reach the operator instead of the second erasing the first.
+	const bool capped = (int)ranges.size() == kFreeReviewMaxChunks;
 
 	auto &core = ReplayCore::instance();
 	// Same discipline as a scrub: kill the queue first so its own finish
@@ -3440,10 +3448,22 @@ bool MultiReplayDock::playFreeReview(bool toOutput)
 		return false;
 	}
 	obs_log(LOG_INFO,
-		"[dock] free review: %zu chunk(s) from %lld ms on angle %d, %s",
+		"[dock] free review: %zu chunk(s) from %lld ms on angle %d, %s%s",
 		ranges.size(),
 		(long long)((inNs - timelineStartNs_) / 1000000),
-		currentAngle1(), toOutput ? "TO OUTPUT" : "off air");
+		currentAngle1(), toOutput ? "TO OUTPUT" : "off air",
+		capped ? " (capped)" : "");
+	// §7.2.7: said BEFORE the "reviewing" notice, so it is the one showing
+	// while the operator's eye is still on the strip from the gesture he
+	// just made — the "reviewing" notice queues behind it (§7.3.8) rather
+	// than erasing it.
+	if (capped) {
+		const int64_t totalMs =
+			kFreeReviewChunkNs * (int64_t)kFreeReviewMaxChunks /
+			1'000'000LL;
+		showNotice(QString(obs_module_text("Dock.FreeReviewCapped"))
+				   .arg(totalMs / 60000));
+	}
 	showNotice(obs_module_text(toOutput ? "Dock.FreeReviewOnAir"
 					    : "Dock.FreeReviewOffAir"));
 	return true;
@@ -4075,14 +4095,65 @@ void MultiReplayDock::showZoomMenu()
 	menu.exec(seek_->mapToGlobal(QPoint(seek_->width(), seek_->height())));
 }
 
+// §7.3.10 — DELETE OVER A THRESHOLD ASKS FIRST. Only DeleteAll used to: a
+// handful of events under one right click had no confirmation at all, and
+// "a handful" turned out to mean whatever was selected, no matter how much
+// of the marked footage that was. Two thresholds, either one enough to ask —
+// a long list of short events and a short list of long ones are the same
+// mistake from two different directions.
+bool MultiReplayDock::confirmDelete(const std::vector<int> &ids)
+{
+	constexpr size_t kConfirmCount = 3;
+	constexpr int64_t kConfirmTotalNs = 30'000'000'000LL; // 30 s
+	int64_t totalNs = 0;
+	auto &store = EventStore::instance();
+	for (int id : ids) {
+		ReplayEvent ev;
+		if (store.get(id, ev) && ev.tOutNs > ev.tInNs)
+			totalNs += ev.tOutNs - ev.tInNs;
+	}
+	if (ids.size() <= kConfirmCount && totalNs <= kConfirmTotalNs)
+		return true;
+	// The buttons are OURS, not Qt's: QMessageBox::Yes/No follow Qt's own
+	// locale, not OBS's, same reason DeleteAllConfirm already builds its
+	// own (see that connection, a few lines up in buildExportBlock).
+	QMessageBox box(this);
+	box.setWindowTitle("obs-multireplay");
+	box.setText(QString(obs_module_text("Dock.DeleteConfirm"))
+			    .arg(ids.size())
+			    .arg(formatTc(totalNs)));
+	QPushButton *yes =
+		box.addButton(obs_module_text("Dock.Yes"), QMessageBox::YesRole);
+	box.addButton(obs_module_text("Dock.No"), QMessageBox::NoRole);
+	box.exec();
+	return box.clickedButton() == yes;
+}
+
 void MultiReplayDock::showNotice(const QString &text)
 {
 	// Shown on the STATUS LINE, which owns it for a few seconds (see
 	// updateChannelStrip). It runs the width of the panel, it is next to the
 	// modes the sentence is usually about, and it is the one place left that
 	// can hold a sentence at all now that the three-line channel band is gone.
+	//
+	// §7.3.8 — QUEUED, not overwritten, when the line is already showing
+	// something: a mark rejected followed within the same tick by a skip
+	// used to replace the rejection before the operator's eye had reached
+	// the strip, so he never learned about it. updateChannelStrip()
+	// (dock-poll.cpp) pops the next one once the current message's window
+	// closes, in the order they happened. Capped (kNoticeQueueMax): past
+	// that, a NEW notice is the one dropped, not one already waiting — a
+	// bug that calls this in a loop must not grow the backlog forever, and
+	// dropping the tail keeps what does get shown in the order it occurred
+	// instead of reordering causes and effects.
+	const int64_t now = (int64_t)os_gettime_ns();
+	if (noticeUntilNs_ > 0 && now < noticeUntilNs_) {
+		if (noticeQueue_.size() < kNoticeQueueMax)
+			noticeQueue_.push_back(text);
+		return;
+	}
 	noticeText_ = text;
-	noticeUntilNs_ = (int64_t)os_gettime_ns() + kNoticeNs;
+	noticeUntilNs_ = now + kNoticeNs;
 	updateChannelStrip();
 }
 

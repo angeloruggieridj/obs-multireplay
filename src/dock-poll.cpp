@@ -176,6 +176,14 @@ void MultiReplayDock::updateChannelStrip()
 	// lasts, because a refusal nobody sees is a panel that ignored him.
 	const bool reverseOnAir = ps.active && ps.reverse;
 	QString line;
+	// §7.3.8 — advance the mini-queue: the current message's window has
+	// closed and something is waiting behind it. A queued notice gets the
+	// shorter duration (kQueuedNoticeNs) — see showNotice's own note on why.
+	if (!noticeQueue_.isEmpty() &&
+	    (int64_t)os_gettime_ns() >= noticeUntilNs_) {
+		noticeText_ = noticeQueue_.takeFirst();
+		noticeUntilNs_ = (int64_t)os_gettime_ns() + kQueuedNoticeNs;
+	}
 	const bool notice = noticeUntilNs_ > 0 &&
 			    (int64_t)os_gettime_ns() < noticeUntilNs_;
 	if (notice) {

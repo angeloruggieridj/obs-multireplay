@@ -37,6 +37,7 @@ including this.
 #include <QLabel>
 #include <QMenu>
 #include <QPushButton>
+#include <QSettings>
 #include <QSizePolicy>
 #include <QString>
 #include <QStyle>
@@ -123,6 +124,49 @@ inline QAbstractButton *findKeyButton(QWidget *root, const QString &id)
 		if (b->property(kKeyProperty).toString() == id)
 			return b;
 	return nullptr;
+}
+
+// ── §7.3.9 — THE LAST FOLDER AN EXPORT WROTE TO, PER PROJECT ─────────────
+//
+// QSettings, not a field in Config/settings.json: this is a resumption of
+// habit ("the folder I pick every time"), not a decision that belongs to
+// the project's own domain model — the project file already distinguishes
+// between the two (see loadConfigFile's own note on why sessionFolder and
+// currentProjectName are the ONLY two fields it lets a project own). Kept
+// in its own INI file inside the plugin's own config directory rather than
+// QSettings' OS-native default location: this plugin has one place its
+// files live (obs_module_config_path), and a Windows registry key nobody
+// but this file knows to look under is not it.
+//
+// Keyed by project name so opening someone else's project does not offer
+// YOUR last export folder as though it were mine — projects with no name
+// yet (writing straight to the session folder) share one entry, same as
+// every other per-project behaviour in this file.
+inline QSettings uiPrefs()
+{
+	QString path;
+	if (char *p = obs_module_config_path("ui-prefs.ini")) {
+		path = QString::fromUtf8(p);
+		bfree(p);
+	}
+	return QSettings(path, QSettings::IniFormat);
+}
+
+inline QString lastExportFolder()
+{
+	const QString proj = QString::fromStdString(
+		ReplayCore::instance().getConfig().currentProjectName);
+	return uiPrefs()
+		.value(QStringLiteral("lastExportFolder/%1").arg(proj))
+		.toString();
+}
+
+inline void setLastExportFolder(const QString &folder)
+{
+	const QString proj = QString::fromStdString(
+		ReplayCore::instance().getConfig().currentProjectName);
+	QSettings s = uiPrefs();
+	s.setValue(QStringLiteral("lastExportFolder/%1").arg(proj), folder);
 }
 
 // ── A KEY THAT OPENS A MENU, WITHOUT WEARING THE PLATFORM'S ARROW ────────
@@ -244,6 +288,10 @@ inline constexpr int64_t kScrubReviewNs = 10'000'000'000LL; // 10 s
 
 // How long a one-line notice keeps the status area (see showNotice).
 inline constexpr int64_t kNoticeNs = 5'000'000'000LL; // 5 s
+// §7.3.8 — shorter, for a notice popped off the mini-queue: half the time a
+// lone notice gets, so a backlog of two or three drains in a few seconds
+// instead of taking fifteen to say everything it has queued up.
+inline constexpr int64_t kQueuedNoticeNs = 2'500'000'000LL; // 2.5 s
 
 // A sequence is several clips, and the engine goes idle between them: the queue
 // advance crosses the playback thread's finish callback and the OBS UI task

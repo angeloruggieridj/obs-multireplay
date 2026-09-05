@@ -941,6 +941,12 @@ private:
 	// (and refuses) when it is not. See the definition.
 	bool markable(int64_t tNs);
 	std::vector<int> selectedEventIds() const;
+	// §7.3.10 — a Delete over threshold asks first, the same way DeleteAll
+	// always has; a short list still goes without asking, since friction on
+	// the common case (one or two events, seconds of footage) is not a
+	// safety net, it is a reason to stop using the key. True = proceed
+	// (below threshold, or the operator confirmed).
+	bool confirmDelete(const std::vector<int> &ids);
 	// The "Play selected" button, factored out so the hotkey of the same name
 	// runs the same code (selection, angle and "to output" all included).
 	void playSelected();
@@ -1603,6 +1609,16 @@ private:
 	// to something the operator just pressed.
 	int64_t noticeUntilNs_ = 0;
 	QString noticeText_;
+	// §7.3.8 — A MINI-QUEUE, because the line only ever holds one thing.
+	// showNotice used to just overwrite it: a mark rejected followed within
+	// the same tick by a skip meant the rejection was replaced before the
+	// operator's eye had reached the strip — a refusal he never learned
+	// about. A second call while one is already showing queues instead;
+	// updateChannelStrip() (dock-poll.cpp) advances it once the current
+	// message's window closes. Capped, so a bug that calls showNotice in a
+	// loop cannot pin the strip on a growing backlog forever.
+	static constexpr int kNoticeQueueMax = 4;
+	QList<QString> noticeQueue_;
 
 	QTimer *pollTimer_ = nullptr;
 	bool prevRecording_ = false; // detects REC start

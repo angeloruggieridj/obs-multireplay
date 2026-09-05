@@ -287,6 +287,9 @@ struct DockChecks {
 	// through the status notice instead — same channel every other rejected
 	// mark/play key on the strip already uses.
 	bool markOutWithoutOpenEventUsesNotice = false;
+	// §7.3.8: a second notice while one is already showing must be QUEUED,
+	// not drop the first one before the operator's eye reaches the strip.
+	bool noticeQueueWorks = false;
 	// §2.4: switching the A|B / A / B selector must not silently reset the
 	// angle of the bay being switched TO (see angle-channels.hpp).
 	bool channelSwitchKeepsAngle = false;
@@ -1041,6 +1044,61 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 			"notice='%s'",
 			noModal ? "none" : "OPEN",
 			qUtf8Printable(notice));
+	}
+
+	// --- §7.3.8: a notice fired while one is already showing queues
+	// instead of overwriting it. markOutBtn (nothing open) and "move up"
+	// (nothing selected) give two DISTINCT, safe-to-fire-here texts —
+	// firing them back to back and reading only the FIRST would prove
+	// nothing, since two overwrites of the SAME text look identical to a
+	// queue of one; the two texts are what makes this a real test.
+	{
+		QAbstractButton *moveUpBtn = nullptr;
+		runOnUi([&]() {
+			for (QAbstractButton *b :
+			     dock->findChildren<QAbstractButton *>())
+				if (b->property(kKeyProperty).toString() ==
+				    QLatin1String("moveUp"))
+					moveUpBtn = b;
+		});
+		QString immediateText, laterText;
+		if (moveUpBtn) {
+			// A CLEAN SLATE FIRST. The check just above this one
+			// already fired markOutBtn once, and its own notice can
+			// still be showing here — without waiting it out, THIS
+			// test's own first click would itself land on an occupied
+			// line and queue behind that one instead of showing
+			// immediately, which looks identical to the queue never
+			// advancing at all. Caught by reading the log rather than
+			// assumed: the failure this produced named the FIRST
+			// click's own text as what was still showing 5.3s later.
+			std::this_thread::sleep_for(std::chrono::milliseconds(5100));
+			runOnUi([&]() {
+				markOutBtn->click();  // "Dock.NoOpenEvent", shows now
+				moveUpBtn->click();   // "Dock.SelectToReorder", queued
+				if (auto *nl = dock->findChild<QLabel *>(
+					    QStringLiteral("mrChanStrip")))
+					immediateText = nl->text();
+			});
+			// Past kNoticeNs (5s) so the first has expired and the
+			// queue has had a poll tick to advance past it.
+			std::this_thread::sleep_for(std::chrono::milliseconds(5300));
+			runOnUi([&]() {
+				if (auto *nl = dock->findChild<QLabel *>(
+					    QStringLiteral("mrChanStrip")))
+					laterText = nl->text();
+			});
+		}
+		c.noticeQueueWorks =
+			immediateText.contains(QString::fromUtf8(
+				obs_module_text("Dock.NoOpenEvent"))) &&
+			laterText.contains(QString::fromUtf8(
+				obs_module_text("Dock.SelectToReorder")));
+		obs_log(c.noticeQueueWorks ? LOG_INFO : LOG_ERROR,
+			"[selftest] notice queue: immediately '%s', after 5.3s "
+			"'%s' (moveUp found: %s)",
+			qUtf8Printable(immediateText), qUtf8Printable(laterText),
+			moveUpBtn ? "yes" : "NO");
 	}
 
 	// --- §2.3: the Angolo fallback is reachable with the mouse EVEN WHEN
@@ -6399,6 +6457,7 @@ void runSelfTest()
 	obs_data_set_bool(checks, "dock_registered", dockChecks.found);
 	obs_data_set_bool(checks, "mark_out_without_open_event_uses_notice",
 			  dockChecks.markOutWithoutOpenEventUsesNotice);
+	obs_data_set_bool(checks, "notice_queue_works", dockChecks.noticeQueueWorks);
 	obs_data_set_bool(checks, "dock_channel_switch_keeps_angle",
 			  dockChecks.channelSwitchKeepsAngle);
 	obs_data_set_bool(checks, "angle_fallback_menu_works",
