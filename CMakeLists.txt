@@ -164,7 +164,9 @@ target_sources(
     # engine rejection
     src/angle-channels.hpp
     src/error-locale.hpp
+    src/dock-internal.hpp
     src/dock-window.cpp
+    src/dock-settings.cpp
     src/dock-layout.cpp
     src/dock-layout.hpp
     src/dock-style.hpp
