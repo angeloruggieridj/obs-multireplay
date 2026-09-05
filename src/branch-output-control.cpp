@@ -24,6 +24,60 @@ bool available()
 	return obs_source_get_display_name(kFilterId) != nullptr;
 }
 
+bool schemaCompatible(std::vector<std::string> *missingKeysOut)
+{
+	// §9.4(b) — Branch Output declares no version string anywhere libobs
+	// exposes: obs_get_module_name/_author/_description all come back null
+	// for it (checked against the installed 1.0.9 — it simply never calls
+	// the macros that would set them), and there is no public API to read
+	// a THIRD PARTY module's own semantic version. A number to compare
+	// against does not exist, so this checks the thing a version number
+	// would have been a proxy for: does Branch Output's filter still
+	// recognize every settings key ensureFilter()/buildSettings() writes.
+	//
+	// obs_get_source_defaults(kFilterId) calls straight into Branch
+	// Output's own get_defaults() with a fresh obs_data_t — no filter
+	// instance, no parent, no side effect — and every key its callback
+	// declares a default for shows up there. Measured against the real
+	// plugin: every key below is present today. A future release that
+	// renames or drops one would surface here, before a single frame is
+	// recorded, instead of as a REC that silently ignored the field.
+	//
+	// ENCODER keys (bitrate, keyint_sec, latency, bframes, bf, lookahead,
+	// custom_audio_source, resolution — see buildSettings()) are
+	// deliberately NOT in this list: buildSettings() hands those straight
+	// through to obs_video_encoder_create(), so they are the ENCODER's
+	// defaults, not Branch Output's — measured absent from this same
+	// defaults object on the very version this project ships against, so
+	// checking them would flag every install, including a working one.
+	static const char *const kEssentialKeys[] = {
+		"stream_recording",         "recording_output_enabled",
+		"replay_buffer",            "use_profile_recording_path",
+		"path",                     "filename_formatting",
+		"no_space_filename",        "rec_format",
+		"split_file",               "split_file_time_mins",
+	};
+
+	obs_data_t *defs = obs_get_source_defaults(kFilterId);
+	if (!defs) {
+		if (missingKeysOut)
+			missingKeysOut->push_back("(no defaults at all)");
+		return false;
+	}
+	bool ok = true;
+	for (const char *key : kEssentialKeys) {
+		if (obs_data_has_default_value(defs, key))
+			continue;
+		ok = false;
+		if (missingKeysOut)
+			missingKeysOut->push_back(key);
+		else
+			break; // caller only wants the yes/no answer
+	}
+	obs_data_release(defs);
+	return ok;
+}
+
 obs_data_t *buildSettings(int camIndex, const Config &cfg)
 {
 	obs_data_t *settings = obs_data_create();

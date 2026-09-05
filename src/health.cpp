@@ -150,6 +150,20 @@ health::PreflightResult HealthMonitor::preflight(const Config &cfg,
 {
 	health::PreflightInput in;
 	in.branchOutputAvailable = branch_output::available();
+	if (in.branchOutputAvailable) {
+		std::vector<std::string> missing;
+		in.branchOutputSchemaCompatible =
+			branch_output::schemaCompatible(&missing);
+		if (!missing.empty()) {
+			std::string joined;
+			for (size_t i = 0; i < missing.size(); i++) {
+				if (i)
+					joined += ", ";
+				joined += missing[i];
+			}
+			in.branchOutputMissingKeys = joined;
+		}
+	}
 	in.ringSecondsWanted = ringSecondsWanted;
 
 	// --- cameras ---

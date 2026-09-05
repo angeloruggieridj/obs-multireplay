@@ -153,6 +153,28 @@ static void test_missing_prerequisites_block()
 	}
 }
 
+static void test_branch_output_schema_mismatch_warns()
+{
+	// §9.4(b) — a settings key ensureFilter() writes that Branch Output no
+	// longer declares a default for: degrade, do not block. A rig that
+	// cannot see Branch Output at all is a different, harder fault
+	// (branch_output_missing) and must not ALSO report this one.
+	PreflightInput in = healthyRig();
+	in.branchOutputSchemaCompatible = false;
+	in.branchOutputMissingKeys = "rec_format";
+	const PreflightResult r = preflight(in);
+	CHECK(r.ok());
+	CHECK(r.worst() == Level::Warning);
+	CHECK(r.has("branch_output_schema_mismatch"));
+
+	in = healthyRig();
+	in.branchOutputAvailable = false;
+	in.branchOutputSchemaCompatible = false; // as health.cpp leaves it: unset
+	const PreflightResult r2 = preflight(in);
+	CHECK(r2.has("branch_output_missing"));
+	CHECK(!r2.has("branch_output_schema_mismatch"));
+}
+
 static void test_partial_rig_warns_but_records()
 {
 	// One of two cameras missing is still a take worth having: the reference controller records
@@ -426,6 +448,7 @@ int main()
 {
 	test_healthy_rig_is_silent();
 	test_missing_prerequisites_block();
+	test_branch_output_schema_mismatch_warns();
 	test_partial_rig_warns_but_records();
 	test_disk_space_thresholds();
 	test_disk_bandwidth_thresholds();

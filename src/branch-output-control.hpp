@@ -12,6 +12,7 @@ Filter id and settings keys verified against branch-output master (1.0.9).
 
 #include <obs-module.h>
 #include <string>
+#include <vector>
 
 namespace multireplay {
 
@@ -26,6 +27,15 @@ constexpr const char *kFilterNamePrefix = "MultiReplay cam";
 
 // True if the Branch Output plugin is loaded in this OBS instance.
 bool available();
+
+// §9.4(b) — true when Branch Output's own filter still declares a default
+// for every settings key ensureFilter()/buildSettings() writes (see the
+// definition for why this, and not a version number, is the signal: Branch
+// Output exposes no version string libobs can read). Call only when
+// available() is true. If missingKeysOut is given, every absent key is
+// appended to it for the Finding's detail string; left null, the check
+// still runs but stops at the first miss.
+bool schemaCompatible(std::vector<std::string> *missingKeysOut = nullptr);
 
 // Find-or-create our Branch Output filter on `target` for camera `camIndex`
 // (0-based) and apply recording settings derived from `cfg`.

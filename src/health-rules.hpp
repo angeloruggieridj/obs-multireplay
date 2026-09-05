@@ -193,6 +193,12 @@ inline std::string mins(int64_t seconds)
 
 struct PreflightInput {
 	bool branchOutputAvailable = false;
+	// §9.4(b) — only meaningful when branchOutputAvailable is true (see
+	// branch-output-control.hpp: schemaCompatible()). Left true when the
+	// check was never run, so an old health.cpp caller that never sets
+	// this field reports nothing, not a false alarm.
+	bool branchOutputSchemaCompatible = true;
+	std::string branchOutputMissingKeys; // comma-joined, for the detail
 	bool sessionFolderSet = false;
 	bool sessionFolderWritable = false;
 	int camerasConfigured = 0;    // slots with a source name
@@ -244,6 +250,14 @@ inline PreflightResult preflight(const PreflightInput &in)
 
 	if (!in.branchOutputAvailable)
 		add(Level::Blocker, "branch_output_missing");
+	// §9.4(b) — Warning, not Blocker: a missing key means the field it
+	// would have carried silently does nothing, which can still leave a
+	// usable (if degraded) recording — very different from no recording
+	// at all. Only judged when Branch Output IS present, or this would
+	// double-report the same absence branch_output_missing already names.
+	else if (!in.branchOutputSchemaCompatible)
+		add(Level::Warning, "branch_output_schema_mismatch",
+		    in.branchOutputMissingKeys);
 
 	if (!in.sessionFolderSet)
 		add(Level::Blocker, "session_folder_unset");
