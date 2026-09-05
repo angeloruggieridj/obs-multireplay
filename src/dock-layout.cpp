@@ -558,7 +558,7 @@ int KeyBlock::shapeHeight(bool flat) const
 	// function is what the strip measures with, and apply() is what draws it.
 	// Two ways of asking the same question is two answers waiting to differ.
 	const int capH = (cap_ && !flat) ? kCaptionH + 2 : 0;
-	const int keyH = flat ? kKeyFoldedH : kKeyH;
+	const int keyH = flat ? sectionKeyFoldedH() : sectionKeyH();
 	return capH + rows * keyH + (rows - 1) * kBandVGap;
 }
 
@@ -669,7 +669,8 @@ void KeyBlock::apply()
 			// The property says "this height is the layout's", and one
 			// rule at the end of the sheet stands the min-height down.
 			if (auto *btn = qobject_cast<QAbstractButton *>(cell.w)) {
-				const int h = flatActive_ ? kKeyFoldedH : kKeyH;
+				const int h = flatActive_ ? sectionKeyFoldedH()
+							  : sectionKeyH();
 				const int pinned = cell.rowSpan * h +
 						   (cell.rowSpan - 1) * kBandVGap;
 				// STAMPED AS WELL AS SET: a style sheet's
@@ -1056,12 +1057,12 @@ int ControlStrip::layoutLanes(int width, bool apply) const
 		while (i < idx.size()) {
 			const Entry &e = blocks_[idx[i]];
 			const int w = e.tall.width();
-			if (i > ln.first && (e.startsLine || used + kZoneGap + w > width))
+			if (i > ln.first && (e.startsLine || used + zoneGap() + w > width))
 				break;
 			const int lane = (int)e.lane;
-			ln.laneW[lane] += (ln.laneW[lane] ? kZoneGap : 0) + w;
+			ln.laneW[lane] += (ln.laneW[lane] ? zoneGap() : 0) + w;
 			ln.height = std::max(ln.height, e.tall.height());
-			used += (used ? kZoneGap : 0) + w;
+			used += (used ? zoneGap() : 0) + w;
 			i++;
 		}
 		ln.last = i;
@@ -1078,7 +1079,7 @@ int ControlStrip::layoutLanes(int width, bool apply) const
 		CW = std::max(CW, ln.laneW[(int)Lane::Centre]);
 		RW = std::max(RW, ln.laneW[(int)Lane::Right]);
 	}
-	const int need = LW + CW + RW + (CW ? kZoneGap : 0) + (RW ? kZoneGap : 0);
+	const int need = LW + CW + RW + (CW ? zoneGap() : 0) + (RW ? zoneGap() : 0);
 	if (need > width)
 		return -1; // no room to tell the lanes apart; pack instead
 
@@ -1095,10 +1096,10 @@ int ControlStrip::layoutLanes(int width, bool apply) const
 	// its gap rather than pushing the middle off centre: the panel has one
 	// middle, and this is the group that belongs in it.
 	const int centreX = (width - CW) / 2;
-	int leftX = centreX - kLaneGapMax - LW;
+	int leftX = centreX - laneGapMax() - LW;
 	if (leftX < 0)
 		leftX = 0;
-	int rightX = centreX + CW + kLaneGapMax;
+	int rightX = centreX + CW + laneGapMax();
 	if (rightX + RW > width)
 		rightX = std::max(centreX + CW, width - RW);
 
@@ -1185,7 +1186,7 @@ int ControlStrip::layoutLanes(int width, bool apply) const
 				e.block->setGeometry(x[lane], alone ? 0 : y,
 						     sz.width(),
 						     alone ? totalH : ln.height);
-				x[lane] += sz.width() + kZoneGap;
+				x[lane] += sz.width() + zoneGap();
 			}
 		}
 		y += ln.height + vgap;
@@ -1202,7 +1203,7 @@ int ControlStrip::layoutStack(int width, bool apply) const
 	// dividing one group from the next: the captions are gone in this shape
 	// (see KeyBlock::apply). A gap the size of the gap between two key rows
 	// would make six groups read as one long list of keys.
-	const int vgap = kZoneGap - 2;
+	const int vgap = zoneGap() - 2;
 	// THE SPINE IS CENTRED, THE SECTIONS ARE NOT. Two different things, and
 	// the difference is the whole reason this is two passes: a column of
 	// sections each centred on its own width has no edge to be read down, and
@@ -1218,7 +1219,7 @@ int ControlStrip::layoutStack(int width, bool apply) const
 			w = 0;
 			while (j < idx.size()) {
 				const QSize sz = blocks_[idx[j]].flat;
-				const int next = w + (j > start ? kZoneGap : 0) +
+				const int next = w + (j > start ? zoneGap() : 0) +
 						 sz.width();
 				if (j > start && next > width)
 					break;
@@ -1235,7 +1236,7 @@ int ControlStrip::layoutStack(int width, bool apply) const
 		const int first = i;
 		while (i < idx.size()) {
 			const QSize sz = blocks_[idx[i]].flat;
-			const int next = lineW + (i > first ? kZoneGap : 0) +
+			const int next = lineW + (i > first ? zoneGap() : 0) +
 					 sz.width();
 			if (i > first && next > width)
 				break;
@@ -1252,9 +1253,9 @@ int ControlStrip::layoutStack(int width, bool apply) const
 			for (int k = first; k < i; k++) {
 				const Entry &e = blocks_[idx[k]];
 				if (k > first)
-					addSeparator(x - kZoneGap / 2, y, lineH);
+					addSeparator(x - zoneGap() / 2, y, lineH);
 				e.block->setGeometry(x, y, e.flat.width(), lineH);
-				x += e.flat.width() + kZoneGap;
+				x += e.flat.width() + zoneGap();
 			}
 		}
 		y += lineH + vgap;
@@ -1275,7 +1276,7 @@ int ControlStrip::layoutPacked(int width, bool flat, bool apply) const
 		while (i < idx.size()) {
 			const Entry &e = blocks_[idx[i]];
 			const QSize sz = flat ? e.flat : e.tall;
-			const int next = lineW + (n ? kZoneGap : 0) + sz.width();
+			const int next = lineW + (n ? zoneGap() : 0) + sz.width();
 			// A declared break opens a new line whatever room is
 			// left; it is how the wide arrangement keeps its two
 			// macro-rows. Folded there is nothing to keep, so the
@@ -1311,8 +1312,8 @@ int ControlStrip::layoutPacked(int width, bool flat, bool apply) const
 			// uncapped — a stacked line with few sections and a lot of
 			// leftover width could spread them arbitrarily far apart.
 			const int gap = n > 1 ? std::min(kZoneGapMax,
-							  kZoneGap + extra / (n - 1))
-					      : kZoneGap;
+							  zoneGap() + extra / (n - 1))
+					      : zoneGap();
 			int x = n > 1 ? 0 : extra / 2;
 			for (int k = first; k < i; k++) {
 				const Entry &e = blocks_[idx[k]];

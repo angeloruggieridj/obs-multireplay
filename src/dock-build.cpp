@@ -555,7 +555,11 @@ QWidget *MultiReplayDock::buildChannelRow()
 	connect(chanSel_, &QButtonGroup::idClicked, this, [this](int code) {
 		setActiveChannel(code == 1 ? Which::B : Which::A, code == 2);
 	});
-	sel->setFixedHeight(kKeyH);
+	// sectionKeyH(), not kKeyH: `sel` is a plain QWidget, not a button, so
+	// KeyBlock::apply()'s per-button pin (which reads the gallery-scaled
+	// height already) never touches it — this call is the only place its
+	// height comes from.
+	sel->setFixedHeight(sectionKeyH());
 	channelBWidgets_ << sel;
 
 	swapBtn_ = iconBtn(Icon::Swap, "swapBays",
@@ -1448,7 +1452,10 @@ KeyBlock *MultiReplayDock::buildSpeedBlock()
 	equaliseKeyWidths(chips);
 
 	speed_->setMinimumWidth(110);
-	speed_->setFixedHeight(kKeyH);
+	// sectionKeyH(): the dial is a QSlider, not a button, so it never goes
+	// through KeyBlock::apply()'s per-button pin — this is its only source
+	// of height, gallery scale included.
+	speed_->setFixedHeight(sectionKeyH());
 	// THE DIAL SITS UNDER THE PRESETS, in both arrangements: they are one
 	// control at two resolutions, and side by side the dial is a strip of
 	// nothing between two groups of keys.

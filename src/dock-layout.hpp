@@ -72,6 +72,46 @@ inline constexpr int kKeyFoldedH = 22;
 inline constexpr int kBandVGap = 4;
 
 // ---------------------------------------------------------------------------
+// GALLERY SCALE (§6.5) — the operator is 1-2 m from the screen, not the ~60 cm
+// a dock normally assumes, and 26 px is a smaller target from there.
+// ---------------------------------------------------------------------------
+//
+// SCOPED TO THE SECTIONS, DELIBERATELY. A key inside a KeyBlock (REC, MARK,
+// BAY, TRANSPORT, SPEED, CLIPS) is scaled here; the toolbar (Live, Monitors,
+// the gear) and the status line's three toggles are not. Those live outside
+// any KeyBlock and are sized purely from ~15-20 hand-derived stylesheet rules
+// (dock-style.hpp's own note: "every rule states min-height = 26 - 2*padding
+// - 2*border", worked out per rule for that rule's own padding) — scaling
+// them correctly means re-deriving every one by hand, and a missed rule is a
+// toolbar key that silently stayed small while its neighbour grew. The
+// sections are the 90%+ of what an operator reaches for, and they DO have a
+// single source: every key inside one is pinned by KeyBlock::apply() from
+// exactly these two numbers, never from its own stylesheet rule.
+//
+// Font size is scoped out for the same reason, one layer down: unlike
+// height, this panel's buttons do NOT share one font size — a speed chip's
+// label is deliberately smaller than REC's, and forcing every pinned key to
+// one gallery size would flatten that hierarchy rather than scale it. The
+// icons need no such rule at all: they are drawn (dock-icons.hpp), not text,
+// so nothing here has to touch them.
+inline bool &galleryFlagRef()
+{
+	static bool g = false;
+	return g;
+}
+inline void setGalleryScale(bool on) { galleryFlagRef() = on; }
+inline bool galleryScale() { return galleryFlagRef(); }
+
+// The pinned height of a key INSIDE a section, in whichever shape the strip
+// is currently wearing — the one and only place KeyBlock::apply() and
+// shapeHeight() read a key's height from. kKeyH/kKeyFoldedH above stay
+// exactly what they always were: the toolbar and every already-redundant
+// setFixedHeight(kKeyH) call at a section's own construction (immediately
+// overwritten by apply()'s pin) keep using them unscaled, on purpose.
+inline int sectionKeyH() { return galleryScale() ? 32 : kKeyH; }
+inline int sectionKeyFoldedH() { return galleryScale() ? 28 : kKeyFoldedH; }
+
+// ---------------------------------------------------------------------------
 // THE HEIGHT A SECTION PINNED ON A KEY, AND WHY IT HAS TO BE WRITTEN DOWN
 // ---------------------------------------------------------------------------
 //
@@ -182,8 +222,10 @@ inline constexpr int kCaptionH = 13;
 // Between two sections, against the 4-6 px between two keys inside one. A gap
 // the size of the gap inside a group makes two groups look like one group, and
 // then the caption is the only thing saying otherwise — a label doing work the
-// layout should have done.
-inline constexpr int kZoneGap = 14;
+// layout should have done. Gallery-scaled (§6.5): the same reasoning as
+// sectionKeyH — wider gaps read as intentional breathing room once the panel
+// is big enough that the keys themselves have grown.
+inline int zoneGap() { return galleryScale() ? 20 : 14; }
 // …and how far apart they may be pushed when a wide dock has width to spare.
 // Past this the sections stop reading as a row of groups and start reading as
 // scattered keys.
@@ -258,8 +300,10 @@ inline constexpr int kModeHysteresis = 40;
 //
 // Past this the block stops spreading and is CENTRED instead, so the keys keep
 // their own size (a key that changes size with the window is a key the hand has
-// to find again) and the panel keeps its middle.
-inline constexpr int kLaneGapMax = 140;
+// to find again) and the panel keeps its middle. Gallery-scaled (§6.5): a
+// maximised fullscreen panel has more width to spend on deliberate air
+// between the three groups before it reads as scattered rather than roomy.
+inline int laneGapMax() { return galleryScale() ? 220 : 140; }
 
 // Which arrangement a panel of this size wants. `current` is what it is wearing
 // now, and it is an argument rather than a fresh decision because a threshold
@@ -334,7 +378,7 @@ private:
 // sizeHint() once, at a width the widget does not end up with, and the last
 // wrapped line is drawn outside it.
 QWidget *flowBand(QWidget *parent, const QList<QWidget *> &children,
-		  int hSpacing = kZoneGap);
+		  int hSpacing = zoneGap());
 
 // Mark the one section per line that absorbs the width nobody claimed.
 QWidget *stretchyZone(QWidget *zone);
