@@ -6,7 +6,7 @@
 **Instant replay multicamera per OBS Studio, in una dock nativa.**
 
 [![Build](https://github.com/angeloruggieridj/obs-multireplay/actions/workflows/push.yaml/badge.svg)](https://github.com/angeloruggieridj/obs-multireplay/actions/workflows/push.yaml)
-[![Latest release](https://img.shields.io/github/v/release/angeloruggieridj/obs-multireplay?include_prereleases&sort=semver)](https://github.com/angeloruggieridj/obs-multireplay/releases)
+[![Latest release](https://img.shields.io/github/v/release/angeloruggieridj/obs-multireplay?include_prereleases&sort=date)](https://github.com/angeloruggieridj/obs-multireplay/releases)
 [![License: GPL v2](https://img.shields.io/badge/license-GPL--2.0--or--later-blue.svg)](LICENSE)
 [![OBS Studio](https://img.shields.io/badge/OBS%20Studio-32%2B-302E31?logo=obsstudio&logoColor=white)](https://obsproject.com/)
 [![Platforms](https://img.shields.io/badge/platforms-Windows%20%C2%B7%20macOS%20%C2%B7%20Linux-lightgrey)](#installation)
