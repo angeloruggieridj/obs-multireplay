@@ -97,3 +97,8 @@ mr_add_test(obs-multireplay-camera-dedup-tests camera_dedup "${MR_TESTS}/camera_
 # switch must do to the value they share so switching AWAY from a bay does
 # not leave the value the OTHER bay reads from stale.
 mr_add_test(obs-multireplay-angle-channels-tests angle_channels "${MR_TESTS}/angle_channels_test.cpp")
+
+# Which known failure a core error string is, if any — the classifier
+# showNotice's callers use to put a localized headline in front of an
+# English detail instead of showing the raw English on its own.
+mr_add_test(obs-multireplay-error-locale-tests error_locale "${MR_TESTS}/error_locale_test.cpp")

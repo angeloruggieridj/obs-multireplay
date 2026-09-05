@@ -7,6 +7,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
 #include "multireplay-dock.hpp"
 #include "angle-channels.hpp"
 #include "dock-layout.hpp"
+#include "error-locale.hpp"
 #include "dock-style.hpp"
 #include "dock-assets.hpp"
 #include "dock-icons.hpp"
@@ -182,6 +183,50 @@ void popupOnClick(QToolButton *b, QMenu *menu)
 	QObject::connect(b, &QToolButton::clicked, b, [b, menu]() {
 		menu->popup(b->mapToGlobal(QPoint(0, b->height())));
 	});
+}
+
+// A LOCALIZED HEADLINE IN FRONT OF THE ENGINE'S OWN ENGLISH, not a
+// translation of it: error-locale.hpp only says WHICH known failure this is,
+// and the detail behind it (a camera number, a file path, a source name)
+// stays exactly as the engine wrote it. An error this cannot classify comes
+// back unchanged — the raw English is still better than nothing, which is
+// what showNotice(QString::fromStdString(err)) showed everywhere before this.
+QString localizedError(const std::string &err)
+{
+	using namespace error_locale;
+	const char *key = nullptr;
+	switch (classify(err)) {
+	case Class::NoFootageForCamera:
+		key = "Dock.ErrNoFootageForCamera";
+		break;
+	case Class::NoPlayableEvents:
+		key = "Dock.ErrNoPlayableEvents";
+		break;
+	case Class::NoFootageInRange:
+		key = "Dock.ErrNoFootageInRange";
+		break;
+	case Class::NoCompletedEvents:
+		key = "Dock.ErrNoCompletedEvents";
+		break;
+	case Class::MusicFileMissing:
+		key = "Dock.ErrMusicFileMissing";
+		break;
+	case Class::MusicNotConfigured:
+		key = "Dock.ErrMusicNotConfigured";
+		break;
+	case Class::MusicSourceMissing:
+		key = "Dock.ErrMusicSourceMissing";
+		break;
+	case Class::MusicSourceNotActive:
+		key = "Dock.ErrMusicSourceNotActive";
+		break;
+	case Class::Unknown:
+		break;
+	}
+	if (!key)
+		return QString::fromStdString(err);
+	return QString("%1 — %2")
+		.arg(obs_module_text(key), QString::fromStdString(err));
 }
 
 // ── A MODE, ON THE STATUS LINE ───────────────────────────────────────────
@@ -4055,7 +4100,7 @@ KeyBlock *MultiReplayDock::buildTransport()
 		if (!pc().playLastEvent(
 			    currentAngle1() - 1,
 			    toOutputBtn_ && toOutputBtn_->isChecked(), err))
-			showNotice(QString::fromStdString(err));
+			showNotice(localizedError(err));
 	});
 
 	// ── PLAY: the biggest key on the panel ───────────────────────────────
@@ -4111,7 +4156,7 @@ KeyBlock *MultiReplayDock::buildTransport()
 			if (!pc().playEvents(
 				    selectedEventIds(), currentAngle1() - 1,
 				    /*toOutput*/ true, err))
-				showNotice(QString::fromStdString(err));
+				showNotice(localizedError(err));
 		});
 		connect(actLast, &QAction::triggered, this, [this]() {
 			std::string err;
@@ -4119,7 +4164,7 @@ KeyBlock *MultiReplayDock::buildTransport()
 				    currentAngle1() - 1,
 				    toOutputBtn_ && toOutputBtn_->isChecked(),
 				    err))
-				showNotice(QString::fromStdString(err));
+				showNotice(localizedError(err));
 		});
 		connect(actStop, &QAction::triggered, this,
 			[this]() { pc().stopEvents(); });
@@ -4225,7 +4270,7 @@ KeyBlock *MultiReplayDock::buildTransport()
 			return;
 		const std::string why = pc().musicProblem();
 		if (!why.empty())
-			showNotice(QString::fromStdString(why));
+			showNotice(localizedError(why));
 	});
 
 	// MUTE — the replay input(s) sit muted in the OBS mixer, so every replay
@@ -5002,7 +5047,7 @@ QPushButton *MultiReplayDock::buildExportKey()
 		const bool music = musicBtn_ && musicBtn_->isChecked();
 		if (!ExportManager::instance().exportSequence(
 			    ids, music, folder.toStdString(), err))
-			showNotice(QString::fromStdString(err));
+			showNotice(localizedError(err));
 		else
 			showNotice(obs_module_text("Dock.ExportReelStarted"));
 	});
@@ -5225,7 +5270,7 @@ QWidget *MultiReplayDock::buildEvents()
 					     toOutputBtn_ &&
 						     toOutputBtn_->isChecked(),
 					     err))
-				showNotice(QString::fromStdString(err));
+				showNotice(localizedError(err));
 		});
 	// Choosing a row LOADS it, on whichever channel the A|B selector points
 	// at. In the reference controller picking an event puts it in the selected bay straight away;
@@ -5843,7 +5888,7 @@ void MultiReplayDock::playSelected()
 	std::string err;
 	if (!playOnTargets(selectedEventIds(),
 			   ReplayChannel::Direction::Forward, err))
-		showNotice(QString::fromStdString(err));
+		showNotice(localizedError(err));
 }
 
 void MultiReplayDock::setAngle(int angle1Based)
@@ -6023,7 +6068,7 @@ void MultiReplayDock::playSelectedReverse()
 	}
 	std::string err;
 	if (!playOnTargets(ids, ReplayChannel::Direction::Reverse, err))
-		showNotice(QString::fromStdString(err));
+		showNotice(localizedError(err));
 }
 
 void MultiReplayDock::applyReplaySpeed(int pct)
@@ -6360,7 +6405,7 @@ void MultiReplayDock::replayCurrentOn(Which which)
 	// operator was left deducing the angle model from what he heard.
 	if (!pc.playEvents(ids, a0, toOut, err,
 			   PlaybackCoordinator::AngleMode::Single))
-		showNotice(QString::fromStdString(err));
+		showNotice(localizedError(err));
 }
 
 void MultiReplayDock::setSearchText(const QString &text)
