@@ -1752,7 +1752,8 @@ QPushButton *MultiReplayDock::buildExportKey()
 			for (int id : ids) {
 				std::string e;
 				if (!ExportManager::instance().exportEvent(
-					    id, 0, folder.toStdString(), e)) {
+					    id, kAllAngles, folder.toStdString(),
+					    e)) {
 					failed++;
 					lastErr = e;
 				}
@@ -2061,10 +2062,30 @@ QWidget *MultiReplayDock::buildEvents()
 				if (folder.isEmpty())
 					return;
 				setLastExportFolder(folder);
-				std::string err;
-				for (int id : ids)
-					ExportManager::instance().exportEvent(
-						id, 0, folder.toStdString(), err);
+				// §2.5 — same accounting as the other export entry
+				// point (buildExportKey): a rejection on one clip
+				// out of a multi-selection must reach the operator,
+				// not vanish into a discarded return value.
+				int failed = 0;
+				std::string lastErr;
+				for (int id : ids) {
+					std::string e;
+					if (!ExportManager::instance().exportEvent(
+						    id, kAllAngles,
+						    folder.toStdString(), e)) {
+						failed++;
+						lastErr = e;
+					}
+				}
+				if (failed > 0)
+					showNotice(
+						QString("%1/%2 %3: %4")
+							.arg(failed)
+							.arg(ids.size())
+							.arg(obs_module_text(
+								"Dock.ExportClipsFailed"))
+							.arg(QString::fromStdString(
+								lastErr)));
 			}
 		});
 	v->addWidget(events_, 1);

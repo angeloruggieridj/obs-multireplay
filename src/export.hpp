@@ -20,11 +20,19 @@ namespace multireplay {
 // recording segments without re-encoding, so exports are nearly instant and
 // can run while recording. The clip starts at the keyframe at/before the
 // event In point (1s GOP -> max 1s of pre-roll).
+// §2.5 — the value that means "every angle the operator ticked on this
+// event, one file each" rather than a specific one. Named so a call site
+// reads as a choice instead of a number that happens to work; see
+// exportEvent()'s own comment for what each ticked angle turns into.
+inline constexpr int kAllAngles = 0;
+
 class ExportManager {
 public:
 	static ExportManager &instance();
 
-	// Queue one event+angle for export. Empty folder = "<session>/export".
+	// Queue one event+angle for export (angle1Based >= 1), or every angle
+	// enabled on the event (angle1Based == kAllAngles), one file each.
+	// Empty folder = "<session>/export".
 	bool exportEvent(int eventId, int angle1Based,
 			 const std::string &customFolder,
 			 std::string &errorOut);

@@ -78,8 +78,9 @@ bool ExportManager::exportEvent(int eventId, int angle1Based,
 	}
 
 	// angle1Based >= 1: export that single angle.
-	// angle1Based == 0: export EVERY enabled angle (one file each) —
-	// the reference controller exports all checked angles, not just the first.
+	// angle1Based == kAllAngles: export EVERY enabled angle (one file
+	// each) — the reference controller exports all checked angles, not
+	// just the first.
 	std::vector<int> angles;
 	if (angle1Based >= 1) {
 		angles.push_back(angle1Based - 1);
@@ -155,7 +156,7 @@ bool ExportManager::exportLastEvent(const std::string &customFolder,
 		errorOut = "no completed events yet";
 		return false;
 	}
-	return exportEvent(id, 0, customFolder, errorOut);
+	return exportEvent(id, kAllAngles, customFolder, errorOut);
 }
 
 // --- the highlight reel -----------------------------------------------------
