@@ -45,10 +45,8 @@ Nothing on the UI thread ever waits for the network.
 
 namespace multireplay {
 
-// Where Branch Output lives. One place, and https, because this decides what
-// executable the operator ends up running.
-inline constexpr const char *kBranchOutputRepo =
-	"https://github.com/OPENSPHERE-Inc/branch-output";
+// Where Branch Output lives. And https, because this decides what executable
+// the operator ends up opening.
 inline constexpr const char *kBranchOutputReleasesPage =
 	"https://github.com/OPENSPHERE-Inc/branch-output/releases/latest";
 

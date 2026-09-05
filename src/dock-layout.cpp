@@ -1276,7 +1276,13 @@ int ControlStrip::layoutPacked(int width, bool flat, bool apply) const
 			// nothing to spread it against, and left-aligned in a
 			// stack of centred lines it reads as the one that went
 			// wrong.
-			const int gap = n > 1 ? kZoneGap + extra / (n - 1)
+			// CAPPED, same reasoning as kLaneGapMax in layoutLanes: past
+			// kZoneGapMax the sections on this line stop reading as a
+			// row of groups and start reading as scattered keys. Was
+			// uncapped — a stacked line with few sections and a lot of
+			// leftover width could spread them arbitrarily far apart.
+			const int gap = n > 1 ? std::min(kZoneGapMax,
+							  kZoneGap + extra / (n - 1))
 					      : kZoneGap;
 			int x = n > 1 ? 0 : extra / 2;
 			for (int k = first; k < i; k++) {

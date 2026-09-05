@@ -151,7 +151,6 @@ inline int monitorRoomFor(const MonitorRoom &m)
 // for a job the gap between the groups is already doing most of. So it stays
 // (the grouping is the point) and it stops taking a full line of text to say so.
 inline constexpr int kCaptionH = 13;
-inline constexpr int kCaptionFoldedH = 11;
 // Between two sections, against the 4-6 px between two keys inside one. A gap
 // the size of the gap inside a group makes two groups look like one group, and
 // then the caption is the only thing saying otherwise — a label doing work the
