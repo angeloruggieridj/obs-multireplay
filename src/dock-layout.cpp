@@ -907,6 +907,15 @@ void ControlStrip::resizeEvent(QResizeEvent *e)
 	if (want != flat_)
 		applyShape(want);
 	layoutLines(width(), flat_, true);
+	// A FOLDED SECTION CAN LAND ON A LINE THAT GIVES IT NO SLACK — every key
+	// pinned to exactly its section's height (see kPinnedHeightProperty) —
+	// and a resize that reaches that state without an intervening theme
+	// change never called repinKeys(), whose only other caller is
+	// applyTheme(). Measured: the speed chips came out 38x13 instead of
+	// 38x22, on a plain resize with no theme touched at all. Cheap and a
+	// no-op unless something was actually lost (see repinKeys itself), so
+	// it belongs on every pass, not only the one that reapplies the sheet.
+	repinKeys(this);
 
 	// A WIDTH CHANGE CHANGES THE FLOOR, so the parent has to be told: how
 	// short this strip may be depends on how wide it is - six sections side
