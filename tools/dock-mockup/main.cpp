@@ -3298,6 +3298,42 @@ void checkDividerGoesBothWays(const QString &label)
 	delete host;
 }
 
+// §6.5 — GALLERY ACTUALLY GROWS THE SECTION KEYS. Every check above passes
+// at 26px keys too, so none of them can tell "the scale did something" from
+// "the panel happened to still fit" — the only way to know is to build a
+// panel on each side of the flag and measure the SAME key in both. REC is
+// inside a KeyBlock (buildRec), so it is exactly the case sectionKeyH() was
+// written for.
+void checkGalleryScalesKeys()
+{
+	const auto measureRecHeight = [](bool gallery) {
+		setGalleryScale(gallery);
+		auto *w = new Mock();
+		w->resize(1500, 900);
+		w->show();
+		for (int i = 0; i < 3; i++) {
+			QApplication::processEvents();
+			QApplication::sendPostedEvents();
+		}
+		int h = -1;
+		for (QAbstractButton *b : w->findChildren<QAbstractButton *>())
+			if (b->property(kKeyProperty).toString() ==
+			    QStringLiteral("rec")) {
+				h = b->height();
+				break;
+			}
+		w->hide();
+		delete w;
+		return h;
+	};
+	const int plainH = measureRecHeight(false);
+	const int galleryH = measureRecHeight(true);
+	setGalleryScale(false); // restore: nothing after this should run scaled
+	check(plainH > 0 && galleryH > plainH,
+	      "gallery: a section key grows with the scale",
+	      QString("REC %1px plain, %2px gallery").arg(plainH).arg(galleryH));
+}
+
 // The whole host pass: a LIGHT panel inside a DARK OBS, which is the
 // configuration every one of these faults was reported from.
 void runHostChecks(QApplication &app, const QString &outDir)
@@ -3604,6 +3640,7 @@ int runChecks(QPalette pal, QApplication &app, const QString &outDir)
 	checkMonitorRowFills(QStringLiteral("monitors, list divider dragged"),
 			     Drag::Body);
 	checkDividerGoesBothWays(QStringLiteral("monitors"));
+	checkGalleryScalesKeys();
 
 	// LAST, because it replaces the application palette and style sheet for
 	// the rest of the process: from here on the panel is a LIGHT one sitting
@@ -3646,6 +3683,13 @@ int main(int argc, char **argv)
 			g_cams = qBound(1, a.mid(7).toInt(), 8);
 		if (a == QStringLiteral("--nob"))
 			g_haveB = false;
+		// §6.5: the arrangement a maximised/fullscreen Wide panel wears.
+		// Set before any KeyBlock exists — every one of them measures
+		// itself against the CURRENT gallery state at construction, and
+		// the panel only ever judges "would this hold together" against
+		// what it built itself around.
+		if (a == QStringLiteral("--gallery"))
+			setGalleryScale(true);
 		// --size=WxH, repeatable: the sizes an operator's dock actually
 		// has, rather than the seven this file guessed at. A flag and not
 		// a positional argument, so it composes with --cams and --nob -
