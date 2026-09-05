@@ -20,6 +20,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
 #include <curl/curl.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -131,6 +132,35 @@ size_t appendToFile(void *data, size_t size, size_t nmemb, void *user)
 	return s->out->good() ? n : 0;
 }
 
+// §3.5 — captures the response's ETag header, so a check can hand it back
+// next time as If-None-Match. Curl offers no getinfo() for an arbitrary
+// response header (only a fixed set), so this is the standard way to read
+// one: a HEADERFUNCTION sees every header line, one call per line,
+// including the blank line and the status line.
+size_t captureEtag(char *buffer, size_t size, size_t nitems, void *user)
+{
+	auto *out = static_cast<std::string *>(user);
+	const size_t n = size * nitems;
+	static const char kPrefix[] = "etag:";
+	constexpr size_t kPrefixLen = sizeof(kPrefix) - 1;
+	if (n <= kPrefixLen)
+		return n;
+	bool matches = true;
+	for (size_t i = 0; i < kPrefixLen && matches; i++)
+		matches = std::tolower((unsigned char)buffer[i]) == kPrefix[i];
+	if (!matches)
+		return n;
+	std::string value(buffer + kPrefixLen, n - kPrefixLen);
+	// Trim the leading space HTTP puts after the colon and the trailing
+	// \r\n curl includes in the line it hands the callback.
+	while (!value.empty() && std::isspace((unsigned char)value.front()))
+		value.erase(value.begin());
+	while (!value.empty() && std::isspace((unsigned char)value.back()))
+		value.pop_back();
+	*out = value;
+	return n;
+}
+
 struct ProgressCtx {
 	std::atomic<bool> *abort = nullptr;
 	std::function<void(int)> report;
@@ -152,7 +182,14 @@ int onProgress(void *user, curl_off_t total, curl_off_t now, curl_off_t,
 // settings it is very easy to get wrong once per call site.
 bool httpGet(const std::string &url, long timeoutSec, BodySink *body,
 	     FileSink *file, ProgressCtx *progress, std::string &errorOut,
-	     long *httpStatusOut = nullptr)
+	     long *httpStatusOut = nullptr,
+	     // §3.5 — a conditional GET. GitHub does not count a 304 answer
+	     // against the anonymous rate limit (60/h/address) the way a 200
+	     // does, so a check that has already seen this exact release list
+	     // costs nothing to repeat. Both null by default: every call site
+	     // but the release check has no cached copy to be conditional on.
+	     const std::string *ifNoneMatch = nullptr,
+	     std::string *etagOut = nullptr)
 {
 	ensureCurlGlobalInit();
 
@@ -160,6 +197,16 @@ bool httpGet(const std::string &url, long timeoutSec, BodySink *body,
 	if (!curl) {
 		errorOut = "could not initialise the HTTP client";
 		return false;
+	}
+	curl_slist *headers = nullptr;
+	if (ifNoneMatch && !ifNoneMatch->empty()) {
+		const std::string h = "If-None-Match: " + *ifNoneMatch;
+		headers = curl_slist_append(headers, h.c_str());
+		curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+	}
+	if (etagOut) {
+		curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, captureEtag);
+		curl_easy_setopt(curl, CURLOPT_HEADERDATA, etagOut);
 	}
 
 	curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
@@ -206,6 +253,8 @@ bool httpGet(const std::string &url, long timeoutSec, BodySink *body,
 	long http = 0;
 	curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http);
 	curl_easy_cleanup(curl);
+	if (headers)
+		curl_slist_free_all(headers);
 	if (httpStatusOut)
 		*httpStatusOut = http;
 
@@ -225,6 +274,12 @@ bool httpGet(const std::string &url, long timeoutSec, BodySink *body,
 		errorOut = curl_easy_strerror(rc);
 		return false;
 	}
+	// A conditional request's own success answer: nothing here changed
+	// since the ETag the caller sent. There is no body to read — the
+	// caller already has one, from the last time this returned 200 — so
+	// this is not the generic "answered N" failure below.
+	if (http == 304 && ifNoneMatch && !ifNoneMatch->empty())
+		return true;
 	if (http < 200 || http >= 300) {
 		errorOut = "the server answered " + std::to_string(http);
 		return false;
@@ -258,6 +313,57 @@ bool pickAsset(obs_data_array_t *assets, ReleaseInfo &out)
 	out.assetName = chosen.name;
 	out.assetBytes = chosen.size;
 	return true;
+}
+
+// §3.5 — the ETag from the last successful (200) release-list fetch, and
+// the body it came with. Offered back as If-None-Match on the next check:
+// GitHub answers a conditional request that still matches with a bare 304
+// and, unlike a 200, that answer does NOT count against the anonymous
+// quota (60 requests/hour/address) — so an operator whose checks find
+// nothing new, which is most of them, stops spending it at all. One file,
+// read once at the top of checkAsync(); best-effort in both directions —
+// a read or write failure here only means the next check pays full price,
+// never a reason to fail the check itself.
+struct ReleaseCache {
+	std::string etag;
+	std::string body;
+};
+
+std::string releaseCachePath()
+{
+	char *p = obs_module_config_path("update-release-cache.json");
+	if (!p)
+		return {};
+	std::string path(p);
+	bfree(p);
+	return path;
+}
+
+ReleaseCache loadReleaseCache()
+{
+	ReleaseCache c;
+	const std::string path = releaseCachePath();
+	if (path.empty())
+		return c;
+	obs_data_t *root = obs_data_create_from_json_file(path.c_str());
+	if (!root)
+		return c;
+	c.etag = obs_data_get_string(root, "etag");
+	c.body = obs_data_get_string(root, "body");
+	obs_data_release(root);
+	return c;
+}
+
+void saveReleaseCache(const ReleaseCache &c)
+{
+	const std::string path = releaseCachePath();
+	if (path.empty() || c.etag.empty())
+		return;
+	obs_data_t *root = obs_data_create();
+	obs_data_set_string(root, "etag", c.etag.c_str());
+	obs_data_set_string(root, "body", c.body.c_str());
+	obs_data_save_json_safe(root, path.c_str(), "tmp", "bak");
+	obs_data_release(root);
 }
 
 std::filesystem::path stagingDir()
@@ -555,8 +661,12 @@ void Updater::checkAsync(UpdateChannel channel)
 		ProgressCtx ctx;
 		ctx.abort = &abort_;
 		long httpStatus = 0;
+		// §3.5 — the cache from the last check that got a real (200)
+		// answer, offered back so this one can be conditional.
+		const ReleaseCache cache = loadReleaseCache();
+		std::string newEtag;
 		if (!httpGet(kReleasesApi, kCheckTimeoutSec, &body, nullptr,
-			     &ctx, err, &httpStatus)) {
+			     &ctx, err, &httpStatus, &cache.etag, &newEtag)) {
 			// GitHub's anonymous API quota is 60 requests per hour per
 			// address (github.com/en/rest/using-the-rest-api/
 			// rate-limits-for-the-rest-api), and it answers a request
@@ -579,6 +689,21 @@ void Updater::checkAsync(UpdateChannel channel)
 				err.c_str());
 			busy_.store(false);
 			return;
+		}
+
+		// §3.5 — a 304 means "still what you cached", not "here it is
+		// again": GitHub sends no body with it, so the cached one from
+		// the last 200 is what gets parsed below. A fresh 200 instead
+		// replaces the cache for next time — only when it actually
+		// carried an ETag to key it on; a release host that ever
+		// stopped sending one should not leave a stale cache being
+		// re-used forever.
+		if (httpStatus == 304) {
+			body.data = cache.body;
+			obs_log(LOG_INFO,
+				"[update] check: 304 not modified, using the cached release list");
+		} else if (!newEtag.empty()) {
+			saveReleaseCache({newEtag, body.data});
 		}
 
 		// The endpoint answers with an ARRAY, and obs_data parses
