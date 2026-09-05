@@ -97,6 +97,33 @@ saying why it's shaped this way — a constraint, an invariant, a bug it was
 written to close. A comment that only restates the next line is worth
 deleting.
 
+**Lead with what must stay true, not with the story of how it got that
+way.** A long comment block often does two different jobs at once — *here
+is the rule* and *here is the bug that taught it to us* — and a reader
+skimming for the rule has to read the whole story to find it. Open with a
+short, declarative sentence (or an ALL-CAPS clause, which is already this
+codebase's own habit: `NOTHING HERE MAY RE-PARENT AN OBSQTDisplay`) stating
+the invariant; the history, the measurement, the exact freeze that shipped
+can follow it.
+
+**A history longer than ~10 lines moves to `docs/adr/`, not into the code.**
+`docs/adr/NNN-slug.md` (see `docs/adr/README.md` for the format) keeps the
+full story — what was tried, what broke, what was measured — with a
+one-line pointer left where the code used to carry all of it:
+`// See docs/adr/007-pinned-key-height.md`. `docs/` is gitignored on
+purpose (this project's development history stays out of the published
+repo — see the top of the internal project notes), so an ADR is for this
+tree's own future sessions, not a public changelog.
+
+**Before writing a long explanatory comment, check it isn't already
+written somewhere else.** `tools/find-duplicate-comments.sh` greps `src/`
+for comment lines that repeat verbatim — the kind of drift where an
+explanation gets copied to a second call site and then only one copy is
+updated when the reason changes. Advisory, not wired into CI, for the same
+reason `find-orphan-constants.sh` isn't: it can't tell a stale copy from
+two places that are still legitimately true for the same reason, so read
+every hit before touching either copy.
+
 ## Running the mockup
 
 ```sh

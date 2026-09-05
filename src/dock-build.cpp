@@ -514,8 +514,8 @@ KeyBlock *MultiReplayDock::buildAngleMatrix()
 	QWidget *sel = buildChannelRow();
 	QVector<Cell> row;
 	row << Cell(sel, 1, false);
-	// The swap skips a column: ⇄ is not a fourth mode, and pressed by mistake
-	// it puts the wrong clip on air.
+	// The gap before ⇄ is deliberate — see buildChannelRow() for why it
+	// sits apart from the selector instead of the fourth button of one.
 	row << Cell(nullptr, 1) << Cell(swapBtn_, 1, false);
 	blk->setShapes({row}, {row});
 	angleBlock_ = blk;
