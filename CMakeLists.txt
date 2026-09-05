@@ -168,6 +168,7 @@ target_sources(
     src/dock-window.cpp
     src/dock-settings.cpp
     src/dock-poll.cpp
+    src/dock-build.cpp
     src/dock-layout.cpp
     src/dock-layout.hpp
     src/dock-style.hpp
