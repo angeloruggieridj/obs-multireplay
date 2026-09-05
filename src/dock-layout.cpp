@@ -822,6 +822,11 @@ QSize ControlStrip::minimumSizeHint() const
 	// worn at the floor.
 	int w = 0;
 	for (const Entry &e : blocks_) {
+		// A section a mode has hidden wholesale (§6.3's "more" menu in
+		// Tall) sets no floor of its own — the whole point of collapsing
+		// it was to stop it doing that.
+		if (e.block->isHidden())
+			continue;
 		const int narrow = std::min(e.tall.width(), e.flat.width());
 		w = std::max(w, std::max(narrow, kMinBlockWidth));
 	}
@@ -985,8 +990,19 @@ QVector<int> ControlStrip::orderFor(bool flat) const
 {
 	QVector<int> idx;
 	idx.reserve(blocks_.size());
+	// isHidden(), NOT isVisible() — a section this strip has never touched
+	// reports isVisible()==false too, for as long as the strip itself (or
+	// any ancestor up to the top-level window) has not been shown yet, and
+	// every one of these functions can run during construction, before
+	// that ever happens. isHidden() answers a narrower, safer question:
+	// did somebody call hide() on THIS widget specifically — which is
+	// exactly what a mode collapsing a section (§6.3, Tall's "more" menu)
+	// does, and exactly what channel B's own visibility toggle never has
+	// (it hides the WIDGETS inside a section, not the section itself, so
+	// this filter changes nothing for the channel-B case it sits beside).
 	for (int i = 0; i < blocks_.size(); i++)
-		idx << i;
+		if (!blocks_[i].block->isHidden())
+			idx << i;
 	if (!flat)
 		return idx; // wide: the declared, left-to-right order
 	// Folded: by rank, stably, so two sections of equal rank keep the order
@@ -1019,8 +1035,12 @@ int ControlStrip::layoutLines(int width, bool flat, bool apply) const
 // than flowed.
 int ControlStrip::layoutLanes(int width, bool apply) const
 {
+	// The declared, left-to-right order, minus whatever a mode has hidden
+	// wholesale (§6.3's "more" menu in Tall) — see orderFor's own note on
+	// why that is isHidden(), not isVisible().
+	const QVector<int> idx = orderFor(false);
 	struct Line {
-		int first = 0, last = 0; // [first, last)
+		int first = 0, last = 0; // [first, last) into idx, not blocks_
 		int laneW[3] = {0, 0, 0};
 		int height = 0;
 	};
@@ -1029,12 +1049,12 @@ int ControlStrip::layoutLanes(int width, bool apply) const
 	// Gather the lines first, in the DECLARED order — left to right is the
 	// reference panel's own reading order, and it is what an operator learned.
 	int i = 0;
-	while (i < blocks_.size()) {
+	while (i < idx.size()) {
 		Line ln;
 		ln.first = i;
 		int used = 0;
-		while (i < blocks_.size()) {
-			const Entry &e = blocks_[i];
+		while (i < idx.size()) {
+			const Entry &e = blocks_[idx[i]];
 			const int w = e.tall.width();
 			if (i > ln.first && (e.startsLine || used + kZoneGap + w > width))
 				break;
@@ -1108,9 +1128,9 @@ int ControlStrip::layoutLanes(int width, bool apply) const
 		// not built at all when B is off, so the count was right there and
 		// wrong in the panel.
 		for (int k = ln.first; k < ln.last; k++)
-			if (blocks_[k].tall.width() > 0 &&
-			    blocks_[k].tall.height() > 0)
-				used[(int)blocks_[k].lane] = true;
+			if (blocks_[idx[k]].tall.width() > 0 &&
+			    blocks_[idx[k]].tall.height() > 0)
+				used[(int)blocks_[idx[k]].lane] = true;
 		for (int l = 0; l < 3; l++)
 			laneLines[l] += used[l] ? 1 : 0;
 	}
@@ -1153,7 +1173,7 @@ int ControlStrip::layoutLanes(int width, bool apply) const
 				addSeparator((centreX + CW + rightX) / 2, y,
 					     ln.height);
 			for (int k = ln.first; k < ln.last; k++) {
-				const Entry &e = blocks_[k];
+				const Entry &e = blocks_[idx[k]];
 				const int lane = (int)e.lane;
 				const QSize sz = e.tall;
 				// Every section on a line gets the LINE's height,
