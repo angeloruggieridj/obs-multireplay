@@ -454,6 +454,17 @@ public:
 	}
 
 	ControlStrip *strip_ = nullptr;
+	// §6.3 — TALL COLLAPSES BAY + CLIPS + SPEED BEHIND ONE "MORE" KEY.
+	// Kept so applyTallCollapse can hide()/show() them: a section a mode
+	// hides wholesale (not the per-widget hiding channel B already does to
+	// the bay selector) is what the layout engine's orderFor now skips —
+	// see the note there. Null bay_ is a real state, not a bug: with one
+	// bay the section is never built at all (§2.10), so there is nothing
+	// to collapse and the more menu says so instead of showing an empty row.
+	KeyBlock *bay_ = nullptr, *clips_ = nullptr, *speed_ = nullptr,
+		 *more_ = nullptr;
+	QMenu *moreMenu_ = nullptr;
+	bool tallCollapsed_ = false;
 	PanelMode mode_ = PanelMode::Wide;
 	// What the wide arrangement asks for, measured while it is worn: Short is
 	// chosen when the panel cannot be that tall, and that moves with the width.
@@ -501,6 +512,7 @@ public:
 
 		strip_->setStacked(m == PanelMode::Wide ? 0 : 1);
 		applyCompactChrome(m == PanelMode::Tall);
+		applyTallCollapse(m == PanelMode::Tall);
 
 		// THE DIVIDERS THE OPERATOR CHOSE FOR *THIS* ARRANGEMENT, put
 		// back. A restore has to happen after the orientations are set,
@@ -549,6 +561,35 @@ public:
 			search_->setFixedWidth(compact ? 90 : 150);
 		if (projectLbl_)
 			projectLbl_->setVisible(!compact);
+	}
+
+	// ── §6.3 — BAY, CLIPS AND SPEED GO BEHIND "MORE" IN A COLUMN ─────────
+	//
+	// hide()/isHidden(), not setSectionVisible(): the layout engine's
+	// orderFor now skips a section on isHidden() precisely so a mode can
+	// make one disappear from the strip's arithmetic entirely, the way
+	// channel B off already makes the bay selector disappear from a
+	// mockup that never builds it in the first place. Here the block DOES
+	// exist (its keys are needed the moment the panel widens back out),
+	// so hiding it wholesale is the only way to stop it costing a line.
+	void applyTallCollapse(bool tall)
+	{
+		if (tall == tallCollapsed_)
+			return;
+		tallCollapsed_ = tall;
+		if (bay_)
+			bay_->setVisible(!tall);
+		if (clips_)
+			clips_->setVisible(!tall);
+		if (speed_)
+			speed_->setVisible(!tall);
+		if (more_)
+			more_->setVisible(tall && (bay_ || clips_ || speed_));
+		if (strip_) {
+			for (KeyBlock *b : {bay_, clips_, speed_, more_})
+				if (b)
+					strip_->blockChanged(b);
+		}
 	}
 
 	void resizeEvent(QResizeEvent *e) override
@@ -933,17 +974,22 @@ private:
 		// the ball is in play".
 		buildRec(Lane::Left, /*startsLine*/ false, /*rank*/ 0);
 		buildMark(Lane::Centre, /*rank*/ 1);
-		buildClips(Lane::Right, /*rank*/ 5);
+		clips_ = buildClips(Lane::Right, /*rank*/ 5);
 		// Whichever of these is inserted FIRST is what has to carry
 		// startsLine: layoutLanes breaks a new line on the entry that
 		// asks for it, in insertion order, not by lane. With B off there
 		// is no bay block at all (absent, not disabled) so the transport
 		// carries it instead.
 		if (g_haveB)
-			buildBaySelector(Lane::Left, /*startsLine*/ true,
-					 /*rank*/ 2);
+			bay_ = buildBaySelector(Lane::Left, /*startsLine*/ true,
+						/*rank*/ 2);
 		buildPlayback(Lane::Centre, /*startsLine*/ !g_haveB, /*rank*/ 3);
-		buildSpeed(Lane::Right, /*rank*/ 4);
+		speed_ = buildSpeed(Lane::Right, /*rank*/ 4);
+		// §6.3: built last, ranked last (a stack has a top, and this is
+		// the one thing on it nobody reaches for during a match), visible
+		// only in Tall — applyTallCollapse hides/shows it opposite the
+		// three sections it stands in for.
+		more_ = buildMore(Lane::Right, /*rank*/ 6);
 		addStrip(v, strip_);
 
 		// THE STATUS LINE SITS ABOVE THE GREEN BAND. The band says what is
@@ -1147,7 +1193,7 @@ private:
 	// C5 is pointing at.
 	//
 	// With one bay the section is not here at all — not disabled, absent.
-	void buildBaySelector(Lane lane, bool startsLine, int rank)
+	KeyBlock *buildBaySelector(Lane lane, bool startsLine, int rank)
 	{
 		auto *blk = new KeyBlock(QString(), this);
 		QVector<Cell> row;
@@ -1169,6 +1215,7 @@ private:
 		row << Cell(nullptr, 1) << Cell(swap);
 		blk->setShapes({row}, {row});
 		strip_->addBlock(blk, lane, startsLine, rank);
+		return blk;
 	}
 
 	// ── REC: the take, and every number about it ─────────────────────────
@@ -1297,7 +1344,7 @@ private:
 	// made "what do I do with a clip once it is marked" a question with two
 	// different answers in two different corners of the panel. One section
 	// answers it now: reorder it, act on it, or get it out.
-	void buildClips(Lane lane, int rank)
+	KeyBlock *buildClips(Lane lane, int rank)
 	{
 		auto *blk = new KeyBlock(QString(), this);
 		auto *up = iconKey(Icon::MoveUp, QStringLiteral("moveUp"),
@@ -1329,13 +1376,14 @@ private:
 			exp->setText(flat ? QString() : QStringLiteral("Export"));
 		});
 		strip_->addBlock(blk, lane, false, rank);
+		return blk;
 	}
 
 	// ── VELOCITA — just the speed now that export has its own section ────
 	//
 	//   25 33 50 75 100 2×
 	//   [ the dial ]
-	void buildSpeed(Lane lane, int rank)
+	KeyBlock *buildSpeed(Lane lane, int rank)
 	{
 		auto *blk = new KeyBlock(QString(), this);
 		QVector<Cell> row;
@@ -1359,6 +1407,70 @@ private:
 		const BlockShape shape{row, {Cell(dial, 6)}};
 		blk->setShapes(shape, shape);
 		strip_->addBlock(blk, lane, false, rank);
+		return blk;
+	}
+
+	// ── §6.3 — "⋯ ALTRO": WHERE BAY, CLIPS AND SPEED GO IN A COLUMN ──────
+	//
+	// Six sections in Tall's narrow width cost six lines — there is no room
+	// for even two of them to share one, which is what packs Short's own
+	// stack down to two or three (§6.4). REC, MARK and TRANSPORT stay
+	// visible: they are the 90% of what gets pressed during a match. The
+	// rest collapses behind one key, on the same menu-popup pattern the
+	// gear and the clip-actions key already use — no widget here is a
+	// second copy of a real one, it is the SAME menu that would open from
+	// the real section, just reachable from one place instead of three.
+	KeyBlock *buildMore(Lane lane, int rank)
+	{
+		auto *blk = new KeyBlock(QString(), this);
+		auto *btn = menuKey(Icon::More, QStringLiteral("moreCollapsed"),
+				    QStringLiteral("Bay · Clip · Velocità"),
+				    "mrGear");
+		moreMenu_ = btn->findChild<QMenu *>();
+		// REPLACES menuKey's placeholder content with the actual three
+		// sections it stands in for. The real dock wires each entry to
+		// CLICK the real (hidden) button underneath rather than
+		// reimplementing its slot — one set of logic, not two that can
+		// drift; the mockup only has to show the shape of that menu.
+		if (moreMenu_) {
+			moreMenu_->clear();
+			if (g_haveB) {
+				QAction *ab = moreMenu_->addAction(
+					QStringLiteral("A\xe2\x86\x94"
+						       "B"));
+				ab->setCheckable(true);
+				ab->setChecked(true);
+				moreMenu_->addAction(QStringLiteral("A"))
+					->setCheckable(true);
+				moreMenu_->addAction(QStringLiteral("B"))
+					->setCheckable(true);
+				moreMenu_->addAction(
+					QStringLiteral("\xe2\x87\x84 Scambia A/B"));
+				moreMenu_->addSeparator();
+			}
+			moreMenu_->addAction(QStringLiteral("\xe2\x96\xb2 Sposta su"));
+			moreMenu_->addAction(
+				QStringLiteral("\xe2\x96\xbc Sposta gi\xc3\xb9"));
+			moreMenu_->addAction(QStringLiteral("Duplica"));
+			moreMenu_->addAction(QStringLiteral("Elimina"));
+			moreMenu_->addSeparator();
+			moreMenu_->addAction(QStringLiteral("Esporta clip\xe2\x80\xa6"));
+			moreMenu_->addSeparator();
+			QMenu *speedMenu =
+				moreMenu_->addMenu(QStringLiteral("Velocit\xc3\xa0"));
+			for (const char *l :
+			     {"25%", "33%", "50%", "75%", "100%", "2\xc3\x97"})
+				speedMenu->addAction(QString::fromUtf8(l));
+		}
+		const BlockShape shape{{Cell(btn)}};
+		blk->setShapes(shape, shape);
+		strip_->addBlock(blk, lane, false, rank);
+		// HIDDEN FROM THE START: the panel opens Wide, and
+		// applyTallCollapse's own guard only acts on a CHANGE — it would
+		// never think to hide a block that came into the world already
+		// visible, which is what every KeyBlock does by default.
+		blk->setVisible(false);
+		return blk;
 	}
 
 	// The tiles, laid into the block chosen for the room they were given.
@@ -1966,6 +2078,43 @@ void checkShortStripPacks(Mock *w, const QString &label)
 	      QString("%1 px packed vs %2 px stacked one per line")
 		      .arg(w->strip_->height())
 		      .arg(naiveSum));
+}
+
+// §6.3 — TALL COLLAPSES BAY + CLIPS + SPEED BEHIND "MORE". Found by mrKey,
+// same rule as every other gate check on this panel: a label is a
+// translation and a glyph is a drawing, neither is what a key IS.
+void checkTallCollapsesToMore(Mock *w, const QString &label)
+{
+	if (w->mode_ != PanelMode::Tall)
+		return;
+	QAbstractButton *more = nullptr, *moveUp = nullptr, *speed25 = nullptr,
+			*bayA = nullptr;
+	for (QAbstractButton *b : w->findChildren<QAbstractButton *>()) {
+		const QString id = b->property(kKeyProperty).toString();
+		if (id == QStringLiteral("moreCollapsed"))
+			more = b;
+		else if (id == QStringLiteral("moveUp"))
+			moveUp = b;
+		else if (id == QStringLiteral("speed25%"))
+			speed25 = b;
+		else if (id == QStringLiteral("bayA"))
+			bayA = b;
+	}
+	check(more && more->isVisible(), label + ": tall shows the more key",
+	      more ? QString() : QStringLiteral("moreCollapsed not found"));
+	check(!moveUp || !moveUp->isVisible(),
+	      label + ": tall collapses clips behind more",
+	      QString("moveUp visible=%1")
+		      .arg(moveUp ? moveUp->isVisible() : false));
+	check(!speed25 || !speed25->isVisible(),
+	      label + ": tall collapses speed behind more",
+	      QString("speed25%% visible=%1")
+		      .arg(speed25 ? speed25->isVisible() : false));
+	if (g_haveB)
+		check(!bayA || !bayA->isVisible(),
+		      label + ": tall collapses the bay selector behind more",
+		      QString("bayA visible=%1")
+			      .arg(bayA ? bayA->isVisible() : false));
 }
 
 void checkAspect(Mock *w, const QString &label)
@@ -3400,6 +3549,7 @@ int runChecks(QPalette pal, QApplication &app, const QString &outDir)
 		checkTooltips(w, label);
 		checkAspect(w, label);
 		checkShortStripPacks(w, label);
+		checkTallCollapsesToMore(w, label);
 		checkMonitorsGiveRoom(w, label);
 		if (label == QStringLiteral("wide"))
 			checkKeyIds(w);
