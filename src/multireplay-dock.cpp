@@ -83,6 +83,8 @@ SPDX-License-Identifier: GPL-2.0-or-later
 #include <QInputDialog>
 #include <QMenu>
 #include <QAction>
+#include <QToolTip>
+#include <QHelpEvent>
 #include <QClipboard>
 #include <QApplication>
 
@@ -123,6 +125,22 @@ QRect SeekBar::trackBand() const
 	// The track plus the 1 px above it and the top row of the ruler, which
 	// the playhead and the marker edges bleed into.
 	return QRect(0, 0, width(), kSeekTrackH + 2);
+}
+
+QRect SeekBar::zoomHitRect() const
+{
+	if (durationNs_ <= 0)
+		return QRect(); // nothing to be a fraction of, nothing to click
+	// IN THE RULER ROW ONLY, not the track: the track is where a drag
+	// starts a scrub, and a hit zone straddling both would make clicking
+	// the zoom factor also move the playhead underneath it.
+	const int m = 2;
+	const int rulerY = 1 + kSeekTrackH;
+	const int zw = 38; // "8.4×" plus padding — the widest factor this
+			   // control ever shows (past that it reads as "many
+			   // hundreds ×", which the entries in showZoomMenu
+			   // never ask for).
+	return QRect(width() - m - zw, rulerY, zw, kSeekRulerH);
 }
 
 void SeekBar::repaintNow(const QRect &r)
@@ -393,6 +411,25 @@ void SeekBar::wheelEvent(QWheelEvent *e)
 	e->accept();
 }
 
+bool SeekBar::event(QEvent *e)
+{
+	// §6.6 — the badge's own tooltip. setToolTip (Dock.SeekHint) answers
+	// for the rest of the bar; a hover here would otherwise say "click or
+	// drag to review, wheel to zoom", which is true of the bar and false
+	// of the one spot on it that does neither.
+	if (e->type() == QEvent::ToolTip) {
+		auto *he = static_cast<QHelpEvent *>(e);
+		if (zoomHitRect().contains(he->pos())) {
+			QToolTip::showText(
+				he->globalPos(),
+				obs_module_text("Dock.ZoomFit"), this,
+				zoomHitRect());
+			return true;
+		}
+	}
+	return QWidget::event(e);
+}
+
 void SeekBar::resizeEvent(QResizeEvent *e)
 {
 	QWidget::resizeEvent(e);
@@ -533,6 +570,13 @@ void SeekBar::paintEvent(QPaintEvent *)
 	// between each pair (the fifths of the step) as long as they are far
 	// enough apart to still be separate lines. The minor marks are what makes
 	// the strip read as a ruler at a glance, before any digit is read.
+	//
+	// §6.6: reserved (both here and inside the block below) so a
+	// graduation label near the right edge never prints UNDER the zoom
+	// factor — the badge itself is drawn last, over anything that still
+	// reaches this far.
+	const QRect zoomRect = zoomHitRect();
+	const int labelRight = zoomRect.isEmpty() ? m + w : zoomRect.left() - 4;
 	{
 		p.setBrush(Qt::NoBrush);
 		// Ruler ground, a shade darker than the track: the strip is part
@@ -607,7 +651,7 @@ void SeekBar::paintEvent(QPaintEvent *)
 			const QString lbl = tickLabel(t);
 			const int lw = fm.horizontalAdvance(lbl);
 			int lx = xi - lw / 2;
-			lx = std::clamp(lx, m + 1, m + w - lw - 1);
+			lx = std::clamp(lx, m + 1, labelRight - lw - 1);
 			if (lx > lastLabelRight + 6) {
 				p.setPen(kMajor);
 				p.drawText(QRect(lx, rulerY + 5, lw, kSeekRulerH - 5),
@@ -615,6 +659,30 @@ void SeekBar::paintEvent(QPaintEvent *)
 				lastLabelRight = lx + lw;
 			}
 		}
+	}
+
+	// §6.6 — THE ZOOM FACTOR, DRAWN INTO THE RULER instead of a separate
+	// key beside the bar (zoomBtn_). Last, so it sits over any graduation
+	// tick that still reaches this far right. A background of its own
+	// marks it as a control rather than another label — click resets to
+	// the whole timeline, right click opens the same spans menu
+	// (showZoomMenu) the old key did.
+	if (!zoomRect.isEmpty()) {
+		const bool zoomedIn = zoom_ > 1.001;
+		p.setPen(Qt::NoPen);
+		p.setBrush(QColor(sc().raise1));
+		p.drawRect(zoomRect);
+		QFont zf = p.font();
+		if (zf.pointSizeF() > 0)
+			zf.setPointSizeF(std::max(6.5, zf.pointSizeF() * 0.78));
+		zf.setBold(zoomedIn);
+		p.setFont(zf);
+		p.setPen(QColor(zoomedIn ? sc().text : sc().textMuted));
+		const QString zlbl =
+			zoomedIn ? QString("%1\xc3\x97").arg(zoom_, 0, 'f',
+							      zoom_ < 10 ? 1 : 0)
+				 : QStringLiteral("1\xc3\x97");
+		p.drawText(zoomRect, Qt::AlignCenter, zlbl);
 	}
 
 	// Playhead: a thin bright line, no bead. the reference controller draws a hairline, and a
@@ -698,6 +766,20 @@ bool SeekBar::findMarkerEdge(int x, int &marker, bool &inPoint) const
 
 void SeekBar::mousePressEvent(QMouseEvent *e)
 {
+	// §6.6 — THE ZOOM BADGE, checked before anything else claims the
+	// click: it sits in the ruler row, which a scrub would otherwise treat
+	// as "start dragging from here". Right click opens the same spans
+	// menu the old key did (showZoomMenu, via the host); left click resets
+	// straight to the whole timeline — the one gesture short enough that
+	// it does not need a menu of its own, the same as the old key's
+	// primary action.
+	if (zoomHitRect().contains(e->pos())) {
+		if (e->button() == Qt::RightButton)
+			emit zoomMenuRequested();
+		else if (e->button() == Qt::LeftButton)
+			setZoom(1.0, 0.5);
+		return;
+	}
 	// No timeline, no scrub. The host would refuse the seek anyway
 	// (seekToFraction), but silently: the click has to be refused HERE, so
 	// the playhead does not jump to where the finger landed on a bar that
@@ -3988,7 +4070,9 @@ void MultiReplayDock::showZoomMenu()
 				span > 0 ? "span" : "whole timeline", want, centre);
 		});
 	}
-	menu.exec(zoomBtn_->mapToGlobal(QPoint(0, zoomBtn_->height())));
+	// §6.6: anchored off the bar itself now, at the badge's own corner —
+	// there is no zoomBtn_ any more to anchor off.
+	menu.exec(seek_->mapToGlobal(QPoint(seek_->width(), seek_->height())));
 }
 
 void MultiReplayDock::showNotice(const QString &text)

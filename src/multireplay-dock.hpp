@@ -230,6 +230,13 @@ signals:
 	// An event's IN or OUT was dragged to `frac`. The bar knows nothing
 	// about events: it reports the gesture and the host moves the point.
 	void markerDragged(int eventId, bool inPoint, double frac);
+	// §6.6 — the zoom factor drawn INTO the ruler's right edge (no more
+	// separate zoomBtn_) asked for its menu. The bar draws its own factor
+	// and resets itself on a left click (both need nothing outside this
+	// class), but the spans menu's entries depend on the DOCK's own
+	// displayDurNs_ and playhead — this is how it asks for one without
+	// knowing either exists.
+	void zoomMenuRequested();
 
 protected:
 	void paintEvent(QPaintEvent *) override;
@@ -243,6 +250,12 @@ protected:
 	// position, the wheel has nothing else to mean, and zooming about the
 	// pointer keeps the frame under it still while the scale changes.
 	void wheelEvent(QWheelEvent *) override;
+	// §6.6 — a SECOND tooltip, over the zoom badge specifically. setToolTip
+	// covers the rest of the bar (Dock.SeekHint); without this override
+	// that is the only text hovering the badge could ever show, and "click
+	// or drag to review, wheel to zoom" says nothing about what a click
+	// THERE does.
+	bool event(QEvent *) override;
 
 private:
 	// --- repaint routing -------------------------------------------------
@@ -275,6 +288,12 @@ private:
 	// playhead and the overlay text live in here; the graduations and their
 	// labels, which are the expensive part of a repaint, do not.
 	QRect trackBand() const;
+	// §6.6 — where the zoom factor is drawn, at the ruler's right edge.
+	// One rect for paintEvent to draw into and mousePressEvent to hit-test
+	// against, so the two can never disagree about where it is. Empty
+	// (nothing drawn, nothing to click) with no timeline: zoom means
+	// nothing on a bar with no span to be a fraction of.
+	QRect zoomHitRect() const;
 
 	double fracAt(int x) const;
 	// Time between two LABELLED graduations at the current width, 0 when
@@ -866,8 +885,10 @@ private:
 	// The selector row of the camera matrix, as cells on the matrix's own
 	// columns.
 	QWidget *buildChannelRow();
-	// Zoom factor of the position bar, and the key that resets it.
-	QPushButton *zoomBtn_ = nullptr;
+	// §6.6: the zoom factor used to be a separate key beside the bar
+	// (zoomBtn_); it is drawn INTO the bar's own ruler now (SeekBar::
+	// zoomHitRect/paintEvent) — click resets, right click opens the same
+	// spans menu (showZoomMenu).
 	// the reference controller paints the header of the angle being watched green. Cheap enough to
 	// call from poll(), which is also the only place that learns the angle
 	// changed under a hotkey.

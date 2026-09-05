@@ -1205,36 +1205,16 @@ QWidget *MultiReplayDock::buildBottomBar()
 	// that reaches the whole project, and the operator finds it by its scale.
 	seek_ = new SeekBar(this);
 	seek_->setToolTip(obs_module_text("Dock.SeekHint"));
-	// The zoom key: it shows the factor because a bar that is showing four
-	// seconds of an hour looks exactly like a bar over a four-second
-	// session, and the operator has to be able to tell those apart at a
-	// glance. Clicking it goes back to the whole timeline.
-	zoomBtn_ = new QPushButton(QStringLiteral("1×"), this);
-	zoomBtn_->setObjectName("mrChanSel");
-	zoomBtn_->setToolTip(obs_module_text("Dock.ZoomFit"));
-	setKeyId(zoomBtn_, QStringLiteral("zoom"));
-	zoomBtn_->setMinimumWidth(34);
-	// AS TALL AS THE BAR IT BELONGS TO. At a key's height it stood against the
-	// bar's top edge with a notch of panel under it, which reads as a control
-	// that has come loose from the thing it controls.
-	zoomBtn_->setFixedHeight(kSeekTrackH + kSeekRulerH + 2);
-	zoomBtn_->setCursor(Qt::PointingHandCursor);
-	// A MENU of spans, not a reset. The wheel is how you zoom by feel, but "show
-	// me the last five minutes" is a thing an operator wants exactly and cannot
-	// reach by rolling a wheel over an hour of footage — and the factor that
-	// gets there depends on how long the session is, which is arithmetic he
-	// should not be doing. The entries are durations for that reason; the factor
-	// is computed from the timeline as it stands when the entry is picked.
-	connect(zoomBtn_, &QPushButton::clicked, this,
+	// §6.6 — THE ZOOM FACTOR IS DRAWN INTO THE BAR NOW (SeekBar::
+	// zoomHitRect/paintEvent), not a separate key beside it: the bar
+	// already prints "4:12 / 1:03:20" over itself while scrubbing, so
+	// drawing "8.4×" at its own right edge is the same idea applied to the
+	// other number this control owns. Left click on the badge resets to
+	// the whole timeline; right click opens the same spans menu the old
+	// key did — the bar cannot build that menu itself (its entries depend
+	// on this dock's displayDurNs_ and playhead), so it only asks.
+	connect(seek_, &SeekBar::zoomMenuRequested, this,
 		&MultiReplayDock::showZoomMenu);
-	connect(seek_, &SeekBar::zoomChanged, this, [this](double z) {
-		zoomBtn_->setText(z <= 1.001 ? QStringLiteral("1×")
-					     : QString("%1×").arg(z, 0, 'f',
-								  z < 10 ? 1 : 0));
-		zoomBtn_->setProperty("level", z > 1.001 ? QStringLiteral("warn")
-							 : QString());
-		repolish(zoomBtn_);
-	});
 	connect(seek_, &SeekBar::scrubStateChanged, this,
 		[this](bool dragging) { seekDragging_ = dragging; });
 	// Where the drag is, printed ON the bar — the only place it is printed now,
@@ -1251,21 +1231,16 @@ QWidget *MultiReplayDock::buildBottomBar()
 	// The bar has to see the mouse before a button is pressed, or the cursor
 	// could never say "this edge can be grabbed".
 	seek_->setMouseTracking(true);
-	{
-		// The zoom key sits at the right end OF THE BAR, not in a
-		// toolbar: it is about this control and nothing else, and it is
-		// also where the eye lands after reading the scale.
-		auto *barBox = new QWidget(this);
-		auto *row = new QHBoxLayout(barBox);
-		row->setContentsMargins(0, 0, 0, 0);
-		row->setSpacing(4);
-		row->addWidget(seek_, 1);
-		row->addWidget(zoomBtn_, 0);
-		// …and none over the position bar either: it is graduated, which is
-		// how an operator recognises a scrubber, and a caption above it was
-		// naming the one control on the panel that names itself.
-		v->addWidget(barBox);
-	}
+	// §6.6: no more barBox wrapper — that HBoxLayout existed only to hold
+	// the bar and zoomBtn_ side by side, and the zoom factor lives inside
+	// the bar's own ruler now. Recovers the 34px zoomBtn_ took plus the
+	// 4px of spacing beside it, and the bar's right edge lines up with
+	// every other control's, which a key floating past it never did.
+	//
+	// ...and no caption over the position bar either: it is graduated,
+	// which is how an operator recognises a scrubber, and a caption above
+	// it was naming the one control on the panel that names itself.
+	v->addWidget(seek_);
 
 	return box;
 }

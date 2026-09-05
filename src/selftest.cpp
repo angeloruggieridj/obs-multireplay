@@ -23,6 +23,7 @@ extern "C" {
 }
 #include "health.hpp"
 #include "multireplay-dock.hpp"
+#include "dock-internal.hpp" // kSeekTrackH/kSeekRulerH, for the zoom badge test
 #include "dock-icons.hpp"
 #include "packet-tap.hpp"
 // pathToUtf8: a path handed to FFmpeg is UTF-8, never path::string() (which is
@@ -2823,9 +2824,11 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 		}
 
 		// --- the position bar zooms -----------------------------------
-		// A wheel notch over the bar has to change the scale, and the key
-		// beside it has to put it back. Driven as a real wheel event, so
-		// the widget's own handler is what is being tested.
+		// A wheel notch over the bar has to change the scale, and a real
+		// click on the zoom badge (§6.6 — drawn INTO the ruler now, no
+		// more separate key beside it) has to put it back. Both driven
+		// as real events, so the widget's own handlers are what is being
+		// tested, not a shortcut around them.
 		{
 			double zoomed = 1.0, reset = 1.0;
 			runOnUi([&]() {
@@ -2843,19 +2846,31 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 				for (int i = 0; i < 4; i++)
 					QCoreApplication::sendEvent(bar, &ev);
 				zoomed = bar->zoom();
-				// The key is a MENU of spans now, not a reset, and
-				// clicking it would park this thread inside
-				// QMenu::exec(). So the check calls what the
-				// menu's own "100%" entry calls — the same
-				// function, one frame short of the mouse.
-				dock->zoomWholeTimeline();
+				// The badge sits in the RULER row, right-aligned:
+				// same geometry paintEvent/zoomHitRect use
+				// (kSeekTrackH, kSeekRulerH are the same constants
+				// both read), approximated here since zoomHitRect()
+				// itself is private to the widget that owns it.
+				// LEFT-click resets directly (safe: no menu, unlike
+				// a right-click, which is left untested here for the
+				// same reason the old key's own menu always was).
+				const QPoint badge(bar->width() - 2 - 19,
+						   1 + kSeekTrackH +
+							   kSeekRulerH / 2);
+				QMouseEvent press(QEvent::MouseButtonPress,
+						  QPointF(badge),
+						  QPointF(bar->mapToGlobal(badge)),
+						  Qt::LeftButton, Qt::LeftButton,
+						  Qt::NoModifier);
+				QCoreApplication::sendEvent(bar, &press);
 				reset = bar->zoom();
 			});
 			c.zoomReached = zoomed;
 			c.seekbarZooms = zoomed > 1.5 && reset <= 1.001;
 			obs_log(c.seekbarZooms ? LOG_INFO : LOG_ERROR,
 				"[selftest] dock: four wheel notches took the bar to "
-				"%.2f×, the key put it back to %.2f×",
+				"%.2f×, a click on the zoom badge put it back to "
+				"%.2f×",
 				zoomed, reset);
 		}
 
