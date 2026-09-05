@@ -3328,10 +3328,52 @@ void checkGalleryScalesKeys()
 	};
 	const int plainH = measureRecHeight(false);
 	const int galleryH = measureRecHeight(true);
-	setGalleryScale(false); // restore: nothing after this should run scaled
 	check(plainH > 0 && galleryH > plainH,
 	      "gallery: a section key grows with the scale",
 	      QString("REC %1px plain, %2px gallery").arg(plainH).arg(galleryH));
+
+	// THE SAME PANEL, TOGGLED LIVE — which is the case the two fresh
+	// panels above do NOT cover, and the one the real dock actually hits:
+	// entering fullscreen flips the flag on a panel that already exists,
+	// with every KeyBlock already through apply() once at the old scale.
+	// KeyBlock::setFlat's own guard ("applied_ && want == flatActive_")
+	// skips apply() whenever a block's flat/tall STATE has not changed,
+	// which in Wide it never does here — so refreshAllBlocks() has to be
+	// the thing that forces it, the same call refreshFullScreenKey() makes.
+	// Caught for real: without it, this assertion failed on the real dock
+	// while both panels above still passed happily, since each was built
+	// fresh at the scale it measured.
+	setGalleryScale(false);
+	auto *live = new Mock();
+	live->resize(1500, 900);
+	live->show();
+	for (int i = 0; i < 3; i++) {
+		QApplication::processEvents();
+		QApplication::sendPostedEvents();
+	}
+	const auto recHeight = [&]() {
+		for (QAbstractButton *b : live->findChildren<QAbstractButton *>())
+			if (b->property(kKeyProperty).toString() ==
+			    QStringLiteral("rec"))
+				return b->height();
+		return -1;
+	};
+	const int liveBefore = recHeight();
+	setGalleryScale(true);
+	live->strip_->refreshAllBlocks();
+	for (int i = 0; i < 3; i++) {
+		QApplication::processEvents();
+		QApplication::sendPostedEvents();
+	}
+	const int liveAfter = recHeight();
+	check(liveBefore > 0 && liveAfter > liveBefore,
+	      "gallery: toggling live on an existing panel grows its keys",
+	      QString("REC %1px before, %2px after refreshAllBlocks()")
+		      .arg(liveBefore)
+		      .arg(liveAfter));
+	live->hide();
+	delete live;
+	setGalleryScale(false); // restore: nothing after this should run scaled
 }
 
 // The whole host pass: a LIGHT panel inside a DARK OBS, which is the

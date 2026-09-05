@@ -800,6 +800,25 @@ void ControlStrip::blockChanged(KeyBlock *b)
 	updateGeometry();
 }
 
+void ControlStrip::refreshAllBlocks()
+{
+	// TWO THINGS, not one, and both are needed: refresh() forces
+	// KeyBlock::apply() to run regardless of its own flat/tall guard, which
+	// is what makes each key's OWN pinned height (setFixedHeight, from
+	// sectionKeyH()/sectionKeyFoldedH()) actually change. measure() is a
+	// SEPARATE cache — the Entry's .tall/.flat QSize that layoutLanes/
+	// layoutStack/layoutPacked pack sections from — and refresh() alone
+	// does not touch it: a block correctly drawn 32 px tall but still
+	// PACKED as if it were 26 would overlap its neighbour on the line
+	// below.
+	for (Entry &e : blocks_) {
+		e.block->refresh();
+		measure(e);
+	}
+	layoutLines(width(), flat_, true);
+	updateGeometry();
+}
+
 QSize ControlStrip::sizeHint() const
 {
 	// What it needs at the width it has, in the arrangement it will wear

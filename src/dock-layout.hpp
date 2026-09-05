@@ -709,6 +709,14 @@ public:
 	// Re-measure a section that changed inside (a camera appeared, the second
 	// bay was switched off) and lay the strip out again.
 	void blockChanged(KeyBlock *b);
+	// GALLERY SCALE (§6.5) NEEDS EVERY BLOCK RE-APPLIED, not just re-laid
+	// out. sectionKeyH()/sectionKeyFoldedH() just started answering a
+	// different number, but KeyBlock::apply() only runs again when a
+	// block's OWN flat/tall state changes (setFlat's guard: "applied_ &&
+	// want == flatActive_") — and toggling gallery in Wide changes neither,
+	// so nothing would re-pin a single key without this. KeyBlock::refresh()
+	// is the one call that forces apply() regardless of that guard.
+	void refreshAllBlocks();
 
 	// WHICH SECTION IS SETTING THE FLOOR, in both of its shapes. "The panel
 	// will not go below 374 px" is a number with nowhere to go: six sections
