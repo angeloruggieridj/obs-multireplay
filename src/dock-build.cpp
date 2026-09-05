@@ -1096,10 +1096,18 @@ QWidget *MultiReplayDock::buildBottomBar()
 	// correct place for a new line to start whether or not it is drawn.
 	strip_->addBlock(buildRecBlock(), Lane::Left, /*startsLine*/ false, 0);
 	strip_->addBlock(buildMarkers(), Lane::Centre, false, 1);
-	strip_->addBlock(buildExportBlock(), Lane::Right, false, 5);
+	clipsBlock_ = buildExportBlock();
+	strip_->addBlock(clipsBlock_, Lane::Right, false, 5);
 	strip_->addBlock(buildAngleMatrix(), Lane::Left, /*startsLine*/ true, 2);
 	strip_->addBlock(buildTransport(), Lane::Centre, false, 3);
-	strip_->addBlock(buildSpeedBlock(), Lane::Right, false, 4);
+	speedBlock_ = buildSpeedBlock();
+	strip_->addBlock(speedBlock_, Lane::Right, false, 4);
+	// §6.3: built last, ranked last (a stack has a top, and this is the one
+	// thing on it nobody reaches for during a match), visible only in
+	// Tall — applyTallCollapse hides/shows it opposite the three sections
+	// it stands in for.
+	moreBlock_ = buildMoreBlock();
+	strip_->addBlock(moreBlock_, Lane::Right, false, 6);
 	addStrip(v, strip_);
 
 	// ── THE STATUS LINE, ABOVE THE GREEN BAND ────────────────────────
@@ -1569,6 +1577,141 @@ KeyBlock *MultiReplayDock::buildExportBlock()
 		exportKey->setText(flat ? QString() : exportLabel);
 	});
 	return blk;
+}
+
+// ---------------------------------------------------------------------------
+// §6.3 — "⋯ ALTRO": WHERE BAY, CLIPS AND SPEED GO IN A COLUMN
+// ---------------------------------------------------------------------------
+//
+// Six sections in Tall's narrow width cost six lines — there is no room for
+// even two of them to share one, which is what packs Short's own stack down
+// to two or three (§6.4). REC, MARK and TRANSPORT stay visible: they are the
+// 90% of what gets pressed during a match. The rest collapses behind one
+// key, on the same menu-popup pattern the gear and the clip-actions key
+// already use.
+//
+// EVERY ENTRY HERE CLICKS THE REAL (HIDDEN) BUTTON rather than
+// reimplementing its slot. The alternative — a QAction wired to its own copy
+// of the logic — is a second place a bay selector's checked state, or which
+// speed is current, can go stale against the first: exactly the trap this
+// project's own notes call out for the channel selector specifically. A
+// hidden QAbstractButton still answers click() exactly as if the operator
+// had pressed it, checked state included, so this menu is a second DOOR
+// onto the same room, never a second room.
+//
+// Rebuilt on every aboutToShow, not once at construction: a hidden button's
+// own state (which bay is current, which speed) can change while the panel
+// sits collapsed, and a menu built once would show whatever was true the
+// day it was opened.
+KeyBlock *MultiReplayDock::buildMoreBlock()
+{
+	auto *blk = new KeyBlock(QString(), this);
+	auto *btn = new QToolButton(this);
+	btn->setObjectName("mrGear");
+	setKeyIcon(btn, Icon::More, tintsFor(sc()), 14);
+	btn->setCursor(Qt::PointingHandCursor);
+	btn->setToolTip(obs_module_text("Dock.ZoneMoreHint"));
+	setKeyId(btn, QStringLiteral("moreCollapsed"));
+	auto *menu = new QMenu(btn);
+	connect(menu, &QMenu::aboutToShow, this, [this, menu]() {
+		menu->clear();
+		const Config cfg = ReplayCore::instance().getConfig();
+		if (cfg.enableChannelB && chanSel_) {
+			for (QAbstractButton *cb : chanSel_->buttons()) {
+				QAction *a = menu->addAction(cb->text());
+				a->setCheckable(true);
+				a->setChecked(cb->isChecked());
+				connect(a, &QAction::triggered, cb,
+					[cb]() { cb->click(); });
+			}
+			if (swapBtn_) {
+				QAction *a = menu->addAction(
+					obs_module_text("Dock.SwapChannels"));
+				connect(a, &QAction::triggered, swapBtn_,
+					[this]() { swapBtn_->click(); });
+			}
+			menu->addSeparator();
+		}
+		if (QAbstractButton *up = findKeyButton(this, "moveUp")) {
+			QAction *a =
+				menu->addAction(obs_module_text("Dock.MoveUp"));
+			connect(a, &QAction::triggered, up,
+				[up]() { up->click(); });
+		}
+		if (QAbstractButton *dn = findKeyButton(this, "moveDown")) {
+			QAction *a = menu->addAction(
+				obs_module_text("Dock.MoveDown"));
+			connect(a, &QAction::triggered, dn,
+				[dn]() { dn->click(); });
+		}
+		// The SAME menu clipActions already builds (Duplica/Elimina/
+		// Elimina tutto), added as a submenu rather than copied: one
+		// list of destructive actions to keep meaning the same thing.
+		if (QAbstractButton *edit = findKeyButton(this, "clipActions")) {
+			if (QMenu *editMenu = edit->findChild<QMenu *>())
+				menu->addMenu(editMenu);
+		}
+		menu->addSeparator();
+		if (QAbstractButton *exp = findKeyButton(this, "export")) {
+			QAction *a = menu->addAction(
+				exp->text().isEmpty()
+					? QString::fromUtf8(obs_module_text(
+						  "Dock.ExportClips"))
+					: exp->text());
+			connect(a, &QAction::triggered, exp,
+				[exp]() { exp->click(); });
+		}
+		if (speedChips_ && !speedChips_->buttons().isEmpty()) {
+			menu->addSeparator();
+			QMenu *speedMenu =
+				menu->addMenu(obs_module_text("Dock.ZoneSpeed"));
+			for (QAbstractButton *chip : speedChips_->buttons()) {
+				QAction *a = speedMenu->addAction(chip->text());
+				connect(a, &QAction::triggered, chip,
+					[chip]() { chip->click(); });
+			}
+		}
+	});
+	popupOnClick(btn, menu);
+	btn->setFixedHeight(kKeyH);
+	const BlockShape shape{{Cell(btn)}};
+	blk->setShapes(shape, shape);
+	// HIDDEN FROM THE START: the panel opens Wide, and applyTallCollapse's
+	// own guard only acts on a CHANGE — it would never think to hide a
+	// block that came into the world already visible, which is what every
+	// KeyBlock does by default.
+	blk->setVisible(false);
+	return blk;
+}
+
+// §6.3's other half: bay/clips/speed disappear from the strip's own
+// arithmetic in Tall (see orderFor's isHidden() check, dock-layout.cpp),
+// and the "more" key takes their place. angleBlock_ is never null here —
+// unlike the mockup's bay_, this dock always builds it (§2.10 collapses
+// its CONTENT when B is off, via applyChannelBVisibility, not the section
+// itself) — but hiding it wholesale for Tall is independent of that and
+// composes with it fine: whichever reason hid it, orderFor stops reserving
+// its room, and the more menu's own aboutToShow decides on cfg.enableChannelB
+// whether to offer the channel items at all.
+void MultiReplayDock::applyTallCollapse(bool tall)
+{
+	if (tall == tallCollapsed_)
+		return;
+	tallCollapsed_ = tall;
+	if (angleBlock_)
+		angleBlock_->setVisible(!tall);
+	if (clipsBlock_)
+		clipsBlock_->setVisible(!tall);
+	if (speedBlock_)
+		speedBlock_->setVisible(!tall);
+	const bool anyCollapsed = angleBlock_ || clipsBlock_ || speedBlock_;
+	if (moreBlock_)
+		moreBlock_->setVisible(tall && anyCollapsed);
+	if (strip_)
+		for (KeyBlock *b :
+		     {angleBlock_, clipsBlock_, speedBlock_, moreBlock_})
+			if (b)
+				strip_->blockChanged(b);
 }
 
 // ---------------------------------------------------------------------------

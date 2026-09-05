@@ -110,6 +110,21 @@ inline QPushButton *iconTextBtn(Icon ic, const QString &text, const char *id,
 	return b;
 }
 
+// ── FIND ONE OF THIS PANEL'S OWN KEYS BY THE ID setKeyId GAVE IT ─────────
+//
+// The same question the gate already asks of the real widgets on every
+// check (selftest.cpp does this same loop by hand each time), used here so
+// a menu that stands in for a hidden section never keeps its own copy of
+// which button is which — a copy is a second place that button could be
+// renamed and this one not told.
+inline QAbstractButton *findKeyButton(QWidget *root, const QString &id)
+{
+	for (QAbstractButton *b : root->findChildren<QAbstractButton *>())
+		if (b->property(kKeyProperty).toString() == id)
+			return b;
+	return nullptr;
+}
+
 // ── A KEY THAT OPENS A MENU, WITHOUT WEARING THE PLATFORM'S ARROW ────────
 //
 // `QToolButton::setMenu` tells Qt the button HAS a menu, and Qt then draws its

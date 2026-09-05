@@ -598,6 +598,12 @@ private:
 	KeyBlock *buildTransport();
 	KeyBlock *buildSpeedBlock();
 	KeyBlock *buildExportBlock();
+	// §6.3 — the "⋯ ALTRO" key Tall collapses bay/clips/speed behind. See
+	// applyTallCollapse() and the note on buildMoreBlock() itself for why
+	// its menu clicks the real (hidden) buttons instead of reimplementing
+	// their slots.
+	KeyBlock *buildMoreBlock();
+	void applyTallCollapse(bool tall);
 	// The single Export key, which asks on the press whether it is one clip or
 	// the whole selection as one file. Built separately because the SPEED
 	// section places it — under the dial, with the rest of what is done to a
@@ -607,6 +613,14 @@ private:
 	// The camera section, kept because switching the second bay on or off
 	// changes how many rows it has and the strip has to be told.
 	KeyBlock *angleBlock_ = nullptr;
+	// §6.3 — the three sections Tall collapses, and the key that stands in
+	// for them. Kept for the same reason angleBlock_ is: applyTallCollapse
+	// hides/shows them, and hiding a section wholesale is what the layout
+	// engine's orderFor now reads (see dock-layout.cpp) to stop reserving
+	// its room.
+	KeyBlock *clipsBlock_ = nullptr, *speedBlock_ = nullptr,
+		 *moreBlock_ = nullptr;
+	bool tallCollapsed_ = false;
 	QWidget *buildEvents();
 	QWidget *buildBottomBar();
 	// The status line, above the on-air band. It OWNS the modes — loop, music,

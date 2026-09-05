@@ -4342,6 +4342,12 @@ void runReopenPass(const std::string &outPath)
 	// its keys — it just costs the dock the height of six rows instead of
 	// two or three.
 	bool shortPacksLines = false;
+	// §6.3 — TALL COLLAPSES BAY + CLIPS + SPEED BEHIND "MORE". Six sections
+	// in a 340 px column cost six lines with no packing to help (there is
+	// never room for two to share one); this is what buys the height back
+	// instead — the three least-pressed-during-a-match sections vanish
+	// from the strip's own arithmetic and one key stands in for them.
+	bool tallCollapsesToMore = false;
 	// PUTTING THE MONITORS DOWN HAS TO GIVE THE ROOM TO THE LIST, and this is
 	// the one check that can tell the difference between the pictures going
 	// away and the room coming back. They are not the same thing, and for a
@@ -4734,7 +4740,35 @@ void runReopenPass(const std::string &outPath)
 				if (auto *nl = dock->findChild<QLabel *>(
 					    QStringLiteral("mrChanStrip")))
 					noticeText = nl->text();
+				// §6.3, found by mrKey like every other check on
+				// this panel: "more" is visible and the three
+				// sections it stands in for are not.
+				QAbstractButton *more = nullptr, *moveUp = nullptr,
+						*speed25 = nullptr, *bay0 = nullptr;
+				for (QAbstractButton *b :
+				     dock->findChildren<QAbstractButton *>()) {
+					const QString id =
+						b->property(kKeyProperty)
+							.toString();
+					if (id == QStringLiteral("moreCollapsed"))
+						more = b;
+					else if (id == QStringLiteral("moveUp"))
+						moveUp = b;
+					else if (id == QStringLiteral("speed25%"))
+						speed25 = b;
+					else if (id == QStringLiteral("bay0"))
+						bay0 = b;
+				}
+				tallCollapsesToMore =
+					more && more->isVisible() &&
+					(!moveUp || !moveUp->isVisible()) &&
+					(!speed25 || !speed25->isVisible()) &&
+					(!bay0 || !bay0->isVisible());
 			});
+			obs_log(tallCollapsesToMore ? LOG_INFO : LOG_ERROR,
+				"[selftest] reopen: tall collapses bay/clips/speed "
+				"behind more: %s",
+				tallCollapsesToMore ? "yes" : "NO");
 			obs_log(keysCentred ? LOG_INFO : LOG_ERROR,
 				"[selftest] reopen: stacked keys - %d px of panel to "
 				"the left of them, %d to the right: %s; band says "
@@ -4838,8 +4872,9 @@ void runReopenPass(const std::string &outPath)
 			  fsKeyShownWhenFloating && fsCoversTheScreen &&
 			  fsRestoresTheWindow && tilesWideOk && tilesTallOk &&
 			  shortReachable && shortPacksLines && keysCentred &&
-			  playKeyIsTall && panelPaintsItself &&
-			  panelMarksAreDrawn && monitorsGiveRoom;
+			  tallCollapsesToMore && playKeyIsTall &&
+			  panelPaintsItself && panelMarksAreDrawn &&
+			  monitorsGiveRoom;
 
 	// --- Put everything back ----------------------------------------------
 	// The operator's project first (so nothing is pointing into the test one),
@@ -4895,6 +4930,8 @@ void runReopenPass(const std::string &outPath)
 	obs_data_set_bool(checks, "monitors_key_gives_the_room_to_the_list",
 			  monitorsGiveRoom);
 	obs_data_set_bool(checks, "stacked_keys_are_centred", keysCentred);
+	obs_data_set_bool(checks, "tall_collapses_bay_clips_speed_behind_more",
+			   tallCollapsesToMore);
 	obs_data_set_bool(checks, "play_key_spans_two_rows", playKeyIsTall);
 	obs_data_set_bool(checks, "panel_paints_its_own_background",
 			  panelPaintsItself);

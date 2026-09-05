@@ -1415,6 +1415,10 @@ void MultiReplayDock::applyPanelMode(PanelMode m, bool force)
 	// Width alone cannot tell these apart — see setStacked.
 	if (strip_)
 		strip_->setStacked(m == PanelMode::Wide ? 0 : 1);
+	// §6.3: Tall collapses bay/clips/speed behind "more" — see the note on
+	// applyTallCollapse itself for why hiding them wholesale, rather than
+	// stacking all six, is what actually buys the height back.
+	applyTallCollapse(m == PanelMode::Tall);
 
 	// The search box is the one control that can be asked to give width back:
 	// in a column, its normal minimum is width the Live and Monitors keys do
