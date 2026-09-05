@@ -242,6 +242,12 @@ recording, and keeps the last minutes of them in a bounded ring in RAM.
 
 ### Installation
 
+> [!IMPORTANT]
+> The builds are **not code-signed**, so your OS may warn about them or block
+> them the first time — on **macOS** you have to clear the download quarantine
+> by hand or OBS will silently refuse to load the plugin. See
+> [Unsigned builds](#unsigned-builds).
+
 1. Install **Branch Output** first — download it from its official repository,
    [github.com/OPENSPHERE-Inc/branch-output/releases](https://github.com/OPENSPHERE-Inc/branch-output/releases)
    — and set its `Interlock` to `Always ON`. Without that it will not start
@@ -257,6 +263,26 @@ recording, and keeps the last minutes of them in a bounded ring in RAM.
 
 On Windows, OBS only scans `%ProgramData%\obs-studio\plugins`; the installer
 puts the plugin there.
+
+On macOS the `.pkg` is not notarised: if the dock does not appear after
+installing, clear the quarantine flag on the installed bundle —
+`xattr -dr com.apple.quarantine "/Library/Application Support/obs-studio/plugins/obs-multireplay.plugin"`
+— and restart OBS.
+
+### Unsigned builds
+
+The releases carry **no publisher signature on any platform** — code-signing
+certificates are neither free nor issued to one-person projects. Your OS will
+say so: macOS quarantines the plugin (and OBS then fails to load it, silently),
+Windows marks the zip as coming from the internet.
+
+Unsigned does not mean unverifiable. Every release is built in public from the
+tagged source, and ships a signed **build provenance attestation**, GitHub's
+per-asset **SHA-256 digests** (which the in-app updater checks for you before it
+installs anything), and, when a key is configured, **VirusTotal** reports.
+
+👉 **[How to verify a download](docs/verification.md)** — what to expect per
+platform, and the three checks, with commands.
 
 ### Building from source
 
@@ -554,6 +580,12 @@ ne tiene gli ultimi minuti in un buffer circolare in RAM.
 
 ### Installazione
 
+> [!IMPORTANT]
+> Le build **non sono firmate**, quindi il sistema operativo può avvisarti o
+> bloccarle al primo avvio — su **macOS** devi togliere a mano la quarantena del
+> download, altrimenti OBS si rifiuta di caricare il plugin senza dire niente.
+> Vedi [Build non firmate](#build-non-firmate).
+
 1. Installa prima **Branch Output** — scaricalo dalla sua repository ufficiale,
    [github.com/OPENSPHERE-Inc/branch-output/releases](https://github.com/OPENSPHERE-Inc/branch-output/releases)
    — e imposta il suo `Interlock` su `Always ON`. Senza, non avvia la
@@ -569,6 +601,28 @@ ne tiene gli ultimi minuti in un buffer circolare in RAM.
 
 Su Windows OBS cerca i plugin solo in `%ProgramData%\obs-studio\plugins`, ed è
 lì che li mette l'installer.
+
+Su macOS il `.pkg` non è notarizzato: se dopo l'installazione la dock non
+compare, togli l'attributo di quarantena dal bundle installato —
+`xattr -dr com.apple.quarantine "/Library/Application Support/obs-studio/plugins/obs-multireplay.plugin"`
+— e riavvia OBS.
+
+### Build non firmate
+
+Le release non portano **nessuna firma dell'editore, su nessuna piattaforma** —
+i certificati di code-signing non sono gratuiti né vengono rilasciati a progetti
+di una persona sola. Il sistema operativo lo segnala: macOS mette il plugin in
+quarantena (e OBS non lo carica, in silenzio), Windows marca lo zip come
+proveniente da internet.
+
+Non firmato non vuol dire non verificabile. Ogni release è compilata in pubblico
+dai sorgenti taggati e porta con sé un'**attestazione di provenance firmata**,
+gli **SHA-256 per asset** di GitHub (che l'updater integrato verifica per te
+prima di installare qualsiasi cosa) e, quando è configurata una chiave, i report
+**VirusTotal**.
+
+👉 **[Come verificare un download](docs/verification.md)** — cosa aspettarsi su
+ogni piattaforma, e le tre verifiche, con i comandi.
 
 ### Compilare dai sorgenti
 

@@ -33,6 +33,18 @@ jobs:
     defaults:
       run:
         shell: bash
+    # contents: write publishes the release; the other two let this job mint a
+    # build provenance attestation for every asset, signed with an OIDC token.
+    # None of the packages are code-signed (see docs/verification.md) -- the
+    # attestation is what replaces a publisher signature.
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    env:
+      # Optional. Without it the VirusTotal steps below are skipped, not failed,
+      # and the release still publishes.
+      VT_API_KEY: ${{ secrets.VT_API_KEY }}
     steps:
       # THE TAG AND THE BINARY HAVE TO AGREE ON WHAT THIS BUILD IS.
       #
@@ -130,6 +142,19 @@ jobs:
             echo "    ${file##*/}: $(sha256sum "${file}" | cut -d " " -f 1)" >> ${{ github.workspace }}/CHECKSUMS.txt
           done
 
+      # None of the packages are code-signed, so ship something people can check
+      # instead: an attestation binding every asset to this workflow, this commit
+      # and this runner. GitHub already publishes a SHA-256 per asset from the
+      # same source; the attestation covers each asset directly rather than by
+      # proxy. `obs-multireplay-1.0.0-*` is the exact set the Rename Files step
+      # moved into the workspace -- a per-extension glob would fail on *.exe,
+      # which this project has no asset for.
+      - name: Attest build provenance 🔏
+        if: fromJSON(steps.check.outputs.validTag)
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-path: ${{ github.workspace }}/obs-multireplay-1.0.0-*
+
       - name: Create Release 🛫
         if: fromJSON(steps.check.outputs.validTag)
         id: create_release
@@ -147,3 +172,42 @@ jobs:
             ${{ github.workspace }}/*.deb
             ${{ github.workspace }}/*.ddeb
             ${{ github.workspace }}/*.tar.xz
+
+      # An independent second opinion, linked from the release page. Needs a free
+      # VirusTotal API key in the VT_API_KEY secret; without one both steps are
+      # skipped and the release still publishes.
+      - name: Scan the packages with VirusTotal 🧬
+        id: vt
+        if: fromJSON(steps.check.outputs.validTag) && env.VT_API_KEY != ''
+        uses: crazy-max/ghaction-virustotal@d34968c958ae283fe976efed637081b9f9dcf74f # v4
+        with:
+          vt_api_key: ${{ secrets.VT_API_KEY }}
+          files: |
+            ${{ github.workspace }}/*.zip
+            ${{ github.workspace }}/*.pkg
+            ${{ github.workspace }}/*.deb
+
+      # softprops' own update_release_body only fires on a "release" event and
+      # this workflow runs on a tag push, so append the reports here instead.
+      # This lands AFTER the "### Checksums" block, so the hand-written changelog
+      # still goes in front of both (see CLAUDE.md's release notes).
+      - name: Link the VirusTotal reports from the release 🔗
+        if: steps.vt.outputs.analysis != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ANALYSIS: ${{ steps.vt.outputs.analysis }}
+        run: |
+          : Link the VirusTotal reports from the release 🔗
+          {
+            echo ''
+            echo '### Verification'
+            echo ''
+            echo '- **Integrity** — compare each asset against the SHA-256 in `### Checksums` above; the in-app updater does this automatically before it installs.'
+            echo "- **Provenance** — \`gh attestation verify <file> --repo ${GITHUB_REPOSITORY}\`"
+            echo '- **VirusTotal** —'
+            IFS=',' read -ra rows <<< "${ANALYSIS}"
+            for row in "${rows[@]}"; do
+              echo "  - [$(basename "${row%%=*}")](${row#*=})"
+            done
+          } >> ${{ github.workspace }}/CHECKSUMS.txt
+          gh release edit "${GITHUB_REF_NAME}" --notes-file ${{ github.workspace }}/CHECKSUMS.txt
