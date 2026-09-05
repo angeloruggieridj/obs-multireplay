@@ -301,6 +301,20 @@ on the same two names and another reboot.
 Background: [OBS forum thread](https://obsproject.com/forum/threads/obs-ui-turns-black-only-the-preview-and-program-showing.195339/)
 · [microsoft/Windows-Dev-Performance#136](https://github.com/microsoft/Windows-Dev-Performance/issues/136).
 
+### Privacy
+
+No telemetry, no analytics, nothing phoned home about your recordings, your
+project names or how you use the panel. The only network traffic this plugin
+ever makes is to `api.github.com`, and only when you ask for it — checking
+for a plugin update (⚙ ▸ Settings ▸ Updates ▸ Check) or fetching Branch
+Output when the panel offers to install it for you. Neither happens on
+launch, in the background, or on any timer: whether Branch Output is
+present is a local check with no network in it at all, and the update page
+sits idle until its Check button is pressed. Every download either of those
+can lead to is verified against a SHA-256 checksum before anything is
+staged, over a plain, unauthenticated HTTPS GET with nothing about your
+machine attached beyond what any HTTP client sends.
+
 ### Reporting a problem
 
 Beta testers are what this stage is for.
@@ -598,6 +612,21 @@ regressione. Su 24H2 e successivi servono **entrambi** i valori. Si annulla con
 
 Riferimenti: [thread sul forum OBS](https://obsproject.com/forum/threads/obs-ui-turns-black-only-the-preview-and-program-showing.195339/)
 · [microsoft/Windows-Dev-Performance#136](https://github.com/microsoft/Windows-Dev-Performance/issues/136).
+
+### Privacy
+
+Nessuna telemetria, nessuna analytics, niente che venga comunicato a
+qualcuno sulle tue registrazioni, i nomi dei progetti o come usi il
+pannello. L'unico traffico di rete che questo plugin genera va verso
+`api.github.com`, e solo quando lo chiedi tu — controllare gli
+aggiornamenti (⚙ ▸ Impostazioni ▸ Aggiornamenti ▸ Controlla) o scaricare
+Branch Output quando il pannello si offre di installarlo. Nessuno dei due
+parte all'avvio, in background o su un timer: sapere se Branch Output c'è è
+un controllo locale, senza rete dentro; la pagina degli aggiornamenti resta
+ferma finché non si preme Controlla. Ogni download a cui questi due portano
+viene verificato con lo SHA-256 prima di essere messo in staging, su una
+richiesta HTTPS semplice e non autenticata, senza nulla della tua macchina
+allegato oltre a quello che manda qualunque client HTTP.
 
 ### Segnalare un problema
 
