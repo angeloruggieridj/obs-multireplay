@@ -1,5 +1,5 @@
 ---
-name: Bug report
+name: Bug report (English)
 about: Something went wrong while recording, marking or replaying
 title: ""
 labels: bug

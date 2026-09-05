@@ -16,6 +16,13 @@
 
 <img src="assets/screenshot-dock.png" alt="The MultiReplay dock inside OBS Studio" width="100%">
 
+The panel adapts to the room it is given — three arrangements, same code and
+the same controls underneath (see `tools/dock-mockup`):
+
+| Wide (docked full-width / floating) | Short (docked under OBS's preview) | Tall (docked to a side) |
+| :---: | :---: | :---: |
+| <img src="assets/screenshot-wide.png" alt="Wide arrangement: cameras above, event list below, one control row" width="100%"> | <img src="assets/screenshot-short.png" alt="Short arrangement: controls stacked to the left, cameras and event list to the right" width="100%"> | <img src="assets/screenshot-tall.png" alt="Tall arrangement: everything stacked in a single narrow column" width="100%"> |
+
 </div>
 
 > [!WARNING]

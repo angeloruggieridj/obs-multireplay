@@ -1,0 +1,3 @@
+# Solo-maintainer project: everything routes to one person, so this file's
+# only job is making that explicit rather than leaving it implicit.
+* @angeloruggieridj
