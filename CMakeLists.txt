@@ -127,6 +127,8 @@ target_sources(
     src/update-asset.hpp
     src/update-installer.hpp
     src/sha256.hpp
+    # the download size cap acts on bytes written, not a declared Content-Length
+    src/size-guard.hpp
     # v1.3: which packets to decode, in which order, to play a range backwards
     src/reverse-plan.hpp
     # slow motion WITH SOUND: a time stretch that leaves the pitch alone
@@ -158,6 +160,11 @@ target_sources(
     src/qt-display.hpp
     src/multireplay-dock.cpp
     src/multireplay-dock.hpp
+    # which bay a numbered hotkey means, and a localized headline for a known
+    # engine rejection
+    src/angle-channels.hpp
+    src/error-locale.hpp
+    src/dock-window.cpp
     src/dock-layout.cpp
     src/dock-layout.hpp
     src/dock-style.hpp
