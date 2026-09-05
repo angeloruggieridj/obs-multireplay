@@ -683,6 +683,32 @@ void EventStore::load()
 	if (!root)
 		return;
 
+	// §9.10 — a lightweight rotation, done here because THIS is the one
+	// moment this file is known to still parse: obs_data_save_json_safe
+	// protects a write from landing half-finished, but not from a whole
+	// file written correctly by a format this build no longer reads (or
+	// from a byte flipped by the disk after the fact) — and load() above
+	// already just returned nothing for either, silently. Two generations
+	// is not a history, it is a way back from the ONE most common shape of
+	// that failure: the project this opened yesterday, kept, in case
+	// whatever got written today does not survive being read tomorrow.
+	{
+		std::error_code ec;
+		const std::string gen2 = joinUtf8(folder_, "events.json.2");
+		const std::string gen1 = joinUtf8(folder_, "events.json.1");
+		if (std::filesystem::exists(utf8ToPath(gen1), ec))
+			std::filesystem::rename(utf8ToPath(gen1),
+						 utf8ToPath(gen2), ec);
+		ec.clear();
+		std::filesystem::copy_file(
+			utf8ToPath(path), utf8ToPath(gen1),
+			std::filesystem::copy_options::overwrite_existing, ec);
+		if (ec)
+			obs_log(LOG_WARNING,
+				"[events] could not rotate events.json backup: %s",
+				ec.message().c_str());
+	}
+
 	nextId_ = (int)obs_data_get_int(root, "nextId");
 	if (nextId_ < 1)
 		nextId_ = 1;

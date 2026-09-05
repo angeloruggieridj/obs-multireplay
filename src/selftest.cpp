@@ -4276,6 +4276,15 @@ void runReopenPass(const std::string &outPath)
 	obs_log(LOG_INFO, "[selftest] REOPEN pass — project folder %s",
 		folder.c_str());
 
+	// §9.10 — the openProject() above just ran EventStore::load() on a
+	// real events.json written by the take pass (it marked several
+	// events), so the rotation load() does on a file that parses should
+	// have left a snapshot of it behind by now.
+	std::error_code eventsBackupEc;
+	const bool eventsBackupCreated = std::filesystem::exists(
+		std::filesystem::path(folder) / "events.json.1",
+		eventsBackupEc);
+
 	MultiReplayDock *dock = nullptr;
 	runOnUi([&]() {
 		if (QMainWindow *mw =
@@ -4976,7 +4985,7 @@ void runReopenPass(const std::string &outPath)
 			  shortReachable && shortPacksLines && keysCentred &&
 			  tallCollapsesToMore && playKeyIsTall &&
 			  panelPaintsItself && panelMarksAreDrawn &&
-			  monitorsGiveRoom;
+			  monitorsGiveRoom && eventsBackupCreated;
 
 	// --- Put everything back ----------------------------------------------
 	// The operator's project first (so nothing is pointing into the test one),
@@ -5009,6 +5018,8 @@ void runReopenPass(const std::string &outPath)
 	obs_data_set_bool(checks, "reopen_live_edge_is_dead", liveEdgeDead);
 	obs_data_set_bool(checks, "reopen_timeline_from_disk", sameBoot.ok);
 	obs_data_set_bool(checks, "reopen_survives_a_reboot", rebooted.ok);
+	obs_data_set_bool(checks, "events_json_backup_rotated",
+			  eventsBackupCreated);
 	// Four booleans, not one: "the full-screen key is broken" is four
 	// different faults with four different fixes, and a single flag would
 	// make the log the only place that says which.
