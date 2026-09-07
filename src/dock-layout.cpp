@@ -518,9 +518,11 @@ KeyBlock::KeyBlock(const QString &caption, QWidget *parent)
 	auto *v = new QVBoxLayout(this);
 	// A boxed sub-section (spec §4: "sotto-sezioni riquadrate, etichetta che
 	// interrompe il bordo in alto a sinistra"). The border is drawn by
-	// #mrBlock in the sheet; these margins keep the keys off it, with 8 px
-	// at the top for the legend to sit on the border line.
-	v->setContentsMargins(6, 8, 6, 5);
+	// #mrBlock in the sheet; these margins keep the keys off it, with room
+	// at the top for the legend to sit on the border line — but only when
+	// there IS a legend. The header blocks pass an empty caption and want
+	// the whole height for their key.
+	v->setContentsMargins(6, caption_.isEmpty() ? 2 : 8, 6, 4);
 	v->setSpacing(2);
 
 	// The caption sits ABOVE the keys. It names the group instead of
@@ -1525,14 +1527,20 @@ void TwoPanelStrip::setHeaders(QWidget *marcaHeader, QWidget *reviewHeader)
 {
 	marcaHeader_ = marcaHeader;
 	reviewHeader_ = reviewHeader;
+	// One fixed height for both, so the line under the header is at the same
+	// y on MARCA and REVIEW even though only MARCA carries a key (REC) up
+	// there (spec §4).
+	const int kHeaderH = 32;
 	if (marcaHeader_) {
 		marcaHeader_->setParent(marca_);
 		marcaHeader_->setObjectName(QStringLiteral("mrPanelHeader"));
+		marcaHeader_->setFixedHeight(kHeaderH);
 		marcaCol_->insertWidget(0, marcaHeader_);
 	}
 	if (reviewHeader_) {
 		reviewHeader_->setParent(review_);
 		reviewHeader_->setObjectName(QStringLiteral("mrPanelHeader"));
+		reviewHeader_->setFixedHeight(kHeaderH);
 		reviewCol_->insertWidget(0, reviewHeader_);
 	}
 }

@@ -1383,18 +1383,19 @@ KeyBlock *MultiReplayDock::buildRecBlock()
 	clockLbl_->setFixedWidth(kClockW);
 	statusLbl_->setFixedWidth(kClockW);
 
-	// MARCA — the panel names itself in its header row (spec §4), beside the
-	// record dot and the clock.
+	// MARCA — the panel names itself in its header row (spec §4), beside a
+	// COMPACT record key and the clock + room-left, all on ONE line so the
+	// header is the same fixed height as REVIEW's.
 	auto *name = new QLabel(QStringLiteral("MARCA"), this);
 	name->setObjectName(QStringLiteral("mrPanelTitle"));
 	name->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+	recBtn_->setFixedHeight(kKeyH);
+	statusLbl_->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
 
-	blk->setShapes({{Cell(name, 1, false), Cell(recBtn_, 1, true, 2),
-			 Cell(clockLbl_, 1, false)},
-			{Cell(nullptr, 2), Cell(statusLbl_, 1, false)}},
-		       {{Cell(name, 1, false), Cell(recBtn_, 1, true, 2),
-			 Cell(clockLbl_, 1, false)},
-			{Cell(nullptr, 2), Cell(statusLbl_, 1, false)}});
+	blk->setShapes({{Cell(name, 1, false), Cell(recBtn_, 1, false),
+			 Cell(clockLbl_, 1, false), Cell(statusLbl_, 1)}},
+		       {{Cell(name, 1, false), Cell(recBtn_, 1, false),
+			 Cell(clockLbl_, 1, false), Cell(statusLbl_, 1)}});
 	return blk;
 }
 
