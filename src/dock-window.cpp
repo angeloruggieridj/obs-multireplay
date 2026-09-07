@@ -324,18 +324,42 @@ void MultiReplayDock::refreshFullScreenKey()
 	const bool floating = host && host->isFloating();
 	if (floating)
 		equipFloatingWindow(host);
-	const int want = floating ? 1 : 0;
-	if (fullScreenKeyShown_ != want) {
-		fullScreenKeyShown_ = want;
-		fullScreenBtn_->setVisible(floating);
+
+	// THE LAYOUT KEY IS ALWAYS ON SCREEN now — the four shape presets are
+	// useful docked or floating. What follows the window is the state INSIDE
+	// its menu: "Schermo intero" is enabled only while floating (a docked
+	// panel has no window of ours to grow) and lit while the panel owns the
+	// screen. Read the lit state off the WINDOW, not off the last click: OBS
+	// can re-dock the panel under us, and a menu still lit after that lies
+	// about where you are.
+	if (fullScreenKeyShown_ != 1) {
+		fullScreenKeyShown_ = 1;
+		fullScreenBtn_->setVisible(true);
 	}
-	// Lit means "this panel owns the screen". Read off the WINDOW, not off the
-	// last click: OBS can put the dock back into the main window under us, and
-	// a key still lit after that is a key that lies about where you are.
+	// The forced shape may have been changed from Settings ▸ Interfaccia on
+	// this same slow beat — pick it up so the menu's tick agrees.
+	layoutPreset_ = std::clamp(
+		ReplayCore::instance().getConfig().layoutPreset, 0, 3);
 	const bool full = floating && host->isFullScreen();
-	if (fullScreenBtn_->isChecked() != full) {
-		QSignalBlocker block(fullScreenBtn_);
-		fullScreenBtn_->setChecked(full);
+	if (actFullScreen_) {
+		actFullScreen_->setEnabled(floating);
+		if (actFullScreen_->isChecked() != full) {
+			QSignalBlocker block(actFullScreen_);
+			actFullScreen_->setChecked(full);
+		}
+	}
+	if (actLayoutAuto_) {
+		QAction *want = layoutPreset_ == 1   ? actLayoutWide_
+				: layoutPreset_ == 2 ? actLayoutShort_
+				: layoutPreset_ == 3 ? actLayoutTall_
+						     : actLayoutAuto_;
+		if (want && !want->isChecked()) {
+			QSignalBlocker b1(actLayoutAuto_);
+			QSignalBlocker b2(actLayoutWide_);
+			QSignalBlocker b3(actLayoutShort_);
+			QSignalBlocker b4(actLayoutTall_);
+			want->setChecked(true);
+		}
 	}
 
 	// §6.5 — GALLERY: either way the panel ends up owning the whole screen.

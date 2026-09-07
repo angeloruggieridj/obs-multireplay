@@ -844,6 +844,18 @@ Config ReplayCore::getConfig() const
 	return config_;
 }
 
+void ReplayCore::setLayoutPreset(int preset)
+{
+	const int p = std::clamp(preset, 0, 3);
+	{
+		std::lock_guard<std::mutex> lock(mutex_);
+		if (config_.layoutPreset == p)
+			return;
+		config_.layoutPreset = p;
+	}
+	saveConfig();
+}
+
 void ReplayCore::setConfig(const Config &cfg)
 {
 	{
@@ -1410,6 +1422,11 @@ void ReplayCore::loadConfigFile(const char *path, bool projectScoped)
 	// it would mean opening somebody else's project re-themed your panel.
 	if (!projectScoped && obs_data_has_user_value(data, "uiTheme"))
 		config_.uiTheme = (int)obs_data_get_int(data, "uiTheme");
+	// GLOBAL, like uiTheme: which arrangement the operator pins the panel to
+	// is about his rig, not the match.
+	if (!projectScoped && obs_data_has_user_value(data, "layoutPreset"))
+		config_.layoutPreset =
+			std::clamp((int)obs_data_get_int(data, "layoutPreset"), 0, 3);
 	if (!projectScoped && obs_data_has_user_value(data, "tableDensity"))
 		config_.tableDensity =
 			(int)obs_data_get_int(data, "tableDensity");
@@ -1565,6 +1582,7 @@ void ReplayCore::saveConfigFile(const char *path) const
 	obs_data_set_int(data, "eventIdDigits", config_.eventIdDigits);
 	obs_data_set_bool(data, "showMultiview", config_.showMultiview);
 	obs_data_set_int(data, "uiTheme", config_.uiTheme);
+	obs_data_set_int(data, "layoutPreset", config_.layoutPreset);
 	obs_data_set_int(data, "tableDensity", config_.tableDensity);
 	obs_data_set_int(data, "eventListCount", config_.eventListCount);
 	obs_data_set_bool(data, "verboseLog", config_.verboseLog);

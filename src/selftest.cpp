@@ -4486,6 +4486,12 @@ void runReopenPass(const std::string &outPath)
 	bool fsRestoresTheWindow = false;
 	bool fsWindowOffersMaximise = false;
 	bool fsDoubleClickIsInert = false;
+	// THE LAYOUT MENU FORCES A SHAPE. Automatic follows the size; picking
+	// "Tall" from the menu makes the panel wear Tall's arrangement even in a
+	// window wide enough for Wide. Driven through the menu ACTION, the same
+	// way the transport keys are driven through their buttons.
+	bool layoutMenuForcesShape = false;
+	QString layoutForcedModeName;
 	// §6.5 — GALLERY SCALES A SECTION KEY WHEN FULLSCREEN. Every other
 	// fullscreen check here is about the WINDOW; this is the one that
 	// asks whether the panel actually noticed and grew its own keys for
@@ -4493,7 +4499,11 @@ void runReopenPass(const std::string &outPath)
 	bool galleryGrowsInFullscreen = false;
 	{
 		QDockWidget *host = nullptr;
-		QPushButton *fsKey = nullptr;
+		// The Layout key (mrKey "layout") is a QToolButton now, and full
+		// screen is one item in its menu. The button opens the menu; the
+		// ACTION does the toggle, so the checks drive it, not the button.
+		QAbstractButton *fsKey = nullptr;
+		QAction *fsAct = nullptr;
 		bool wasFloating = false;
 		bool wasVisible = false;
 		QRect windowed;
@@ -4511,12 +4521,16 @@ void runReopenPass(const std::string &outPath)
 					host = d;
 					break;
 				}
-			// By glyph, the way the transport keys are found: exactly
-			// one button in this dock carries it.
-			for (QPushButton *b : dock->findChildren<QPushButton *>())
+			// By mrKey, like every other key on this panel: exactly
+			// one button carries "layout", and its menu holds the
+			// full-screen action under objectName mrActFullScreen.
+			for (QAbstractButton *b :
+			     dock->findChildren<QAbstractButton *>())
 				if (b->property(kKeyProperty).toString() ==
-				    QStringLiteral("fullscreen"))
+				    QStringLiteral("layout"))
 					fsKey = b;
+			fsAct = dock->findChild<QAction *>(
+				QStringLiteral("mrActFullScreen"));
 			if (!host)
 				return;
 			wasFloating = host->isFloating();
@@ -4531,15 +4545,20 @@ void runReopenPass(const std::string &outPath)
 			if (wasFloating)
 				host->setFloating(false);
 		});
-		if (host && fsKey) {
-			// The key follows the floating state on the dock's slow
+		if (host && fsKey && fsAct) {
+			// The menu follows the floating state on the dock's slow
 			// beat (~264 ms), so every wait here is that beat plus
 			// room for the window manager.
 			std::this_thread::sleep_for(
 				std::chrono::milliseconds(900));
 			runOnUi([&]() {
+				// The LAYOUT key is always on screen now; what is
+				// gated on the dock being docked is the full-screen
+				// ACTION — a docked panel has no window of ours to
+				// grow, so the item is disabled.
 				fsKeyHiddenWhenDocked =
-					!fsKey->isVisibleTo(fsKey->parentWidget());
+					fsKey->isVisibleTo(fsKey->parentWidget()) &&
+					!fsAct->isEnabled();
 				host->setFloating(true);
 			});
 			std::this_thread::sleep_for(
@@ -4558,11 +4577,12 @@ void runReopenPass(const std::string &outPath)
 			int recHBefore = -1, recHAfter = -1;
 			runOnUi([&]() {
 				fsKeyShownWhenFloating =
-					fsKey->isVisibleTo(fsKey->parentWidget());
+					fsKey->isVisibleTo(fsKey->parentWidget()) &&
+					fsAct->isEnabled();
 				windowed = host->geometry();
 				if (QAbstractButton *rec = findRecButton())
 					recHBefore = rec->height();
-				fsKey->click();
+				fsAct->trigger();
 			});
 			std::this_thread::sleep_for(
 				std::chrono::milliseconds(700));
@@ -4580,7 +4600,7 @@ void runReopenPass(const std::string &outPath)
 					recHAfter = rec->height();
 				galleryGrowsInFullscreen =
 					recHBefore > 0 && recHAfter > recHBefore;
-				fsKey->click();
+				fsAct->trigger();
 			});
 			obs_log(galleryGrowsInFullscreen ? LOG_INFO : LOG_ERROR,
 				"[selftest] reopen: gallery scale in fullscreen — "
@@ -4672,6 +4692,43 @@ void runReopenPass(const std::string &outPath)
 			std::this_thread::sleep_for(
 				std::chrono::milliseconds(400));
 		}
+
+		// ── THE LAYOUT MENU FORCES A SHAPE ───────────────────────────────────
+		if (host && dock) {
+			QAction *aTall = dock->findChild<QAction *>(
+				QStringLiteral("mrActLayoutTall"));
+			QAction *aAuto = dock->findChild<QAction *>(
+				QStringLiteral("mrActLayoutAuto"));
+			if (aTall && aAuto) {
+				runOnUi([&]() {
+					host->setFloating(true);
+					// A window wide enough that automatic would
+					// pick Wide, so a forced Tall is unambiguous.
+					host->resize(1200, 760);
+				});
+				std::this_thread::sleep_for(
+					std::chrono::milliseconds(700));
+				runOnUi([&]() { aTall->trigger(); });
+				std::this_thread::sleep_for(
+					std::chrono::milliseconds(700));
+				runOnUi([&]() {
+					layoutForcedModeName = QString::fromLatin1(
+						panelModeName(dock->panelMode()));
+					layoutMenuForcesShape =
+						dock->panelMode() == PanelMode::Tall;
+					// Back to automatic, and let it settle.
+					aAuto->trigger();
+				});
+				std::this_thread::sleep_for(
+					std::chrono::milliseconds(700));
+			}
+			obs_log(layoutMenuForcesShape ? LOG_INFO : LOG_ERROR,
+				"[selftest] reopen: Layout menu forced Tall on a "
+				"1200x760 window -> mode '%s': %s",
+				layoutForcedModeName.toUtf8().constData(),
+				layoutMenuForcesShape ? "forced" : "DID NOT FORCE");
+		}
+
 		// ── THE CAMERAS ARE ON SCREEN IN BOTH ARRANGEMENTS ────────────────────
 		// A tile has NO SIZE OF ITS OWN — AspectBox declares neither a floor nor
 		// a hint, deliberately, because a floor there becomes the whole panel's —
@@ -5037,6 +5094,8 @@ void runReopenPass(const std::string &outPath)
 			  fsWindowOffersMaximise);
 	obs_data_set_bool(checks, "title_double_click_leaves_the_panel_alone",
 			  fsDoubleClickIsInert);
+	obs_data_set_bool(checks, "layout_menu_forces_the_shape",
+			  layoutMenuForcesShape);
 	obs_data_set_bool(checks, "camera_tiles_have_width_when_wide", tilesWideOk);
 	obs_data_set_bool(checks, "camera_tiles_have_width_in_a_column", tilesTallOk);
 	obs_data_set_bool(checks, "short_arrangement_is_reachable", shortReachable);

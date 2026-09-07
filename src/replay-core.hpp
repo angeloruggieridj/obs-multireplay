@@ -207,6 +207,13 @@ struct Config {
 	// on-air band and the tally keep their own hues at every setting, because
 	// red means on air and that is not a preference.
 	int uiTheme = 0;
+	// WHICH ARRANGEMENT THE PANEL WEARS. 0 = automatic (follow the size, the
+	// default), 1 = force Wide/Normale, 2 = force Short, 3 = force Tall. Set
+	// from the toolbar's Layout menu. GLOBAL, like uiTheme: whether an
+	// operator pins the panel to a shape is a fact about his rig, not the
+	// match. A forced shape still respects the panel's own minimums; on a
+	// floating window the menu also sets the geometry.
+	int layoutPreset = 0;
 	// HOW TALL A ROW OF THE EVENT LIST IS. 0 = comfortable (the historic 30 px),
 	// 1 = compact, 2 = dense. It is not just the row: an angle cell holds combo
 	// boxes, and the row is sized from the cell it actually built — so the
@@ -306,6 +313,12 @@ public:
 	// --- Config ---
 	Config getConfig() const;
 	void setConfig(const Config &cfg);
+	// A TARGETED WRITE for one global field the toolbar changes live. Unlike
+	// setConfig() it does NOT re-point the SegmentIndex or rebuild the Branch
+	// Output filters — a key pressed mid-match must never reach that path —
+	// it just clamps, stores and persists (config.json). 0..3, see
+	// Config.layoutPreset.
+	void setLayoutPreset(int preset);
 
 	// --- Project management ---
 	// Returns sessionFolder/currentProjectName, or sessionFolder if no project.

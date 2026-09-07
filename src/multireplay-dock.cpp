@@ -1239,8 +1239,7 @@ MultiReplayDock::MultiReplayDock(QWidget *parent) : QWidget(parent)
 	// from here — including the first real resize OBS gives the dock, which is
 	// usually not Wide.
 	applyTableDensity(ReplayCore::instance().getConfig().tableDensity);
-	applyPanelMode(panelModeFor(size(), panelMode_, wideFloorH_),
-		       /*force*/ true);
+	applyPanelMode(effectivePanelMode(size()), /*force*/ true);
 
 	// ...AND THE COLOURS AGAIN, NOW THAT THE TABLE EXISTS. The first pass ran
 	// from the top of this constructor, before any child, so the size it gave
@@ -2056,10 +2055,49 @@ void MultiReplayDock::applyPreviewSplit(int want)
 //
 // One pass late costs nothing. The floor moves only with the WIDTH, and the
 // hysteresis in panelModeFor covers the tick it takes to catch up.
+// THE MODE THIS SIZE SHOULD WEAR. A forced Layout-menu preset wins; otherwise
+// it is panelModeFor's own answer. A forced shape still goes through
+// applyPanelMode, so it still respects the panel's minimums — "Tall" on a
+// window too wide for it just wears Tall's arrangement in the room it has.
+PanelMode MultiReplayDock::effectivePanelMode(const QSize &s) const
+{
+	switch (layoutPreset_) {
+	case 1:
+		return PanelMode::Wide;
+	case 2:
+		return PanelMode::Short;
+	case 3:
+		return PanelMode::Tall;
+	default:
+		return panelModeFor(s, panelMode_, wideFloorH_);
+	}
+}
+
+void MultiReplayDock::setLayoutPreset(int preset)
+{
+	layoutPreset_ = std::clamp(preset, 0, 3);
+	ReplayCore::instance().setLayoutPreset(layoutPreset_);
+
+	// On a FLOATING window a preset sets the geometry too — "Tall" is one
+	// click, not a drag against four screen edges. Docked, only the shape is
+	// ours to force: OBS owns the dock's size.
+	if (layoutPreset_ != 0) {
+		QDockWidget *host = hostDock();
+		if (host && host->isFloating()) {
+			static const QSize kPresetSize[4] = {
+				QSize(), QSize(1200, 760), QSize(1000, 360),
+				QSize(340, 900)};
+			host->resize(kPresetSize[layoutPreset_]);
+		}
+	}
+	applyPanelMode(effectivePanelMode(size()), /*force*/ true);
+	refreshFullScreenKey();
+}
+
 void MultiReplayDock::resizeEvent(QResizeEvent *event)
 {
 	QWidget::resizeEvent(event);
-	applyPanelMode(panelModeFor(size(), panelMode_, wideFloorH_));
+	applyPanelMode(effectivePanelMode(size()));
 	QTimer::singleShot(0, this, [this]() {
 		if (panelMode_ == PanelMode::Wide)
 			wideFloorH_ = minimumSizeHint().height();

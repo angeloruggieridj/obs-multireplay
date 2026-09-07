@@ -90,6 +90,7 @@ into their own translation units keeps each concern reviewable on its own.
 #include <QInputDialog>
 #include <QMenu>
 #include <QAction>
+#include <QActionGroup>
 #include <QClipboard>
 #include <QApplication>
 
@@ -225,25 +226,59 @@ QWidget *MultiReplayDock::buildToolbar()
 	connect(monitorsBtn_, &QPushButton::toggled, this,
 		[this](bool on) { applyMonitorsVisible(on); });
 
-	// ⛶ — the panel to the whole screen. ONLY WHEN IT FLOATS, and hidden (not
-	// disabled) otherwise: see fullScreenBtn_ in the header for why the key is
-	// absent rather than dead, and why this makes a window state change instead
-	// of a new window. refreshFullScreenKey() decides whether it is on screen;
-	// it starts hidden because a dock is docked until somebody pulls it out.
-	fullScreenBtn_ = iconBtn(Icon::FullScreen, "fullscreen",
-				 obs_module_text("Dock.FullScreenHint"), box,
-				 "mrToggle");
-	fullScreenBtn_->setCheckable(true);
+	// THE LAYOUT MENU. It was the ⛶ full-screen toggle; the redesign folded
+	// the arrangement choice into it — one control instead of two. A
+	// QToolButton with a menu (Automatico · Normale · Short · Tall ·
+	// separator · Schermo intero), popped on click like the gear (no
+	// setMenu — Qt draws its own arrow over our mark and no rule reaches it).
+	//
+	// ALWAYS VISIBLE now, docked or floating: the four shape presets are
+	// useful either way. Only the "Schermo intero" action is disabled while
+	// docked — a docked panel has no window of ours to grow — and lit while
+	// the panel owns the screen. refreshFullScreenKey() keeps all five in
+	// step on poll()'s slow beat.
+	fullScreenBtn_ = new QToolButton(box);
+	fullScreenBtn_->setObjectName("mrToggle");
+	setKeyIcon(fullScreenBtn_, Icon::FullScreen, tintsFor(sc()), 14);
+	setKeyId(fullScreenBtn_, QStringLiteral("layout"));
 	fullScreenBtn_->setCursor(Qt::PointingHandCursor);
-	fullScreenBtn_->setToolTip(obs_module_text("Dock.FullScreenHint"));
-	fullScreenBtn_->hide();
-	connect(fullScreenBtn_, &QPushButton::toggled, this, [this](bool on) {
-		setPanelFullScreen(on);
-		// The window may have refused (it was re-docked between the paint
-		// and the click), so the key is told what happened rather than
-		// trusted to have made it happen.
-		refreshFullScreenKey();
-	});
+	fullScreenBtn_->setToolTip(obs_module_text("Dock.LayoutHint"));
+	fullScreenBtn_->setFixedHeight(kKeyH);
+	{
+		auto *menu = new QMenu(fullScreenBtn_);
+		auto *shapes = new QActionGroup(menu);
+		shapes->setExclusive(true);
+		const auto addShape = [&](const char *key, int preset,
+					  const char *objName) {
+			QAction *a = menu->addAction(obs_module_text(key));
+			a->setObjectName(QString::fromLatin1(objName));
+			a->setCheckable(true);
+			shapes->addAction(a);
+			connect(a, &QAction::triggered, this,
+				[this, preset]() { setLayoutPreset(preset); });
+			return a;
+		};
+		actLayoutAuto_ = addShape("Dock.LayoutAuto", 0, "mrActLayoutAuto");
+		actLayoutWide_ = addShape("Dock.LayoutWide", 1, "mrActLayoutWide");
+		actLayoutShort_ =
+			addShape("Dock.LayoutShort", 2, "mrActLayoutShort");
+		actLayoutTall_ = addShape("Dock.LayoutTall", 3, "mrActLayoutTall");
+		menu->addSeparator();
+		actFullScreen_ = menu->addAction(obs_module_text("Dock.FullScreen"));
+		actFullScreen_->setObjectName("mrActFullScreen");
+		actFullScreen_->setCheckable(true);
+		connect(actFullScreen_, &QAction::triggered, this,
+			[this](bool on) {
+				setPanelFullScreen(on);
+				// The window may have refused (re-docked between
+				// the paint and the click), so the action is told
+				// what happened rather than trusted to have made
+				// it happen.
+				refreshFullScreenKey();
+			});
+		popupOnClick(fullScreenBtn_, menu);
+	}
+	layoutPreset_ = ReplayCore::instance().getConfig().layoutPreset;
 	// THE GEAR SITS WITH THE OTHER PANEL-WIDE KEYS. What it opens is the
 	// configuration of the whole panel — the project, the cameras, the tags,
 	// the theme — and inside the record section it read as part of arming a

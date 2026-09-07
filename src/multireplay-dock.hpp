@@ -53,6 +53,7 @@ class PlaybackCoordinator;
 
 class QEvent;
 class QKeyEvent;
+class QAction;
 class QPushButton;
 class QToolButton;
 class QSlider;
@@ -731,7 +732,25 @@ private:
 	// destroys the native window of every OBSQTDisplay underneath (the bays and
 	// every multiview tile) and strands their obs_display; a window-state change
 	// leaves every child handle exactly where it was.
-	QPushButton *fullScreenBtn_ = nullptr;
+	// The Layout menu. It was the ⛶ full-screen toggle; the redesign folded
+	// the arrangement choice into it, so it is now a QToolButton whose menu
+	// carries Automatico / Normale / Short / Tall / Schermo intero. ALWAYS
+	// VISIBLE, docked or floating (the shape presets are useful either way);
+	// only the "Schermo intero" action is disabled while docked, because a
+	// docked panel has no window of ours to grow.
+	QToolButton *fullScreenBtn_ = nullptr;
+	QAction *actLayoutAuto_ = nullptr;
+	QAction *actLayoutWide_ = nullptr;
+	QAction *actLayoutShort_ = nullptr;
+	QAction *actLayoutTall_ = nullptr;
+	QAction *actFullScreen_ = nullptr;
+	// Cached from Config.layoutPreset so effectivePanelMode() costs no lock in
+	// the resize path. Written from poll()'s slow beat and from the menu's own
+	// handlers, the same way setVerboseLogging() pushes into its atomic.
+	int layoutPreset_ = 0;
+	// The mode the panel should wear at this size: the forced preset if one is
+	// set, otherwise panelModeFor().
+	PanelMode effectivePanelMode(const QSize &s) const;
 	// Where the floating window was before it took the screen. Qt restores a
 	// geometry of its own on showNormal(), but a QDockWidget that has been
 	// floated, docked and floated again has had that memory rewritten under it
@@ -756,6 +775,10 @@ private:
 	// that wraps us is not ours: OBS creates it, hides it, and can hand the
 	// layout back a different one.
 	void refreshFullScreenKey();
+	// Apply a Layout-menu choice: cache it, persist it (ReplayCore, without
+	// the setConfig() side effects), re-evaluate the arrangement now, and —
+	// on a floating window — size it to suit the shape.
+	void setLayoutPreset(int preset);
 	// Maximised is not "a window the size of a maximised one": the moment
 	// anything moves they behave differently, so leaving full screen has to put
 	// back the state, not the rectangle.
