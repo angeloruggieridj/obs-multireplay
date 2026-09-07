@@ -651,58 +651,99 @@ void MultiReplayDock::buildSpeedDial()
 }
 
 // ---------------------------------------------------------------------------
-// Transport — the reference controller's centre group: ⏸ ◀ ↺ [Play Events ▾] NOW ⏮ ⏭ Loop ♫
+// REVIEW panel (spec §4) — header · playback · modes · transport · trim
 // ---------------------------------------------------------------------------
+// REVIEW panel (spec §4) — playback (header + PLAY/NOW) · controls · speed
+// ---------------------------------------------------------------------------
+//
+// Every widget and every connection here was in the old one-block
+// buildTransport(); this regroups them into the reference panel's rows and
+// drops the ▾ play-options menu (spec §8: its three entries all have
+// dedicated keys, and its "Angolo" fallback moved to the CAM key). Kept to
+// TWO extra blocks rather than one-per-group: a KeyBlock per group stacked
+// in a column added ~300 px to the panel's floor, past what a floating
+// window can restore to.
 
-KeyBlock *MultiReplayDock::buildTransport()
+KeyBlock *MultiReplayDock::buildPlayback()
 {
-	// ONE ROW, in the reference panel's order:
-	//
-	//   play  reverse  last  [Riproduci eventi] menu  step-  step+  NOW
-	//   Loop  music  In output
-	//
-	// It was three rows of its own for a while, which made this section twice
-	// as tall as the ones beside it and pushed the whole strip down the panel.
-	// The reference keeps its transport on one line, and so does this.
-	auto *blk = new KeyBlock(obs_module_text("Dock.ZoneTransport"), this);
+	auto *blk = new KeyBlock(QString(), this);
 
-	// THREE ROWS, ordered by what an operator reaches for first:
-	//
-	//   Riproduci eventi ▾   NOW      ← put a replay on air / come back to live
-	//   ⏸  ◀  ↺  ⏮  ⏭                 ← drive the clip that is on air
-	//   Loop  ♫  In output            ← the modes the two rows above run under
-	//
-	// One row of eleven keys made the two that matter most — play the events,
-	// and get back to the live edge — the same size and the same weight as a
-	// frame step, so the eye had to read the whole strip to find them. Rows
-	// give them a place: the top one is where the hand goes without looking.
-	//
-	// The grid is five columns wide, and the wide keys SPAN it, so every key
-	// stands on a column and the group reads as one block rather than three
-	// rows of unrelated lengths.
+	// REVIEW header: which event ▶ is about (padded like the table's id
+	// column, kept up to date by updateChannelStrip) and IN OUTPUT — the
+	// toggle that decides whether a replay takes the Program. Seeded from
+	// Settings, never written back: setConfig() re-points the segment index
+	// and re-creates the Branch Output filters, so a key pressed mid-match
+	// must not reach it.
+	reviewEventLbl_ = new QLabel(QStringLiteral("—"), this);
+	reviewEventLbl_->setObjectName(QStringLiteral("mrReviewEvent"));
+	reviewEventLbl_->setAlignment(Qt::AlignCenter);
+	reviewEventLbl_->setFont(QFont(monoFamily()));
 
-	// ▶ U+25B6
-	// ONE MARK FOR A KEY THAT IS BOTH. This is a play at rest and a pause
-	// while a clip runs, and drawing it as one or the other made it look like
-	// two different keys depending on when you glanced at it.
-	playPauseBtn_ = iconBtn(Icon::Play, "playPause",
-				obs_module_text("Dock.PlayPause"), this, "mrPlay");
+	toOutputBtn_ = statusToggle(Icon::ToOutput,
+				    obs_module_text("Dock.ToOutput"), "toOutput",
+				    obs_module_text("Dock.ToOutput"), this);
+	toOutputBtn_->setChecked(
+		ReplayCore::instance().getConfig().toOutputOnPlay);
+	toOutputBtn_->setFixedHeight(kKeyH);
 
-	// Stop. It used to live two clicks deep in the ▾ menu, which was
-	// survivable while every replay ended by itself at its OUT. A free review
-	// does not: it runs until it is stopped, so the way to stop it has to be a
-	// key. And ▶ cannot be that key — while something plays it is a PAUSE,
-	// which holds the picture instead of giving Program back.
-	stopBtn_ = iconBtn(Icon::Stop, "stop", obs_module_text("Dock.Stop"), this);
+	// ▶ PLAY — the biggest key on the panel: the one that takes the
+	// Program, so the one the eye should land on without reading anything.
+	// A filled green rectangle two key-rows tall carrying only the play
+	// mark. Plain QPushButton, no menu (setMenu swallows click(), and a
+	// hotkey and the gate reach it that way).
+	auto *playSel = iconBtn(Icon::Play, "playEvents",
+				obs_module_text("Dock.PlaySelected"), this,
+				"mrAccent");
+	setKeyIconRole(playSel, Icon::Play, IconRole::OnSignal, tintsFor(sc()),
+		       22);
+	playSel->setMinimumWidth(64);
+	playSel->setMaximumHeight(QWIDGETSIZE_MAX);
+	connect(playSel, &QPushButton::clicked, this,
+		&MultiReplayDock::playSelected);
 
-	// The reverse-play key, and it works (v1.3). Nothing decodes backwards, so
-	// this is a GOP cache shown newest-first; see reverse-plan.hpp.
-	auto *revBtn = iconBtn(Icon::Reverse, "playReverse",
-			       obs_module_text("Dock.PlayReverse"), this);
-	connect(revBtn, &QPushButton::clicked, this,
-		[this]() { playSelectedReverse(); });
+	// NOW — a destination, not a modifier: drop the replay, go back to the
+	// live edge. Keeps the WORD (no mark for "back to now" reads), drawn
+	// big and red even at rest.
+	nowBtn_ = new QPushButton(QStringLiteral("NOW"), this);
+	nowBtn_->setObjectName("mrNow");
+	nowBtn_->setProperty("live", false);
+	nowBtn_->setCursor(Qt::PointingHandCursor);
+	nowBtn_->setToolTip(obs_module_text("Dock.JumpToNow"));
+	setKeyId(nowBtn_, QStringLiteral("now"));
+	nowBtn_->setMinimumWidth(56);
+	nowBtn_->setMaximumHeight(QWIDGETSIZE_MAX);
+	connect(nowBtn_, &QPushButton::clicked, this, [this]() {
+		// the reference controller NOW: drop the replay and watch the
+		// live edge again. The stretch armed on the bar stops being what
+		// the play keys are about.
+		pc().stopEvents();
+		ReplayCore::instance().setFollowLive(true);
+		clearFreeReview();
+	});
 
-	// "Instantly play last event".
+	// Row 0: event id · IN OUTPUT. Rows 1-2: PLAY and NOW, each two rows
+	// tall — PLAY because it is first-function, NOW the spec asks the same
+	// size. A real spacer widget on row 2 so the grid row exists for the
+	// row-span-2 cells to reach into (a bare null cell is only a hole).
+	auto *rowFill = new QWidget(this);
+	rowFill->setFixedHeight(1);
+	rowFill->setObjectName(QStringLiteral("mrRowFill"));
+	blk->setShapes({{Cell(reviewEventLbl_, 3), Cell(toOutputBtn_, 2, false)},
+			{Cell(playSel, 3, true, 2), Cell(nowBtn_, 2, true, 2)},
+			{Cell(rowFill, 5, false)}},
+		       {{Cell(reviewEventLbl_, 3), Cell(toOutputBtn_, 2, false)},
+			{Cell(playSel, 3, true, 2), Cell(nowBtn_, 2, true, 2)},
+			{Cell(rowFill, 5, false)}});
+	return blk;
+}
+
+KeyBlock *MultiReplayDock::buildReviewControls()
+{
+	auto *blk = new KeyBlock(QString(), this);
+
+	// ── MODES (row 0) ──────────────────────────────────────────────────
+	// ↺ "instantly play last event" — a distinct mark from LOOP (Icon::
+	// PlayLast, not Icon::Loop) so the two do not read as the same thing.
 	auto *lastBtn = iconBtn(Icon::PlayLast, "playLast",
 				obs_module_text("Dock.PlayLast"), this);
 	connect(lastBtn, &QPushButton::clicked, this, [this]() {
@@ -713,86 +754,55 @@ KeyBlock *MultiReplayDock::buildTransport()
 			showNotice(localizedError(err));
 	});
 
-	// ── PLAY: the biggest key on the panel ───────────────────────────────
-	//
-	// It is the one that takes the Program, so it is the one the eye should
-	// land on without reading anything. It was a text button the same weight
-	// as a frame step, in a row of eight, and the operator had to read the
-	// strip to find it. Now it is a filled green rectangle two key-rows tall
-	// carrying nothing but the play mark — and there are exactly two filled
-	// keys on this panel, this and REC once it is armed.
-	//
-	// It must stay a plain QPushButton with no menu on it: QPushButton::setMenu
-	// swallows click(), and both a hotkey and the automated gate reach this
-	// key that way. The options live on the ▾ beside it, which is where the
-	// reference controller keeps them too.
-	auto *playSel = iconBtn(Icon::Play, "playEvents",
-				obs_module_text("Dock.PlaySelected"), this,
-				"mrAccent");
-	// WHITE, because the key is a filled green rectangle. #mrAccent already
-	// says `color: #ffffff` for the label; the mark is the rest of it, and a
-	// style sheet cannot reach a pixmap — so on a light panel this was a dark
-	// grey ▶ sitting on the one key that takes the Program.
-	setKeyIconRole(playSel, Icon::Play, IconRole::OnSignal, tintsFor(sc()), 22);
-	playSel->setMinimumWidth(64);
-	connect(playSel, &QPushButton::clicked, this,
-		&MultiReplayDock::playSelected);
+	loopBtn_ = statusToggle(Icon::Loop, obs_module_text("Dock.Loop"), "loop",
+				obs_module_text("Dock.Loop"), this);
+	connect(loopBtn_, &QPushButton::toggled, this,
+		[this](bool on) { pc().setLoop(on); });
 
-	auto *more = new QToolButton(this);
-	more->setObjectName("mrGear");
-	// setKeyIcon, NOT setIcon: a mark handed straight to the widget carries no
-	// record of which mark it is, so restyleIcons cannot find it and the three
-	// menu keys kept the ink of the theme they were BUILT in for the rest of
-	// the session. Invisible until the operator changes theme, which is the one
-	// moment it is guaranteed to be looked at.
-	setKeyIcon(more, Icon::Menu, tintsFor(sc()), 14);
-	more->setCursor(Qt::PointingHandCursor);
-	more->setToolTip(obs_module_text("Dock.PlayOptions"));
-	setKeyId(more, QStringLiteral("playOptions"));
+	// MUTE — the replay input(s) sit muted in the OBS mixer. It LATCHES: a
+	// new replay does not clear it, NOW/Live do not, only the operator does.
+	muteBtn_ = statusToggle(Icon::Mute, obs_module_text("Dock.Mute"),
+				"muteAudio", obs_module_text("Dock.MuteHint"),
+				this);
+	muteBtn_->setChecked(
+		ReplayCore::instance().getConfig().muteReplayAudio);
+	connect(muteBtn_, &QPushButton::toggled, this, [this](bool on) {
+		for (Which w : targetChannels())
+			ReplayChannel::instance(w).setMuted(on);
+	});
+
+	musicBtn_ = statusToggle(Icon::Music, obs_module_text("Dock.Music"),
+				 "music", obs_module_text("Dock.MusicHint"),
+				 this);
+	connect(musicBtn_, &QPushButton::toggled, this, [this](bool on) {
+		for (Which w : targetChannels())
+			PlaybackCoordinator::instance(w).setMusicEnabled(on);
+		// SAY IT NOW, not after the replay: the two ways music produces
+		// nothing are both invisible while the key is pressed.
+		if (!on)
+			return;
+		const std::string why = pc().musicProblem();
+		if (!why.empty())
+			showNotice(localizedError(why));
+	});
+
+	// CAM — pick an angle with the mouse when there are no multiview tiles
+	// to click (Monitors off). Carries the same lazy "Angolo" list the
+	// play-options ▾ used to; poll()/applyMonitorsRoom hides it while the
+	// tiles are on screen. Opened by popupOnClick, never setMenu (Qt would
+	// draw its own arrow over the mark).
+	camBtn_ = new QToolButton(this);
+	camBtn_->setObjectName("mrGear");
+	camBtn_->setText(QStringLiteral("CAM"));
+	camBtn_->setCursor(Qt::PointingHandCursor);
+	camBtn_->setToolTip(obs_module_text("Dock.Angle"));
+	setKeyId(camBtn_, QStringLiteral("cam"));
+	camBtn_->setFixedHeight(kKeyH);
+	camBtn_->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
 	{
-		auto *menu = new QMenu(more);
-		auto *actOut = menu->addAction(obs_module_text("Dock.PlayToOutput"));
-		auto *actLast = menu->addAction(obs_module_text("Dock.PlayLast"));
-		menu->addSeparator();
-		auto *actStop = menu->addAction(obs_module_text("Dock.Stop"));
-		popupOnClick(more, menu);
-		connect(actOut, &QAction::triggered, this, [this]() {
-			// Explicitly the EVENT, so an unmarked stretch armed on
-			// the bar stops being what the play keys are about. This
-			// entry is also the way back to the selected row when a
-			// free review is armed and the main key is answering it.
-			clearFreeReview();
-			std::string err;
-			if (!pc().playEvents(
-				    selectedEventIds(), currentAngle1() - 1,
-				    /*toOutput*/ true, err))
-				showNotice(localizedError(err));
-		});
-		connect(actLast, &QAction::triggered, this, [this]() {
-			std::string err;
-			if (!pc().playLastEvent(
-				    currentAngle1() - 1,
-				    toOutputBtn_ && toOutputBtn_->isChecked(),
-				    err))
-				showNotice(localizedError(err));
-		});
-		connect(actStop, &QAction::triggered, this,
-			[this]() { pc().stopEvents(); });
-
-		// ALWAYS-PRESENT FALLBACK: the per-camera angle matrix is gone —
-		// the mouse picks an angle by clicking a multiview tile — and
-		// with Monitors off, showMultiview off, or a filmstrip too
-		// narrow to show every configured camera, clicking a picture is
-		// not an option at all. This menu is reachable regardless of
-		// any of that, so it is where "change the angle with the
-		// mouse" always has an answer. Rebuilt on every open
-		// (aboutToShow), not once at construction, because a camera can
-		// be renamed or added in Settings without this dock being
-		// rebuilt.
-		menu->addSeparator();
-		auto *angleMenu = menu->addMenu(obs_module_text("Dock.Angle"));
-		connect(angleMenu, &QMenu::aboutToShow, this, [this, angleMenu]() {
-			angleMenu->clear();
+		auto *menu = new QMenu(camBtn_);
+		connect(menu, &QMenu::aboutToShow, this, [this, menu]() {
+			menu->clear();
 			const Config cfg = ReplayCore::instance().getConfig();
 			for (int i = 0; i < kNCams; i++) {
 				if (cfg.cameras[i].sourceName.empty())
@@ -807,155 +817,54 @@ KeyBlock *MultiReplayDock::buildTransport()
 								       i + 1)
 							     : QString::fromStdString(
 								       dn));
-				QAction *act = angleMenu->addAction(label);
+				QAction *act = menu->addAction(label);
 				connect(act, &QAction::triggered, this,
 					[this, i]() { setAngle(i + 1); });
 			}
 		});
+		popupOnClick(camBtn_, menu);
 	}
 
-	// NOW IS A DESTINATION, not a modifier: it drops the replay and puts the
-	// operator back on the live edge, which during a match is the most
-	// consequential key on this panel after REC and PLAY. It keeps the WORD —
-	// there is no mark for "back to now" that anybody would read — and it gets
-	// the whole width of the transport row under the keys, which is what
-	// "first function" looks like on a key that is not a rectangle of colour.
-	nowBtn_ = new QPushButton(QStringLiteral("NOW"), this);
-	nowBtn_->setObjectName("mrNow");
-	nowBtn_->setProperty("live", false);
-	nowBtn_->setCursor(Qt::PointingHandCursor);
-	nowBtn_->setToolTip(obs_module_text("Dock.JumpToNow"));
-	setKeyId(nowBtn_, QStringLiteral("now"));
-	nowBtn_->setMinimumWidth(38);
-
-	// One frame back, one frame forward. The step BACK is not the forward one
-	// with the sign changed — see stepFrameBackward.
+	// ── TRANSPORT (row 1) ─────────────────────────────────────────────
+	// Two frame steps, side by side, in timeline order. The step BACK is
+	// not the forward one with the sign changed — see stepFrameBackward.
 	auto *stepBackBtn = iconBtn(Icon::StepBack, "stepBack",
 				    obs_module_text("Dock.StepBack"), this);
 	connect(stepBackBtn, &QPushButton::clicked, this,
 		[this]() { stepFrameBackward(); });
-
 	auto *stepBtn = iconBtn(Icon::StepFwd, "stepFwd",
 				obs_module_text("Dock.StepFwd"), this);
 	connect(stepBtn, &QPushButton::clicked, this,
 		[this]() { stepFrameForward(); });
-
-	// HELD DOWN, not tapped. Finding the right frame means passing it and coming
-	// back, and that is work done with a key held while watching the picture —
-	// so these two repeat. Nothing else in this row does: a repeating Play or a
-	// repeating REC is an accident waiting for a heavy hand.
-	//
-	// The interval is 150 ms and not Qt's default 100: a step BACK decodes a
-	// whole GOP (that is what makes reverse possible at all), which is ~100 ms on
-	// an iGPU, and asking for the next one before the last has been served just
-	// queues work the machine is already behind on.
-	// (These two used to be Unicode glyphs, and U+23EE / U+23ED carry
-	// Emoji_Presentation=Yes — so Windows painted the two least consequential
-	// keys in the row in bright Segoe UI Emoji blue, on a panel where every
-	// other key is a grey mark. useTextGlyph existed to force the font. They
-	// are drawn now, at the one weight every other mark is drawn at, and the
-	// problem cannot come back.)
+	// HELD DOWN, not tapped. 150 ms, not Qt's 100: a step BACK decodes a
+	// whole GOP (~100 ms on an iGPU).
 	for (QPushButton *b : {stepBackBtn, stepBtn}) {
 		b->setAutoRepeat(true);
 		b->setAutoRepeatDelay(400);
 		b->setAutoRepeatInterval(150);
 	}
 
-	loopBtn_ = statusToggle(Icon::Loop, obs_module_text("Dock.Loop"), "loop",
-				obs_module_text("Dock.Loop"), this);
-	connect(loopBtn_, &QPushButton::toggled, this,
-		[this](bool on) { pc().setLoop(on); });
+	auto *revBtn = iconBtn(Icon::Reverse, "playReverse",
+			       obs_module_text("Dock.PlayReverse"), this);
+	connect(revBtn, &QPushButton::clicked, this,
+		[this]() { playSelectedReverse(); });
 
-	musicBtn_ = statusToggle(Icon::Music, obs_module_text("Dock.Music"),
-				 "music",
-				 obs_module_text("Dock.MusicHint"), this);
-	connect(musicBtn_, &QPushButton::toggled, this, [this](bool on) {
-		for (Which w : targetChannels())
-			PlaybackCoordinator::instance(w).setMusicEnabled(on);
-		// SAY IT NOW, not after the replay. The two ways music produces
-		// nothing — a file that is not there, a source that is in no
-		// active scene — are both invisible while the key is being
-		// pressed and both silent while the replay runs.
-		if (!on)
-			return;
-		const std::string why = pc().musicProblem();
-		if (!why.empty())
-			showNotice(localizedError(why));
-	});
+	// ONE MARK FOR A KEY THAT IS BOTH: a play at rest, a pause while a clip
+	// runs.
+	playPauseBtn_ = iconBtn(Icon::Play, "playPause",
+				obs_module_text("Dock.PlayPause"), this,
+				"mrPlay");
+	// Stop must be a key of its own: a free review runs until it is
+	// stopped, and ▶ cannot be that key (while something plays it is a
+	// PAUSE, which holds the picture instead of giving Program back).
+	// EXACTLY ONE button in this dock carries this glyph — the gate finds
+	// Stop by it.
+	stopBtn_ = iconBtn(Icon::Stop, "stop", obs_module_text("Dock.Stop"),
+			   this);
 
-	// MUTE — the replay input(s) sit muted in the OBS mixer, so every replay
-	// plays silent. It LATCHES: a new replay does not clear it, NOW/Live do
-	// not, only the operator does (this key, its hotkey, or the Settings
-	// checkbox that seeds it). Follows the A|B / A / B selector, exactly like
-	// music. Music on + mute on = the clips play under the music track alone.
-	muteBtn_ = statusToggle(Icon::Mute, obs_module_text("Dock.Mute"), "muteAudio",
-				obs_module_text("Dock.MuteHint"), this);
-	muteBtn_->setChecked(ReplayCore::instance().getConfig().muteReplayAudio);
-	connect(muteBtn_, &QPushButton::toggled, this, [this](bool on) {
-		for (Which w : targetChannels())
-			ReplayChannel::instance(w).setMuted(on);
-	});
-
-	toOutputBtn_ = statusToggle(Icon::ToOutput,
-				    obs_module_text("Dock.ToOutput"), "toOutput",
-				    obs_module_text("Dock.ToOutput"), this);
-	// ONE state, two places to see it: the key starts where Settings says, and
-	// every play path reads the key (see playOnTargets). A setting and a button
-	// that each hold their own copy of "does this take Program" is a button left
-	// in the wrong position.
-	toOutputBtn_->setChecked(ReplayCore::instance().getConfig().toOutputOnPlay);
-	// The key is NOT written back to the config. setConfig() re-points the
-	// segment index and re-creates the Branch Output filters, so a key the
-	// operator presses mid-match must not reach it — the same rule that keeps a
-	// typed comment out of the config. Settings seeds the key at start-up; from
-	// then on the key is the live state and Settings is where the default lives.
-	// TWO ROWS, AND THE TWO KEYS THAT MATTER MOST ARE DRAWN LIKE IT:
-	//
-	//   play/pause  stop  reverse  last  step-  step+  ⋮   drive the clip
-	//   [           NOW           ]                        back to the live edge
-	//   [ PLAY ]  two rows tall, filled                     events on air
-	//
-	// PLAY is the biggest key on the panel because it is the one that takes
-	// Program; NOW is the widest because it is the way back. They were a text
-	// button and a small key in a row of eight, the same weight as a frame
-	// step, so the eye had to read the whole strip to find either.
-	//
-	// Stop stands next to Play, in that order, because that is the pair: one
-	// starts the picture and the other gives Program back.
-	//
-	// The three MODES that used to end this row — loop, music, in output — are
-	// on the status line now. They are not things you do to the clip, they are
-	// the conditions the next one runs under, and mixed in here they read as
-	// four more transport keys.
-	nowBtn_->setMinimumWidth(56);
-	more->setFixedSize(22, kKeyH);
-	for (QPushButton *b : {playPauseBtn_, stopBtn_, revBtn, lastBtn,
-			       stepBackBtn, stepBtn})
-		b->setFixedHeight(kKeyH);
-	nowBtn_->setFixedHeight(kKeyH);
-	playSel->setMaximumHeight(QWIDGETSIZE_MAX);
-	blk->setShapes({{Cell(playPauseBtn_), Cell(stopBtn_), Cell(revBtn),
-			 Cell(lastBtn), Cell(stepBackBtn), Cell(stepBtn),
-			 Cell(more), Cell(playSel, 1, true, 2)},
-			{Cell(nowBtn_, 7)}},
-		       {{Cell(playPauseBtn_), Cell(stopBtn_), Cell(revBtn),
-			 Cell(lastBtn), Cell(stepBackBtn), Cell(stepBtn),
-			 Cell(more)},
-			{Cell(nowBtn_, 4), Cell(playSel, 3)}});
-
-	// There WAS a big "position / length" readout under these keys. It is gone:
-	// the position bar prints the same two numbers on itself (setOverlayText),
-	// where the operator is already looking while he scrubs, and two copies of a
-	// timecode a frame apart is two things to reconcile at exactly the moment
-	// there is no time to.
-
-	// wire transport actions
 	connect(playPauseBtn_, &QPushButton::clicked, this, [this]() {
-		// A REAL pause: the clip freezes on the frame it is showing and the
-		// next press carries on from there. It used to stop the queue, so
-		// the second press re-cued the event and played it again from the
-		// IN — the operator paused on the moment he wanted, pressed play,
-		// and lost it.
+		// A REAL pause: the clip freezes on the frame it is showing and
+		// the next press carries on from there.
 		for (Which w : targetChannels()) {
 			auto &pcw = PlaybackCoordinator::instance(w);
 			auto &chw = ReplayChannel::instance(w);
@@ -964,42 +873,55 @@ KeyBlock *MultiReplayDock::buildTransport()
 				continue;
 			}
 			// NOTHING RUNNING, AND THE BAR IS ON FOOTAGE NOBODY
-			// MARKED: play THAT, off air.
-			//
-			// This is what the key was missing. Parked on an unmarked
-			// stretch it used to replay the selected event instead —
-			// something else entirely, from somewhere else on the
-			// timeline — so the only way to look at an action that had
-			// not been marked was to mark it, which is precisely what
-			// the operator was trying not to do. It runs until Stop,
-			// and it never touches Program: putting it on air is a
-			// second, deliberate press of "Play events".
-			//
-			// Once, for the bay the selector is on: a free review is a
-			// range, not an event, and playing the same range on both
-			// bays would be two decoders showing one picture.
+			// MARKED: play THAT, off air. It runs until Stop and
+			// never touches Program. Once, for the bay the selector
+			// is on: a free review is a range, and playing it on
+			// both bays would be two decoders showing one picture.
 			if (playheadIsFreeFootage()) {
 				if (w == targetChannels().front())
 					playFreeReview(/*toOutput*/ false);
 				continue;
 			}
-			// Otherwise ▶ means "play what is selected", which is what
-			// it has always meant.
+			// Otherwise ▶ means "play what is selected".
 			ReplayCore::instance().setFollowLive(false);
 			replayCurrentOn(w);
 		}
 	});
 	connect(stopBtn_, &QPushButton::clicked, this,
 		[this]() { stopPlayback(); });
-	connect(nowBtn_, &QPushButton::clicked, this, [this]() {
-		// the reference controller NOW: drop the replay and watch the live edge again.
-		pc().stopEvents();
-		ReplayCore::instance().setFollowLive(true);
-		// Back at the front, so the stretch that was armed on the bar is
-		// no longer what the play keys are about.
-		clearFreeReview();
-	});
 
+	// ── TRIM (row 2) ──────────────────────────────────────────────────
+	// Move the SELECTED event's in or out point to where the position bar
+	// stands. A mark taken live is late by definition; until this the only
+	// fix was delete-and-remark from a scrub, which loses the angles and
+	// the comments. Frame nudges are hotkeys (registerDockHotkeys).
+	auto *trimIn = iconBtn(Icon::TrimIn, "trimIn",
+			       obs_module_text("Dock.TrimInHint"), this);
+	connect(trimIn, &QPushButton::clicked, this,
+		[this]() { setSelectedPoint(true); });
+	auto *trimOut = iconBtn(Icon::TrimOut, "trimOut",
+				obs_module_text("Dock.TrimOutHint"), this);
+	connect(trimOut, &QPushButton::clicked, this,
+		[this]() { setSelectedPoint(false); });
+
+	for (QPushButton *b : {lastBtn, loopBtn_, muteBtn_, musicBtn_,
+			       stepBackBtn, stepBtn, revBtn, playPauseBtn_,
+			       stopBtn_, trimIn, trimOut})
+		b->setFixedHeight(kKeyH);
+
+	// Six columns. Row 0: ↺ LOOP MUTE ♪ CAM. Row 1: ⏮ ⏭ | ◀ ▶ ■ (a margin
+	// between the frame steps and the transport, spec §4). Row 2: ⇤IN
+	// OUT⇥.
+	blk->setShapes({{Cell(lastBtn), Cell(loopBtn_), Cell(muteBtn_),
+			 Cell(musicBtn_), Cell(camBtn_)},
+			{Cell(stepBackBtn), Cell(stepBtn), Cell(nullptr),
+			 Cell(revBtn), Cell(playPauseBtn_), Cell(stopBtn_)},
+			{Cell(trimIn, 3), Cell(trimOut, 3)}},
+		       {{Cell(lastBtn), Cell(loopBtn_), Cell(muteBtn_),
+			 Cell(musicBtn_), Cell(camBtn_)},
+			{Cell(stepBackBtn), Cell(stepBtn), Cell(nullptr),
+			 Cell(revBtn), Cell(playPauseBtn_), Cell(stopBtn_)},
+			{Cell(trimIn, 3), Cell(trimOut, 3)}});
 	return blk;
 }
 
@@ -1040,23 +962,10 @@ QWidget *MultiReplayDock::buildStatusBar(QWidget *parent)
 	statusNotice_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
 	h->addWidget(statusNotice_, 1);
 
-	auto *sep = new QWidget(statusBar_);
-	sep->setObjectName(QStringLiteral("mrStatSep"));
-	sep->setFixedWidth(1);
-	h->addWidget(sep);
-	for (QPushButton *b : {loopBtn_, musicBtn_, muteBtn_, toOutputBtn_}) {
-		b->setParent(statusBar_);
-		b->setFixedHeight(kStatusBarH - 4);
-		// THE LAYOUT OWNS THE HEIGHT, so the style sheet must not also have
-		// an opinion about it: the rule for these asks for exactly the 18 px
-		// they are given, and exactly is not a margin - any rounding, at any
-		// display scale, puts the frame one pixel past the widget and the
-		// bottom border outside it. Unlit that is invisible (the border is
-		// transparent); lit it is a box somebody forgot to close, which is
-		// why only "in output" was ever reported.
-		b->setProperty("mrPinned", true);
-		h->addWidget(b);
-	}
+	// (loop · music · mute · in output used to sit here. Spec §4 makes them
+	// REVIEW's "modes" — loop/mute/music in buildModes(), IN OUTPUT in the
+	// REVIEW header. This line is now only the notice and the speed
+	// read-out.)
 	auto *sep2 = new QWidget(statusBar_);
 	sep2->setObjectName(QStringLiteral("mrStatSep"));
 	sep2->setFixedWidth(1);
@@ -1098,15 +1007,15 @@ QWidget *MultiReplayDock::buildBottomBar()
 	strip_->addToMarca(buildMarkers());
 	strip_->addToMarca(buildAngleMatrix()); // sets angleBlock_
 
-	// REVIEW
-	strip_->addToReview(buildTransport());
+	// REVIEW (spec §4): playback (event id + IN OUTPUT + PLAY/NOW),
+	// controls (modes · transport · trim in three rows), speed.
+	strip_->addToReview(buildPlayback());
+	strip_->addToReview(buildReviewControls());
 	speedBlock_ = buildSpeedBlock();
 	strip_->addToReview(speedBlock_);
-	// Export/reorder/clip-actions. Spec §3 wants these on a toolbar over the
-	// event table; until that toolbar exists they stay here, as "what you do
-	// with a clip once it is marked", at the foot of REVIEW.
-	clipsBlock_ = buildExportBlock();
-	strip_->addToReview(clipsBlock_);
+	// (Export / reorder / delete-all are a toolbar over the event table now,
+	// buildTableTools() — spec §3. Off the strip is also what keeps the
+	// panel's floor under what a floating window restores to.)
 
 	// Tall used to collapse bay/clips/speed behind a "more" menu; the tab bar
 	// does that job now, so the block is not built.
@@ -1475,112 +1384,92 @@ KeyBlock *MultiReplayDock::buildSpeedBlock()
 // THE RUNNING ORDER, and the actions that have no key of their own
 // ---------------------------------------------------------------------------
 
-KeyBlock *MultiReplayDock::buildExportBlock()
+// ---------------------------------------------------------------------------
+// The event-table toolbar (spec §3): ⇅ Tempo · ▲ ▼ · Elimina tutto · ⤓ Esporta
+// ---------------------------------------------------------------------------
+//
+// This was a KeyBlock in the command panel ("clips"). Spec §3 puts it over
+// the table, with the tabs — it is about the list, not about a clip on air —
+// and dropping it from the strip is also what brought the panel's floor back
+// under what a floating window restores to. The ⋯ (Duplica / Elimina) menu
+// is gone: those two live on the table's own right-click menu.
+QWidget *MultiReplayDock::buildTableTools()
 {
-	auto *blk = new KeyBlock(obs_module_text("Dock.ZoneClips"), this);
+	auto *box = new QWidget(this);
+	box->setObjectName(QStringLiteral("mrTableTools"));
+	auto *h = new QHBoxLayout(box);
+	h->setContentsMargins(0, 0, 0, 0);
+	h->setSpacing(4);
 
-	// The running order is the operator's. Two keys rather than
-	// drag-and-drop: a drag inside a table whose cells are all editable is a
-	// click away from starting an edit instead, and during a match that is
-	// the wrong thing to risk.
-	int orderKeyW = 0;
-	QVector<QPushButton *> order;
+	// ⇅ Tempo — chronological auto-sort. It was a Settings-only checkbox;
+	// the spec wants it here where the reordering is. Toggling it writes the
+	// config the same way moveSelectedEvent() already does when it turns
+	// this OFF.
+	auto *sortBtn = new QPushButton(obs_module_text("Dock.SortByTime"), box);
+	sortBtn->setObjectName(QStringLiteral("mrToggle"));
+	sortBtn->setCheckable(true);
+	sortBtn->setCursor(Qt::PointingHandCursor);
+	sortBtn->setToolTip(obs_module_text("Dock.SortByTimeHint"));
+	setKeyId(sortBtn, QStringLiteral("sortTime"));
+	sortBtn->setChecked(
+		ReplayCore::instance().getConfig().sortEventsByTime);
+	sortBtn->setFixedHeight(kKeyH);
+	connect(sortBtn, &QPushButton::toggled, this, [this](bool on) {
+		auto &core = ReplayCore::instance();
+		Config cfg = core.getConfig();
+		if (cfg.sortEventsByTime == on)
+			return;
+		cfg.sortEventsByTime = on;
+		core.setConfig(cfg);
+		refreshEvents();
+	});
+	h->addWidget(sortBtn);
+
+	// ▲ ▼ — the running order is the operator's. Keys rather than a drag: a
+	// drag inside a table whose cells are all editable is one slip from
+	// starting an edit instead.
 	for (const auto &mv : {std::pair<Icon, int>{Icon::MoveUp, -1},
 			       std::pair<Icon, int>{Icon::MoveDown, +1}}) {
 		const int delta = mv.second;
 		auto *b = iconBtn(mv.first, delta < 0 ? "moveUp" : "moveDown",
 				  obs_module_text(delta < 0 ? "Dock.MoveUp"
 							    : "Dock.MoveDown"),
-				  this);
+				  box);
 		connect(b, &QPushButton::clicked, this,
 			[this, delta]() { moveSelectedEvent(delta); });
-		b->ensurePolished();
 		b->setFixedHeight(kKeyH);
-		orderKeyW = std::max(orderKeyW, b->sizeHint().width());
-		order << b;
+		h->addWidget(b);
 	}
 
-	// Duplicate / delete / delete-all have no place of their own on the
-	// reference panel (they live in its context menu), and three more
-	// buttons here would be three more things to read past. They are one
-	// click away, and on the table's right-click menu as well.
-	auto *edit = new QToolButton(this);
-	edit->setObjectName("mrGear");
-	setKeyIcon(edit, Icon::More, tintsFor(sc()), 14);
-	edit->setCursor(Qt::PointingHandCursor);
-	edit->setToolTip(obs_module_text("Dock.ClipActions"));
-	setKeyId(edit, QStringLiteral("clipActions"));
-	{
-		auto *menu = new QMenu(edit);
-		auto *actDup = menu->addAction(obs_module_text("Dock.Duplicate"));
-		auto *actDel = menu->addAction(obs_module_text("Dock.Delete"));
-		menu->addSeparator();
-		auto *actAll = menu->addAction(obs_module_text("Dock.DeleteAll"));
-		popupOnClick(edit, menu);
-		connect(actDup, &QAction::triggered, this, [this]() {
-			for (int id : selectedEventIds())
-				EventStore::instance().duplicate(id);
-			refreshEvents();
-		});
-		connect(actDel, &QAction::triggered, this, [this]() {
-			const auto ids = selectedEventIds();
-			if (!confirmDelete(ids))
-				return;
-			for (int id : ids)
-				EventStore::instance().remove(id);
-			refreshEvents();
-		});
-		connect(actAll, &QAction::triggered, this, [this]() {
-			// The buttons are OURS, not Qt's: QMessageBox::Yes/No
-			// follow Qt's own locale, not OBS's, so a panel in
-			// Italian showed English "Yes/No" on the one confirm
-			// this panel still has.
-			QMessageBox box(this);
-			box.setWindowTitle("obs-multireplay");
-			box.setText(obs_module_text("Dock.DeleteAllConfirm"));
-			QPushButton *yes = box.addButton(
-				obs_module_text("Dock.Yes"),
-				QMessageBox::YesRole);
-			box.addButton(obs_module_text("Dock.No"),
-				      QMessageBox::NoRole);
-			box.exec();
-			if (box.clickedButton() != yes)
-				return;
-			pc().stopEvents();
-			EventStore::instance().clearAll();
-		});
-	}
-	// A tool button sizes itself around its glyph plus a menu arrow, so left
-	// alone it comes out narrower and shorter than the keys it stands with.
-	edit->setFixedHeight(kKeyH);
-	edit->setMinimumWidth(orderKeyW);
-	edit->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
+	h->addStretch(1);
 
-	// EXPORT LIVES HERE NOW (§6.2): everything done to an event AFTER it is
-	// marked, in one section instead of two. It used to sit under the speed
-	// dial, which made "what do I do with a clip once it is marked" a
-	// question with two different answers in two different corners of the
-	// panel.
-	auto *exportKey = buildExportKey();
-	// TALL: order/actions, then export on its own line so it reads as the
-	// section's second question rather than a fourth key crowded onto the
-	// first row's end. FLAT: one row, all four side by side — this section
-	// is short enough that folding it costs a line for no reason.
-	blk->setShapes({{Cell(order[0]), Cell(order[1]), Cell(edit)},
-			{Cell(exportKey, 3)}},
-		       {{Cell(order[0]), Cell(order[1]), Cell(edit), Cell(exportKey)}});
-	// EXPORT DROPS ITS WORD WHEN THE STRIP FOLDS, joining its three
-	// neighbours as an icon the tooltip still names. Folded is exactly
-	// where this section sits closest to the panel's own edge — a stacked
-	// side dock, a Short arrangement's left column — and a labelled key
-	// there is the one thing in the row asking for more width than the
-	// other three combined (measured on the mockup: it moved the toolbar's
-	// own "Live" key down to its CSS floor, clipped, at 1400x340).
-	const QString exportLabel = exportKey->text();
-	blk->setOnShape([exportKey, exportLabel](bool flat) {
-		exportKey->setText(flat ? QString() : exportLabel);
+	// Elimina tutto — its own key now (the ⋯ menu it used to hide in is
+	// gone). Amber, and it confirms; the buttons are OURS so the panel's
+	// locale wins over Qt's.
+	auto *delAll = new QPushButton(obs_module_text("Dock.DeleteAll"), box);
+	delAll->setObjectName(QStringLiteral("mrDanger"));
+	delAll->setCursor(Qt::PointingHandCursor);
+	setKeyId(delAll, QStringLiteral("deleteAll"));
+	delAll->setFixedHeight(kKeyH);
+	connect(delAll, &QPushButton::clicked, this, [this]() {
+		QMessageBox box(this);
+		box.setWindowTitle("obs-multireplay");
+		box.setText(obs_module_text("Dock.DeleteAllConfirm"));
+		QPushButton *yes = box.addButton(obs_module_text("Dock.Yes"),
+						 QMessageBox::YesRole);
+		box.addButton(obs_module_text("Dock.No"), QMessageBox::NoRole);
+		box.exec();
+		if (box.clickedButton() != yes)
+			return;
+		pc().stopEvents();
+		EventStore::instance().clearAll();
 	});
-	return blk;
+	h->addWidget(delAll);
+
+	// ⤓ Esporta — asks on the press whether it is one clip or the whole
+	// selection as one file.
+	h->addWidget(buildExportKey());
+	return box;
 }
 
 // ---------------------------------------------------------------------------
@@ -1858,25 +1747,9 @@ KeyBlock *MultiReplayDock::buildMarkers()
 		keys << b;
 	}
 
-	// Trim: move the SELECTED event's in or out point to where the position
-	// bar stands. A mark taken live is taken late by definition - the operator
-	// saw the action first - and until now the only way to fix one was to
-	// delete it and mark again from a scrub, which is two ways of saying the
-	// same thing and one of them loses the angles and the comments. Zoom the
-	// bar, put the playhead on the frame, press.
-	//
-	// Frame nudges are hotkeys rather than four more keys on a full row (see
-	// registerDockHotkeys): a Stream Deck is where this kind of work actually
-	// happens, and the panel is already dense.
-	auto *trimIn = iconBtn(Icon::TrimIn, "trimIn",
-			       obs_module_text("Dock.TrimInHint"), this);
-	connect(trimIn, &QPushButton::clicked, this,
-		[this]() { setSelectedPoint(true); });
-	auto *trimOut = iconBtn(Icon::TrimOut, "trimOut",
-				obs_module_text("Dock.TrimOutHint"), this);
-	connect(trimOut, &QPushButton::clicked, this,
-		[this]() { setSelectedPoint(false); });
-	keys << trimIn << trimOut;
+	// (Trim — ⇤IN OUT⇥ — moved to REVIEW's own group, buildTrim(): the spec
+	// puts "move a point already marked" with the transport, not with the
+	// keys that take a point in the first place.)
 
 	// Cancel ends the FIRST row, beside the two keys it undoes, and it is the
 	// only key of this group in the danger colour. On the old single row it sat
@@ -1894,34 +1767,19 @@ KeyBlock *MultiReplayDock::buildMarkers()
 	});
 	keys << cancel;
 
-	// THREE ROWS, because it answers three questions, in the order an operator
-	// reaches for them during a match:
+	// TWO ROWS, the two questions this group answers (spec §4):
 	//
-	//   −5s −10s −20s    take the last N seconds whole   (first function)
-	//   IN  OUT  ✕       take a point, close it, undo it (second)
-	//   ⇤IN OUT⇥         move a point already taken      (third)
+	//   −5s −10s −20s    take the last N seconds whole  (clip rapida)
+	//   IN  OUT  ✕       take a point, close it, undo it (clip manuale)
 	//
-	// It was one row of eight, and one row said those three were the same kind
-	// of act: "-10s" and "OUT" are not, and putting them side by side claimed
-	// they were.
-	//
-	// SIX COLUMNS so the row of two divides as evenly as the rows of three: on
-	// three columns the trim row left a hole in the corner, and the eye finds
-	// that hole every time it reads the block.
-	//
-	// FOLDED IT IS TWO ROWS, and that is a deliberate trade rather than a
-	// compromise. In a column every key row is charged to the event list, and a
-	// third row here put the panel's floor past what a small floating window
-	// can be. The hierarchy stands where there is room to draw it; where there
-	// is not, the durations keep their own row and the points and the trims
-	// share the next one.
+	// One row of six said those two were the same kind of act: "-10s" and
+	// "OUT" are not. Folded it is the same two rows.
 	blk->setShapes({{Cell(presets[0], 2), Cell(presets[1], 2),
 			 Cell(presets[2], 2)},
-			{Cell(in, 2), Cell(out, 2), Cell(cancel, 2)},
-			{Cell(trimIn, 3), Cell(trimOut, 3)}},
-		       {{Cell(presets[0]), Cell(presets[1]), Cell(presets[2]),
-			 Cell(cancel)},
-			{Cell(in), Cell(out), Cell(trimIn), Cell(trimOut)}});
+			{Cell(in, 2), Cell(out, 2), Cell(cancel, 2)}},
+		       {{Cell(presets[0], 2), Cell(presets[1], 2),
+			 Cell(presets[2], 2)},
+			{Cell(in, 2), Cell(out, 2), Cell(cancel, 2)}});
 	return blk;
 }
 
@@ -2089,6 +1947,7 @@ QWidget *MultiReplayDock::buildEvents()
 								lastErr)));
 			}
 		});
+	v->addWidget(buildTableTools());
 	v->addWidget(events_, 1);
 
 	// There is no inspector panel any more. It existed for the one edit the

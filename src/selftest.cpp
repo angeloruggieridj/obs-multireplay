@@ -1103,35 +1103,26 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 
 	// --- §2.3: the Angolo fallback is reachable with the mouse EVEN WHEN
 	// clicking a multiview tile is not an option (Monitors off, showMultiview
-	// off, or a filmstrip too narrow for every configured camera). It lives
-	// in the play-options menu (▾, mrKey "playOptions"), a QToolButton whose
-	// menu is opened by popupOnClick rather than QAbstractButton::setMenu —
-	// found as a QMenu child of the button, not via ->menu(). The angle
-	// submenu populates lazily on QMenu::aboutToShow (a camera can be
-	// renamed in Settings without this dock being rebuilt), so it is invoked
-	// directly here rather than actually popping the menu open on screen.
+	// off, or a filmstrip too narrow for every configured camera). It is the
+	// CAM key in REVIEW's modes (mrKey "cam"), a QToolButton whose menu is
+	// opened by popupOnClick rather than QAbstractButton::setMenu — found as
+	// a QMenu child of the button, not via ->menu(). The camera list
+	// populates lazily on QMenu::aboutToShow (a camera can be renamed in
+	// Settings without this dock being rebuilt), so it is invoked directly
+	// here rather than actually popping the menu open on screen.
 	{
 		QToolButton *moreBtn = nullptr;
 		runOnUi([&]() {
 			for (QToolButton *b : dock->findChildren<QToolButton *>())
 				if (b->property(kKeyProperty).toString() ==
-				    QLatin1String("playOptions"))
+				    QLatin1String("cam"))
 					moreBtn = b;
 		});
 		QMenu *angleMenu = nullptr;
-		if (moreBtn) {
+		if (moreBtn)
 			runOnUi([&]() {
-				if (QMenu *menu = moreBtn->findChild<QMenu *>()) {
-					const QString wanted =
-						QString::fromUtf8(obs_module_text(
-							"Dock.Angle"));
-					for (QAction *a : menu->actions())
-						if (a->menu() &&
-						    a->text() == wanted)
-							angleMenu = a->menu();
-				}
+				angleMenu = moreBtn->findChild<QMenu *>();
 			});
-		}
 		bool angleFallbackMenuWorks = false;
 		int firstCam1 = -1;
 		if (angleMenu) {
@@ -1164,7 +1155,7 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 		} else {
 			obs_log(LOG_ERROR,
 				"[selftest] dock: Angolo fallback menu not found "
-				"under play options (moreBtn=%p)",
+				"on the CAM key (moreBtn=%p)",
 				(void *)moreBtn);
 		}
 		c.angleFallbackMenuWorks = angleFallbackMenuWorks;

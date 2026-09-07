@@ -151,6 +151,14 @@ void MultiReplayDock::updateChannelStrip()
 	const int idDigits =
 		std::clamp(ReplayCore::instance().getConfig().eventIdDigits, 1, 8);
 
+	// REVIEW header (spec §4): the event ▶ is about, padded like the table's
+	// id column. An em-dash when there is nothing selected or marked.
+	if (reviewEventLbl_)
+		reviewEventLbl_->setText(
+			haveEv ? QString("%1").arg(evId, idDigits, 10,
+						   QLatin1Char('0'))
+			       : QStringLiteral("—"));
+
 	// Where the playhead is INSIDE this clip. Clamped on purpose: parked at
 	// the live edge (or at 0, with a project reopened and nothing recording)
 	// the raw difference is the distance between two unrelated instants, and

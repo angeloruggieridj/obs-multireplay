@@ -615,19 +615,25 @@ private:
 	KeyBlock *buildRecBlock();
 	KeyBlock *buildMarkers();
 	KeyBlock *buildAngleMatrix();
-	KeyBlock *buildTransport();
+	// REVIEW panel (spec §4): buildPlayback() is the header (event id + IN
+	// OUTPUT) plus PLAY/NOW; buildReviewControls() is modes (↺/LOOP,
+	// MUTE/♪/CAM), transport (⏮⏭ · ◀▶■) and trim (⇤IN OUT⇥) in three rows
+	// of one block. Kept to two blocks: one KeyBlock per group stacked in a
+	// column added ~300 px to the panel's floor.
+	KeyBlock *buildPlayback();
+	KeyBlock *buildReviewControls();
 	KeyBlock *buildSpeedBlock();
-	KeyBlock *buildExportBlock();
-	// §6.3 — the "⋯ ALTRO" key Tall collapses bay/clips/speed behind. See
-	// applyTallCollapse() and the note on buildMoreBlock() itself for why
-	// its menu clicks the real (hidden) buttons instead of reimplementing
-	// their slots.
+	// The toolbar over the event table (spec §3): ⇅ Tempo, ▲ ▼, Elimina
+	// tutto, ⤓ Esporta. It used to be a "clips" section in the command
+	// panel.
+	QWidget *buildTableTools();
+	// (buildMoreBlock / applyTallCollapse: the Tall "⋯ ALTRO" collapse.
+	// TwoPanelStrip's tab bar does that job now — moreBlock_ is not built —
+	// but the guarded no-op stays.)
 	KeyBlock *buildMoreBlock();
 	void applyTallCollapse(bool tall);
 	// The single Export key, which asks on the press whether it is one clip or
-	// the whole selection as one file. Built separately because the SPEED
-	// section places it — under the dial, with the rest of what is done to a
-	// clip once it is marked.
+	// the whole selection as one file.
 	QPushButton *buildExportKey();
 	// The command area: MARCA | REVIEW (dock-layout.hpp). It replaced the
 	// six-section ControlStrip.
@@ -635,13 +641,9 @@ private:
 	// The camera section, kept because switching the second bay on or off
 	// changes how many rows it has and the strip has to be told.
 	KeyBlock *angleBlock_ = nullptr;
-	// §6.3 — the three sections Tall collapses, and the key that stands in
-	// for them. Kept for the same reason angleBlock_ is: applyTallCollapse
-	// hides/shows them, and hiding a section wholesale is what the layout
-	// engine's orderFor now reads (see dock-layout.cpp) to stop reserving
-	// its room.
-	KeyBlock *clipsBlock_ = nullptr, *speedBlock_ = nullptr,
-		 *moreBlock_ = nullptr;
+	// speedBlock_ is kept because applyChannelBVisibility / the strip need a
+	// handle; moreBlock_ is not built (TwoPanelStrip's tab bar replaced it).
+	KeyBlock *speedBlock_ = nullptr, *moreBlock_ = nullptr;
 	bool tallCollapsed_ = false;
 	QWidget *buildEvents();
 	QWidget *buildBottomBar();
@@ -1507,6 +1509,12 @@ private:
 	// finds Stop by it.
 	QPushButton *stopBtn_ = nullptr;
 	QPushButton *nowBtn_ = nullptr;
+	// REVIEW header: which event ▶ is about, padded to eventIdDigits.
+	QLabel *reviewEventLbl_ = nullptr;
+	// REVIEW modes, Monitors-OFF only: opens the angle menu with the mouse
+	// when there are no multiview tiles to click. Carries the same lazy
+	// "Angolo" submenu the play-options ▾ used to.
+	QToolButton *camBtn_ = nullptr;
 	bool seekDragging_ = false;
 
 	// markers. the reference controller's Live is a red toggle BUTTON in the top bar, not a

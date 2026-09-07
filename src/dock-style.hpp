@@ -365,7 +365,8 @@ R"QSS(
 #MultiReplayDock QWidget#mrBlock, #MultiReplayDock QWidget#mrLeftCol,
 #MultiReplayDock QWidget#mrListPane, #MultiReplayDock QWidget#mrPreviewPane,
 #MultiReplayDock QWidget#mrMarca, #MultiReplayDock QWidget#mrReview,
-#MultiReplayDock QWidget#mrMarcaFoot, #MultiReplayDock QWidget#mrReviewFoot {
+#MultiReplayDock QWidget#mrMarcaFoot, #MultiReplayDock QWidget#mrReviewFoot,
+#MultiReplayDock QWidget#mrRowFill, #MultiReplayDock QWidget#mrTableTools {
 	background: transparent;
 }
 /* MARCA | REVIEW — the two command panels. Each carries a quiet title above

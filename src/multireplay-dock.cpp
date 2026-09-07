@@ -1354,6 +1354,13 @@ void MultiReplayDock::applyMonitorsVisible(bool on)
 // the pass it forces is the one that stays on screen.
 void MultiReplayDock::applyMonitorsRoom()
 {
+	// CAM in REVIEW's modes appears only with Monitors OFF (spec §4/§7):
+	// with the tiles on screen the angle is picked by clicking a picture,
+	// and a key that does the same thing beside them is one more thing to
+	// read past. Absent, not disabled — the modes row reflows.
+	if (camBtn_)
+		camBtn_->setVisible(!monitorsOn_);
+
 	if (!splitter_ || !leftCol_)
 		return;
 	// In Short the key strip has been moved into this column, so it is never
