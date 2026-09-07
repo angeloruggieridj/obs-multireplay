@@ -1431,14 +1431,15 @@ int MultiReplayDock::monitorRoomH() const
 int MultiReplayDock::tileColumns(int tileCount) const
 {
 	const int n = std::max(1, tileCount);
-	// THE SAME COLUMN RULE IN EVERY ARRANGEMENT — one row up to three
-	// cameras, ceil(n/2) columns beyond — so the grid the operator learned in
-	// the Wide layout is the same grid down a side (Tall) or under the OBS
-	// preview (Short). It used to be a one-row filmstrip in Tall on the
-	// argument that a narrow column cannot carry a 4-wide grid at a size
-	// worth looking at; the operator asked for the consistent shape instead,
-	// small tiles and all.
-	//
+	// SHORT AND TALL: FOUR FIXED COLUMNS (spec §2 — "4 slot fissi per riga,
+	// ⌈n/4⌉ righe, slot vuoti riservati"). A narrow column shows a lot of
+	// small tiles in a stable grid, and a fixed column count means adding a
+	// camera never re-flows the ones already there. Wide keeps the reference
+	// grid (one row to three, ⌈n/2⌉ beyond), read off the same arithmetic
+	// the tile sizes come from.
+	if (panelMode_ != PanelMode::Wide)
+		return std::clamp(n, 1, 4);
+
 	// FROM THE SAME ARITHMETIC THE SIZES COME FROM (tileBlockFor): a column
 	// count that disagrees with the measured tile size is a block with a hole
 	// in it. tileBlockFor's cols does not depend on the width or the room, so
@@ -1651,9 +1652,14 @@ void MultiReplayDock::dumpMonitorLayout(const char *why)
 	const int gap = monitorSplit_->handleWidth();
 	const int cols = visTiles > 0 ? std::max(1, tileColumns(visTiles)) : 0;
 	const int rows = cols > 0 ? (visTiles + cols - 1) / cols : 0;
+	// Short and Tall pin the grid to four columns (spec §2); Wide reads the
+	// declared count off tileBlockFor. Passing `cols` here keeps the tile
+	// SIZES in step with the tile PLACEMENT (rebuildMultiview uses the same
+	// tileColumns()).
+	const int fc = panelMode_ != PanelMode::Wide ? cols : 0;
 	const TileBlock tb =
 		visTiles > 0
-			? tileBlockFor(paneW, bays, visTiles, gap, roomH)
+			? tileBlockFor(paneW, bays, visTiles, gap, roomH, fc)
 			: TileBlock{};
 
 	QString split;
@@ -1881,8 +1887,9 @@ void MultiReplayDock::applyPreviewAspect()
 			// really be much shorter: A comes out height-bound and far
 			// narrower than the space it was given, and the difference is
 			// the black band beside it.
-			const TileBlock tb = tileBlockFor(paneW, bays, visibleTiles,
-							  gap, monitorRoomH());
+			const TileBlock tb = tileBlockFor(
+				paneW, bays, visibleTiles, gap, monitorRoomH(),
+				panelMode_ == PanelMode::Short ? 4 : 0);
 			tb0 = tb;
 			tilesW = tb.blockW;
 			blockH = tb.blockH;

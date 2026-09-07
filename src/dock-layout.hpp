@@ -539,7 +539,10 @@ inline constexpr int kTileGap = 4;
 // that matters when the panel is docked under the OBS preview: there the pane
 // is wide and shallow, and an arrangement chosen from the width alone asks for
 // four rows of tiles in a pane with room for two. 0 = no limit.
-TileBlock tileBlockFor(int paneW, int bays, int n, int gap, int maxH = 0);
+// `forcedCols` > 0 overrides the declared one-row-to-three / ceil(n/2)
+// column count — the narrow arrangements pin it to 4 (spec §2).
+TileBlock tileBlockFor(int paneW, int bays, int n, int gap, int maxH = 0,
+		       int forcedCols = 0);
 
 // ---------------------------------------------------------------------------
 // KeyBlock — one captioned section, in two declared shapes

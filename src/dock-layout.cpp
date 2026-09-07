@@ -388,7 +388,8 @@ void AspectBox::relayout()
 // The camera block — see the note in the header
 // ---------------------------------------------------------------------------
 
-TileBlock tileBlockFor(int paneW, int bays, int n, int gap, int maxH)
+TileBlock tileBlockFor(int paneW, int bays, int n, int gap, int maxH,
+		       int forcedCols)
 {
 	TileBlock best;
 	if (n <= 0 || paneW <= 0 || bays <= 0)
@@ -418,7 +419,10 @@ TileBlock tileBlockFor(int paneW, int bays, int n, int gap, int maxH)
 	// smaller than the glance they exist for. Declared, because "three
 	// across, then four" is a decision about how a rig is read and a score
 	// agrees with it only by accident.
-	const int cols = (n <= 3) ? n : (n + 1) / 2;
+	const int cols = forcedCols > 0 ? std::clamp(std::min(forcedCols, n), 1,
+						    forcedCols)
+					: (n <= 3) ? n
+						   : (n + 1) / 2;
 	const int rows = (n + cols - 1) / cols;
 
 	// THE WHOLE MONITORING ROW IS ONE HEIGHT, and that is the change that
