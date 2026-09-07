@@ -4736,10 +4736,13 @@ QWidget *MultiReplayDock::buildAngleCell(int eventId, int cam0, bool on,
 		if (refreshing_)
 			return;
 		QMenu m(sp);
-		// 100 IS one of the presets, and has to be: "--" is not a speed,
-		// so without it there is no way to pin an angle to 1x while the
-		// slider sits at 25.
-		const QVector<int> pcts = {-1, 25, 33, 50, 75, 100, 200};
+		// Presets first, then Personalizzata… (spec §3). 100 IS one of
+		// the presets and has to be: "--" is not a speed, so without it
+		// there is no way to pin an angle to 1x while the slider sits at
+		// 25. The presets match the panel's chips (25..125); the engine
+		// still takes anything from 5 to 400, which the custom entry
+		// reaches.
+		const QVector<int> pcts = {-1, 25, 50, 75, 100, 125};
 		const int now = sp->property("mrPct").toInt();
 		for (int p : pcts) {
 			QAction *a = m.addAction(
@@ -4754,6 +4757,25 @@ QWidget *MultiReplayDock::buildAngleCell(int eventId, int cam0, bool on,
 						p > 0 ? p / 100.0 : -1.0);
 				});
 		}
+		m.addSeparator();
+		QAction *custom = m.addAction(
+			QString::fromUtf8(obs_module_text("Dock.SpeedCustom")));
+		custom->setCheckable(true);
+		custom->setChecked(now > 0 && !pcts.contains(now));
+		connect(custom, &QAction::triggered, this,
+			[this, sp, eventId, a1c, now]() {
+				bool ok = false;
+				const int start = now > 0 ? now : 100;
+				const int p = QInputDialog::getInt(
+					this,
+					QString::fromUtf8(obs_module_text(
+						"Dock.SpeedCustom")),
+					QStringLiteral("%"), start, 5, 400, 5,
+					&ok);
+				if (ok)
+					EventStore::instance().setAngleSpeed(
+						eventId, a1c, p / 100.0);
+			});
 		m.exec(sp->mapToGlobal(QPoint(0, sp->height())));
 	});
 
