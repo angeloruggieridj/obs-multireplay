@@ -251,7 +251,14 @@ inline Scheme schemeFor(ThemeChoice choice, const QPalette &pal)
 	s.textDim = hex(mix(bg, fg, 0.26));
 	s.accent = hex(hl);
 	s.accentText = hex(hlText);
-	s.tabBar = hex(hl);
+	// THE ACTIVE LIST TAB IS A CONSTANT, not the theme's accent. The redesign
+	// settled this: the tab an operator is on is wayfinding — it has to read as
+	// the same thing from across a gallery, whatever OBS is themed with — so it
+	// is a fixed navy whose LUMINANCE follows the panel (signalOn with darkFloor
+	// 0, exactly like the greens), never the OBS highlight, which under
+	// "follow the OBS theme" could be any hue. On Broadcast this is a no-op:
+	// hl there already IS #1D3D74.
+	s.tabBar = hex(signalOn(QColor("#1D3D74"), bg, dark, 0));
 
 	// SIGNAL. Fixed hues; only their lightness is answerable to the theme.
 	const QColor recHue("#C0202A");
@@ -532,7 +539,11 @@ QTabBar#mrListTabs { background: transparent; }
    outside the painter can measure, and "is this tab wide enough for its own
    name" is exactly the question the gate has to answer. */
 QTabBar#mrListTabs::tab {
-	background: @raise1@; color: @textMuted@;
+	/* An inactive tab still carries a LIST NAME the operator has to read at a
+	   glance — that is @textKey@ (a label at rest), not @textMuted@ (a caption).
+	   On the light theme @textMuted@ (0.50 mix) fell to ~2.9:1 and the names
+	   under it read as grey mush. */
+	background: @raise1@; color: @textKey@;
 	border: 1px solid @border@; border-bottom: 0;
 	padding: 3px 9px; margin-right: 1px; min-width: 16px;
 }
