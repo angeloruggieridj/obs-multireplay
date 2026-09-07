@@ -299,6 +299,15 @@ public:
 		auto *v = new QVBoxLayout(this);
 		v->setContentsMargins(4, 4, 4, 4);
 		v->setSpacing(3);
+		// LET THE PANEL BE DRAGGED SHORTER THAN ITS CONTENT WANTS. In OBS
+		// this widget is a child of a QDockWidget, which can be resized
+		// below its content's minimum — the splitter above compresses, the
+		// list scrolls. A top-level QWidget instead pins itself to
+		// layout()->minimumSize(), so the two-panel command area's stacked
+		// height (MARCA over REVIEW in Short) would keep the mockup from
+		// ever being made short enough for panelModeFor to pick Short.
+		// SetNoConstraint drops that pin, matching the dock.
+		v->setSizeConstraint(QLayout::SetNoConstraint);
 		root_ = v;
 
 		buildMonitors();
@@ -425,6 +434,21 @@ public:
 		v->addWidget(controls_);
 
 		applyPanelMode(PanelMode::Wide, /*force*/ true);
+
+		// RE-STAMP THE HEIGHTS THE SECTIONS PINNED. Applying a style sheet
+		// (which the ctor does above, and which showing the panel triggers
+		// again on first polish) writes each key's QSS min-height onto the
+		// widget and drops the setFixedHeight KeyBlock::apply() gave it —
+		// so a two-row key (REC, the green PLAY) or one built at gallery
+		// scale falls back to the sheet's ordinary 26 px. repinKeys()
+		// reads kPinnedHeightProperty and puts the pin back.
+		//
+		// ONCE NOW and ONCE AFTER THE FIRST POLISH: the ctor runs before
+		// the panel is shown, and show() re-polishes the whole tree and
+		// drops the pin again. The real dock re-pins on its poll() beat;
+		// the deferred call is the mockup's stand-in for that.
+		repinKeys(this);
+		QTimer::singleShot(0, this, [this]() { repinKeys(this); });
 	}
 
 	// ── CHANGING THE THEME WHILE THE PANEL IS UP ─────────────────────────
@@ -453,17 +477,11 @@ public:
 		repinKeys(this);
 	}
 
-	ControlStrip *strip_ = nullptr;
-	// §6.3 — TALL COLLAPSES BAY + CLIPS + SPEED BEHIND ONE "MORE" KEY.
-	// Kept so applyTallCollapse can hide()/show() them: a section a mode
-	// hides wholesale (not the per-widget hiding channel B already does to
-	// the bay selector) is what the layout engine's orderFor now skips —
-	// see the note there. Null bay_ is a real state, not a bug: with one
-	// bay the section is never built at all (§2.10), so there is nothing
-	// to collapse and the more menu says so instead of showing an empty row.
-	KeyBlock *bay_ = nullptr, *clips_ = nullptr, *speed_ = nullptr,
-		 *more_ = nullptr;
-	QMenu *moreMenu_ = nullptr;
+	// MARCA | REVIEW (dock-layout.hpp), the same strip the real dock uses.
+	TwoPanelStrip *strip_ = nullptr;
+	// The "Canali replay" box, kept so the channel-B toggle can hide it
+	// whole (absent, not disabled, with one bay).
+	KeyBlock *bay_ = nullptr;
 	bool tallCollapsed_ = false;
 	PanelMode mode_ = PanelMode::Wide;
 	// What the wide arrangement asks for, measured while it is worn: Short is
@@ -510,7 +528,7 @@ public:
 		bodySplit_->setOrientation(sideBySide ? Qt::Horizontal
 						      : Qt::Vertical);
 
-		strip_->setStacked(m == PanelMode::Wide ? 0 : 1);
+		strip_->setMode(m);
 		applyCompactChrome(m == PanelMode::Tall);
 		applyTallCollapse(m == PanelMode::Tall);
 
@@ -563,33 +581,17 @@ public:
 			projectLbl_->setVisible(!compact);
 	}
 
-	// ── §6.3 — BAY, CLIPS AND SPEED GO BEHIND "MORE" IN A COLUMN ─────────
-	//
-	// hide()/isHidden(), not setSectionVisible(): the layout engine's
-	// orderFor now skips a section on isHidden() precisely so a mode can
-	// make one disappear from the strip's arithmetic entirely, the way
-	// channel B off already makes the bay selector disappear from a
-	// mockup that never builds it in the first place. Here the block DOES
-	// exist (its keys are needed the moment the panel widens back out),
-	// so hiding it wholesale is the only way to stop it costing a line.
+	// TALL USED TO COLLAPSE BAY + CLIPS + SPEED BEHIND A "MORE" KEY. The
+	// two-panel redesign (spec §4) does that job with the REVIEW / MARCA tab
+	// bar instead — TwoPanelStrip::setMode(Tall) shows one panel at a time —
+	// so there is nothing here to hide. Kept as a guarded no-op because
+	// applyPanelMode still names the transition and a future arrangement may
+	// want the hook back.
 	void applyTallCollapse(bool tall)
 	{
 		if (tall == tallCollapsed_)
 			return;
 		tallCollapsed_ = tall;
-		if (bay_)
-			bay_->setVisible(!tall);
-		if (clips_)
-			clips_->setVisible(!tall);
-		if (speed_)
-			speed_->setVisible(!tall);
-		if (more_)
-			more_->setVisible(tall && (bay_ || clips_ || speed_));
-		if (strip_) {
-			for (KeyBlock *b : {bay_, clips_, speed_, more_})
-				if (b)
-					strip_->blockChanged(b);
-		}
 	}
 
 	void resizeEvent(QResizeEvent *e) override
@@ -961,70 +963,34 @@ private:
 		controls_->setSizePolicy(QSizePolicy::Preferred,
 					 QSizePolicy::Minimum);
 
-		strip_ = new ControlStrip(controls_);
-		// Two macro-rows, REARRANGED (§6.2): row 1 is PREPARE (arm, mark,
-		// pile the clip up), row 2 is SEND IT LIVE (which bay, drive it,
-		// how fast). REC anchors row 1 the way it always did; MARK moves
-		// to the centre lane so it is the first thing the eye lands on
-		// after the picture, where a bay selector used to sit centred in
-		// a lane that went empty the moment channel B was off (§2.10).
-		// The numbers are still the order the strip folds into a stack
-		// on a narrow dock: REC, mark, bay, transport, speed, clips —
-		// export stays last there, "the one thing nobody touches while
-		// the ball is in play".
-		buildRec(Lane::Left, /*startsLine*/ false, /*rank*/ 0);
-		buildMark(Lane::Centre, /*rank*/ 1);
-		clips_ = buildClips(Lane::Right, /*rank*/ 5);
-		// Whichever of these is inserted FIRST is what has to carry
-		// startsLine: layoutLanes breaks a new line on the entry that
-		// asks for it, in insertion order, not by lane. With B off there
-		// is no bay block at all (absent, not disabled) so the transport
-		// carries it instead.
-		if (g_haveB)
-			bay_ = buildBaySelector(Lane::Left, /*startsLine*/ true,
-						/*rank*/ 2);
-		buildPlayback(Lane::Centre, /*startsLine*/ !g_haveB, /*rank*/ 3);
-		speed_ = buildSpeed(Lane::Right, /*rank*/ 4);
-		// §6.3: built last, ranked last (a stack has a top, and this is
-		// the one thing on it nobody reaches for during a match), visible
-		// only in Tall — applyTallCollapse hides/shows it opposite the
-		// three sections it stands in for.
-		more_ = buildMore(Lane::Right, /*rank*/ 6);
-		addStrip(v, strip_);
+		// THE COMMAND PANEL: MARCA | REVIEW (spec §4). Two titled panels
+		// instead of six folding sections — MARCA is what you do to the
+		// live feed (arm, mark, pick a bay), REVIEW is what you do to the
+		// replay (play, transport, modes, speed). Wide sits them side by
+		// side, Short stacks them, Tall swaps them behind a tab bar. Same
+		// blocks the strip always had; this changes how they are grouped.
+		strip_ = new TwoPanelStrip(controls_);
+		strip_->setHeaders(buildRecHeader(), buildReviewHeader());
+		strip_->addToMarca(buildQuickClip());
+		strip_->addToMarca(buildManualClip());
+		// The bay selector is always BUILT (its keys are needed the moment
+		// the panel widens) but SECTION-HIDDEN when there is one bay —
+		// absent from the arithmetic, not merely empty.
+		bay_ = buildBaySelector();
+		strip_->addToMarca(bay_);
+		if (!g_haveB)
+			bay_->setSectionVisible(false);
+		strip_->setReviewGrid(buildPlaybackBox(), buildModesBox(),
+				      buildTransportBox(), buildTrimBox(),
+				      buildSpeedBox());
+		strip_->setFooters(buildMarcaFooter(), buildReviewFooter());
+		v->addWidget(strip_);
 
 		// THE STATUS LINE SITS ABOVE THE GREEN BAND. The band says what is
 		// on air; the line says what the next replay will run under. Below
 		// it, the modes read as a footnote to a clip that is already
 		// playing.
 		v->addWidget(buildStatusBar());
-
-		// ── the on-air band ──────────────────────────────────────────
-		auto *clip = new QLabel(
-			QStringLiteral("  0003 · C2 · 50%          −00:03.20   Σ 00:11"),
-			controls_);
-		clip->setStyleSheet(
-			QString("background:%1;color:#fff;font-weight:700;font-size:10px;")
-				.arg(sc_.onAir));
-		clip->setFixedHeight(kClipBarH);
-		// THE PLACEHOLDER MUST NOT SET THE PANEL'S FLOOR. In the panel
-		// this band is a custom-painted widget that elides its own text;
-		// here it is a QLabel, and a QLabel's minimum is the width of its
-		// text — so words chosen for a mockup were deciding how narrow the
-		// dock could be made.
-		clip->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
-		clip->setMinimumWidth(60);
-		auto *skip = iconKey(Icon::SkipNext, QStringLiteral("skipNext"),
-				     QStringLiteral("Clip successiva"), "mrSkip");
-		// It lives ON the green band, always: its mark is the other half
-		// of a label the sheet already writes in white.
-		setKeyIconRole(skip, Icon::SkipNext, IconRole::OnSignal, g_tints);
-		skip->setFixedSize(30, kClipBarH - 6);
-		skip->setMinimumHeight(0);
-		auto *cl = new QHBoxLayout(clip);
-		cl->setContentsMargins(4, 3, 4, 3);
-		cl->addStretch(1);
-		cl->addWidget(skip, 0, Qt::AlignVCenter);
-		v->addWidget(clip);
 
 		// ── the position bar ─────────────────────────────────────────
 		auto *seekRow = new QWidget(controls_);
@@ -1050,7 +1016,14 @@ private:
 		v->addWidget(seekRow);
 	}
 
-	// ── the status line: it OWNS the modes ───────────────────────────────
+	// ── the status line ─────────────────────────────────────────────────
+	//
+	// What the NEXT replay will run under: which list and event the
+	// transport is about, and the speed. The modes (loop · music · mute ·
+	// in output) used to sit here; spec §4 makes them REVIEW's "Modi" box
+	// and the REVIEW header's IN OUTPUT, and the health badge moves to
+	// MARCA's footer — so this line is now only the notice and the speed
+	// read-out.
 	QWidget *buildStatusBar()
 	{
 		auto *box = new QWidget(controls_);
@@ -1060,17 +1033,6 @@ private:
 		h->setContentsMargins(6, 2, 6, 2);
 		h->setSpacing(6);
 
-		auto *health = key(QStringLiteral("1"), "mrHealth");
-		health->setProperty("level", QStringLiteral("warn"));
-		// DENSE, so the style sheet does not ask for a taller frame than
-		// the widget owns — which put the badge's bottom border outside
-		// it and read as a box nobody closed.
-		health->setProperty("dense", true);
-		health->setMinimumHeight(0);
-		health->setFixedHeight(kStatusH - 6);
-		setKeyIconRole(health, Icon::Health, IconRole::Warn, g_tints, 11);
-		setKeyId(health, QStringLiteral("health"));
-		h->addWidget(health);
 		auto *notice = new QLabel(QStringLiteral("Lista 01 · evento 0003"),
 					  box);
 		notice->setObjectName(QStringLiteral("mrStatusText"));
@@ -1078,30 +1040,7 @@ private:
 		statusDetail_ = notice;
 		h->addWidget(notice, 1);
 
-		// THE MODES SIT AGAINST THE RIGHT EDGE, not in the middle. A group
-		// centred on a bar whose width changes with the dock is a group
-		// that moves every time the panel is resized; against an edge the
-		// hand finds it the same way twice.
 		h->addWidget(statusSep(box));
-		auto *loop = statusKey(Icon::Loop, QStringLiteral("LOOP"),
-				       QStringLiteral("loop"),
-				       QStringLiteral("Ripeti la clip"));
-		h->addWidget(loop);
-		auto *music = statusKey(Icon::Music, QStringLiteral("MUSICA"),
-					QStringLiteral("music"),
-					QStringLiteral("Musica sotto il replay"));
-		h->addWidget(music);
-		auto *mute = statusKey(Icon::Mute, QStringLiteral("MUTO"),
-				       QStringLiteral("muteAudio"),
-				       QStringLiteral("Replay mutato nel mixer"));
-		h->addWidget(mute);
-		auto *out = statusKey(Icon::ToOutput, QStringLiteral("IN OUTPUT"),
-				      QStringLiteral("toOutput"),
-				      QStringLiteral("Il replay prende il Program"));
-		out->setChecked(true);
-		h->addWidget(out);
-		h->addWidget(statusSep(box));
-
 		auto *speed = new QLabel(QStringLiteral("1.00×"), box);
 		speed->setObjectName(QStringLiteral("mrStatusValue"));
 		h->addWidget(speed);
@@ -1125,29 +1064,98 @@ private:
 		return b;
 	}
 
-	// ── MARK: three rows, because it answers three questions ─────────────
+	// ── MARCA header row: the panel names itself, next to REC + clock ────
 	//
-	//   −5s −10s −20s    take the last N seconds whole   (first function)
-	//   IN  OUT  ✕       take a point, close it, undo it (second)
-	//   ⇤IN OUT⇥         move a point already taken      (third)
-	//
-	// It was one row of eight, and one row said those three were the same
-	// kind of act. The order is how often an operator reaches for them
-	// during a match, top first.
-	void buildMark(Lane lane, int rank)
+	// One line, same fixed height as REVIEW's header (spec §4). REC spans no
+	// rows here — it is a compact key in the header, not the two-row giant of
+	// the old strip: the take is armed from here, its numbers read from here.
+	KeyBlock *buildRecHeader()
 	{
 		auto *blk = new KeyBlock(QString(), this);
-		auto *m5 = key(QStringLiteral("−5s"));
-		setKeyId(m5, QStringLiteral("mark5"));
-		auto *m10 = key(QStringLiteral("−10s"));
-		setKeyId(m10, QStringLiteral("mark10"));
-		auto *m20 = key(QStringLiteral("−20s"));
-		setKeyId(m20, QStringLiteral("mark20"));
-		// IN AND OUT STAY WORDS. The brief asks for icons wherever an
-		// action is universally recognisable, and these are the
-		// counter-example it names itself: every mark on a timeline is a
-		// bracket of some kind, and a panel whose most-pressed keys are
-		// two brackets is a panel you have to hover to use.
+		auto *name = new QLabel(QStringLiteral("MARCA"), this);
+		name->setObjectName(QStringLiteral("mrPanelTitle"));
+		name->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+
+		auto *rec = iconTextKey(Icon::Rec, QStringLiteral("REC"),
+					QStringLiteral("rec"), "mrRec", 13);
+		setKeyIconRole(rec, Icon::Rec, IconRole::Rec, g_tints, 13);
+		// The property the sheet keys its two states off. Unset, neither
+		// #mrRec[recording="false"] nor ["true"] matched and the key fell
+		// back to the ordinary key colour.
+		rec->setProperty("recording", false);
+		rec->setMinimumWidth(78);
+		// UNCAP THE HEIGHT: iconTextKey pins it at kKeyH, but REC's height
+		// is KeyBlock::apply()'s to set — it follows gallery scale, and a
+		// hard max would stop it growing in the full-screen view.
+		rec->setMaximumHeight(QWIDGETSIZE_MAX);
+
+		auto *clock = new QLabel(QStringLiteral("09:52:20"), this);
+		clock->setObjectName(QStringLiteral("mrClock"));
+		auto *sub = new QLabel(QStringLiteral("rim. 01:10:24"), this);
+		sub->setObjectName(QStringLiteral("mrMuted"));
+		sub->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+		// FIXED WIDTH: these change four times a second and their text
+		// changes LENGTH with it; a width change re-flows the strip.
+		clock->setFixedWidth(96);
+
+		blk->setShapes({{Cell(name, 1, false), Cell(rec, 1, false),
+				 Cell(clock, 1, false), Cell(sub, 1)}},
+			       {{Cell(name, 1, false), Cell(rec, 1, false),
+				 Cell(clock, 1, false), Cell(sub, 1)}});
+		return blk;
+	}
+
+	// ── REVIEW header row: ■ REVIEW · event id · IN OUTPUT ──────────────
+	KeyBlock *buildReviewHeader()
+	{
+		auto *blk = new KeyBlock(QString(), this);
+		auto *name = new QLabel(QStringLiteral("\xE2\x96\xA0 REVIEW"), this);
+		name->setObjectName(QStringLiteral("mrPanelTitle"));
+		name->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+
+		auto *ev = new QLabel(QStringLiteral("0003"), this);
+		ev->setObjectName(QStringLiteral("mrReviewEvent"));
+		ev->setAlignment(Qt::AlignCenter);
+
+		auto *toOut = statusKey(Icon::ToOutput, QStringLiteral("IN OUTPUT"),
+					QStringLiteral("toOutput"),
+					QStringLiteral("Il replay prende il Program"));
+		toOut->setChecked(true);
+		toOut->setFixedHeight(kKeyH);
+
+		blk->setShapes({{Cell(name, 2, false), Cell(ev, 3),
+				 Cell(toOut, 2, false)}},
+			       {{Cell(name, 2, false), Cell(ev, 3),
+				 Cell(toOut, 2, false)}});
+		return blk;
+	}
+
+	// ── MARCA body box 1 — Clip rapida: the last N seconds, whole ───────
+	//
+	// Function-azure keys (#mrFn): a quick clip is a one-press capture, a
+	// class of its own between a neutral command and the filled green PLAY.
+	KeyBlock *buildQuickClip()
+	{
+		auto *blk = new KeyBlock(QStringLiteral("Clip rapida"), this);
+		QVector<Cell> row;
+		for (int sec : {5, 10, 20}) {
+			// A MINUS SIGN, not a hyphen: U+2212, "a duration before an
+			// instant".
+			auto *b = key(QString("\xE2\x88\x92%1s").arg(sec), "mrFn");
+			setKeyId(b, QString("mark%1").arg(sec));
+			row << Cell(b);
+		}
+		blk->setShapes({row}, {row});
+		return blk;
+	}
+
+	// ── MARCA body box 2 — Clip manuale: take a point, close it, undo it ─
+	KeyBlock *buildManualClip()
+	{
+		auto *blk = new KeyBlock(QStringLiteral("Clip manuale"), this);
+		// IN AND OUT STAY WORDS — every mark on a timeline is a bracket,
+		// and a panel whose two most-pressed keys are two brackets is one
+		// you hover to use. Neutral commands, not the filled green PLAY.
 		auto *in = key(QStringLiteral("IN"));
 		setKeyId(in, QStringLiteral("markIn"));
 		auto *out = key(QStringLiteral("OUT"));
@@ -1156,31 +1164,12 @@ private:
 				       QStringLiteral("Annulla la marcatura"),
 				       "mrDanger");
 		// #mrDanger colours a LABEL and this key has none — only the ✕ —
-		// so without a role the one destructive key on the row was drawn
+		// so without a role the one destructive key of the group was drawn
 		// exactly as neutral as the two it undoes.
 		setKeyIconRole(cancel, Icon::Cancel, IconRole::Danger, g_tints);
-		auto *tin = iconKey(Icon::TrimIn, QStringLiteral("trimIn"),
-				    QStringLiteral("Porta l'IN qui"));
-		auto *tout = iconKey(Icon::TrimOut, QStringLiteral("trimOut"),
-				     QStringLiteral("Porta l'OUT qui"));
-		// SIX COLUMNS so the row of two divides as evenly as the rows of
-		// three: on three columns the trim row left a hole in the corner,
-		// and the eye finds that hole every time it reads the block.
-		//
-		// FOLDED IT IS TWO ROWS, and that is a deliberate trade rather
-		// than a compromise. In a column every key row is charged to the
-		// event list, and a third row here put the panel's floor at 668 px
-		// — which is fine in an OBS side dock (they are as tall as the
-		// screen) and impossible in a small floating window. The hierarchy
-		// stands where there is room to draw it; where there is not, the
-		// durations keep their own row and the points and the trims share
-		// the next one.
-		blk->setShapes({{Cell(m5, 2), Cell(m10, 2), Cell(m20, 2)},
-				{Cell(in, 2), Cell(out, 2), Cell(cancel, 2)},
-				{Cell(tin, 3), Cell(tout, 3)}},
-			       {{Cell(m5), Cell(m10), Cell(m20), Cell(cancel)},
-				{Cell(in), Cell(out), Cell(tin), Cell(tout)}});
-		strip_->addBlock(blk, lane, false, rank);
+		blk->setShapes({{Cell(in), Cell(out), Cell(cancel)}},
+			       {{Cell(in), Cell(out), Cell(cancel)}});
+		return blk;
 	}
 
 	// ── WHICH BAY the keys drive. That is all this section is now ────────
@@ -1192,19 +1181,24 @@ private:
 	// row of keys can do better: the key says "C5", the picture says what
 	// C5 is pointing at.
 	//
-	// With one bay the section is not here at all — not disabled, absent.
-	KeyBlock *buildBaySelector(Lane lane, bool startsLine, int rank)
+	// With one bay the section is SECTION-HIDDEN by the caller — absent from
+	// the strip's arithmetic, not merely empty (buildControls, one bay).
+	KeyBlock *buildBaySelector()
 	{
-		auto *blk = new KeyBlock(QString(), this);
+		auto *blk = new KeyBlock(QStringLiteral("Canali replay"), this);
 		QVector<Cell> row;
 		// A↔B, not A|B: it says what the mode DOES (a command goes to
 		// both bays) rather than naming two things with a bar between.
-		for (const char *l : {"A↔B", "A", "B"}) {
-			auto *b = key(QString::fromUtf8(l), "mrChanSel");
+		// Same code mapping as the real dock's buildChannelRow: A↔B is 2,
+		// A is 0, B is 1.
+		for (const auto &lc : {std::make_pair("A↔B", 2),
+				       std::make_pair("A", 0),
+				       std::make_pair("B", 1)}) {
+			auto *b = key(QString::fromUtf8(lc.first), "mrChanSel");
 			b->setCheckable(true);
-			b->setChecked(QString::fromUtf8(l) == QStringLiteral("A"));
+			b->setChecked(lc.second == 0);
 			b->setMinimumWidth(38);
-			setKeyId(b, QStringLiteral("bay%1").arg(QString::fromUtf8(l)));
+			setKeyId(b, QStringLiteral("bay%1").arg(lc.second));
 			row << Cell(b);
 		}
 		auto *swap = iconKey(Icon::Swap, QStringLiteral("swapBays"),
@@ -1214,263 +1208,224 @@ private:
 		// mistake it puts the wrong clip on air.
 		row << Cell(nullptr, 1) << Cell(swap);
 		blk->setShapes({row}, {row});
-		strip_->addBlock(blk, lane, startsLine, rank);
 		return blk;
 	}
 
-	// ── REC: the take, and every number about it ─────────────────────────
-	//
-	// One section, as it should always have been: arming the take, how long
-	// it has been running, how much room is left, and the wall clock. They
-	// were spread between here and the status line, so "how long have we
-	// been recording" was answered in a different place from "are we
-	// recording".
-	//
-	// REC SPANS BOTH ROWS. It is one of the three first-function keys on the
-	// panel (REC, PLAY, NOW) and it is drawn bigger than the rest — the same
-	// height as the section, so nothing beside it is left misaligned.
-	void buildRec(Lane lane, bool startsLine, int rank)
-	{
-		auto *blk = new KeyBlock(QString(), this);
-		auto *rec = iconTextKey(Icon::Rec, QStringLiteral("REC"),
-					QStringLiteral("rec"), "mrRec", 13);
-		// The dot is red, like the word beside it. At rest the key is
-		// chrome with a red label; armed it is filled red and the mark
-		// turns white with it (see poll() in the dock).
-		setKeyIconRole(rec, Icon::Rec, IconRole::Rec, g_tints, 13);
-		// The property the sheet keys its two states off. Unset, NEITHER
-		// #mrRec[recording="false"] nor ["true"] matched and the key fell
-		// back to the ordinary key colour — so the mockup was drawing a
-		// REC key in grey and calling it drawn.
-		rec->setProperty("recording", false);
-		rec->setMaximumHeight(QWIDGETSIZE_MAX);
-		rec->setMinimumWidth(78);
-
-		// HOW LONG THE TAKE HAS BEEN RUNNING is the number the operator
-		// looks for, so it is the big one and it is red while it runs.
-		// The wall clock and the room left are the small print under it.
-		auto *elapsed = new QLabel(QStringLiteral("09:52:20"), this);
-		elapsed->setObjectName(QStringLiteral("mrStatusValue"));
-		elapsed->setProperty("rec", true);
-		auto *sub = new QLabel(QStringLiteral("17:22:06 · rim. 01:10:24"),
-				       this);
-		sub->setObjectName(QStringLiteral("mrMuted"));
-		// FIXED WIDTH, and it is not cosmetic: these change four times a
-		// second and their text changes LENGTH with it. A width change
-		// re-flows the strip, which changes its height, which makes the
-		// panel redistribute height — and what gives it up is the
-		// pictures, whose resize re-allocates a swap chain on the
-		// graphics thread. A label that cannot change width cannot start
-		// that chain.
-		elapsed->setFixedWidth(132);
-		sub->setFixedWidth(132);
-
-		const BlockShape shape{{Cell(rec, 1, true, 2), Cell(elapsed, 1, false)},
-				       {Cell(nullptr, 1), Cell(sub, 1, false)}};
-		blk->setShapes(shape, shape);
-		strip_->addBlock(blk, lane, startsLine, rank);
-	}
-
-	// ── the transport, and the two keys that matter most in it ───────────
-	//
-	//   ▶⏸ ■ ◀ ↺ ⏮ ⏭ ▾   drive the clip that is showing
-	//   [      NOW      ]  come back to the live edge
-	//   [  PLAY  ]         put the selected events on air — two rows tall
+	// ── REVIEW grid row 0, left — Riproduzione: PLAY (big) + NOW (big) ──
 	//
 	// PLAY IS THE BIGGEST KEY ON THE PANEL because it is the one that takes
-	// Program, and NOW is the widest because it is the way back. They were a
-	// text button and a small key in a row of eight, the same weight as a
-	// frame step, so the eye had to read the whole strip to find either.
-	void buildPlayback(Lane lane, bool startsLine, int rank)
+	// Program; NOW is the same size because it is the way back. A 1 px
+	// spacer holds the second grid row open for the row-span-2 cells.
+	KeyBlock *buildPlaybackBox()
 	{
-		auto *blk = new KeyBlock(QString(), this);
-		auto *pp = iconKey(Icon::Play, QStringLiteral("playPause"),
-				   QStringLiteral("Riproduci / pausa"), "mrPlay");
-		auto *stop = iconKey(Icon::Stop, QStringLiteral("stop"),
-				     QStringLiteral("Stop"));
-		auto *rev = iconKey(Icon::Reverse, QStringLiteral("playReverse"),
-				    QStringLiteral("Riproduci all'indietro"));
+		auto *blk = new KeyBlock(QStringLiteral("Riproduzione"), this);
+		auto *play = iconKey(Icon::Play, QStringLiteral("playEvents"),
+				     QStringLiteral("Riproduci gli eventi selezionati"),
+				     "mrAccent");
+		// The one filled key on the panel: white mark on solid green.
+		setKeyIconRole(play, Icon::Play, IconRole::OnSignal, g_tints, 22);
+		play->setMaximumHeight(QWIDGETSIZE_MAX);
+		play->setMinimumWidth(64);
+
+		auto *now = key(QStringLiteral("NOW"), "mrNow");
+		setKeyId(now, QStringLiteral("now"));
+		now->setProperty("live", false);
+		now->setToolTip(QStringLiteral("Torna al fronte live"));
+		now->setMaximumHeight(QWIDGETSIZE_MAX);
+		now->setMinimumWidth(56);
+
+		auto *rowFill = new QWidget(this);
+		rowFill->setObjectName(QStringLiteral("mrRowFill"));
+		rowFill->setFixedHeight(1);
+
+		const BlockShape shape{
+			{Cell(play, 3, true, 2), Cell(now, 3, true, 2)},
+			{Cell(rowFill, 6, false)}};
+		blk->setShapes(shape, shape);
+		return blk;
+	}
+
+	// ── REVIEW grid row 0, right — Modi: last/loop, then mute/music/CAM ─
+	KeyBlock *buildModesBox()
+	{
+		auto *blk = new KeyBlock(QStringLiteral("Modi"), this);
 		auto *last = iconKey(Icon::PlayLast, QStringLiteral("playLast"),
 				     QStringLiteral("Riproduci l'ultimo evento"));
+		auto *loop = key(QStringLiteral("LOOP"), "mrToggle");
+		loop->setCheckable(true);
+		setKeyId(loop, QStringLiteral("loop"));
+		auto *mute = key(QStringLiteral("MUTO"), "mrToggle");
+		mute->setCheckable(true);
+		setKeyId(mute, QStringLiteral("muteAudio"));
+		auto *music = key(QStringLiteral("\xE2\x99\xAA"), "mrToggle");
+		music->setCheckable(true);
+		setKeyId(music, QStringLiteral("music"));
+		music->setToolTip(QStringLiteral("Musica sotto il replay"));
+
+		// CAM — pick an angle with the mouse when there are no multiview
+		// tiles to click. QToolButton with a popup menu, opened on click.
+		auto *cam = new QToolButton(this);
+		cam->setObjectName(QStringLiteral("mrCam"));
+		cam->setText(QStringLiteral("CAM"));
+		cam->setToolTip(QStringLiteral("Angolo"));
+		setKeyId(cam, QStringLiteral("cam"));
+		cam->setMinimumHeight(kKeyH);
+		cam->setMaximumHeight(kKeyH);
+		{
+			auto *m = new QMenu(cam);
+			for (int i = 0; i < g_cams; i++)
+				m->addAction(QString("%1  C%1").arg(i + 1));
+			QObject::connect(cam, &QToolButton::clicked, cam, [cam, m]() {
+				m->popup(cam->mapToGlobal(QPoint(0, cam->height())));
+			});
+		}
+
+		for (QPushButton *b : {last, loop, mute, music})
+			b->setFixedHeight(kKeyH);
+
+		blk->setShapes({{Cell(last, 3), Cell(loop, 3)},
+				{Cell(mute, 2), Cell(music, 2), Cell(cam, 2)}},
+			       {{Cell(last, 3), Cell(loop, 3)},
+				{Cell(mute, 2), Cell(music, 2), Cell(cam, 2)}});
+		return blk;
+	}
+
+	// ── REVIEW grid row 1, left — Trasporto ─────────────────────────────
+	//
+	//   ⏮ ⏭   the two frame steps, side by side, in timeline order
+	//   ◀ ▶ ■  reverse, play/pause, stop  (enlarged, icon-only)
+	KeyBlock *buildTransportBox()
+	{
+		auto *blk = new KeyBlock(QStringLiteral("Trasporto"), this);
 		auto *sb = iconKey(Icon::StepBack, QStringLiteral("stepBack"),
 				   QStringLiteral("Un fotogramma indietro"));
 		auto *sf = iconKey(Icon::StepFwd, QStringLiteral("stepFwd"),
 				   QStringLiteral("Un fotogramma avanti"));
-		auto *more = menuKey(Icon::Menu, QStringLiteral("playOptions"),
-				     QStringLiteral("Altre opzioni"));
-		// NO WIDTH CAP. The panel's ▾ has none — its section sizes it,
-		// which comes to the mark plus the key's own padding. Capped at
-		// 22 here it had SIX pixels of content for a 14 px chevron, so
-		// this tool was rendering a smudge on a key the panel draws
-		// properly. A stand-in narrower than the real key measures a
-		// mark that was never clipped.
-
-		auto *now = key(QStringLiteral("NOW"), "mrNow");
-		setKeyId(now, QStringLiteral("now"));
-		now->setToolTip(QStringLiteral("Torna al fronte live"));
-
-		auto *play = iconKey(Icon::Play, QStringLiteral("playEvents"),
-				     QStringLiteral("Riproduci gli eventi selezionati"),
-				     "mrAccent");
-		// The one filled key on the panel: white mark on solid green,
-		// which is what the sheet already says about its label.
-		setKeyIconRole(play, Icon::Play, IconRole::OnSignal, g_tints, 22);
-		play->setMaximumHeight(QWIDGETSIZE_MAX);
-		// WIDE AS WELL AS TALL. Two rows of height alone made it a green
-		// stripe; the key that takes Program should be the one rectangle
-		// the eye lands on without reading anything.
-		play->setMinimumWidth(96);
-		setKeyIcon(play, Icon::Play, g_tints, 22);
-
-		const BlockShape wide{
-			{Cell(pp), Cell(stop), Cell(rev), Cell(last), Cell(sb),
-			 Cell(sf), Cell(more), Cell(play, 1, true, 2)},
-			{Cell(now, 7)}};
-		const BlockShape flat{
-			{Cell(pp), Cell(stop), Cell(rev), Cell(last), Cell(sb),
-			 Cell(sf), Cell(more)},
-			{Cell(now, 4), Cell(play, 3)}};
-		blk->setShapes(wide, flat);
-		strip_->addBlock(blk, lane, startsLine, rank);
-	}
-
-	// ── CLIPS, UNIFIED (§6.2): everything done to an event AFTER it is ───
-	// ── marked, in one section instead of two ─────────────────────────────
-	//
-	// ▲ ▼ move the selected event in its list's running order — the order
-	// the sequence export writes and the order a queue plays, so it is not
-	// a tidying-up gesture, it is the edit. ⋯ duplicates or deletes it.
-	// Export used to sit one section over, under the speed dial, which
-	// made "what do I do with a clip once it is marked" a question with two
-	// different answers in two different corners of the panel. One section
-	// answers it now: reorder it, act on it, or get it out.
-	KeyBlock *buildClips(Lane lane, int rank)
-	{
-		auto *blk = new KeyBlock(QString(), this);
-		auto *up = iconKey(Icon::MoveUp, QStringLiteral("moveUp"),
-				   QStringLiteral("Sposta l'evento su"));
-		auto *dn = iconKey(Icon::MoveDown, QStringLiteral("moveDown"),
-				   QStringLiteral("Sposta l'evento giù"));
-		auto *more = menuKey(Icon::More, QStringLiteral("clipActions"),
-				     QStringLiteral("Duplica · Elimina"));
-		auto *exp = iconTextKey(Icon::ExportClip, QStringLiteral("Export"),
-					QStringLiteral("export"));
-		exp->setToolTip(QStringLiteral("Esporta la clip o l'intera sequenza"));
-		remember(exp);
-		// TALL: two rows — order/actions, then export on its own line so
-		// it reads as the section's second question rather than a fourth
-		// key crowded onto the first row's end.
-		const BlockShape tall{{Cell(up), Cell(dn), Cell(more)},
-				      {Cell(exp, 3)}};
-		// FLAT: one row, all four side by side — this section is short
-		// enough that folding it costs a line for no reason.
-		const BlockShape flat{{Cell(up), Cell(dn), Cell(more), Cell(exp)}};
-		blk->setShapes(tall, flat);
-		// EXPORT DROPS ITS WORD WHEN THE STRIP FOLDS, joining its three
-		// neighbours as an icon the tooltip still names. Folded is exactly
-		// where this section sits closest to the panel's own edge — a
-		// stacked side dock, a Short arrangement's left column — and a
-		// labelled key there is the one thing in the row asking for more
-		// width than the other three combined.
-		blk->setOnShape([exp](bool flat) {
-			exp->setText(flat ? QString() : QStringLiteral("Export"));
-		});
-		strip_->addBlock(blk, lane, false, rank);
+		auto *rev = iconKey(Icon::Reverse, QStringLiteral("playReverse"),
+				    QStringLiteral("Riproduci all'indietro"));
+		auto *pp = iconKey(Icon::Play, QStringLiteral("playPause"),
+				   QStringLiteral("Riproduci / pausa"), "mrPlay");
+		// EXACTLY ONE button carries this glyph — the gate finds Stop by it.
+		auto *stop = iconKey(Icon::Stop, QStringLiteral("stop"),
+				     QStringLiteral("Stop"));
+		for (QPushButton *b : {sb, sf, rev, pp, stop}) {
+			b->setFixedHeight(kKeyH);
+			b->setMinimumWidth(40);
+		}
+		blk->setShapes({{Cell(sb), Cell(sf), Cell(nullptr), Cell(rev),
+				 Cell(pp), Cell(stop)}},
+			       {{Cell(sb), Cell(sf), Cell(nullptr), Cell(rev),
+				 Cell(pp), Cell(stop)}});
 		return blk;
 	}
 
-	// ── VELOCITA — just the speed now that export has its own section ────
-	//
-	//   25 33 50 75 100 2×
-	//   [ the dial ]
-	KeyBlock *buildSpeed(Lane lane, int rank)
+	// ── REVIEW grid row 1, right — Rifinitura: ⇤IN  OUT⇥ ────────────────
+	KeyBlock *buildTrimBox()
 	{
-		auto *blk = new KeyBlock(QString(), this);
+		auto *blk = new KeyBlock(QStringLiteral("Rifinitura"), this);
+		auto *tin = iconKey(Icon::TrimIn, QStringLiteral("trimIn"),
+				    QStringLiteral("Porta l'IN qui"));
+		auto *tout = iconKey(Icon::TrimOut, QStringLiteral("trimOut"),
+				     QStringLiteral("Porta l'OUT qui"));
+		for (QPushButton *b : {tin, tout}) {
+			b->setFixedHeight(kKeyH);
+			b->setMinimumWidth(40);
+		}
+		blk->setShapes({{Cell(tin), Cell(tout)}},
+			       {{Cell(tin), Cell(tout)}});
+		return blk;
+	}
+
+	// ── REVIEW grid row 2 — Velocità: five presets over the dial ────────
+	KeyBlock *buildSpeedBox()
+	{
+		auto *blk = new KeyBlock(QStringLiteral("Velocità"), this);
 		QVector<Cell> row;
 		QList<QPushButton *> chips;
-		for (const char *l : {"25%", "33%", "50%", "75%", "100%", "2×"}) {
-			auto *b = key(QString::fromUtf8(l), "mrSpeedChip");
-			b->setChecked(QString::fromUtf8(l) == QStringLiteral("100%"));
-			setKeyId(b, QStringLiteral("speed%1").arg(
-					    QString::fromUtf8(l)));
+		// 25 / 50 / 75 / 100 / 125 (spec §4): slow motion and a touch
+		// over; the 2x fast-forward is a hotkey now, not a chip.
+		for (int pct : {25, 50, 75, 100, 125}) {
+			auto *b = key(QString("%1%").arg(pct), "mrSpeedChip");
+			b->setCheckable(true);
+			b->setChecked(pct == 100);
+			setKeyId(b, QStringLiteral("speed%1").arg(pct));
+			b->setFixedHeight(kKeyH);
 			chips << b;
 			row << Cell(b);
 		}
 		equaliseKeyWidths(chips);
 		auto *dial = new QSlider(Qt::Horizontal, this);
 		dial->setObjectName(QStringLiteral("mrSpeed"));
-		dial->setRange(5, 200);
+		dial->setRange(25, 125);
 		dial->setValue(100);
 		dial->setMinimumWidth(110);
 		dial->setFixedHeight(kKeyH);
+		auto *lbl = new QLabel(QStringLiteral("1.00\xC3\x97"), this);
+		lbl->setObjectName(QStringLiteral("mrTimecode"));
+		lbl->setMinimumWidth(42);
+		lbl->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
 
-		const BlockShape shape{row, {Cell(dial, 6)}};
+		const BlockShape shape{row, {Cell(dial, 4), Cell(lbl, 1, false)}};
 		blk->setShapes(shape, shape);
-		strip_->addBlock(blk, lane, false, rank);
 		return blk;
 	}
 
-	// ── §6.3 — "⋯ ALTRO": WHERE BAY, CLIPS AND SPEED GO IN A COLUMN ──────
-	//
-	// Six sections in Tall's narrow width cost six lines — there is no room
-	// for even two of them to share one, which is what packs Short's own
-	// stack down to two or three (§6.4). REC, MARK and TRANSPORT stay
-	// visible: they are the 90% of what gets pressed during a match. The
-	// rest collapses behind one key, on the same menu-popup pattern the
-	// gear and the clip-actions key already use — no widget here is a
-	// second copy of a real one, it is the SAME menu that would open from
-	// the real section, just reachable from one place instead of three.
-	KeyBlock *buildMore(Lane lane, int rank)
+	// ── FOOTERS: health badge under MARCA, the green on-air band under
+	// REVIEW (spec §0/§4). MARCA's footer is a fixed-height carrier so its
+	// body lines up with REVIEW's grid even while the badge is hidden.
+	QWidget *buildMarcaFooter()
 	{
-		auto *blk = new KeyBlock(QString(), this);
-		auto *btn = menuKey(Icon::More, QStringLiteral("moreCollapsed"),
-				    QStringLiteral("Bay · Clip · Velocità"),
-				    "mrGear");
-		moreMenu_ = btn->findChild<QMenu *>();
-		// REPLACES menuKey's placeholder content with the actual three
-		// sections it stands in for. The real dock wires each entry to
-		// CLICK the real (hidden) button underneath rather than
-		// reimplementing its slot — one set of logic, not two that can
-		// drift; the mockup only has to show the shape of that menu.
-		if (moreMenu_) {
-			moreMenu_->clear();
-			if (g_haveB) {
-				QAction *ab = moreMenu_->addAction(
-					QStringLiteral("A\xe2\x86\x94"
-						       "B"));
-				ab->setCheckable(true);
-				ab->setChecked(true);
-				moreMenu_->addAction(QStringLiteral("A"))
-					->setCheckable(true);
-				moreMenu_->addAction(QStringLiteral("B"))
-					->setCheckable(true);
-				moreMenu_->addAction(
-					QStringLiteral("\xe2\x87\x84 Scambia A/B"));
-				moreMenu_->addSeparator();
-			}
-			moreMenu_->addAction(QStringLiteral("\xe2\x96\xb2 Sposta su"));
-			moreMenu_->addAction(
-				QStringLiteral("\xe2\x96\xbc Sposta gi\xc3\xb9"));
-			moreMenu_->addAction(QStringLiteral("Duplica"));
-			moreMenu_->addAction(QStringLiteral("Elimina"));
-			moreMenu_->addSeparator();
-			moreMenu_->addAction(QStringLiteral("Esporta clip\xe2\x80\xa6"));
-			moreMenu_->addSeparator();
-			QMenu *speedMenu =
-				moreMenu_->addMenu(QStringLiteral("Velocit\xc3\xa0"));
-			for (const char *l :
-			     {"25%", "33%", "50%", "75%", "100%", "2\xc3\x97"})
-				speedMenu->addAction(QString::fromUtf8(l));
-		}
-		const BlockShape shape{{Cell(btn)}};
-		blk->setShapes(shape, shape);
-		strip_->addBlock(blk, lane, false, rank);
-		// HIDDEN FROM THE START: the panel opens Wide, and
-		// applyTallCollapse's own guard only acts on a CHANGE — it would
-		// never think to hide a block that came into the world already
-		// visible, which is what every KeyBlock does by default.
-		blk->setVisible(false);
-		return blk;
+		auto *foot = new QWidget(this);
+		foot->setObjectName(QStringLiteral("mrMarcaFoot"));
+		foot->setFixedHeight(kKeyH);
+		auto *h = new QHBoxLayout(foot);
+		h->setContentsMargins(0, 0, 0, 0);
+		auto *health = key(QStringLiteral("1"), "mrHealth");
+		health->setProperty("level", QStringLiteral("warn"));
+		health->setProperty("dense", true);
+		health->setMinimumHeight(0);
+		health->setFixedHeight(kKeyH);
+		setKeyIconRole(health, Icon::Health, IconRole::Warn, g_tints, 11);
+		setKeyId(health, QStringLiteral("health"));
+		// AlignLeft only, no vertical flag: an aligned layout item is given
+		// its sizeHint, and #mrHealth[dense] asks for min-height 0 — so a
+		// vertically-aligned badge renders ~13 px and reads as un-hittable.
+		// Letting it fill the fixed-height carrier keeps it a real target.
+		h->addWidget(health, 0, Qt::AlignLeft);
+		h->addStretch(1);
+		return foot;
+	}
+
+	QWidget *buildReviewFooter()
+	{
+		auto *foot = new QWidget(this);
+		foot->setObjectName(QStringLiteral("mrReviewFoot"));
+		auto *h = new QHBoxLayout(foot);
+		h->setContentsMargins(0, 0, 0, 0);
+		auto *clip = new QLabel(
+			QStringLiteral("  0003 · C2 · 50%          −00:03.20   Σ 00:11"),
+			foot);
+		clip->setObjectName(QStringLiteral("mrClipBar"));
+		clip->setStyleSheet(
+			QString("background:%1;color:#fff;font-weight:700;font-size:10px;")
+				.arg(sc_.onAir));
+		clip->setFixedHeight(kClipBarH);
+		// THE PLACEHOLDER MUST NOT SET THE PANEL'S FLOOR — a QLabel's
+		// minimum is the width of its text, and words chosen for a mockup
+		// were deciding how narrow the dock could be made.
+		clip->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+		clip->setMinimumWidth(60);
+		auto *skip = iconKey(Icon::SkipNext, QStringLiteral("skipNext"),
+				     QStringLiteral("Clip successiva"), "mrSkip");
+		setKeyIconRole(skip, Icon::SkipNext, IconRole::OnSignal, g_tints);
+		skip->setFixedSize(30, kClipBarH - 6);
+		skip->setMinimumHeight(0);
+		auto *cl = new QHBoxLayout(clip);
+		cl->setContentsMargins(4, 3, 4, 3);
+		cl->addStretch(1);
+		cl->addWidget(skip, 0, Qt::AlignVCenter);
+		h->addWidget(clip, 1);
+		return foot;
 	}
 
 	// The tiles, laid into the block chosen for the room they were given.
@@ -1822,6 +1777,18 @@ bool inEventList(const QWidget *c)
 	return false;
 }
 
+// The Tall arrangement's REVIEW / MARCA tab bar (mrPanelTabs) builds its own
+// scroll buttons (ScrollLeftButton / ScrollRightButton) — Qt widgets, not
+// panel keys, and they carry no mrKey, no tooltip and no minimum size worth
+// enforcing.
+bool inTabBar(const QWidget *c)
+{
+	for (const QWidget *p = c; p; p = p->parentWidget())
+		if (qobject_cast<const QTabBar *>(p))
+			return true;
+	return false;
+}
+
 void checkNothingClipped(Mock *w, const QString &label)
 {
 	const QRect panel(QPoint(0, 0), w->size());
@@ -1862,7 +1829,7 @@ void checkHitTargets(Mock *w, const QString &label)
 	int small = 0;
 	QString worst;
 	for (QAbstractButton *b : w->findChildren<QAbstractButton *>()) {
-		if (!b->isVisible() || inEventList(b))
+		if (!b->isVisible() || inEventList(b) || inTabBar(b))
 			continue;
 		// The status line's own keys are shorter by design — they are
 		// pressed while being looked at, not reached for blind.
@@ -1895,7 +1862,7 @@ void checkLabelsFit(Mock *w, const QString &label)
 	int cut = 0;
 	QString worst;
 	for (QAbstractButton *b : w->findChildren<QAbstractButton *>()) {
-		if (!b->isVisible() || b->text().isEmpty())
+		if (!b->isVisible() || b->text().isEmpty() || inTabBar(b))
 			continue;
 		const int need = b->fontMetrics().horizontalAdvance(b->text()) +
 				 (b->icon().isNull() ? 0 : b->iconSize().width() + 4);
@@ -1926,7 +1893,7 @@ void checkTooltips(Mock *w, const QString &label)
 	QString worst;
 	for (QAbstractButton *b : w->findChildren<QAbstractButton *>()) {
 		if (b->objectName().startsWith(QStringLiteral("qt_")) ||
-		    inEventList(b))
+		    inEventList(b) || inTabBar(b))
 			continue;
 		// A key with a word on it says what it is by saying it.
 		if (!b->text().isEmpty() || !b->toolTip().isEmpty())
@@ -2032,89 +1999,52 @@ RowFit rowFit(Mock *w)
 	return f;
 }
 
-// §6.4 — SHORT PACKS THE FOLDED SECTIONS ONTO SHARED LINES, not one per
-// section. The plan for this asked for a new `ControlStrip::setStacked(2)`
-// that lays every section's FLAT shape and packs several to a line; reading
-// `layoutStack` shows that mechanism already exists — its greedy pass keeps
-// adding blocks to the current line while they fit the width, and only
-// starts a new one when the next block would not. What did not exist was
-// anything that LOCKED that in: a regression back to one section per line
-// changes nothing else about the checks, since every section still fits,
-// still has its keys, still folds — it just costs a dock the height of six
-// rows instead of two or three, on the one arrangement whose whole point is
-// staying short. So this measures lines, not looks.
+// SHORT STACKS MARCA OVER REVIEW (spec §4). The two-panel command area
+// replaced the six folding sections: Short is no longer "pack the flat
+// shapes onto shared lines", it is "the two titled panels, one above the
+// other". So the check is structural — both panels on screen, REVIEW's top
+// below MARCA's bottom — not a line count.
 void checkShortStripPacks(Mock *w, const QString &label)
 {
 	if (w->mode_ != PanelMode::Short)
 		return;
-	QVector<int> lines;
-	int naiveSum = 0, count = 0;
-	for (QObject *ch : w->strip_->children()) {
-		auto *kb = dynamic_cast<KeyBlock *>(ch);
-		if (!kb || !kb->isVisible() || kb->width() <= 0 ||
-		    kb->height() <= 0)
-			continue;
-		count++;
-		naiveSum += kb->height();
-		bool onKnownLine = false;
-		for (int y : lines)
-			if (std::abs(y - kb->y()) <= 2) {
-				onKnownLine = true;
-				break;
-			}
-		if (!onKnownLine)
-			lines << kb->y();
-	}
-	if (count == 0)
+	auto *marca = w->strip_->findChild<QWidget *>(QStringLiteral("mrMarca"));
+	auto *review = w->strip_->findChild<QWidget *>(QStringLiteral("mrReview"));
+	if (!check(marca && review,
+		   label + ": Short has both command panels"))
 		return;
-	check(lines.size() < count,
-	      label + ": short packs sections onto shared lines",
-	      QString("%1 sections on %2 lines").arg(count).arg(lines.size()));
-	// Not just "shares a line somewhere" — the strip's OWN measured height
-	// has to actually be shorter than what one row per section would have
-	// cost, or the sharing bought nothing worth keeping.
-	check(w->strip_->height() < naiveSum,
-	      label + ": short's packed strip beats one row per section",
-	      QString("%1 px packed vs %2 px stacked one per line")
-		      .arg(w->strip_->height())
-		      .arg(naiveSum));
+	check(marca->isVisible() && review->isVisible(),
+	      label + ": Short shows MARCA and REVIEW together",
+	      QString("marca=%1 review=%2")
+		      .arg(marca->isVisible())
+		      .arg(review->isVisible()));
+	const int marcaBot = marca->mapTo(w, QPoint(0, marca->height())).y();
+	const int reviewTop = review->mapTo(w, QPoint(0, 0)).y();
+	check(reviewTop >= marcaBot - 2,
+	      label + ": Short stacks MARCA over REVIEW",
+	      QString("marca bottom %1, review top %2").arg(marcaBot).arg(reviewTop));
 }
 
-// §6.3 — TALL COLLAPSES BAY + CLIPS + SPEED BEHIND "MORE". Found by mrKey,
-// same rule as every other gate check on this panel: a label is a
-// translation and a glyph is a drawing, neither is what a key IS.
+// TALL SWAPS THE TWO PANELS BEHIND A TAB BAR (spec §4). Bay/clips/speed used
+// to collapse behind a "more" key; the REVIEW / MARCA tab bar does that job
+// now — one panel visible at a time.
 void checkTallCollapsesToMore(Mock *w, const QString &label)
 {
 	if (w->mode_ != PanelMode::Tall)
 		return;
-	QAbstractButton *more = nullptr, *moveUp = nullptr, *speed25 = nullptr,
-			*bayA = nullptr;
-	for (QAbstractButton *b : w->findChildren<QAbstractButton *>()) {
-		const QString id = b->property(kKeyProperty).toString();
-		if (id == QStringLiteral("moreCollapsed"))
-			more = b;
-		else if (id == QStringLiteral("moveUp"))
-			moveUp = b;
-		else if (id == QStringLiteral("speed25%"))
-			speed25 = b;
-		else if (id == QStringLiteral("bayA"))
-			bayA = b;
-	}
-	check(more && more->isVisible(), label + ": tall shows the more key",
-	      more ? QString() : QStringLiteral("moreCollapsed not found"));
-	check(!moveUp || !moveUp->isVisible(),
-	      label + ": tall collapses clips behind more",
-	      QString("moveUp visible=%1")
-		      .arg(moveUp ? moveUp->isVisible() : false));
-	check(!speed25 || !speed25->isVisible(),
-	      label + ": tall collapses speed behind more",
-	      QString("speed25%% visible=%1")
-		      .arg(speed25 ? speed25->isVisible() : false));
-	if (g_haveB)
-		check(!bayA || !bayA->isVisible(),
-		      label + ": tall collapses the bay selector behind more",
-		      QString("bayA visible=%1")
-			      .arg(bayA ? bayA->isVisible() : false));
+	auto *tabs = w->strip_->findChild<QTabBar *>(QStringLiteral("mrPanelTabs"));
+	auto *marca = w->strip_->findChild<QWidget *>(QStringLiteral("mrMarca"));
+	auto *review = w->strip_->findChild<QWidget *>(QStringLiteral("mrReview"));
+	if (!check(tabs && marca && review,
+		   label + ": Tall has the panel tab bar"))
+		return;
+	check(tabs->isVisible(), label + ": Tall shows the REVIEW / MARCA tabs",
+	      QString("tabs visible=%1").arg(tabs->isVisible()));
+	check(marca->isVisible() != review->isVisible(),
+	      label + ": Tall shows exactly one panel at a time",
+	      QString("marca=%1 review=%2")
+		      .arg(marca->isVisible())
+		      .arg(review->isVisible()));
 }
 
 void checkAspect(Mock *w, const QString &label)
@@ -2126,6 +2056,12 @@ void checkAspect(Mock *w, const QString &label)
 			continue;
 		const int picH = box->height() - w->tagHeight();
 		if (picH <= 0 || box->width() <= 0)
+			continue;
+		// A COLLAPSED PANE IS NOT AN ASPECT BUG. Short at a genuinely
+		// short height (1400x340) sacrifices the pictures so the list and
+		// the two command panels stay usable — the pane is a sliver, and
+		// "a sliver is not 16:9" is not the thing this check is for.
+		if (picH < 16)
 			continue;
 		const double want = box->width() * 9.0 / 16.0;
 		// One pixel of slack: the fit is integer arithmetic and a cell
@@ -2156,7 +2092,7 @@ void checkKeyIds(Mock *w)
 		// view's corner button), and the event list's cells are cells
 		// rather than keys. Neither is one of this panel's keys.
 		if (b->objectName().startsWith(QStringLiteral("qt_")) ||
-		    inEventList(b))
+		    inEventList(b) || inTabBar(b))
 			continue;
 		const QString id = b->property(kKeyProperty).toString();
 		if (id.isEmpty()) {
@@ -3315,6 +3251,17 @@ void checkGalleryScalesKeys()
 			QApplication::processEvents();
 			QApplication::sendPostedEvents();
 		}
+		// The same two calls refreshFullScreenKey() makes: showing the
+		// panel re-polishes every key and drops the fixed height
+		// KeyBlock::apply() gave it, so the pin is re-stamped AFTER the
+		// first polish — a fresh panel built with the flag pre-set is not
+		// enough on its own.
+		w->strip_->refreshAllBlocks();
+		repinKeys(w);
+		for (int i = 0; i < 3; i++) {
+			QApplication::processEvents();
+			QApplication::sendPostedEvents();
+		}
 		int h = -1;
 		for (QAbstractButton *b : w->findChildren<QAbstractButton *>())
 			if (b->property(kKeyProperty).toString() ==
@@ -3439,13 +3386,12 @@ void runHostChecks(QApplication &app, const QString &outDir)
 		     QStringLiteral("rec key"));
 	checkMarkInk(w, QStringLiteral("markCancel"), QColor(g_sc.danger),
 		     QStringLiteral("cancel key"));
-	// The three that open a menu, which is where OBS printed a second one.
+	// The gear opens a menu, which is where OBS printed a second arrow over
+	// our own mark. (The old play-options ▾ and clip-actions ⋯ keys are gone
+	// with the two-panel redesign — spec §8: their functions have dedicated
+	// keys, and the Angolo fallback is the CAM key.)
 	checkOneMarkOnly(w, QStringLiteral("settings"), QStringLiteral("gear"),
 			 outDir);
-	checkOneMarkOnly(w, QStringLiteral("playOptions"),
-			 QStringLiteral("play options"), outDir);
-	checkOneMarkOnly(w, QStringLiteral("clipActions"),
-			 QStringLiteral("clip actions"), outDir);
 
 	checkRowTypeIsOneSize(w, QStringLiteral("list"));
 	checkSettingsDialog(w, outDir);
@@ -3596,7 +3542,7 @@ int runChecks(QPalette pal, QApplication &app, const QString &outDir)
 			    w->minimumSizeHint().width(),
 			    w->minimumSizeHint().height(),
 			    panelModeName(w->mode_),
-			    w->strip_->minHeightForWidth(w->strip_->width()));
+			    w->strip_->minimumSizeHint().height());
 		const QString label = QString(t.name);
 		check(w->mode_ == t.mode, label + ": arrangement chosen",
 		      QString("got %1").arg(panelModeName(w->mode_)));
@@ -3610,10 +3556,6 @@ int runChecks(QPalette pal, QApplication &app, const QString &outDir)
 		if (t.mode == PanelMode::Tall) {
 			const bool fits = w->minimumSizeHint().width() <= 340;
 			check(fits, label + ": fits a side dock", widestMinimum(w));
-			if (!fits)
-				std::printf("      sections: %s\n",
-					    qUtf8Printable(
-						    w->strip_->describeBlocks()));
 		}
 		// THE LIST IS THE ELASTIC ZONE. Whatever else the arrangement
 		// does, the table has to come out usable — the panel exists to
@@ -3872,7 +3814,7 @@ int main(int argc, char **argv)
 			    w->minimumSizeHint().width(),
 			    w->minimumSizeHint().height(),
 			    panelModeName(w->mode_),
-			    w->strip_->isFlat() ? "stack" : "lanes",
+			    w->mode_ == PanelMode::Wide ? "lanes" : "stack",
 			    w->bodySplit_->sizes().value(0),
 			    w->bodySplit_->sizes().value(1));
 	}

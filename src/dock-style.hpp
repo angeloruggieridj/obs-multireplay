@@ -565,7 +565,9 @@ QPushButton#mrPlay[playing="true"]:hover { background: @pvwBg@; border-color: @p
 QPushButton#mrNow {
 	background: @raise1@; border: 1px solid @border@; border-radius: 5px;
 	font-weight: 700; font-size: 10px; letter-spacing: 0.8px;
-	min-height: 24px; min-width: 36px; padding: 0;
+	/* min-width holds the whole word plus the letter-spacing: below this the
+	   key clipped its own "NOW". Spec §4 wants it read as a big key anyway. */
+	min-height: 24px; min-width: 46px; padding: 0;
 	color: @rec@; border-color: @recBg@;
 }
 QPushButton#mrNow:hover { color: @rec@; border-color: @rec@; background: @recBg@; }
