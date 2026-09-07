@@ -855,21 +855,23 @@ class TwoPanelStrip : public QWidget {
 public:
 	explicit TwoPanelStrip(QWidget *parent);
 
-	// Add a sub-box to a panel, in reading order top to bottom.
+	// The fixed-height header row of each panel (name + REC/clock for MARCA,
+	// name + event id + IN OUTPUT for REVIEW). Not a boxed sub-section.
+	void setHeaders(QWidget *marcaHeader, QWidget *reviewHeader);
+	// MARCA's body: up to three boxed sub-sections, top to bottom
+	// (Clip rapida · Clip manuale · Canali replay). Rows 0-1 taller, 2 short.
 	void addToMarca(KeyBlock *b);
-	void addToReview(KeyBlock *b);
+	// REVIEW's body: a 2x3 grid — [playback | modes] / [transport | trim] /
+	// [speed spanning] — in Wide, one column otherwise.
+	void setReviewGrid(KeyBlock *playback, KeyBlock *modes,
+			   KeyBlock *transport, KeyBlock *trim, KeyBlock *speed);
 	// The strip under each panel: health badge (MARCA), on-air band (REVIEW).
-	// Either may be null.
 	void setFooters(QWidget *marcaFoot, QWidget *reviewFoot);
 
 	void setMode(PanelMode m);
 	PanelMode mode() const { return mode_; }
 
-	// Re-apply every block's shape — after a theme change or a gallery-scale
-	// flip, where a block's own flat/tall state has not changed but the keys
-	// inside it must be re-pinned.
 	void refreshAllBlocks();
-	// One block changed inside (a camera appeared, channel B switched off).
 	void blockChanged(KeyBlock *b);
 
 	QSize sizeHint() const override;
@@ -880,16 +882,22 @@ protected:
 
 private:
 	void relayout();
+	void applyGrid();
 	int wantedHeight() const;
 
 	QWidget *marca_ = nullptr;
 	QWidget *review_ = nullptr;
 	QVBoxLayout *marcaCol_ = nullptr;
 	QVBoxLayout *reviewCol_ = nullptr;
+	QWidget *marcaHeader_ = nullptr;
+	QWidget *reviewHeader_ = nullptr;
+	QWidget *reviewGrid_ = nullptr;
+	QGridLayout *grid_ = nullptr;
 	QWidget *marcaFoot_ = nullptr;
 	QWidget *reviewFoot_ = nullptr;
 	QVector<KeyBlock *> marcaBlocks_;
 	QVector<KeyBlock *> reviewBlocks_;
+	QVector<KeyBlock *> reviewBoxes_; // playback, modes, transport, trim, speed
 
 	// Tall only: a tab bar swaps the two panels.
 	QTabBar *tabs_ = nullptr;

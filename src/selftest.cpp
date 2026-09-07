@@ -1008,6 +1008,44 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 
 	c.found = dock && pollTimer && markBtn && markOutBtn && playBtn &&
 		  stepBtn && stepBackBtn && revBtn && revBtn->isEnabled();
+
+	// A LOOK AT WHAT WAS DRAWN, early enough that a later failing check does
+	// not deprive it of one. MR_GATE_SHOT=<dir> writes a PNG of the docked
+	// panel and, floated, at three sizes.
+	if (c.found && getenv("MR_GATE_SHOT")) {
+		const char *sd = getenv("MR_GATE_SHOT");
+		QDockWidget *hd = nullptr;
+		runOnUi([&]() {
+			dock->grab().save(QString("%1/panel-docked.png").arg(sd));
+			for (QWidget *w = dock->parentWidget(); w;
+			     w = w->parentWidget())
+				if (auto *d = qobject_cast<QDockWidget *>(w)) {
+					hd = d;
+					break;
+				}
+		});
+		if (hd) {
+			for (auto wh : {QSize(1180, 760), QSize(900, 360),
+					QSize(320, 900)}) {
+				runOnUi([&]() {
+					hd->setFloating(true);
+					hd->resize(wh);
+				});
+				std::this_thread::sleep_for(
+					std::chrono::milliseconds(800));
+				runOnUi([&]() {
+					dock->grab().save(
+						QString("%1/panel-%2x%3.png")
+							.arg(sd)
+							.arg(wh.width())
+							.arg(wh.height()));
+				});
+			}
+			runOnUi([&]() { hd->setFloating(false); });
+		}
+		obs_log(LOG_INFO, "[selftest] panel screenshots -> %s", sd);
+	}
+
 	if (!c.found) {
 		obs_log(LOG_ERROR,
 			"[selftest] dock not usable (dock=%p timer=%p mark=%p "
@@ -4767,6 +4805,25 @@ void runReopenPass(const std::string &outPath)
 				runOnUi([&]() { host->resize(w, h); });
 				std::this_thread::sleep_for(
 					std::chrono::milliseconds(700));
+				// A LOOK AT WHAT WAS ACTUALLY DRAWN. Off by
+				// default; MR_GATE_SHOT=<dir> writes a PNG of the
+				// dock at each size the reopen pass visits, so a
+				// layout can be compared to the design without a
+				// human watching OBS.
+				if (const char *shotDir =
+					    getenv("MR_GATE_SHOT")) {
+					runOnUi([&]() {
+						const QString p =
+							QString("%1/dock-%2x%3.png")
+								.arg(shotDir)
+								.arg(w)
+								.arg(h);
+						dock->grab().save(p);
+						obs_log(LOG_INFO,
+							"[selftest] shot %s",
+							qUtf8Printable(p));
+					});
+				}
 				runOnUi([&]() {
 					modeName = panelModeName(dock->panelMode());
 					int nw = 1 << 20, n = 0;

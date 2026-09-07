@@ -510,8 +510,17 @@ KeyBlock::KeyBlock(const QString &caption, QWidget *parent)
 	// put a moc'd type in a header the mockup also compiles - so a name is how
 	// a section is found from outside, exactly as the camera tiles are.
 	setObjectName(QStringLiteral("mrBlock"));
+	// Qt honours a style-sheet background/border only on a widget that
+	// carries this — it sets it for a plain QWidget but NOT for a subclass,
+	// and KeyBlock is one. Without it the boxed-sub-section border in the
+	// sheet draws nothing.
+	setAttribute(Qt::WA_StyledBackground, true);
 	auto *v = new QVBoxLayout(this);
-	v->setContentsMargins(0, 0, 0, 0);
+	// A boxed sub-section (spec §4: "sotto-sezioni riquadrate, etichetta che
+	// interrompe il bordo in alto a sinistra"). The border is drawn by
+	// #mrBlock in the sheet; these margins keep the keys off it, with 8 px
+	// at the top for the legend to sit on the border line.
+	v->setContentsMargins(6, 8, 6, 5);
 	v->setSpacing(2);
 
 	// The caption sits ABOVE the keys. It names the group instead of
@@ -523,16 +532,14 @@ KeyBlock::KeyBlock(const QString &caption, QWidget *parent)
 	// reads at a glance instead of a column of headings with keys under them.
 	// A caption line also costs ~16 px on a panel that is short of height.
 	//
-	// THE STRETCH GOES ABOVE THE CAPTION, not between it and the keys. It
-	// used to sit between, so on a deep line the caption stayed pinned to the
-	// top edge while its keys drifted to the middle - and a heading a
-	// centimetre away from what it names has stopped naming it.
-	v->addStretch(1);
+	// THE LEGEND IS AT THE TOP, interrupting the box border. Its negative
+	// top margin (in the sheet) lifts it onto the border line; a panel-
+	// coloured background clears the border behind the text.
 	if (!caption_.isEmpty()) {
 		cap_ = new QLabel(caption_.toUpper(), this);
 		cap_->setObjectName(QStringLiteral("mrZoneTitle"));
 		cap_->setWordWrap(false);
-		cap_->setAlignment(Qt::AlignLeft | Qt::AlignBottom);
+		cap_->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
 		cap_->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
 		v->addWidget(cap_, 0);
 	}
@@ -657,7 +664,11 @@ void KeyBlock::apply()
 		// one where it asked. Folding still wins on its own terms when
 		// the section is NOT hidden: a stacked panel drops captions to
 		// save the line regardless of channel B.
-		cap_->setVisible(!flatActive_ && !sectionHidden_);
+		// The legend names the boxed sub-section (spec §4) in every
+		// arrangement, not only the wide one — the boxes are stacked in
+		// Short and behind a tab in Tall, and a box with no name there is
+		// just a rectangle.
+		cap_->setVisible(!sectionHidden_);
 		cap_->setFixedHeight(kCaptionH);
 	}
 
@@ -673,6 +684,7 @@ void KeyBlock::apply()
 		grid_->setColumnStretch(c, 0);
 
 	int r = 0;
+	int maxCol = 0;
 	for (const QVector<Cell> &row : s) {
 		int c = 0;
 		for (const Cell &cell : row) {
@@ -743,11 +755,23 @@ void KeyBlock::apply()
 			}
 			c += cell.span;
 		}
+		maxCol = std::max(maxCol, c);
 		r++;
 	}
-	if (stretchFrom_ >= 0)
+	if (stretchFrom_ >= 0) {
 		for (int c = stretchFrom_; c <= stretchTo_; c++)
 			grid_->setColumnStretch(c, 1);
+	} else if (maxCol > 0) {
+		// A PHANTOM STRETCH COLUMN just past the last key. Any width the
+		// block is given beyond what its keys ask for lands here, on the
+		// right, instead of being shared out among the key columns —
+		// which is what spread a row of three keys across a whole 40%
+		// panel and gave the redesigned strip its sparse, un-broadcast
+		// look. Keys stay at their natural width; the section reads as a
+		// dense group. (No-op when the block is already sized to its
+		// content, e.g. inside ControlStrip's lanes.)
+		grid_->setColumnStretch(maxCol, 1);
+	}
 	body_->updateGeometry();
 	updateGeometry();
 }
@@ -1427,8 +1451,23 @@ void addStrip(QBoxLayout *parent, ControlStrip *s)
 }
 
 // ---------------------------------------------------------------------------
-// TwoPanelStrip
+// TwoPanelStrip — MARCA | REVIEW, as the redesign draws it
 // ---------------------------------------------------------------------------
+//
+// Two titled panels. Each has a fixed-height HEADER row (the panel's name and,
+// for MARCA, REC + clock; for REVIEW, the event id and IN OUTPUT) and a BODY
+// of boxed sub-sections whose three rows line up across the divide:
+//
+//   MARCA (~40%)                     REVIEW (~60%)
+//   ┌ Clip rapida ─────┐   row 0     ┌ Riproduzione ┐┌ Modi ──────┐
+//   ┌ Clip manuale ────┐   row 1     ┌ Trasporto ───┐┌ Rifinitura ┐
+//   ┌ Canali replay ───┐   row 2     ┌ Velocità ────────────────  ┐
+//   [ health footer ]               [ green on-air band footer ]
+//
+// Rows 0 and 1 are taller than row 2 (stretch 2:2:1), the same in both
+// panels, so the boxes stay aligned. Wide sets the two panels side by side;
+// Short stacks them and REVIEW's grid collapses to one column; Tall swaps
+// them behind a REVIEW / MARCA tab bar.
 
 TwoPanelStrip::TwoPanelStrip(QWidget *parent) : QWidget(parent)
 {
@@ -1439,9 +1478,6 @@ TwoPanelStrip::TwoPanelStrip(QWidget *parent) : QWidget(parent)
 	outer->setContentsMargins(0, 0, 0, 0);
 	outer->setSpacing(4);
 
-	// The Tall tab bar rides on top; it is hidden in the other two shapes,
-	// where the two panels stand together and each names itself in its own
-	// header row (buildReviewHeader / the MARCA label in buildRecBlock).
 	tabs_ = new QTabBar(this);
 	tabs_->setObjectName(QStringLiteral("mrPanelTabs"));
 	tabs_->setDrawBase(false);
@@ -1464,12 +1500,19 @@ TwoPanelStrip::TwoPanelStrip(QWidget *parent) : QWidget(parent)
 	reviewCol_->setContentsMargins(0, 0, 0, 0);
 	reviewCol_->setSpacing(4);
 
-	// The body row: horizontal in Wide (side by side), vertical in the two
-	// narrow shapes. setDirection() flips it without re-parenting a child.
+	// REVIEW's body is a 2-column grid in Wide (Riproduzione | Modi over
+	// Trasporto | Rifinitura, Velocità spanning) and one column otherwise.
+	reviewGrid_ = new QWidget(review_);
+	reviewGrid_->setObjectName(QStringLiteral("mrReviewGrid"));
+	grid_ = new QGridLayout(reviewGrid_);
+	grid_->setContentsMargins(0, 0, 0, 0);
+	grid_->setHorizontalSpacing(6);
+	grid_->setVerticalSpacing(4);
+
 	auto *body = new QWidget(this);
 	row_ = new QHBoxLayout(body);
 	row_->setContentsMargins(0, 0, 0, 0);
-	row_->setSpacing(6);
+	row_->setSpacing(8);
 	row_->addWidget(marca_, 2);
 	row_->addWidget(review_, 3);
 	outer->addWidget(body, 1);
@@ -1478,28 +1521,86 @@ TwoPanelStrip::TwoPanelStrip(QWidget *parent) : QWidget(parent)
 		[this](int) { relayout(); });
 }
 
-static void addBlockToCol(QVBoxLayout *col, QWidget *foot, KeyBlock *b)
+void TwoPanelStrip::setHeaders(QWidget *marcaHeader, QWidget *reviewHeader)
 {
-	// Blocks after the title, footer pinned at the bottom. Insert before the
-	// footer if it is already there, else append.
-	const int idx = foot ? std::max(0, col->indexOf(foot)) : col->count();
-	col->insertWidget(idx, b);
+	marcaHeader_ = marcaHeader;
+	reviewHeader_ = reviewHeader;
+	if (marcaHeader_) {
+		marcaHeader_->setParent(marca_);
+		marcaHeader_->setObjectName(QStringLiteral("mrPanelHeader"));
+		marcaCol_->insertWidget(0, marcaHeader_);
+	}
+	if (reviewHeader_) {
+		reviewHeader_->setParent(review_);
+		reviewHeader_->setObjectName(QStringLiteral("mrPanelHeader"));
+		reviewCol_->insertWidget(0, reviewHeader_);
+	}
 }
 
 void TwoPanelStrip::addToMarca(KeyBlock *b)
 {
 	if (!b)
 		return;
+	// After the header, in order; the footer (setFooters) comes last.
+	marcaCol_->insertWidget(1 + marcaBlocks_.size(), b);
+	marcaCol_->setStretch(1 + marcaBlocks_.size(),
+			      marcaBlocks_.size() < 2 ? 2 : 1);
 	marcaBlocks_ << b;
-	addBlockToCol(marcaCol_, marcaFoot_, b);
 }
 
-void TwoPanelStrip::addToReview(KeyBlock *b)
+void TwoPanelStrip::setReviewGrid(KeyBlock *playback, KeyBlock *modes,
+				  KeyBlock *transport, KeyBlock *trim,
+				  KeyBlock *speed)
 {
-	if (!b)
-		return;
-	reviewBlocks_ << b;
-	addBlockToCol(reviewCol_, reviewFoot_, b);
+	reviewBoxes_ = {playback, modes, transport, trim, speed};
+	for (KeyBlock *b : reviewBoxes_)
+		if (b) {
+			b->setParent(reviewGrid_);
+			reviewBlocks_ << b;
+		}
+	reviewCol_->insertWidget(1, reviewGrid_); // after the header
+	reviewCol_->setStretch(1, 1);
+	applyGrid();
+}
+
+void TwoPanelStrip::applyGrid()
+{
+	// Take everything out (widgets survive — they are parented to
+	// reviewGrid_), then place by the current mode.
+	while (QLayoutItem *it = grid_->takeAt(0))
+		delete it;
+	for (int c = 0; c < 4; c++)
+		grid_->setColumnStretch(c, 0);
+	for (int r = 0; r < 4; r++)
+		grid_->setRowStretch(r, 0);
+
+	const bool twoCol = mode_ == PanelMode::Wide;
+	KeyBlock *pb = reviewBoxes_.value(0), *md = reviewBoxes_.value(1),
+		 *tr = reviewBoxes_.value(2), *rf = reviewBoxes_.value(3),
+		 *sp = reviewBoxes_.value(4);
+	if (twoCol) {
+		if (pb)
+			grid_->addWidget(pb, 0, 0);
+		if (md)
+			grid_->addWidget(md, 0, 1);
+		if (tr)
+			grid_->addWidget(tr, 1, 0);
+		if (rf)
+			grid_->addWidget(rf, 1, 1);
+		if (sp)
+			grid_->addWidget(sp, 2, 0, 1, 2);
+		grid_->setColumnStretch(0, 1);
+		grid_->setColumnStretch(1, 1);
+		grid_->setRowStretch(0, 2);
+		grid_->setRowStretch(1, 2);
+		grid_->setRowStretch(2, 1);
+	} else {
+		int r = 0;
+		for (KeyBlock *b : {pb, md, tr, rf, sp})
+			if (b)
+				grid_->addWidget(b, r++, 0);
+		grid_->setColumnStretch(0, 1);
+	}
 }
 
 void TwoPanelStrip::setFooters(QWidget *marcaFoot, QWidget *reviewFoot)
@@ -1533,7 +1634,6 @@ void TwoPanelStrip::relayout()
 	row_->setStretch(0, wide ? 2 : 0);
 	row_->setStretch(1, wide ? 3 : 0);
 
-	// TALL SHOWS ONE PANEL AT A TIME. review is tab 0, marca is tab 1.
 	if (tall) {
 		const bool showReview = tabs_->currentIndex() != 1;
 		marca_->setVisible(!showReview);
@@ -1543,16 +1643,13 @@ void TwoPanelStrip::relayout()
 		review_->setVisible(true);
 	}
 
-	// Each panel names itself in its own header block (■ REVIEW / the MARCA
-	// label in the record block); in Tall the tab bar prints the name and
-	// the header still carries the event id and IN OUTPUT.
-
-	// The sub-boxes wear their tall shape only in Wide; folded otherwise.
+	// Every sub-box wears its wide shape only in Wide; folded otherwise.
 	for (KeyBlock *b : marcaBlocks_)
 		b->setFlat(!wide);
 	for (KeyBlock *b : reviewBlocks_)
 		b->setFlat(!wide);
 
+	applyGrid();
 	updateGeometry();
 	update();
 }
@@ -1591,10 +1688,6 @@ int TwoPanelStrip::wantedHeight() const
 
 QSize TwoPanelStrip::sizeHint() const
 {
-	// WIDTH comes from the layout (the two panels' own minimums, side by
-	// side in Wide); only the HEIGHT is ours to state, and it is exactly
-	// the height the current arrangement needs — nothing spare goes here,
-	// it goes to the picture and the list above.
 	return QSize(QWidget::sizeHint().width(), wantedHeight());
 }
 
@@ -1605,9 +1698,6 @@ QSize TwoPanelStrip::minimumSizeHint() const
 
 void TwoPanelStrip::paintEvent(QPaintEvent *)
 {
-	// A hairline down the gap between the two panels in Wide, the same cue
-	// ControlStrip drew between its lanes: it says "two groups" in one pixel
-	// of width rather than a line of height.
 	if (mode_ != PanelMode::Wide || !marca_->isVisible())
 		return;
 	const int x = (marca_->geometry().right() + review_->geometry().left()) /

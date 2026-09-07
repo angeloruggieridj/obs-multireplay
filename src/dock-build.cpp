@@ -589,7 +589,7 @@ KeyBlock *MultiReplayDock::buildAngleMatrix()
 	// transport glyphs, the percentages - but "A|B  A  B" beside an arrow is
 	// a question the operator has to answer from memory: which of the two
 	// bays do the keys drive. The caption is the answer.
-	auto *blk = new KeyBlock(obs_module_text("Dock.ZoneOutput"), this);
+	auto *blk = new KeyBlock(obs_module_text("Dock.ZoneChannels"), this);
 	channelBWidgets_.clear();
 	// The CAPTION collapses with channel B through KeyBlock::
 	// setSectionVisible() (see applyChannelBVisibility()), NOT through
@@ -747,7 +747,7 @@ KeyBlock *MultiReplayDock::buildReviewHeader()
 
 KeyBlock *MultiReplayDock::buildPlayback()
 {
-	auto *blk = new KeyBlock(QString(), this);
+	auto *blk = new KeyBlock(obs_module_text("Dock.ZonePlayback"), this);
 
 	// ▶ PLAY — the biggest key on the panel: the one that takes the
 	// Program, so the one the eye should land on without reading anything.
@@ -784,17 +784,23 @@ KeyBlock *MultiReplayDock::buildPlayback()
 		clearFreeReview();
 	});
 
-	// Two grid rows, both keys spanning them — big, side by side. The shape
-	// has only these rows: apply() places the span-2 cells, the grid gets
-	// its second row from the span, and rows() == 2 sizes the block for it.
-	blk->setShapes({{Cell(playSel, 3, true, 2), Cell(nowBtn_, 3, true, 2)}},
-		       {{Cell(playSel, 3, true, 2), Cell(nowBtn_, 3, true, 2)}});
+	// TWO real grid rows so PLAY and NOW stand two key-rows tall (spec §4,
+	// "▶ PLAY (grande)" · "NOW (grande, stessa taglia di PLAY)"). A 1 px
+	// spacer widget holds row 1 open for the row-span-2 cells to reach into
+	// — a bare null cell is only a hole and rows() would report 1.
+	auto *rowFill = new QWidget(this);
+	rowFill->setObjectName(QStringLiteral("mrRowFill"));
+	rowFill->setFixedHeight(1);
+	blk->setShapes({{Cell(playSel, 3, true, 2), Cell(nowBtn_, 3, true, 2)},
+			{Cell(rowFill, 6, false)}},
+		       {{Cell(playSel, 3, true, 2), Cell(nowBtn_, 3, true, 2)},
+			{Cell(rowFill, 6, false)}});
 	return blk;
 }
 
 KeyBlock *MultiReplayDock::buildModes()
 {
-	auto *blk = new KeyBlock(QString(), this);
+	auto *blk = new KeyBlock(obs_module_text("Dock.ZoneModes"), this);
 
 	// ↺ "instantly play last event" — a distinct mark from LOOP (Icon::
 	// PlayLast, not Icon::Loop) so the two do not read as the same thing.
@@ -893,7 +899,7 @@ KeyBlock *MultiReplayDock::buildModes()
 
 KeyBlock *MultiReplayDock::buildReviewTransport()
 {
-	auto *blk = new KeyBlock(QString(), this);
+	auto *blk = new KeyBlock(obs_module_text("Dock.ZoneTransport"), this);
 
 	// The two frame steps, side by side, in the order the timeline runs.
 	// The step BACK is not the forward one with the sign changed — see
@@ -975,7 +981,7 @@ KeyBlock *MultiReplayDock::buildReviewTransport()
 
 KeyBlock *MultiReplayDock::buildTrim()
 {
-	auto *blk = new KeyBlock(QString(), this);
+	auto *blk = new KeyBlock(obs_module_text("Dock.ZoneTrim"), this);
 
 	// Move the SELECTED event's in or out point to where the position bar
 	// stands. A mark taken live is late by definition; until this the only
@@ -1073,22 +1079,23 @@ QWidget *MultiReplayDock::buildBottomBar()
 	// they are grouped and arranged, not what is in them.
 	strip_ = new TwoPanelStrip(box);
 
-	// MARCA — buildRecBlock() also creates healthBtn_, which goes in this
-	// panel's footer just below (spec §8: health moved out of the status
-	// line).
-	strip_->addToMarca(buildRecBlock());
-	strip_->addToMarca(buildMarkers());
+	// HEADERS — equal fixed height on both panels (spec §4). buildRecBlock()
+	// carries the MARCA name + REC + clock and also creates healthBtn_ for
+	// the MARCA footer; buildReviewHeader() carries ■ REVIEW + event id +
+	// IN OUTPUT.
+	strip_->setHeaders(buildRecBlock(), buildReviewHeader());
+
+	// MARCA body — three boxed sub-sections that line up with REVIEW's grid
+	// rows: Clip rapida (row 0), Clip manuale (row 1), Canali replay (row 2).
+	strip_->addToMarca(buildQuickClip());
+	strip_->addToMarca(buildManualClip());
 	strip_->addToMarca(buildAngleMatrix()); // sets angleBlock_
 
-	// REVIEW (spec §4), top to bottom: header · playback · modes ·
-	// transport · trim · speed.
-	strip_->addToReview(buildReviewHeader());
-	strip_->addToReview(buildPlayback());
-	strip_->addToReview(buildModes());
-	strip_->addToReview(buildReviewTransport());
-	strip_->addToReview(buildTrim());
+	// REVIEW body — a 2x3 grid: [playback | modes] / [transport | trim] /
+	// [speed spanning].
 	speedBlock_ = buildSpeedBlock();
-	strip_->addToReview(speedBlock_);
+	strip_->setReviewGrid(buildPlayback(), buildModes(),
+			      buildReviewTransport(), buildTrim(), speedBlock_);
 	// (Export / reorder / delete-all are a toolbar over the event table now,
 	// buildTableTools() — spec §3. Off the strip is also what keeps the
 	// panel's floor under what a floating window restores to.)
@@ -1759,33 +1766,43 @@ QPushButton *MultiReplayDock::buildExportKey()
 // Markers: Live/Recorded + IN/OUT + presets
 // ---------------------------------------------------------------------------
 
-KeyBlock *MultiReplayDock::buildMarkers()
+// MARCA body box 0 — Clip rapida: the last N seconds, whole. Big keys, the
+// function colour (spec §4).
+KeyBlock *MultiReplayDock::buildQuickClip()
 {
-	// THREE ROWS, and they are the three questions this group answers, in the
-	// order an operator asks them:
-	//
-	//   IN    OUT   Annulla      <- take a point / close it / throw it away
-	//   -5s   -10s  -20s         <- take the last N seconds whole
-	//   TRIM IN     TRIM OUT     <- move a point of the event already marked
-	//
-	// As one long row these eight keys were a strip with no internal
-	// structure: "-10s" and "OUT" are not the same kind of act, and putting
-	// them side by side said they were.
-	//
-	// SIX COLUMNS, not three, so that the row of two fills the section just as
-	// the rows of three do - on three columns the trim row left one empty cell
-	// in the corner, and the eye finds that hole every time it reads the block.
-	auto *blk = new KeyBlock(obs_module_text("Dock.Mark"), this);
+	auto *blk = new KeyBlock(obs_module_text("Dock.ZoneQuickClip"), this);
+	QVector<QPushButton *> presets;
+	for (int sec : {5, 10, 20}) {
+		// A MINUS SIGN, not a hyphen: these read as durations before an
+		// instant, and U+2212 is the character that says so.
+		auto *b = compactBtn(QString("\xE2\x88\x92%1s").arg(sec), this,
+				     "mrPlay");
+		setKeyId(b, QString("mark%1").arg(sec));
+		connect(b, &QPushButton::clicked, this, [this, sec]() {
+			const int64_t t = markTimeNs();
+			if (!markable(t))
+				return;
+			EventStore::instance().markInOut(t, sec,
+							 currentAngle1() - 1);
+			refreshEvents();
+		});
+		b->setFixedHeight(kKeyH);
+		presets << b;
+	}
+	blk->setShapes({{Cell(presets[0]), Cell(presets[1]), Cell(presets[2])}},
+		       {{Cell(presets[0]), Cell(presets[1]), Cell(presets[2])}});
+	return blk;
+}
 
-	// IN AND OUT STAY WORDS. The brief asks for icons wherever an action is
-	// universally recognisable, and these are the counter-example it names
-	// itself: every mark on a timeline is a bracket of some kind, and a panel
-	// whose two most-pressed keys are two brackets is a panel you have to
-	// hover to use.
-	//
-	// AND THEY ARE COMMANDS, NOT ACTIONS. They were drawn in the same filled
-	// green as "play the events" — so the loudest keys on the panel were two
-	// that mark a point and put nothing on air.
+// MARCA body box 1 — Clip manuale: take a point, close it, throw it away.
+KeyBlock *MultiReplayDock::buildManualClip()
+{
+	auto *blk = new KeyBlock(obs_module_text("Dock.ZoneManualClip"), this);
+
+	// IN AND OUT STAY WORDS — every mark on a timeline is a bracket, and a
+	// panel whose two most-pressed keys are two brackets is one you hover to
+	// use. They are COMMANDS, not actions: neutral, not the filled green of
+	// "play the events".
 	auto *in = compactBtn(obs_module_text("Dock.MarkIn"), this);
 	setKeyId(in, QStringLiteral("markIn"));
 	auto *out = compactBtn(obs_module_text("Dock.MarkOut"), this);
@@ -1794,7 +1811,6 @@ KeyBlock *MultiReplayDock::buildMarkers()
 		const int64_t t = markTimeNs();
 		if (!markable(t))
 			return;
-		// Inherit the currently selected camera angle (0-based).
 		EventStore::instance().markIn(t, currentAngle1() - 1);
 		refreshEvents();
 	});
@@ -1807,59 +1823,21 @@ KeyBlock *MultiReplayDock::buildMarkers()
 		refreshEvents();
 	});
 
-	QList<QPushButton *> keys{in, out};
-	QVector<QPushButton *> presets;
-	for (int sec : {5, 10, 20}) {
-		// A MINUS SIGN, not a hyphen: these read as durations before an
-		// instant, and U+2212 is the character that says so at the size
-		// the keys are drawn.
-		auto *b = compactBtn(QString("−%1s").arg(sec), this);
-		setKeyId(b, QString("mark%1").arg(sec));
-		connect(b, &QPushButton::clicked, this, [this, sec]() {
-			const int64_t t = markTimeNs();
-			if (!markable(t))
-				return;
-			EventStore::instance().markInOut(t, sec,
-							 currentAngle1() - 1);
-			refreshEvents();
-		});
-		presets << b;
-		keys << b;
-	}
-
-	// (Trim — ⇤IN OUT⇥ — moved to REVIEW's own group, buildTrim(): the spec
-	// puts "move a point already marked" with the transport, not with the
-	// keys that take a point in the first place.)
-
-	// Cancel ends the FIRST row, beside the two keys it undoes, and it is the
-	// only key of this group in the danger colour. On the old single row it sat
-	// at the far end, five keys away from the thing it cancels.
+	// ✕ Annulla — the one destructive key of the group, in the danger
+	// colour. #mrDanger colours a label and this key has none, so it also
+	// gets the icon role.
 	auto *cancel = iconBtn(Icon::Cancel, "markCancel",
 			       obs_module_text("Dock.Cancel"), this, "mrDanger");
-	// #mrDanger colours the LABEL, and this key has no label — only the ✕. So
-	// the whole of "this one destroys something" lived in a property that
-	// reached nothing, and the key was drawn exactly as neutral as the two it
-	// undoes.
 	setKeyIconRole(cancel, Icon::Cancel, IconRole::Danger, tintsFor(sc()));
 	connect(cancel, &QPushButton::clicked, this, [this]() {
 		EventStore::instance().markCancel();
 		refreshEvents();
 	});
-	keys << cancel;
 
-	// TWO ROWS, the two questions this group answers (spec §4):
-	//
-	//   −5s −10s −20s    take the last N seconds whole  (clip rapida)
-	//   IN  OUT  ✕       take a point, close it, undo it (clip manuale)
-	//
-	// One row of six said those two were the same kind of act: "-10s" and
-	// "OUT" are not. Folded it is the same two rows.
-	blk->setShapes({{Cell(presets[0], 2), Cell(presets[1], 2),
-			 Cell(presets[2], 2)},
-			{Cell(in, 2), Cell(out, 2), Cell(cancel, 2)}},
-		       {{Cell(presets[0], 2), Cell(presets[1], 2),
-			 Cell(presets[2], 2)},
-			{Cell(in, 2), Cell(out, 2), Cell(cancel, 2)}});
+	for (QPushButton *b : {in, out, cancel})
+		b->setFixedHeight(kKeyH);
+	blk->setShapes({{Cell(in), Cell(out), Cell(cancel)}},
+		       {{Cell(in), Cell(out), Cell(cancel)}});
 	return blk;
 }
 

@@ -362,12 +362,26 @@ R"QSS(
    the strip and every section in it. That is the dark band under a light
    panel. */
 #MultiReplayDock QWidget#mrBottomBar, #MultiReplayDock QWidget#mrStrip,
-#MultiReplayDock QWidget#mrBlock, #MultiReplayDock QWidget#mrLeftCol,
+#MultiReplayDock QWidget#mrLeftCol,
 #MultiReplayDock QWidget#mrListPane, #MultiReplayDock QWidget#mrPreviewPane,
 #MultiReplayDock QWidget#mrMarca, #MultiReplayDock QWidget#mrReview,
+#MultiReplayDock QWidget#mrReviewGrid, #MultiReplayDock QWidget#mrPanelHeader,
 #MultiReplayDock QWidget#mrMarcaFoot, #MultiReplayDock QWidget#mrReviewFoot,
 #MultiReplayDock QWidget#mrRowFill, #MultiReplayDock QWidget#mrTableTools {
 	background: transparent;
+}
+/* ── BOXED SUB-SECTIONS (spec §4) ────────────────────────────────
+   Each group in MARCA and REVIEW is a rounded box whose legend interrupts
+   the top-left of the border. The panel header rows (#mrPanelHeader) are
+   NOT boxed — they carry a divider under them instead. */
+#MultiReplayDock QWidget#mrBlock {
+	background: transparent;
+	border: 1px solid @border@;
+	border-radius: 5px;
+}
+#MultiReplayDock QWidget#mrPanelHeader {
+	border: 0;
+	border-bottom: 1px solid @border@;
 }
 /* MARCA | REVIEW — the two command panels. Each carries a quiet title above
    its blocks (hidden in Tall, where the tab bar prints the name instead). */
@@ -382,7 +396,7 @@ R"QSS(
 #MultiReplayDock QTabBar#mrPanelTabs::tab {
 	background: @raise1@;
 	color: @textMuted@;
-	border: 1px solid @line@;
+	border: 1px solid @border@;
 	border-bottom: 0;
 	padding: 2px 12px;
 	margin-right: 2px;
@@ -453,7 +467,7 @@ QLabel#mrMuted[mrProject="true"] { color: @accent@; font-size: 9px; padding: 0 4
    flat, the accent colour, a little wider than the toolbar's other keys. */
 #MultiReplayDock QToolButton#mrProjectSel {
 	background: transparent;
-	border: 1px solid @line@;
+	border: 1px solid @border@;
 	border-radius: 3px;
 	color: @text@;
 	font-weight: 700;
@@ -1049,7 +1063,12 @@ QFrame#mrZone {
 }
 QLabel#mrZoneTitle {
 	color: @textMuted@; font-size: 9px; font-weight: 700; letter-spacing: 1.1px;
-	padding: 1px 0px 0px 1px; margin: 0px;
+	/* Lift onto the box border and clear it behind the text. The box's
+	   contents margin reserves 8 px at the top; -8 px puts the legend on
+	   the border line. */
+	background: @panel@;
+	padding: 0px 4px 0px 3px;
+	margin-top: -8px; margin-left: 3px; margin-bottom: 1px;
 }
 /* FOLDED: the same caption in a narrow column, where there is one per group
    down the panel instead of one per group across it. Smaller type, tighter

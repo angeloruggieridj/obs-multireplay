@@ -613,7 +613,9 @@ private:
 	// section where it read as part of arming a take.
 	QToolButton *buildGearMenu();
 	KeyBlock *buildRecBlock();
-	KeyBlock *buildMarkers();
+	// MARCA body boxes (spec §4): Clip rapida · Clip manuale · Canali replay.
+	KeyBlock *buildQuickClip();
+	KeyBlock *buildManualClip();
 	KeyBlock *buildAngleMatrix();
 	// REVIEW panel (spec §4), in order: header (■ REVIEW · event id · IN
 	// OUTPUT), playback (PLAY + NOW), modes (↺/LOOP, MUTE/♪/CAM), transport
