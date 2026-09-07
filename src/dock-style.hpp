@@ -679,13 +679,17 @@ QLabel#mrStatUnit { color: @textMuted@; font-size: 11px; padding-bottom: 3px; }
    filled with the theme's accent, so on an eight-camera rig six blue bars
    shouted from the corner of the panel about nothing at all — and the two that
    were carrying a tally could not be picked out of them. */
+/* A BADGE ON THE PICTURE NOW (spec §2), not a bar under it: semi-transparent
+   so the image stays readable behind it, and the tally colour moved from the
+   fill to the letters — a solid fill big enough to read from across the room
+   would cover more of the one thing the tile exists to show. */
 QLabel#mrTileCap {
-	background: @raise1@; color: @textMuted@;
-	font-size: 9px; font-weight: 700; padding: 0px 4px;
+	background: rgba(0, 0, 0, 140); color: @textMuted@;
+	font-size: 9px; font-weight: 700; padding: 1px 5px; border-radius: 3px;
 }
-QLabel#mrTileCap[tally="pvw"] { background: @pvw@; color: #ffffff; }
-QLabel#mrTileCap[tally="pgm"] { background: @rec@; color: #ffffff; }
-QLabel#mrTileCap[tally="replay"] { background: @warnBg@; color: @warn@; }
+QLabel#mrTileCap[tally="pvw"] { color: @pvw@; }
+QLabel#mrTileCap[tally="pgm"] { color: @rec@; }
+QLabel#mrTileCap[tally="replay"] { color: @warn@; }
 
 /* ── channel strip under the preview ─────────────────────── */
 QLabel#mrChanBadge {
@@ -701,12 +705,15 @@ QLabel#mrChanBadge {
    findable in the corner of the eye and read in one glance, and neither of
    those improves past a few pixels. 10 px of coloured band under a picture is
    10 px the event list does not get, on every box, on every rig. */
+/* A BADGE ON THE PICTURE NOW (spec §2), the same change and the same reason
+   as #mrTileCap just above: semi-transparent so the image reads behind it,
+   the tally colour moved from the fill to the letters. */
 QLabel#mrChanTag {
-	background: @raise1@; color: @textMuted@;
-	font-weight: 700; font-size: 9px; padding: 0px 0px;
+	background: rgba(0, 0, 0, 140); color: @textMuted@;
+	font-weight: 700; font-size: 9px; padding: 1px 5px; border-radius: 3px;
 }
-QLabel#mrChanTag[chan="A"][active="true"] { background: @onAirDim@; color: #ffffff; }
-QLabel#mrChanTag[chan="B"][active="true"] { background: @accent@; color: @accentText@; }
+QLabel#mrChanTag[chan="A"][active="true"] { color: @onAir@; }
+QLabel#mrChanTag[chan="B"][active="true"] { color: @accent@; }
 /* ONE LINE, not three. It used to stack list / clip / remaining, then id and
    the two offsets, then timecode and speed — 44 px under the pictures, most of
    which the on-air band and the position bar were already saying. What is left

@@ -37,10 +37,14 @@ including this.
 #include <QLabel>
 #include <QMenu>
 #include <QPushButton>
+#include <QModelIndex>
+#include <QPainter>
 #include <QSettings>
 #include <QSizePolicy>
 #include <QString>
 #include <QStyle>
+#include <QStyledItemDelegate>
+#include <QStyleOptionViewItem>
 #include <QToolButton>
 #include <QVBoxLayout>
 #include <QWidget>
@@ -125,6 +129,34 @@ inline QAbstractButton *findKeyButton(QWidget *root, const QString &id)
 			return b;
 	return nullptr;
 }
+
+// ── THE EVENT-IN-PGM MARK ON THE ID COLUMN (spec §3) ─────────────────────
+//
+// "cella # rossa + striscia verticale sul bordo sinistro (non tutta la
+// riga: quello è il colore selezione, arancio)". Row colour is already
+// spoken for — poll() tints the id ITEM (setForeground/setBackground on
+// Qt::UserRole+1) rather than the row, so "playing" and "selected" (the
+// view's own orange) stay two different things to look at. The stripe is
+// the half a plain item can't carry: no QTableWidgetItem property paints a
+// border on one edge only, so this delegate draws it — a few pixels of
+// paint on top of whatever the base delegate already drew, never a second
+// opinion about the cell's own text or background.
+class OnAirIdDelegate : public QStyledItemDelegate {
+public:
+	using QStyledItemDelegate::QStyledItemDelegate;
+	void paint(QPainter *p, const QStyleOptionViewItem &opt,
+		   const QModelIndex &idx) const override
+	{
+		QStyledItemDelegate::paint(p, opt, idx);
+		if (!idx.data(Qt::UserRole + 1).toBool())
+			return;
+		p->save();
+		p->fillRect(QRect(opt.rect.left(), opt.rect.top(), 3,
+				  opt.rect.height()),
+			    QColor(sc().rec));
+		p->restore();
+	}
+};
 
 // ── §7.3.9 — THE LAST FOLDER AN EXPORT WROTE TO, PER PROJECT ─────────────
 //

@@ -2042,6 +2042,10 @@ QWidget *MultiReplayDock::buildEvents()
 	// focus lives for most of a match. The table would otherwise swallow Enter
 	// (open an editor) and ←/→ (walk across columns) — see eventFilter.
 	events_->installEventFilter(this);
+	// The left-edge stripe on the id of whatever event is in PGM (spec §3) —
+	// see OnAirIdDelegate's own note (dock-internal.hpp) for why it needs a
+	// delegate and not just an item property.
+	events_->setItemDelegateForColumn(kColId, new OnAirIdDelegate(events_));
 	rebuildEventColumns();
 	connect(events_, &QTableWidget::itemChanged, this,
 		&MultiReplayDock::onEventItemChanged);

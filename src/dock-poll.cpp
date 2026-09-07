@@ -900,10 +900,11 @@ void MultiReplayDock::poll()
 	}
 
 
-	// The row on air gets a PGM cue on its id cell. the reference controller colours the whole
-	// row, but our row colour is the selection (orange), and repainting a
-	// selected row would make "playing" and "selected" indistinguishable —
-	// which is the one thing that must never be ambiguous during a match.
+	// The row on air gets a PGM cue on its id cell — a red cell plus the
+	// delegate's own left-edge stripe (spec §3), never the whole row: the
+	// row colour is the selection (orange), and repainting a selected row
+	// would make "playing" and "selected" indistinguishable, which is the
+	// one thing that must never be ambiguous during a match.
 	{
 		const auto &ps = playSt;
 		const bool wasProgrammatic = itemsProgrammatic_;
@@ -916,8 +917,11 @@ void MultiReplayDock::poll()
 			bool isActive = ps.active && (ps.eventId == rowEv);
 			if (idItem->data(Qt::UserRole + 1).toBool() != isActive) {
 				idItem->setData(Qt::UserRole + 1, isActive);
+				idItem->setBackground(
+					isActive ? QBrush(QColor(sc().rec))
+						 : QBrush());
 				idItem->setForeground(
-					isActive ? QBrush(QColor("#ff5a3c"))
+					isActive ? QBrush(QColor("#ffffff"))
 						 : QBrush());
 			}
 		}

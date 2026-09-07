@@ -356,17 +356,12 @@ void AspectBox::relayout()
 {
 	if (!pic_)
 		return;
-	// THE BAND GOES BEFORE THE SHAPE DOES. Squeezed under the OBS preview a
-	// tile can end up shorter than its own naming band, and the first
-	// version answered that by giving the picture the whole box — which is
-	// the one thing this class exists to prevent. A 12 px band on an 11 px
-	// box was not telling anybody anything; the ratio still is.
-	int availH = height();
-	const bool room = tag_ && availH >= kTagH + 10;
-	if (room)
-		availH -= kTagH;
-	if (tag_)
-		tag_->setVisible(room);
+	// THE NAME IS A BADGE OVERLAID ON THE PICTURE NOW (spec §2: "cornice
+	// colorata + badge piccolo in alto a sinistra, fondo semi-trasparente"),
+	// not a band that used to cost the picture its own height. The picture
+	// gets the WHOLE box — a 16:9 rectangle of the full available height —
+	// and the badge sits inside its top-left corner, over the image.
+	const int availH = height();
 	if (availH < 2 || width() < 4) {
 		picRect_ = QRect(0, 0, std::max(0, width()),
 				 std::max(0, height()));
@@ -379,8 +374,33 @@ void AspectBox::relayout()
 	const int y = (availH - h) / 2;
 	picRect_ = QRect(x, y, w, h);
 	pic_->setGeometry(picRect_);
-	if (room)
-		tag_->setGeometry(x, y + h, w, kTagH);
+	if (!tag_)
+		return;
+	// TOO SMALL A PICTURE HAS NO ROOM FOR A BADGE EITHER — the same floor
+	// the band used to observe, just measured against the badge's own
+	// height instead of subtracting it first.
+	const bool room = h >= kTagH + 6 && w >= 24;
+	tag_->setVisible(room);
+	if (!room)
+		return;
+	// NATURAL WIDTH, not the picture's: a badge is small text on a small
+	// chip, and stretching it to the tile's width would print "C1" in a
+	// bar as wide as the image again — the very thing this replaces.
+	const QSize ts = tag_->sizeHint();
+	const int tw = std::min(std::max(1, w - 6), std::max(1, ts.width()));
+	const int th = std::max(kTagH, ts.height());
+	tag_->setGeometry(x + 3, y + 3, tw, th);
+	// RAISED, AND NATIVE, because it overlaps a picture that IS a native
+	// window in the real dock (OBSQTDisplay, qt-display.hpp): a plain
+	// Qt-painted sibling composites into its own top-level's backing
+	// store, which a separate native HWND simply paints over regardless of
+	// which one was added or raised last. Giving the badge a native
+	// window of its own puts it in the SAME stacking mechanism as the
+	// picture, where raise() (SetWindowPos, not a Qt-internal reorder)
+	// actually decides who is on top.
+	if (!tag_->testAttribute(Qt::WA_NativeWindow))
+		tag_->setAttribute(Qt::WA_NativeWindow);
+	tag_->raise();
 }
 
 
