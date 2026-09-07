@@ -2937,6 +2937,22 @@ void MultiReplayDock::updateMultiviewTally()
 			tally = QStringLiteral("pgm");
 		else if (t.cam0 == pvw)
 			tally = QStringLiteral("pvw");
+		// THE FRAME AROUND THE PICTURE IS THE TALLY, read before the name
+		// in the band: green for the angle being watched, a thicker red
+		// for the one on air, nothing otherwise. The band keeps the name,
+		// still coloured by the same property, so the two reinforce.
+		if (t.box) {
+			QColor fc;
+			int fw = 0;
+			if (tally == QLatin1String("pgm")) {
+				fc = QColor(sc().rec);
+				fw = 3;
+			} else if (tally == QLatin1String("pvw")) {
+				fc = QColor(sc().pvw);
+				fw = 2;
+			}
+			t.box->setTallyFrame(fc, fw);
+		}
 		if (t.caption->property("tally").toString() == tally)
 			continue;
 		t.caption->setProperty("tally", tally);

@@ -31,9 +31,11 @@
 #pragma once
 
 #include <QBoxLayout>
+#include <QColor>
 #include <QLayout>
 #include <QLayoutItem>
 #include <QList>
+#include <QRect>
 #include <QSize>
 #include <QString>
 #include <QVector>
@@ -453,18 +455,28 @@ public:
 	// obs_get_video_info and the mockup from its own default.
 	void setRatio(int w, int h);
 
-	// How tall the naming band is. It is a TALLY as much as a label — which
-	// box is which is read by colour before it is read by letter — so it is
-	// small but never nothing.
+	// How tall the naming band is. It carries the name; the TALLY is the
+	// FRAME around the picture (setTallyFrame) — a colour read before a
+	// letter, drawn in the box's own paintEvent so it needs no stylesheet
+	// and no inset of the picture child.
 	static constexpr int kTagH = 12;
+
+	// The tally frame: which angle is watched (a colour), which is on air
+	// (a thicker colour). Set from outside — AspectBox knows no Scheme — as
+	// a colour and a width, or an invalid colour for no frame.
+	void setTallyFrame(const QColor &c, int width);
 
 protected:
 	void resizeEvent(QResizeEvent *) override;
+	void paintEvent(QPaintEvent *) override;
 
 private:
 	void relayout();
 	QWidget *pic_ = nullptr;
 	QWidget *tag_ = nullptr;
+	QRect picRect_;
+	QColor tallyC_;
+	int tallyW_ = 0;
 	int rw_ = 16, rh_ = 9;
 };
 

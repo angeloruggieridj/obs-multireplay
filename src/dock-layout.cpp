@@ -9,6 +9,7 @@
 #include <QPushButton>
 #include <QSizePolicy>
 #include <QPainter>
+#include <QPen>
 #include <QStringList>
 #include <QPaintEvent>
 #include <QResizeEvent>
@@ -322,6 +323,32 @@ void AspectBox::resizeEvent(QResizeEvent *)
 	relayout();
 }
 
+void AspectBox::setTallyFrame(const QColor &c, int width)
+{
+	if (tallyC_ == c && tallyW_ == width)
+		return;
+	tallyC_ = c;
+	tallyW_ = width;
+	update();
+}
+
+void AspectBox::paintEvent(QPaintEvent *)
+{
+	// The tally is drawn as a frame INSIDE the picture rectangle — in the
+	// letterbox margin when the box is not exactly the canvas ratio, and on
+	// the picture's own edge when it is. No stylesheet border (that would
+	// need the picture child inset by its width) and no background: the box
+	// stays transparent until it has a tally to show.
+	if (!tallyC_.isValid() || tallyW_ <= 0 || picRect_.isEmpty())
+		return;
+	QPainter p(this);
+	p.setRenderHint(QPainter::Antialiasing, false);
+	p.setBrush(Qt::NoBrush);
+	p.setPen(QPen(tallyC_, tallyW_));
+	const qreal h = tallyW_ / 2.0;
+	p.drawRect(QRectF(picRect_).adjusted(h, h, -h, -h));
+}
+
 void AspectBox::relayout()
 {
 	if (!pic_)
@@ -338,15 +365,17 @@ void AspectBox::relayout()
 	if (tag_)
 		tag_->setVisible(room);
 	if (availH < 2 || width() < 4) {
-		pic_->setGeometry(0, 0, std::max(0, width()),
-				  std::max(0, height()));
+		picRect_ = QRect(0, 0, std::max(0, width()),
+				 std::max(0, height()));
+		pic_->setGeometry(picRect_);
 		return;
 	}
 	const int w = std::max(1, std::min(width(), availH * rw_ / rh_));
 	const int h = std::max(1, w * rh_ / rw_);
 	const int x = (width() - w) / 2;
 	const int y = (availH - h) / 2;
-	pic_->setGeometry(x, y, w, h);
+	picRect_ = QRect(x, y, w, h);
+	pic_->setGeometry(picRect_);
 	if (room)
 		tag_->setGeometry(x, y + h, w, kTagH);
 }
