@@ -194,7 +194,9 @@ struct Config {
 	// twenty tabs on a dock-width strip leave each name a few pixels, and a
 	// name nobody can read is worse than the number it replaced. An operator
 	// who works with three lists says three, and gets three wide tabs.
-	int eventListCount = 20;
+	// How many list tabs the toolbar shows; the "+" key raises it, up to
+	// kEventLists (spec §1). ~5 by default — a match uses a handful.
+	int eventListCount = 5;
 	// The multiview strip beside the big preview (one small picture per
 	// configured camera, plus the replay). On by default — seeing every angle
 	// at once is the reason a replay operator has a controller at all — but
@@ -319,6 +321,8 @@ public:
 	// it just clamps, stores and persists (config.json). 0..3, see
 	// Config.layoutPreset.
 	void setLayoutPreset(int preset);
+	// The toolbar "+" key: raise how many list tabs are shown (spec §1).
+	void setEventListCount(int count);
 
 	// --- Project management ---
 	// Returns sessionFolder/currentProjectName, or sessionFolder if no project.

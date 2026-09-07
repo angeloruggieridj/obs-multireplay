@@ -200,6 +200,10 @@ QWidget *MultiReplayDock::buildToolbar()
 	// not on a key, and it was the one that stayed the old grey after a theme
 	// change.
 	searchIcon_ = new QLabel(box);
+	// Clickable in the narrow arrangements (spec §7): a tap toggles the
+	// field it stands in for. applyPanelMode sets the `clickable` property;
+	// this filter only acts when it is set.
+	searchIcon_->installEventFilter(this);
 	h->addWidget(searchIcon_);
 	restyleSearchIcon();
 	search_ = new QLineEdit(box);
@@ -384,10 +388,32 @@ QWidget *MultiReplayDock::buildToolbar()
 		EventStore::instance().selectList(idx + 1);
 		refreshEvents();
 	});
-	// The tab bar owns its own row now, so it gets the whole width: with the
-	// names on, the scroll buttons only appear when twenty NAMED lists really
-	// do not fit, instead of as soon as the search box took its share.
-	v->addWidget(listTabs_);
+	// THE "+" KEY (spec §1): ~5 tabs show; + raises the count by one, up to
+	// kEventLists, with the number as the name. Pinned to the right of the
+	// strip so the tabs scroll under it, not past it.
+	auto *tabRow = new QWidget(box);
+	auto *tr = new QHBoxLayout(tabRow);
+	tr->setContentsMargins(0, 0, 0, 0);
+	tr->setSpacing(3);
+	tr->addWidget(listTabs_, 1);
+	addBankBtn_ = new QToolButton(tabRow);
+	addBankBtn_->setObjectName(QStringLiteral("mrToggle"));
+	addBankBtn_->setText(QStringLiteral("+"));
+	addBankBtn_->setCursor(Qt::PointingHandCursor);
+	addBankBtn_->setToolTip(obs_module_text("Dock.AddBankHint"));
+	setKeyId(addBankBtn_, QStringLiteral("addBank"));
+	addBankBtn_->setFixedHeight(kKeyH);
+	connect(addBankBtn_, &QToolButton::clicked, this, [this]() {
+		auto &core = ReplayCore::instance();
+		const int n = core.getConfig().eventListCount;
+		if (n >= kEventLists)
+			return;
+		core.setEventListCount(n + 1);
+		refreshListNames();
+		poll();
+	});
+	tr->addWidget(addBankBtn_, 0);
+	v->addWidget(tabRow);
 
 	return box;
 }

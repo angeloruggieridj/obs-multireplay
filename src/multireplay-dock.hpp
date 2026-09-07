@@ -1526,6 +1526,7 @@ private:
 
 	// events
 	QTabBar *listTabs_ = nullptr; // the 20 lists, broadcast-style tabs
+	QToolButton *addBankBtn_ = nullptr; // "+" — show one more list (spec §1)
 	QLineEdit *search_ = nullptr;
 	QTableWidget *events_ = nullptr;
 	// (No inspector panel: the per-angle enable box, speed and comment are all

@@ -856,6 +856,21 @@ void ReplayCore::setLayoutPreset(int preset)
 	saveConfig();
 }
 
+void ReplayCore::setEventListCount(int count)
+{
+	// The "+" key in the toolbar (spec §1). A targeted write like
+	// setLayoutPreset — no side effects, so setConfig()'s SegmentIndex
+	// re-point and filter rebuild stay out of a mid-match tap.
+	const int c = std::clamp(count, 1, kEventLists);
+	{
+		std::lock_guard<std::mutex> lock(mutex_);
+		if (config_.eventListCount == c)
+			return;
+		config_.eventListCount = c;
+	}
+	saveConfig();
+}
+
 void ReplayCore::setConfig(const Config &cfg)
 {
 	{

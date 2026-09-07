@@ -1501,15 +1501,27 @@ void MultiReplayDock::applyPanelMode(PanelMode m, bool force)
 	// moreBlock_ is ever rebuilt.)
 	applyTallCollapse(m == PanelMode::Tall);
 
-	// The search box is the one control that can be asked to give width back:
-	// in a column, its normal minimum is width the Live and Monitors keys do
-	// not have. In em, like the box's own construction, so a larger OBS font
-	// does not clip it back down to a fixed pixel count.
-	if (search_) {
-		const int em =
-			search_->fontMetrics().horizontalAdvance(QLatin1Char('M'));
-		search_->setMinimumWidth(m == PanelMode::Tall ? qMax(40, 4 * em)
-							       : qMax(80, 7 * em));
+	// SEARCH COLLAPSES TO ITS ICON in the narrow arrangements (spec §7:
+	// "sotto ~1000 px si riduce a icona 🔍 che apre il campo"). Wide keeps
+	// the field always visible. The icon (searchIcon_) is clickable in the
+	// narrow modes — its eventFilter (buildToolbar) toggles the field.
+	if (search_ && searchIcon_) {
+		const bool narrow = m != PanelMode::Wide;
+		searchIcon_->setProperty("clickable", narrow);
+		searchIcon_->setCursor(narrow ? Qt::PointingHandCursor
+					      : Qt::ArrowCursor);
+		if (narrow) {
+			// Hidden until the icon is tapped; the tap sets this
+			// property so the state survives a relayout.
+			search_->setVisible(
+				searchIcon_->property("expanded").toBool());
+		} else {
+			search_->setVisible(true);
+			searchIcon_->setProperty("expanded", false);
+			const int em = search_->fontMetrics().horizontalAdvance(
+				QLatin1Char('M'));
+			search_->setMinimumWidth(qMax(80, 7 * em));
+		}
 	}
 
 	// OUT COLUMN: the one column of the table that is inferable. IN and
@@ -4912,6 +4924,20 @@ bool MultiReplayDock::eventFilter(QObject *watched, QEvent *event)
 			}
 		}
 	}
+	// THE SEARCH ICON OPENS THE FIELD in the narrow arrangements (spec §7).
+	if (watched == searchIcon_ && searchIcon_ &&
+	    searchIcon_->property("clickable").toBool() &&
+	    event->type() == QEvent::MouseButtonPress) {
+		const bool now = !searchIcon_->property("expanded").toBool();
+		searchIcon_->setProperty("expanded", now);
+		if (search_) {
+			search_->setVisible(now);
+			if (now)
+				search_->setFocus(Qt::MouseFocusReason);
+		}
+		return true;
+	}
+
 	// THE TABLE EATS THE KEYS THAT MATTER. A QTableWidget with focus takes
 	// Enter to open an editor and ←/→ to walk across columns, and the table is
 	// where the operator's focus is for most of a match — so without this the
