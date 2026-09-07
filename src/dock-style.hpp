@@ -449,6 +449,19 @@ QLabel#mrMuted      { color: @textMuted@; font-size: 10px; }
    per-widget setStyleSheet(), so applyTheme() re-colours it for free along
    with everything else Qt repolishes when the sheet is replaced. */
 QLabel#mrMuted[mrProject="true"] { color: @accent@; font-size: 9px; padding: 0 4px; }
+/* The project selector: a menu button that reads as a name, not a control —
+   flat, the accent colour, a little wider than the toolbar's other keys. */
+#MultiReplayDock QToolButton#mrProjectSel {
+	background: transparent;
+	border: 1px solid @line@;
+	border-radius: 3px;
+	color: @text@;
+	font-weight: 700;
+	padding: 0 8px;
+	text-align: left;
+}
+#MultiReplayDock QToolButton#mrProjectSel:hover { background: @raise1@; }
+#MultiReplayDock QToolButton#mrProjectSel::menu-indicator { image: none; width: 0; }
 QLabel#mrTimecode   { color: @text@; font-size: 12px; font-weight: 700;
                       letter-spacing: 0.3px; }
 QLabel#mrSectionLabel { color: @textMuted@; font-size: 9px; font-weight: 700;

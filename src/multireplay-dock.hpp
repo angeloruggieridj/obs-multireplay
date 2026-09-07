@@ -1468,7 +1468,7 @@ private:
 	QPushButton *recBtn_ = nullptr;
 	QLabel *statusLbl_ = nullptr;
 	QLabel *clockLbl_ = nullptr;   // wall clock + remaining recording time
-	QLabel *projectLbl_ = nullptr; // shows active project name
+	QToolButton *projectBtn_ = nullptr; // project selector menu (spec §1)
 	// The magnifier beside the search box: the one mark on this panel that is
 	// not on a button, and therefore the one restyleIcons cannot redraw.
 	QLabel *searchIcon_ = nullptr;

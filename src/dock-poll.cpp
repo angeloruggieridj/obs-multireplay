@@ -1305,14 +1305,14 @@ void MultiReplayDock::poll()
 	// or creates a project, and reading it copies the whole Config.
 	if (refreshStatus) {
 		std::string proj = core.getConfig().currentProjectName;
-		if (projectLbl_) {
+		if (projectBtn_) {
 			if (proj.empty()) {
-				projectLbl_->hide();
+				projectBtn_->hide();
 			} else {
-				projectLbl_->setText(
-					QString::fromStdString("[" + proj +
-							       "]"));
-				projectLbl_->show();
+				projectBtn_->setText(
+					QString::fromStdString(proj) +
+					QStringLiteral("  \xE2\x96\xBE"));
+				projectBtn_->show();
 			}
 		}
 	}

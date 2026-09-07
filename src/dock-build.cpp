@@ -125,16 +125,65 @@ QWidget *MultiReplayDock::buildToolbar()
 	h->setContentsMargins(0, 0, 0, 0);
 	h->setSpacing(5);
 
-	projectLbl_ = new QLabel(box);
-	projectLbl_->setObjectName("mrMuted");
-	// A PROPERTY, not a per-widget style sheet: see the mrProject rule in
-	// dock-style.hpp. setStyleSheet() on one widget opens a separate style
-	// context and forces a re-polish of its subtree — measured elsewhere on
-	// this panel at >100 ms — and it does not follow a theme change on its
-	// own, which is why this used to be set twice, here and in applyTheme().
-	projectLbl_->setProperty("mrProject", true);
-	projectLbl_->hide();
-	h->addWidget(projectLbl_);
+	// THE PROJECT SELECTOR (spec §1): a menu button, not a label — Nuovo,
+	// Apri…, and the list of projects on disk. Wider than the other toolbar
+	// items (min-width) so the whole name shows where there is room. Its
+	// menu opens on clicked (popupOnClick), never setMenu.
+	projectBtn_ = new QToolButton(box);
+	projectBtn_->setObjectName(QStringLiteral("mrProjectSel"));
+	projectBtn_->setProperty("mrProject", true);
+	projectBtn_->setCursor(Qt::PointingHandCursor);
+	projectBtn_->setToolButtonStyle(Qt::ToolButtonTextOnly);
+	projectBtn_->setToolTip(obs_module_text("Dock.ProjectMenuHint"));
+	projectBtn_->setMinimumWidth(132);
+	projectBtn_->setMaximumWidth(280);
+	projectBtn_->setFixedHeight(kKeyH);
+	setKeyId(projectBtn_, QStringLiteral("project"));
+	projectBtn_->hide();
+	{
+		auto *menu = new QMenu(projectBtn_);
+		auto *actNew = menu->addAction(obs_module_text("Dock.NewProject"));
+		auto *actOpen =
+			menu->addAction(obs_module_text("Dock.OpenProject"));
+		menu->addSeparator();
+		auto *recent = menu->addMenu(obs_module_text("Dock.RecentProjects"));
+		connect(actNew, &QAction::triggered, this,
+			&MultiReplayDock::newProjectDialog);
+		connect(actOpen, &QAction::triggered, this,
+			&MultiReplayDock::openProjectDialog);
+		// Built on every open: a project created or deleted while the
+		// panel is up must show up without a rebuild.
+		connect(recent, &QMenu::aboutToShow, this, [this, recent]() {
+			recent->clear();
+			auto &core = ReplayCore::instance();
+			const std::string cur = core.getConfig().currentProjectName;
+			const auto all = core.listProjects();
+			if (all.empty()) {
+				QAction *none = recent->addAction(
+					obs_module_text("Dock.NoProjects"));
+				none->setEnabled(false);
+				return;
+			}
+			for (const std::string &p : all) {
+				QAction *a = recent->addAction(
+					QString::fromStdString(p));
+				a->setCheckable(true);
+				a->setChecked(p == cur);
+				connect(a, &QAction::triggered, this,
+					[this, p]() {
+						std::string err;
+						if (!ReplayCore::instance()
+							     .openProject(p, err))
+							showNotice(
+								localizedError(
+									err));
+						poll();
+					});
+			}
+		});
+		popupOnClick(projectBtn_, menu);
+	}
+	h->addWidget(projectBtn_);
 	// ONE STRETCH: the project name holds the left, and everything else — the
 	// search field, the panel keys, and Live — rides flush to the right. The
 	// redesign pulled Live OUT of the middle of the row and into its own corner
@@ -1182,10 +1231,10 @@ QToolButton *MultiReplayDock::buildGearMenu()
 	gear->setToolTip(obs_module_text("Dock.Settings"));
 	gear->setFixedHeight(kKeyH);
 	{
+		// (Nuovo / Apri… moved to the project selector button, spec §1.
+		// The gear keeps the configuration of the whole panel — setup,
+		// settings, tags, chapters.)
 		auto *menu = new QMenu(gear);
-		auto *actNew = menu->addAction(obs_module_text("Dock.NewProject"));
-		auto *actOpen = menu->addAction(obs_module_text("Dock.OpenProject"));
-		menu->addSeparator();
 		auto *actSetup = menu->addAction(obs_module_text("Setup.MenuItem"));
 		auto *actSettings = menu->addAction(obs_module_text("Dock.Settings"));
 		auto *actRename = menu->addAction(obs_module_text("Dock.RenameList"));
@@ -1207,10 +1256,6 @@ QToolButton *MultiReplayDock::buildGearMenu()
 			&MultiReplayDock::runSetupWizard);
 		connect(actRename, &QAction::triggered, this,
 			&MultiReplayDock::renameListDialog);
-		connect(actNew, &QAction::triggered, this,
-			&MultiReplayDock::newProjectDialog);
-		connect(actOpen, &QAction::triggered, this,
-			&MultiReplayDock::openProjectDialog);
 		connect(actSettings, &QAction::triggered, this,
 			&MultiReplayDock::openSettings);
 		connect(actChapters, &QAction::triggered, this,
