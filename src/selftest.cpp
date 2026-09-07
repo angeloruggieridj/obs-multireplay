@@ -4903,13 +4903,34 @@ void runReopenPass(const std::string &outPath)
 				playKeyIsTall ? "two rows" : "NOT two rows");
 			// ── THE MONITORS KEY, PRESSED FOR REAL ──────────────
 			//
-			// Still at 1100x700, still Wide — the arrangement the
-			// report came from ("in full screen the table does not
-			// grow"). Through the key itself, because the rule that
-			// hands the room back lives behind the toggle and a
-			// direct call would prove the pictures hidden and
-			// nothing about the height the list was owed.
+			// At 1100x700, Wide — the arrangement the report came
+			// from ("in full screen the table does not grow").
+			// Resized back here: the tall-tiles measure just left
+			// the window at 340x900, and in Tall leftCol_ can be
+			// taller than the table could ever grow to, so the
+			// assertion below would be arithmetically unreachable.
+			// Through the key itself, because the rule that hands
+			// the room back lives behind the toggle.
 			{
+				// Tall enough for the whole panel to FIT — the
+				// redesigned MARCA | REVIEW panel with its boxed
+				// sub-sections is taller than the old flat strip,
+				// and in a window shorter than its floor every
+				// child overflows and the list has nothing to
+				// gain from the pictures going. Above the floor,
+				// the toggle's whole job is visible.
+				int floorH = 0;
+				runOnUi([&]() {
+					host->setFloating(true);
+					floorH = dock->minimumSizeHint().height();
+				});
+				const int wantH = std::max(760, floorH + 220);
+				runOnUi([&]() { host->resize(1200, wantH); });
+				std::this_thread::sleep_for(
+					std::chrono::milliseconds(700));
+				runOnUi([&]() { host->resize(1200, wantH); });
+				std::this_thread::sleep_for(
+					std::chrono::milliseconds(700));
 				QPushButton *mon = nullptr;
 				runOnUi([&]() {
 					for (QPushButton *b :
