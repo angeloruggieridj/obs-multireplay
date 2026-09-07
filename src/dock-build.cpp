@@ -1112,37 +1112,15 @@ QWidget *MultiReplayDock::buildBottomBar()
 	// does that job now, so the block is not built.
 	moreBlock_ = nullptr;
 
-	// FOOTERS: the health badge under MARCA, and a spacer of the same height
-	// under REVIEW so the two panels' bodies line up (spec §4: "in REVIEW il
-	// footer è riservato ma invisibile").
-	auto *reviewFootSpacer = new QWidget(box);
-	reviewFootSpacer->setFixedHeight(kKeyH);
-	strip_->setFooters(healthBtn_, reviewFootSpacer);
-
-	v->addWidget(strip_);
-
-	// ── THE STATUS LINE, ABOVE THE GREEN BAND ────────────────────────
-	// The band says what is ON AIR; this line says what the next replay will
-	// run under. Below it, the modes read as a footnote to a clip that is
-	// already playing.
-	//
-	// It OWNS the modes rather than mirroring them: loop, music and "in
-	// output" are buttons here and nowhere else. A status bar repeating three
-	// toggles that were also keys in the strip would be three states with two
-	// homes, which is exactly how a toggle ends up left in the wrong position.
-	v->addWidget(buildStatusBar(box));
-
-	// ── Row 3: the green ON-AIR band, and the key that skips past it ──
+	// ── THE GREEN ON-AIR BAND: it is REVIEW's footer (spec §0/§4) ─────
 	// What is playing, on which angle, how much is left, at what speed —
 	// with the fill as its progress. The >> beside it drops the clip and
 	// takes the next item of the queue, which may be another angle of the
 	// same event or the next event: the operator who has seen enough of a
 	// replay should not have to sit through the rest of it, and Stop is a
 	// different thing (it kills the sequence).
+	QWidget *reviewFoot = nullptr;
 	{
-		auto *h = new QHBoxLayout();
-		h->setContentsMargins(0, 0, 0, 0);
-		h->setSpacing(3);
 		clipBar_ = new ClipBar(this);
 		// FULL WIDTH, and the one key that belongs to it sits ON it, at the
 		// right end. >> means "I have seen enough of THIS clip, take the
@@ -1190,7 +1168,8 @@ QWidget *MultiReplayDock::buildBottomBar()
 		bl->addStretch(1);
 		bl->addWidget(nextClipBtn_, 0, Qt::AlignVCenter);
 
-		auto *wrap = new QWidget(this);
+		auto *wrap = new QWidget(box);
+		wrap->setObjectName(QStringLiteral("mrReviewFoot"));
 		auto *wl = new QHBoxLayout(wrap);
 		wl->setContentsMargins(0, 0, 0, 0);
 		wl->addWidget(clipBar_, 1);
@@ -1198,9 +1177,33 @@ QWidget *MultiReplayDock::buildBottomBar()
 		// thing on the panel that fills with colour as a clip runs; a
 		// heading saying "ON AIR" above it was a line of height spent
 		// telling the operator what he could already see.
-		h->addWidget(wrap, 1);
-		v->addLayout(h);
+		reviewFoot = wrap;
 	}
+
+	// FOOTERS: the health badge under MARCA (spec §8), the on-air band under
+	// REVIEW (spec §0). The band is a real footer of the panel now, not a
+	// full-width row below it. The health badge is hidden until there is
+	// something to say, so it rides in a fixed-height carrier — the row is
+	// reserved either way and MARCA's body lines up with REVIEW's (spec §4:
+	// "in REVIEW il footer è riservato ma invisibile", the same the other
+	// way round).
+	auto *marcaFoot = new QWidget(box);
+	marcaFoot->setObjectName(QStringLiteral("mrMarcaFoot"));
+	marcaFoot->setFixedHeight(kKeyH);
+	auto *mfl = new QHBoxLayout(marcaFoot);
+	mfl->setContentsMargins(0, 0, 0, 0);
+	mfl->addWidget(healthBtn_, 0, Qt::AlignLeft | Qt::AlignVCenter);
+	mfl->addStretch(1);
+	strip_->setFooters(marcaFoot, reviewFoot);
+
+	v->addWidget(strip_);
+
+	// ── THE STATUS LINE ─────────────────────────────────────────────
+	// What the NEXT replay will run under: which list and event the
+	// transport is about, where the playhead is, the answer to a key just
+	// pressed. It OWNS the modes (loop, music, mute, in output) rather than
+	// mirroring keys that live elsewhere.
+	v->addWidget(buildStatusBar(box));
 
 	// (The channel selector A|B / A / B and the swap key used to be a row of
 	// their own here, under the green band. They are part of the camera

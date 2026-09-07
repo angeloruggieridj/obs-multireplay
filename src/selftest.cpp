@@ -4452,6 +4452,10 @@ void runReopenPass(const std::string &outPath)
 	// again" is an impression until somebody measures it against the key
 	// beside it.
 	bool playKeyIsTall = false;
+	// SPEC §0/§8 — THE GREEN BAND IS REVIEW'S FOOTER and the health badge is
+	// MARCA's, not the toolbar's. Both are asserted by ancestry: the ClipBar
+	// sits inside #mrReview, and the health key inside #mrMarca.
+	bool bandInReviewFooter = false, healthInMarcaFooter = false;
 	// THE PANEL PAINTS ITS OWN BACKGROUND, asserted as the MECHANISM rather
 	// than as a colour, because the colour cannot fail here and the mechanism
 	// can. Qt honours `#MultiReplayDock { background: … }` only on a widget
@@ -4921,11 +4925,43 @@ void runReopenPass(const std::string &outPath)
 				tallCollapsesToMore =
 					tabs && tabs->isVisible() && pm && pr &&
 					(pm->isVisible() != pr->isVisible());
+
+				// SPEC §0/§8 — the on-air band is REVIEW's footer,
+				// the health badge is MARCA's. By ancestry.
+				if (auto *cb = dock->findChild<ClipBar *>())
+					for (QWidget *a = cb->parentWidget(); a;
+					     a = a->parentWidget())
+						if (a == pr) {
+							bandInReviewFooter = true;
+							break;
+						}
+				QAbstractButton *hb = nullptr;
+				for (QAbstractButton *b :
+				     dock->findChildren<QAbstractButton *>())
+					if (b->property(kKeyProperty).toString() ==
+					    QLatin1String("health")) {
+						hb = b;
+						break;
+					}
+				if (hb)
+					for (QWidget *a = hb->parentWidget(); a;
+					     a = a->parentWidget())
+						if (a == pm) {
+							healthInMarcaFooter = true;
+							break;
+						}
 			});
 			obs_log(tallCollapsesToMore ? LOG_INFO : LOG_ERROR,
 				"[selftest] reopen: tall swaps MARCA/REVIEW behind a "
 				"tab bar: %s",
 				tallCollapsesToMore ? "yes" : "NO");
+			obs_log((bandInReviewFooter && healthInMarcaFooter)
+					? LOG_INFO
+					: LOG_ERROR,
+				"[selftest] reopen: band in REVIEW footer: %s, health "
+				"in MARCA footer: %s",
+				bandInReviewFooter ? "yes" : "NO",
+				healthInMarcaFooter ? "yes" : "NO");
 			obs_log(keysCentred ? LOG_INFO : LOG_ERROR,
 				"[selftest] reopen: stacked keys - %d px of panel to "
 				"the left of them, %d to the right: %s; band says "
@@ -5036,6 +5072,7 @@ void runReopenPass(const std::string &outPath)
 			  tilesWideOk && tilesTallOk &&
 			  shortReachable && shortPacksLines && keysCentred &&
 			  tallCollapsesToMore && playKeyIsTall &&
+			  bandInReviewFooter && healthInMarcaFooter &&
 			  panelPaintsItself && panelMarksAreDrawn &&
 			  monitorsGiveRoom && eventsBackupCreated;
 
@@ -5102,6 +5139,9 @@ void runReopenPass(const std::string &outPath)
 	obs_data_set_bool(checks, "tall_collapses_bay_clips_speed_behind_more",
 			   tallCollapsesToMore);
 	obs_data_set_bool(checks, "play_key_spans_two_rows", playKeyIsTall);
+	obs_data_set_bool(checks, "on_air_band_is_review_footer", bandInReviewFooter);
+	obs_data_set_bool(checks, "health_badge_is_marca_footer",
+			  healthInMarcaFooter);
 	obs_data_set_bool(checks, "panel_paints_its_own_background",
 			  panelPaintsItself);
 	obs_data_set_bool(checks, "panel_marks_are_drawn", panelMarksAreDrawn);
