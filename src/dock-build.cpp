@@ -721,19 +721,16 @@ KeyBlock *MultiReplayDock::buildPlayback()
 		clearFreeReview();
 	});
 
-	// Row 0: event id · IN OUTPUT. Rows 1-2: PLAY and NOW, each two rows
-	// tall — PLAY because it is first-function, NOW the spec asks the same
-	// size. A real spacer widget on row 2 so the grid row exists for the
-	// row-span-2 cells to reach into (a bare null cell is only a hole).
-	auto *rowFill = new QWidget(this);
-	rowFill->setFixedHeight(1);
-	rowFill->setObjectName(QStringLiteral("mrRowFill"));
+	// Row 0: event id · IN OUTPUT. Row 1: PLAY and NOW, each declared two
+	// rows tall — PLAY because it is first-function, NOW the spec asks the
+	// same size. The shape has only these two rows: apply() places PLAY with
+	// rowSpan 2, so the grid gets a second row for it to fill without a
+	// spacer, and the block's own height (rows() == 2) already accounts for
+	// it.
 	blk->setShapes({{Cell(reviewEventLbl_, 3), Cell(toOutputBtn_, 2, false)},
-			{Cell(playSel, 3, true, 2), Cell(nowBtn_, 2, true, 2)},
-			{Cell(rowFill, 5, false)}},
+			{Cell(playSel, 3, true, 2), Cell(nowBtn_, 2, true, 2)}},
 		       {{Cell(reviewEventLbl_, 3), Cell(toOutputBtn_, 2, false)},
-			{Cell(playSel, 3, true, 2), Cell(nowBtn_, 2, true, 2)},
-			{Cell(rowFill, 5, false)}});
+			{Cell(playSel, 3, true, 2), Cell(nowBtn_, 2, true, 2)}});
 	return blk;
 }
 
@@ -909,19 +906,23 @@ KeyBlock *MultiReplayDock::buildReviewControls()
 			       stopBtn_, trimIn, trimOut})
 		b->setFixedHeight(kKeyH);
 
-	// Six columns. Row 0: ↺ LOOP MUTE ♪ CAM. Row 1: ⏮ ⏭ | ◀ ▶ ■ (a margin
-	// between the frame steps and the transport, spec §4). Row 2: ⇤IN
-	// OUT⇥.
+	// Eight columns, two rows. Row 0: ↺ LOOP MUTE ♪ CAM · ⇤IN OUT⇥. Row 1:
+	// ⏮ ⏭ (gap) ◀ ▶ ■ then the trim keys again would crowd it, so trim
+	// rides row 0 beside the modes — "move a point already marked" is a
+	// preparation, not a transport act. A third row was ~30 px the panel's
+	// floor could not spare without a floating window failing to restore.
 	blk->setShapes({{Cell(lastBtn), Cell(loopBtn_), Cell(muteBtn_),
-			 Cell(musicBtn_), Cell(camBtn_)},
+			 Cell(musicBtn_), Cell(camBtn_), Cell(nullptr),
+			 Cell(trimIn), Cell(trimOut)},
 			{Cell(stepBackBtn), Cell(stepBtn), Cell(nullptr),
-			 Cell(revBtn), Cell(playPauseBtn_), Cell(stopBtn_)},
-			{Cell(trimIn, 3), Cell(trimOut, 3)}},
+			 Cell(revBtn), Cell(playPauseBtn_), Cell(stopBtn_),
+			 Cell(nullptr, 2)}},
 		       {{Cell(lastBtn), Cell(loopBtn_), Cell(muteBtn_),
-			 Cell(musicBtn_), Cell(camBtn_)},
+			 Cell(musicBtn_), Cell(camBtn_), Cell(nullptr),
+			 Cell(trimIn), Cell(trimOut)},
 			{Cell(stepBackBtn), Cell(stepBtn), Cell(nullptr),
-			 Cell(revBtn), Cell(playPauseBtn_), Cell(stopBtn_)},
-			{Cell(trimIn, 3), Cell(trimOut, 3)}});
+			 Cell(revBtn), Cell(playPauseBtn_), Cell(stopBtn_),
+			 Cell(nullptr, 2)}});
 	return blk;
 }
 

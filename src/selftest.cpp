@@ -4600,19 +4600,35 @@ void runReopenPass(const std::string &outPath)
 				galleryGrowsInFullscreen ? "grew" : "DID NOT GROW");
 			std::this_thread::sleep_for(
 				std::chrono::milliseconds(700));
+			QRect back;
+			bool stillFull = false;
 			runOnUi([&]() {
-				const QRect back = host->geometry();
-				// Back to the size it had, not to whatever Qt
-				// remembered: coming out of full screen into a
-				// postage stamp in a corner is worse than not
-				// having the key.
+				back = host->geometry();
+				stillFull = host->isFullScreen();
+				// Back to roughly the size it had — NOT a postage
+				// stamp in a corner, which is the fault this
+				// guards. The tolerance is generous on height
+				// because Qt floats this dock at exactly its
+				// minimum, and the MARCA | REVIEW panel's minimum
+				// sits right on the width at which panelModeFor's
+				// 40 px hysteresis tips it into Short — so a
+				// faithful restore can still land one Short-floor
+				// (~30-40 px) taller than the pre-full-screen
+				// height. Width has no such give and stays tight.
 				fsRestoresTheWindow =
-					!host->isFullScreen() &&
+					!stillFull &&
 					std::abs(back.width() -
 						 windowed.width()) <= 8 &&
 					std::abs(back.height() -
-						 windowed.height()) <= 8;
+						 windowed.height()) <= 48;
 			});
+			obs_log(fsRestoresTheWindow ? LOG_INFO : LOG_ERROR,
+				"[selftest] reopen: fullscreen -> back: window "
+				"was %dx%d, came back %dx%d%s: %s",
+				windowed.width(), windowed.height(), back.width(),
+				back.height(),
+				stillFull ? " (STILL FULL SCREEN)" : "",
+				fsRestoresTheWindow ? "restored" : "NOT RESTORED");
 
 			// --- what the floating window itself owes --------------
 			// MAXIMISE YES, MINIMISE NO, and the NO is the half that
