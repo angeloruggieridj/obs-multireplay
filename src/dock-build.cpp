@@ -119,11 +119,34 @@ QWidget *MultiReplayDock::buildToolbar()
 	auto *v = new QVBoxLayout(box);
 	v->setContentsMargins(0, 0, 0, 0);
 	v->setSpacing(2);
+	toolbarV_ = v;
+
+	// A THIN VERTICAL RULE (spec §1: "tre zone separate da filetti"). A
+	// plain QWidget, not a QFrame — this project's rule for a background
+	// from a stylesheet (dock-style.hpp's own note on WA_StyledBackground):
+	// Qt paints one for free on a bare QWidget, never on a subclass.
+	const auto mkVSep = [this]() -> QWidget * {
+		auto *s = new QWidget(this);
+		s->setObjectName(QStringLiteral("mrSepLine"));
+		s->setFixedWidth(1);
+		return s;
+	};
+	toolSepA_ = mkVSep();
+	toolSepB_ = mkVSep();
+	toolSepC_ = mkVSep();
 
 	auto *topRow = new QWidget(box);
+	toolRow1_ = topRow;
 	auto *h = new QHBoxLayout(topRow);
 	h->setContentsMargins(0, 0, 0, 0);
 	h->setSpacing(5);
+	// TALL'S OWN SEARCH ROW (spec §5): built here so arrangeToolbar() only
+	// ever moves widgets, never creates them. Hidden until Tall asks for it.
+	toolRow2_ = new QWidget(box);
+	auto *h2 = new QHBoxLayout(toolRow2_);
+	h2->setContentsMargins(0, 0, 0, 0);
+	h2->setSpacing(5);
+	toolRow2_->hide();
 
 	// THE PROJECT SELECTOR (spec §1): a menu button, not a label — Nuovo,
 	// Apri…, and the list of projects on disk. Wider than the other toolbar
@@ -183,13 +206,12 @@ QWidget *MultiReplayDock::buildToolbar()
 		});
 		popupOnClick(projectBtn_, menu);
 	}
-	h->addWidget(projectBtn_);
-	// ONE STRETCH: the project name holds the left, and everything else — the
-	// search field, the panel keys, and Live — rides flush to the right. The
-	// redesign pulled Live OUT of the middle of the row and into its own corner
-	// (see below): it is the panel's mode, not a take control, and an operator
-	// finds a corner key without looking.
-	h->addStretch(1);
+	// projectBtn_, the search pair, the three panel keys and Live are all
+	// placed by arrangeToolbar() at the end of this function, and again on
+	// every mode change — not here. Which of h / h2 each rides in, and in
+	// what order, is exactly the thing that differs between Wide/Short's one
+	// row and Tall's three (spec §1/§5); building that placement twice would
+	// be two copies of the same decision to keep in step.
 
 	// A DRAWN MAGNIFIER, not the emoji. U+1F50D carries
 	// Emoji_Presentation=Yes, so Windows painted it in full colour from Segoe
@@ -204,7 +226,6 @@ QWidget *MultiReplayDock::buildToolbar()
 	// field it stands in for. applyPanelMode sets the `clickable` property;
 	// this filter only acts when it is set.
 	searchIcon_->installEventFilter(this);
-	h->addWidget(searchIcon_);
 	restyleSearchIcon();
 	search_ = new QLineEdit(box);
 	search_->setPlaceholderText(obs_module_text("Dock.Search"));
@@ -220,7 +241,6 @@ QWidget *MultiReplayDock::buildToolbar()
 	search_->setMinimumWidth(qMax(80, 7 * searchEm));
 	connect(search_, &QLineEdit::textChanged, this,
 		[this](const QString &) { refreshEvents(); });
-	h->addWidget(search_, 0);
 
 	// the reference controller's Live button, in the reference controller's place and the reference controller's colour: red means the
 	// marks land where the action is happening, off means they land where the
@@ -337,18 +357,12 @@ QWidget *MultiReplayDock::buildToolbar()
 	// the theme — and inside the record section it read as part of arming a
 	// take. It goes beside the full-screen key because those two are the pair
 	// that are about the panel itself rather than about the replay.
-	//
-	// TOOLS CLUSTER, THEN A GAP, THEN LIVE. Search and the three panel keys
-	// (Monitors · gear · full screen) ride together at the right; Live is set
-	// off past a fixed gap in the panel's own corner, so the one key that puts
-	// the whole panel back on the live edge is always in the same place and
-	// never mistaken for a tool.
-	h->addWidget(monitorsBtn_);
-	h->addWidget(buildGearMenu());
-	h->addWidget(fullScreenBtn_);
-	h->addSpacing(12);
-	h->addWidget(liveBtn_);
+	gearBtn_ = buildGearMenu();
+	// TOOLS CLUSTER, THEN A GAP, THEN LIVE — in Wide/Short. Tall groups them
+	// differently (spec §5); arrangeToolbar() below is what actually places
+	// every one of these keys, in both h and h2.
 	v->addWidget(topRow);
+	v->addWidget(toolRow2_);
 
 	// The 20 lists as TABS, not a dropdown. the reference controller shows them all at once and
 	// the operator jumps between them mid-match without opening anything; a
@@ -391,12 +405,12 @@ QWidget *MultiReplayDock::buildToolbar()
 	// THE "+" KEY (spec §1): ~5 tabs show; + raises the count by one, up to
 	// kEventLists, with the number as the name. Pinned to the right of the
 	// strip so the tabs scroll under it, not past it.
-	auto *tabRow = new QWidget(box);
-	auto *tr = new QHBoxLayout(tabRow);
+	bankRow_ = new QWidget(box);
+	auto *tr = new QHBoxLayout(bankRow_);
 	tr->setContentsMargins(0, 0, 0, 0);
 	tr->setSpacing(3);
 	tr->addWidget(listTabs_, 1);
-	addBankBtn_ = new QToolButton(tabRow);
+	addBankBtn_ = new QToolButton(bankRow_);
 	addBankBtn_->setObjectName(QStringLiteral("mrToggle"));
 	addBankBtn_->setText(QStringLiteral("+"));
 	addBankBtn_->setCursor(Qt::PointingHandCursor);
@@ -413,9 +427,122 @@ QWidget *MultiReplayDock::buildToolbar()
 		poll();
 	});
 	tr->addWidget(addBankBtn_, 0);
-	v->addWidget(tabRow);
+
+	// THE INITIAL ARRANGEMENT (spec §1/§5). panelMode_ already carries its
+	// real default (Wide) at this point in construction; applyPanelMode's
+	// own call to arrangeToolbar(), moments later, re-asserts whatever the
+	// panel's actual starting size resolves to and is a no-op if it agrees.
+	arrangeToolbar(panelMode_);
 
 	return box;
+}
+
+// ---------------------------------------------------------------------------
+// The toolbar's row count follows the panel mode (spec §1/§5): ONE row in
+// Wide/Short — project · banks · search+tools · Live, three thin rules
+// between the four zones — and THREE in Tall (project/Live/tools · search
+// alone · banks). Every widget here already exists (buildToolbar built it
+// once); this only ever MOVES them between h (toolRow1_), h2 (toolRow2_) and
+// toolbarV_ (bankRow_'s own row) — never a second copy of a button whose
+// checked/current state could go stale against the first.
+// ---------------------------------------------------------------------------
+
+void MultiReplayDock::arrangeToolbar(PanelMode m)
+{
+	if (!toolRow1_ || !toolRow2_ || !bankRow_ || !toolbarV_)
+		return;
+	const int want = (m == PanelMode::Tall) ? 1 : 0;
+	if (want == toolbarArrangement_)
+		return;
+	toolbarArrangement_ = want;
+
+	auto *h1 = qobject_cast<QHBoxLayout *>(toolRow1_->layout());
+	auto *h2 = qobject_cast<QHBoxLayout *>(toolRow2_->layout());
+	if (!h1 || !h2)
+		return;
+
+	// CLEAR BOTH ROWS COMPLETELY. Every entry here is either a widget item
+	// (taking it does not delete the widget — it only detaches it from this
+	// layout) or a stretch/spacing item (which owns nothing else and must be
+	// deleted itself, the same way Qt's own "clear a layout" recipe does).
+	QLayoutItem *item;
+	while ((item = h1->takeAt(0)) != nullptr)
+		delete item;
+	while ((item = h2->takeAt(0)) != nullptr)
+		delete item;
+	// bankRow_ is the one piece with a THIRD possible home — its own row in
+	// toolbarV_ — rather than just h1 vs h2, so it needs its own detach.
+	h1->removeWidget(bankRow_);
+	toolbarV_->removeWidget(bankRow_);
+
+	if (want == 0) {
+		// WIDE / SHORT (spec §1): one row, three zones behind thin
+		// rules, Live isolated past its own gap and rule. Full words on
+		// both keys — there is room for them beside a whole extra zone
+		// (the banks) that Tall's row does not carry at all.
+		liveBtn_->setText(QString::fromUtf8(obs_module_text("Dock.LiveMode"))
+					  .toUpper());
+		monitorsBtn_->setText(
+			QString::fromUtf8(obs_module_text("Dock.Monitors")));
+		h1->addWidget(projectBtn_);
+		h1->addWidget(toolSepA_);
+		// bankRow_ keeps ITS natural width — it carries its own internal
+		// stretch (the tabs, ahead of the pinned "+"), and giving it a
+		// SECOND stretch here as well let it swallow the whole row: the
+		// "+" ended up stranded, an inch past the last tab, on any panel
+		// wider than the tabs needed. The row's leftover space belongs
+		// in the gap that actually separates the two clusters — banks on
+		// the left, search/tools/Live on the right — not inside one of
+		// them.
+		h1->addWidget(bankRow_, 0);
+		h1->addStretch(1);
+		h1->addWidget(toolSepB_);
+		h1->addWidget(searchIcon_);
+		h1->addWidget(search_);
+		h1->addWidget(monitorsBtn_);
+		h1->addWidget(gearBtn_);
+		h1->addWidget(fullScreenBtn_);
+		h1->addSpacing(10);
+		h1->addWidget(toolSepC_);
+		h1->addWidget(liveBtn_);
+		toolSepA_->show();
+		toolSepB_->show();
+		toolSepC_->show();
+		toolRow2_->hide();
+	} else {
+		// TALL (spec §5): three rows —
+		//   1) [project ▾] … ● LIVE (fenced by rules) … Monitors ⛶▾ ⚙
+		//   2) the search field, extended to the row's full width
+		//   3) banks + "+" (bankRow_, in its own row of toolbarV_)
+		//
+		// LIVE AND MONITORS LOSE THEIR WORD HERE. Row 1 now carries the
+		// project selector AND both panel keys AND the layout/gear pair
+		// in a column as narrow as 320 px — five controls where Wide
+		// spends the same row on four plus a whole bank strip. Their
+		// icon and tooltip already say what they do; the mark is what a
+		// key this tight can still afford; see dock-icons for the two.
+		liveBtn_->setText(QString());
+		monitorsBtn_->setText(QString());
+		h1->addWidget(projectBtn_);
+		h1->addStretch(1);
+		h1->addWidget(toolSepA_);
+		h1->addWidget(liveBtn_);
+		h1->addWidget(toolSepB_);
+		h1->addWidget(monitorsBtn_);
+		h1->addWidget(gearBtn_);
+		h1->addWidget(fullScreenBtn_);
+		toolSepA_->show();
+		toolSepB_->show();
+		toolSepC_->hide();
+
+		h2->addWidget(searchIcon_);
+		h2->addWidget(search_, 1);
+		toolRow2_->show();
+
+		// After toolRow1_ (index 0) and toolRow2_ (index 1).
+		toolbarV_->insertWidget(2, bankRow_);
+	}
+	bankRow_->show();
 }
 
 // ---------------------------------------------------------------------------

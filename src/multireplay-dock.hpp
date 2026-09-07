@@ -1528,6 +1528,25 @@ private:
 	QTabBar *listTabs_ = nullptr; // the 20 lists, broadcast-style tabs
 	QToolButton *addBankBtn_ = nullptr; // "+" — show one more list (spec §1)
 	QLineEdit *search_ = nullptr;
+	// THE TOOLBAR'S ROW COUNT FOLLOWS THE PANEL MODE (spec §1/§5): one row in
+	// Wide/Short (project · banks · search+tools · Live, three thin rules
+	// between the four zones) and three rows in Tall (project/Live/tools ·
+	// search alone · banks). toolRow1_ and toolRow2_ are permanent — always
+	// mounted in the toolbar's own QVBoxLayout — and arrangeToolbar() moves
+	// the ACTUAL widgets (never rebuilds them) between the two, because a
+	// second copy of projectBtn_ would be a second place its state can go
+	// stale against the first.
+	QWidget *toolRow1_ = nullptr;
+	QWidget *toolRow2_ = nullptr; // Tall only: the search field on its own
+	QVBoxLayout *toolbarV_ = nullptr; // owns toolRow1_/toolRow2_/bankRow_
+	QWidget *bankRow_ = nullptr; // the list tabs + "+", spec §1
+	QToolButton *gearBtn_ = nullptr;
+	QWidget *toolSepA_ = nullptr; // project | banks
+	QWidget *toolSepB_ = nullptr; // banks | tools  (Wide/Short) or Live | tools (Tall)
+	QWidget *toolSepC_ = nullptr; // tools | Live   (Wide/Short only)
+	// -1 = not yet arranged, 0 = single row, 1 = Tall's three rows.
+	int toolbarArrangement_ = -1;
+	void arrangeToolbar(PanelMode m);
 	QTableWidget *events_ = nullptr;
 	// (No inspector panel: the per-angle enable box, speed and comment are all
 	// in the table now, on the row and in the column they belong to.)

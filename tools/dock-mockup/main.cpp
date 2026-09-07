@@ -91,6 +91,11 @@ constexpr int kStatusH = 26;
 // ruler is tighter.
 constexpr int kClipBarH = 28;
 constexpr int kSeekH = 42;
+// The toolbar's bank strip (spec §1), folded into the single row in
+// Wide/Short: enough for ~5 short tabs plus "+", then it stops growing and
+// the rest of the row's leftover width goes to the gap that separates it
+// from the search/tools/Live cluster.
+constexpr int kBankRowMaxWidth = 320;
 // Narrower than this a tile stops being a picture and becomes a smear; wider
 // than this it stops being a confidence monitor and starts competing with the
 // bay it is meant to be checked against.
@@ -322,13 +327,10 @@ public:
 		lv->setContentsMargins(0, 0, 0, 0);
 		lv->setSpacing(2);
 		lv->addWidget(buildToolbar(listPane_));
-		auto *tabs = new QLabel(
-			QStringLiteral(" 1 │ 2 │ 3 │ 4 │ 5 │ 6 │ 7 │ 8 │ 9 │ 10 "),
-			listPane_);
-		tabs->setObjectName(QStringLiteral("mrMuted"));
-		tabs->setFixedHeight(20);
-		tabs->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
-		lv->addWidget(tabs);
+		// bankRow_ (the "1 │ 2 │ 3 … + " strip) is built and placed by
+		// buildToolbar()/arrangeToolbar() now — folded into the single
+		// row in Wide/Short, its own row in Tall (spec §1/§5) — not a
+		// fixed sibling here any more.
 		table_ = new QTableWidget(6, 6, listPane_);
 		table_->setObjectName(QStringLiteral("mrEvents"));
 		table_->verticalHeader()->setVisible(false);
@@ -531,6 +533,7 @@ public:
 		strip_->setMode(m);
 		applyCompactChrome(m == PanelMode::Tall);
 		applyTallCollapse(m == PanelMode::Tall);
+		arrangeToolbar(m);
 
 		// THE DIVIDERS THE OPERATOR CHOSE FOR *THIS* ARRANGEMENT, put
 		// back. A restore has to happen after the orientations are set,
@@ -575,10 +578,10 @@ public:
 		}
 		if (statusDetail_)
 			statusDetail_->setVisible(!compact);
-		if (search_)
-			search_->setFixedWidth(compact ? 90 : 150);
-		if (projectLbl_)
-			projectLbl_->setVisible(!compact);
+		// search_'s width and projectLbl_'s visibility are arrangeToolbar()'s
+		// now (spec section 1/5): the project button stays visible and
+		// narrower in Tall, never hidden, and search_ gets its own
+		// full-width row instead of vanishing.
 	}
 
 	// TALL USED TO COLLAPSE BAY + CLIPS + SPEED BEHIND A "MORE" KEY. The
@@ -592,6 +595,103 @@ public:
 		if (tall == tallCollapsed_)
 			return;
 		tallCollapsed_ = tall;
+	}
+
+	// THE TOOLBAR'S ROW COUNT (spec §1/§5) — ported from
+	// MultiReplayDock::arrangeToolbar (dock-build.cpp): one row in
+	// Wide/Short (project · banks · search+tools · Live, three thin rules
+	// between the four zones), three in Tall (project/Live/tools · search
+	// alone · banks). Only ever MOVES the widgets buildToolbar() already
+	// built — never a second copy of one whose state (checked, current
+	// text) could go stale against the first.
+	void arrangeToolbar(PanelMode m)
+	{
+		if (!toolRow1_ || !toolRow2_ || !bankRow_ || !toolbarV_)
+			return;
+		const int want = (m == PanelMode::Tall) ? 1 : 0;
+		if (want == toolbarArrangement_)
+			return;
+		toolbarArrangement_ = want;
+
+		auto *h1 = qobject_cast<QHBoxLayout *>(toolRow1_->layout());
+		auto *h2 = qobject_cast<QHBoxLayout *>(toolRow2_->layout());
+		if (!h1 || !h2)
+			return;
+
+		QLayoutItem *item;
+		while ((item = h1->takeAt(0)) != nullptr)
+			delete item;
+		while ((item = h2->takeAt(0)) != nullptr)
+			delete item;
+		h1->removeWidget(bankRow_);
+		toolbarV_->removeWidget(bankRow_);
+
+		if (want == 0) {
+			// WIDE / SHORT: one row, three zones behind thin rules,
+			// Live isolated past its own gap and rule. Full words on
+			// Live/Monitors — there is room beside a whole bank strip
+			// that Tall's row does not carry at all.
+			liveBtn_->setText(QStringLiteral("LIVE"));
+			monitorsBtn_->setText(QStringLiteral("Monitors"));
+			search_->setFixedWidth(150);
+			h1->addWidget(projectBtn_);
+			h1->addWidget(toolSepA_);
+			// bankRow_ gets a CAPPED stretch, not an open one: an
+			// Ignored-policy child reports nothing toward bankRow_'s
+			// own sizeHint, so stretch=0 starved it down to just the
+			// "+" (the tabs stopped drawing); an uncapped stretch=1
+			// swung the other way and let it swallow the whole row,
+			// stranding "+" an inch past the last tab on any panel
+			// wider than the tabs need. Capped, it grows enough to
+			// show its tabs and stops — the REST of the leftover
+			// space is the plain addStretch right after it.
+			bankRow_->setMaximumWidth(kBankRowMaxWidth);
+			h1->addWidget(bankRow_, 1);
+			h1->addStretch(1);
+			h1->addWidget(toolSepB_);
+			h1->addWidget(searchIcon_);
+			h1->addWidget(search_);
+			h1->addWidget(monitorsBtn_);
+			h1->addWidget(gearBtn_);
+			h1->addWidget(fullScreenBtn_);
+			h1->addSpacing(10);
+			h1->addWidget(toolSepC_);
+			h1->addWidget(liveBtn_);
+			toolSepA_->show();
+			toolSepB_->show();
+			toolSepC_->show();
+			toolRow2_->hide();
+		} else {
+			// TALL: three rows — 1) project · LIVE (fenced) ·
+			// Monitors/gear/full-screen  2) search, full width
+			// 3) banks + "+". Live/Monitors lose their word: row 1
+			// now carries five controls in a column as narrow as
+			// 320 px, where Wide spends the same row on four plus a
+			// whole bank strip.
+			liveBtn_->setText(QString());
+			monitorsBtn_->setText(QString());
+			// EXTENDED, not the single-row width: spec §5's own words
+			// for this row are "campo ricerca esteso".
+			search_->setFixedWidth(220);
+			h1->addWidget(projectBtn_);
+			h1->addStretch(1);
+			h1->addWidget(toolSepA_);
+			h1->addWidget(liveBtn_);
+			h1->addWidget(toolSepB_);
+			h1->addWidget(monitorsBtn_);
+			h1->addWidget(gearBtn_);
+			h1->addWidget(fullScreenBtn_);
+			toolSepA_->show();
+			toolSepB_->show();
+			toolSepC_->hide();
+
+			h2->addWidget(searchIcon_);
+			h2->addWidget(search_, 1);
+			toolRow2_->show();
+
+			toolbarV_->insertWidget(2, bankRow_);
+		}
+		bankRow_->show();
 	}
 
 	void resizeEvent(QResizeEvent *e) override
@@ -785,6 +885,23 @@ private:
 	QLabel *projectLbl_ = nullptr;
 	bool compactChrome_ = false;
 
+	// THE TOOLBAR'S ROW COUNT FOLLOWS THE PANEL MODE, the same as the real
+	// dock (multireplay-dock.hpp/dock-build.cpp): one row in Wide/Short,
+	// three in Tall. toolRow1_/toolRow2_ are permanent; arrangeToolbar()
+	// only ever MOVES the widgets built once in buildToolbar().
+	QWidget *toolRow1_ = nullptr;
+	QWidget *toolRow2_ = nullptr;
+	QVBoxLayout *toolbarV_ = nullptr;
+	QWidget *bankRow_ = nullptr;
+	QLabel *searchIcon_ = nullptr;
+	QLabel *projectBtn_ = nullptr; // same widget as projectLbl_
+	QPushButton *liveBtn_ = nullptr;
+	QPushButton *monitorsBtn_ = nullptr;
+	QToolButton *gearBtn_ = nullptr;
+	QAbstractButton *fullScreenBtn_ = nullptr;
+	QWidget *toolSepA_ = nullptr, *toolSepB_ = nullptr, *toolSepC_ = nullptr;
+	int toolbarArrangement_ = -1; // -1 = unset, 0 = single row, 1 = Tall's three
+
 	void remember(QPushButton *b)
 	{
 		worded_.push_back({b, b->text(), b->minimumWidth()});
@@ -874,12 +991,40 @@ private:
 	void tileTally(int i, const char *what) { tile_[i]->setTally(what); }
 
 	// ── the toolbar: what is GLOBAL to the panel ─────────────────────────
+	//
+	// FOUR ZONES BEHIND THREE THIN RULES (spec §1), one row in Wide/Short
+	// and three in Tall (spec §5) — ported from the real dock's
+	// buildToolbar()/arrangeToolbar() (dock-build.cpp). This function only
+	// BUILDS the widgets, once; arrangeToolbar() (above) is what places
+	// them, and runs again on every mode change.
 	QWidget *buildToolbar(QWidget *parent)
 	{
 		auto *box = new QWidget(parent);
-		auto *h = new QHBoxLayout(box);
+		auto *v = new QVBoxLayout(box);
+		v->setContentsMargins(0, 0, 0, 0);
+		v->setSpacing(2);
+		toolbarV_ = v;
+
+		const auto mkVSep = [this]() -> QWidget * {
+			auto *s = new QWidget(this);
+			s->setObjectName(QStringLiteral("mrSepLine"));
+			s->setFixedWidth(1);
+			return s;
+		};
+		toolSepA_ = mkVSep();
+		toolSepB_ = mkVSep();
+		toolSepC_ = mkVSep();
+
+		toolRow1_ = new QWidget(box);
+		auto *h = new QHBoxLayout(toolRow1_);
 		h->setContentsMargins(0, 0, 0, 0);
 		h->setSpacing(5);
+		toolRow2_ = new QWidget(box);
+		auto *h2 = new QHBoxLayout(toolRow2_);
+		h2->setContentsMargins(0, 0, 0, 0);
+		h2->setSpacing(5);
+		toolRow2_->hide();
+
 		auto *proj = new QLabel(QStringLiteral("Partita"), box);
 		proj->setObjectName(QStringLiteral("mrMuted"));
 		// Same property the real dock sets (multireplay-dock.cpp): the
@@ -887,14 +1032,12 @@ private:
 		// other #mrMuted labels get.
 		proj->setProperty("mrProject", true);
 		projectLbl_ = proj;
-		h->addWidget(proj);
-		h->addStretch(1);
+		projectBtn_ = proj;
 
-		auto *mag = new QLabel(box);
-		mag->setPixmap(iconFor(Icon::Search, QColor(sc_.textMuted), 13,
-				       devicePixelRatioF())
-				       .pixmap(13, 13));
-		h->addWidget(mag);
+		searchIcon_ = new QLabel(box);
+		searchIcon_->setPixmap(iconFor(Icon::Search, QColor(sc_.textMuted),
+						13, devicePixelRatioF())
+						.pixmap(13, 13));
 		auto *search = new QLabel(QStringLiteral("Cerca…"), box);
 		search->setObjectName(QStringLiteral("mrMuted"));
 		search->setStyleSheet(
@@ -910,46 +1053,70 @@ private:
 		// this stand-in has no business raising.
 		search->setFixedWidth(150);
 		search_ = search;
-		h->addWidget(search);
 
-		auto *live = iconTextKey(Icon::Live, QStringLiteral("Live"),
-					 QStringLiteral("live"), "mrLive", 12);
+		liveBtn_ = iconTextKey(Icon::Live, QStringLiteral("LIVE"),
+				       QStringLiteral("live"), "mrLive", 12);
 		// White once lit: the key goes solid red and a green dot inside it
 		// would be two signals arguing in one control.
-		setKeyIconRole(live, Icon::Live, IconRole::LitWhite, g_tints, 12);
-		live->setCheckable(true);
-		live->setToolTip(QStringLiteral("Le marcature cadono sul fronte live"));
-		remember(live);
-		h->addWidget(live);
+		setKeyIconRole(liveBtn_, Icon::Live, IconRole::LitWhite, g_tints, 12);
+		liveBtn_->setCheckable(true);
+		liveBtn_->setToolTip(
+			QStringLiteral("Le marcature cadono sul fronte live"));
 		// A STATE, NOT A SIGNAL. Monitors used to be drawn with the Live
 		// key's role, so "the pictures are on" — the resting state of the
 		// panel — lit up in the same red as REC. Red has one meaning here
 		// and this is not it.
-		auto *mon = iconTextKey(Icon::Monitors, QStringLiteral("Monitors"),
-					QStringLiteral("monitors"), "mrToggle", 12);
-		mon->setCheckable(true);
-		mon->setChecked(true);
-		mon->setToolTip(QStringLiteral(
-			"Mostra o nasconde baie e anteprime camera"));
+		monitorsBtn_ = iconTextKey(Icon::Monitors, QStringLiteral("Monitors"),
+					   QStringLiteral("monitors"), "mrToggle",
+					   12);
+		monitorsBtn_->setCheckable(true);
+		monitorsBtn_->setChecked(true);
+		monitorsBtn_->setToolTip(
+			QStringLiteral("Mostra o nasconde baie e anteprime camera"));
 		// WIRED, and it was not. A key drawn and connected to nothing is a
 		// key this tool cannot judge — which is why the fault it hides
 		// (the pictures go away, the room does not) was only ever found in
 		// the real panel.
-		connect(mon, &QAbstractButton::toggled, this,
+		connect(monitorsBtn_, &QAbstractButton::toggled, this,
 			[this](bool on) { setMonitorsVisible(on); });
-		remember(mon);
-		h->addWidget(mon);
 		// THE GEAR LIVES WITH THE OTHER PANEL-WIDE KEYS, not down in the
 		// record section. What it opens is Settings for the whole panel;
 		// beside REC it read as part of arming a take.
-		auto *gear = menuKey(Icon::Gear, QStringLiteral("settings"),
-				     QStringLiteral("Impostazioni"), "mrGear", 15);
-		h->addWidget(gear);
-		auto *full = iconKey(Icon::FullScreen, QStringLiteral("fullscreen"),
-				     QStringLiteral("Schermo intero"), "mrToggle");
-		full->setCheckable(true);
-		h->addWidget(full);
-		h->addStretch(1);
+		gearBtn_ = menuKey(Icon::Gear, QStringLiteral("settings"),
+				   QStringLiteral("Impostazioni"), "mrGear", 15);
+		fullScreenBtn_ =
+			iconKey(Icon::FullScreen, QStringLiteral("fullscreen"),
+				QStringLiteral("Schermo intero"), "mrToggle");
+		fullScreenBtn_->setCheckable(true);
+
+		// THE "+" BANK KEY (spec §1): the 1…N list tabs, "+" pinned to the
+		// right of the strip. A static stand-in — the real listTabs_'s
+		// scroll behaviour is not this tool's concern — but a WIDGET of
+		// its own so arrangeToolbar() can move the whole strip between
+		// h (Wide/Short) and its own row (Tall).
+		bankRow_ = new QWidget(box);
+		auto *br = new QHBoxLayout(bankRow_);
+		br->setContentsMargins(0, 0, 0, 0);
+		br->setSpacing(3);
+		auto *tabs = new QLabel(
+			QStringLiteral(" 1 │ 2 │ 3 │ 4 │ 5 │ 6 │ 7 │ 8 │ 9 │ 10 "),
+			bankRow_);
+		tabs->setObjectName(QStringLiteral("mrMuted"));
+		tabs->setFixedHeight(20);
+		// IGNORED, still — bankRow_'s own MINIMUM must stay small (Tall
+		// collapses to a ~260 px column, and this fake ten-tab string is
+		// not what should stop it). What Preferred broke was the RUNTIME
+		// width, not the floor; bankRow_'s own setMaximumWidth below is
+		// what fixes that half without undoing this one.
+		tabs->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+		br->addWidget(tabs, 1);
+		auto *addBank = key(QStringLiteral("+"), "mrToggle");
+		setKeyId(addBank, QStringLiteral("addBank"));
+		br->addWidget(addBank, 0);
+
+		v->addWidget(toolRow1_);
+		v->addWidget(toolRow2_);
+		arrangeToolbar(mode_);
 		return box;
 	}
 

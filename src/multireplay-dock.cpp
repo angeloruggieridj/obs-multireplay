@@ -1502,12 +1502,21 @@ void MultiReplayDock::applyPanelMode(PanelMode m, bool force)
 	// moreBlock_ is ever rebuilt.)
 	applyTallCollapse(m == PanelMode::Tall);
 
-	// SEARCH COLLAPSES TO ITS ICON in the narrow arrangements (spec §7:
-	// "sotto ~1000 px si riduce a icona 🔍 che apre il campo"). Wide keeps
-	// the field always visible. The icon (searchIcon_) is clickable in the
-	// narrow modes — its eventFilter (buildToolbar) toggles the field.
+	// THE TOOLBAR'S ROW COUNT (spec §1/§5): one row in Wide/Short, three in
+	// Tall — moves the actual widgets, builds nothing twice. Before the
+	// search-collapse logic below: that logic asks which ROW search_ is in
+	// right now, and arrangeToolbar is what just decided that.
+	arrangeToolbar(m);
+
+	// SEARCH COLLAPSES TO ITS ICON only in SHORT (spec §7: "sotto ~1000 px
+	// si riduce a icona 🔍 che apre il campo"). Wide keeps the field always
+	// visible because there is room for it beside the rest of the row; Tall
+	// ALSO keeps it always visible, but on a row of its own (spec §5's
+	// "campo ricerca esteso") — collapsing it there would leave that whole
+	// second row empty. The icon (searchIcon_) is clickable only in Short —
+	// its eventFilter (buildToolbar) toggles the field.
 	if (search_ && searchIcon_) {
-		const bool narrow = m != PanelMode::Wide;
+		const bool narrow = m == PanelMode::Short;
 		searchIcon_->setProperty("clickable", narrow);
 		searchIcon_->setCursor(narrow ? Qt::PointingHandCursor
 					      : Qt::ArrowCursor);
