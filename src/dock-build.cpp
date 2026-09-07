@@ -621,9 +621,11 @@ void MultiReplayDock::buildSpeedDial()
 	// 70 px wedged between the presets and the edge.
 	speed_ = new QSlider(Qt::Horizontal, this);
 	speed_->setObjectName("mrSpeed");
-	// Up to 2×: the reference controller's variable speed is 0-100%, and its fast forward is the
-	// same control pushed past 1×.
-	speed_->setRange(5, 200);
+	// 25-125% on the panel (spec §4): the dial is for slow motion and a
+	// touch over. The 2× fast-forward is off the panel now — still a
+	// hotkey, and the engine still takes 5-400%, so applyReplaySpeed() can
+	// be handed any of that from a Stream Deck.
+	speed_->setRange(25, 125);
 	speed_->setValue(100);
 	speed_->setMinimumWidth(220);
 	speed_->setMinimumHeight(26);
@@ -1411,12 +1413,10 @@ KeyBlock *MultiReplayDock::buildSpeedBlock()
 	QList<QPushButton *> chips;
 	speedChips_ = new QButtonGroup(this);
 	speedChips_->setExclusive(false);
-	// The reference set (25/33/50/75/100) plus the 2x that is its fast
-	// forward - the engine takes any speed, since a speed is only the
-	// spacing between frames.
+	// 25 / 50 / 75 / 100 / 125 (spec §4). Slow motion and a touch over;
+	// the 2× is a hotkey now, not a chip.
 	const std::pair<int, const char *> speedPresets[] = {
-		{25, "25%"}, {33, "33%"},   {50, "50%"},
-		{75, "75%"}, {100, "100%"}, {200, "2\xc3\x97"}};
+		{25, "25%"}, {50, "50%"}, {75, "75%"}, {100, "100%"}, {125, "125%"}};
 	for (const auto &[pct, lbl] : speedPresets) {
 		int p = pct; // copy: capturing a structured binding is
 			     // non-portable
@@ -1456,15 +1456,15 @@ KeyBlock *MultiReplayDock::buildSpeedBlock()
 	// panel — reorder it here under the speed dial, export it one section
 	// over. One section answers it now (buildExportBlock).
 	blk->setShapes({{Cell(chips[0]), Cell(chips[1]), Cell(chips[2]),
-			 Cell(chips[3]), Cell(chips[4]), Cell(chips[5])},
-			{Cell(speed_, 5), Cell(speedLbl_, 1, false)}},
-		       // The six presets stay on ONE row folded as well. They are
+			 Cell(chips[3]), Cell(chips[4])},
+			{Cell(speed_, 4), Cell(speedLbl_, 1, false)}},
+		       // The five presets stay on ONE row folded as well. They are
 		       // the narrowest keys on the panel and splitting them across
 		       // two rows bought nothing but a line — and it broke the run
 		       // of values an operator reads left to right.
 		       {{Cell(chips[0]), Cell(chips[1]), Cell(chips[2]),
-			 Cell(chips[3]), Cell(chips[4]), Cell(chips[5])},
-			{Cell(speed_, 5), Cell(speedLbl_, 1, false)}});
+			 Cell(chips[3]), Cell(chips[4])},
+			{Cell(speed_, 4), Cell(speedLbl_, 1, false)}});
 	return blk;
 }
 
