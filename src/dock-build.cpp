@@ -134,9 +134,11 @@ QWidget *MultiReplayDock::buildToolbar()
 	projectLbl_->setProperty("mrProject", true);
 	projectLbl_->hide();
 	h->addWidget(projectLbl_);
-	// Search and Live sit in the MIDDLE of their row, as they do on the
-	// reference panel: the operator's eye comes down off the picture into the
-	// centre of the panel, not into a corner.
+	// ONE STRETCH: the project name holds the left, and everything else — the
+	// search field, the panel keys, and Live — rides flush to the right. The
+	// redesign pulled Live OUT of the middle of the row and into its own corner
+	// (see below): it is the panel's mode, not a take control, and an operator
+	// finds a corner key without looking.
 	h->addStretch(1);
 
 	// A DRAWN MAGNIFIER, not the emoji. U+1F50D carries
@@ -202,9 +204,10 @@ QWidget *MultiReplayDock::buildToolbar()
 		ReplayCore::instance().setFollowLive(true);
 		clearFreeReview();
 	});
-	h->addWidget(liveBtn_);
+	// Live is added LAST, past the panel keys and a separator — see the far
+	// end of this function.
 
-	// the reference controller's Monitors key, in the reference controller's place: right of Live. It takes the whole
+	// the reference controller's Monitors key. It takes the whole
 	// monitoring block away — the two replay decks, the camera previews AND the
 	// green strip under them — because that block is what costs GPU, and an
 	// operator working from the list on a thin machine should be able to put it
@@ -246,15 +249,17 @@ QWidget *MultiReplayDock::buildToolbar()
 	// the theme — and inside the record section it read as part of arming a
 	// take. It goes beside the full-screen key because those two are the pair
 	// that are about the panel itself rather than about the replay.
-	// ...AND THE THREE OF THEM SIT AT THE FAR END. Monitors, the gear and
-	// full screen are about the PANEL; search and Live are about the take.
-	// Packed together in the middle the six keys read as one group and the
-	// operator had to remember which three were which - so the stretch goes
-	// between them, and the panel keys end flush with the panel's edge.
-	h->addStretch(1);
+	//
+	// TOOLS CLUSTER, THEN A GAP, THEN LIVE. Search and the three panel keys
+	// (Monitors · gear · full screen) ride together at the right; Live is set
+	// off past a fixed gap in the panel's own corner, so the one key that puts
+	// the whole panel back on the live edge is always in the same place and
+	// never mistaken for a tool.
 	h->addWidget(monitorsBtn_);
 	h->addWidget(buildGearMenu());
 	h->addWidget(fullScreenBtn_);
+	h->addSpacing(12);
+	h->addWidget(liveBtn_);
 	v->addWidget(topRow);
 
 	// The 20 lists as TABS, not a dropdown. the reference controller shows them all at once and
