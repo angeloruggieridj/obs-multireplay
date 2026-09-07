@@ -857,7 +857,7 @@ public:
 
 	// The fixed-height header row of each panel (name + REC/clock for MARCA,
 	// name + event id + IN OUTPUT for REVIEW). Not a boxed sub-section.
-	void setHeaders(QWidget *marcaHeader, QWidget *reviewHeader);
+	void setHeaders(KeyBlock *marcaHeader, KeyBlock *reviewHeader);
 	// MARCA's body: up to three boxed sub-sections, top to bottom
 	// (Clip rapida · Clip manuale · Canali replay). Rows 0-1 taller, 2 short.
 	void addToMarca(KeyBlock *b);
@@ -889,8 +889,8 @@ private:
 	QWidget *review_ = nullptr;
 	QVBoxLayout *marcaCol_ = nullptr;
 	QVBoxLayout *reviewCol_ = nullptr;
-	QWidget *marcaHeader_ = nullptr;
-	QWidget *reviewHeader_ = nullptr;
+	KeyBlock *marcaHeader_ = nullptr;
+	KeyBlock *reviewHeader_ = nullptr;
 	QWidget *reviewGrid_ = nullptr;
 	QGridLayout *grid_ = nullptr;
 	QWidget *marcaFoot_ = nullptr;

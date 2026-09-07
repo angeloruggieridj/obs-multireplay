@@ -44,16 +44,8 @@ PanelMode panelModeFor(const QSize &size, PanelMode current, int wideFloorH)
 	// go comes to rest exactly ON its floor, so the test has to fire AT that
 	// height, not below it - the hysteresis is what gives it room to.
 	const int need = std::max(kShortMaxHeight, wideFloorH + kModeHysteresis);
-	// Sticky in BOTH directions, like the Tall boundary above: coming out
-	// of Wide costs 40 px more than going in. It also fixes a real trap —
-	// Qt floats this dock at exactly its minimum height, so a faithful
-	// restore from full screen lands right on `need` and, without this,
-	// tips straight into Short and clamps ~40 px taller than the operator's
-	// window.
-	const int hLimit =
-		need + (current == PanelMode::Short  ? kModeHysteresis
-			: current == PanelMode::Wide ? -kModeHysteresis
-						     : 0);
+	const int hLimit = need + (current == PanelMode::Short ? kModeHysteresis
+							      : 0);
 	if (size.height() < hLimit)
 		return PanelMode::Short;
 
@@ -646,6 +638,26 @@ void KeyBlock::apply()
 	// asks them how big they are. See setOnShape in the header.
 	if (onShape_)
 		onShape_(flatActive_);
+
+	// THE BOX IS A WIDE-LAYOUT FEATURE. Side by side the rounded borders and
+	// legends give the panel its broadcast-desk grid (spec §4). Stacked in a
+	// narrow column they are eight borders and eight legends down a panel
+	// whose scarce axis is height — which is exactly the "too fragmented"
+	// the redesign set out to fix — and they add ~100 px the panel's Short
+	// floor cannot spare. Folded, the block goes flat: no border, tight
+	// margins, the legend as a plain caption line.
+	if (auto *v = qobject_cast<QVBoxLayout *>(layout())) {
+		const bool legend = cap_ && !caption_.isEmpty();
+		v->setContentsMargins(6, flatActive_ ? 0 : (legend ? 8 : 2), 6,
+				      flatActive_ ? 0 : 4);
+	}
+	if (property("folded").toBool() != flatActive_) {
+		setProperty("folded", flatActive_);
+		if (style()) {
+			style()->unpolish(this);
+			style()->polish(this);
+		}
+	}
 
 	if (cap_) {
 		// STACKED, THE CAPTION GOES. Side by side it is what tells six
@@ -1523,26 +1535,26 @@ TwoPanelStrip::TwoPanelStrip(QWidget *parent) : QWidget(parent)
 		[this](int) { relayout(); });
 }
 
-void TwoPanelStrip::setHeaders(QWidget *marcaHeader, QWidget *reviewHeader)
+void TwoPanelStrip::setHeaders(KeyBlock *marcaHeader, KeyBlock *reviewHeader)
 {
 	marcaHeader_ = marcaHeader;
 	reviewHeader_ = reviewHeader;
-	// One fixed height for both, so the line under the header is at the same
-	// y on MARCA and REVIEW even though only MARCA carries a key (REC) up
-	// there (spec §4).
-	const int kHeaderH = 32;
-	if (marcaHeader_) {
-		marcaHeader_->setParent(marca_);
-		marcaHeader_->setObjectName(QStringLiteral("mrPanelHeader"));
-		marcaHeader_->setFixedHeight(kHeaderH);
+	// One MINIMUM height for both, so the line under the header sits at the
+	// same y on MARCA and REVIEW even though only MARCA carries a key (REC)
+	// up there (spec §4). Not fixed: the full-screen gallery view grows
+	// every key, and a fixed header would clip REC there.
+	const int kHeaderH = 30;
+	for (KeyBlock *h : {marcaHeader, reviewHeader}) {
+		if (!h)
+			continue;
+		h->setParent(h == marcaHeader ? marca_ : review_);
+		h->setObjectName(QStringLiteral("mrPanelHeader"));
+		h->setMinimumHeight(kHeaderH);
+	}
+	if (marcaHeader_)
 		marcaCol_->insertWidget(0, marcaHeader_);
-	}
-	if (reviewHeader_) {
-		reviewHeader_->setParent(review_);
-		reviewHeader_->setObjectName(QStringLiteral("mrPanelHeader"));
-		reviewHeader_->setFixedHeight(kHeaderH);
+	if (reviewHeader_)
 		reviewCol_->insertWidget(0, reviewHeader_);
-	}
 }
 
 void TwoPanelStrip::addToMarca(KeyBlock *b)
@@ -1668,6 +1680,12 @@ void TwoPanelStrip::refreshAllBlocks()
 		b->refresh();
 	for (KeyBlock *b : reviewBlocks_)
 		b->refresh();
+	// The header blocks too — REC's height is pinned by KeyBlock::apply()
+	// and the full-screen gallery view relies on a refresh to grow it.
+	if (marcaHeader_)
+		marcaHeader_->refresh();
+	if (reviewHeader_)
+		reviewHeader_->refresh();
 	updateGeometry();
 }
 

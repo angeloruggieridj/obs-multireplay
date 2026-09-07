@@ -851,7 +851,7 @@ KeyBlock *MultiReplayDock::buildModes()
 	// play-options ▾ used to; poll()/applyMonitorsRoom hides it while the
 	// tiles are on screen. Opened by popupOnClick, never setMenu.
 	camBtn_ = new QToolButton(this);
-	camBtn_->setObjectName("mrGear");
+	camBtn_->setObjectName("mrCam");
 	camBtn_->setText(QStringLiteral("CAM"));
 	camBtn_->setCursor(Qt::PointingHandCursor);
 	camBtn_->setToolTip(obs_module_text("Dock.Angle"));
@@ -939,9 +939,13 @@ KeyBlock *MultiReplayDock::buildReviewTransport()
 	stopBtn_ = iconBtn(Icon::Stop, "stop", obs_module_text("Dock.Stop"),
 			   this);
 
+	// ENLARGED (~40 px, spec §4: "tasti ingranditi, come quelli di
+	// Rifinitura"): these are icon-only and pressed under time pressure.
 	for (QPushButton *b : {stepBackBtn, stepBtn, revBtn, playPauseBtn_,
-			       stopBtn_})
+			       stopBtn_}) {
 		b->setFixedHeight(kKeyH);
+		b->setMinimumWidth(40);
+	}
 
 	connect(playPauseBtn_, &QPushButton::clicked, this, [this]() {
 		// A REAL pause: the clip freezes on the frame it is showing and
@@ -995,8 +999,10 @@ KeyBlock *MultiReplayDock::buildTrim()
 				obs_module_text("Dock.TrimOutHint"), this);
 	connect(trimOut, &QPushButton::clicked, this,
 		[this]() { setSelectedPoint(false); });
-	trimIn->setFixedHeight(kKeyH);
-	trimOut->setFixedHeight(kKeyH);
+	for (QPushButton *b : {trimIn, trimOut}) {
+		b->setFixedHeight(kKeyH);
+		b->setMinimumWidth(40);
+	}
 
 	// Same fixed width, side by side (spec §4).
 	blk->setShapes({{Cell(trimIn), Cell(trimOut)}},
@@ -1389,7 +1395,9 @@ KeyBlock *MultiReplayDock::buildRecBlock()
 	auto *name = new QLabel(QStringLiteral("MARCA"), this);
 	name->setObjectName(QStringLiteral("mrPanelTitle"));
 	name->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
-	recBtn_->setFixedHeight(kKeyH);
+	// REC's height is pinned by KeyBlock::apply() (which follows gallery
+	// scale) — no setFixedHeight here, or it would stop growing in the
+	// full-screen gallery view the gate checks.
 	statusLbl_->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
 
 	blk->setShapes({{Cell(name, 1, false), Cell(recBtn_, 1, false),
@@ -1777,7 +1785,7 @@ KeyBlock *MultiReplayDock::buildQuickClip()
 		// A MINUS SIGN, not a hyphen: these read as durations before an
 		// instant, and U+2212 is the character that says so.
 		auto *b = compactBtn(QString("\xE2\x88\x92%1s").arg(sec), this,
-				     "mrPlay");
+				     "mrFn");
 		setKeyId(b, QString("mark%1").arg(sec));
 		connect(b, &QPushButton::clicked, this, [this, sec]() {
 			const int64_t t = markTimeNs();

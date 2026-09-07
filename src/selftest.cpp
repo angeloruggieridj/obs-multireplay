@@ -1025,6 +1025,16 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 				}
 		});
 		if (hd) {
+			// Put the dock back EXACTLY as found: floating state and
+			// geometry. Resizing it here and not restoring polluted
+			// the reopen pass's own float geometry — its full-screen
+			// test then ran on a 300 px window and cascaded.
+			bool wasFloat = false;
+			QRect wasGeom;
+			runOnUi([&]() {
+				wasFloat = hd->isFloating();
+				wasGeom = hd->geometry();
+			});
 			for (auto wh : {QSize(1180, 760), QSize(900, 360),
 					QSize(320, 900)}) {
 				runOnUi([&]() {
@@ -1041,7 +1051,13 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 							.arg(wh.height()));
 				});
 			}
-			runOnUi([&]() { hd->setFloating(false); });
+			runOnUi([&]() {
+				hd->setFloating(wasFloat);
+				if (wasFloat && wasGeom.isValid())
+					hd->setGeometry(wasGeom);
+			});
+			std::this_thread::sleep_for(
+				std::chrono::milliseconds(300));
 		}
 		obs_log(LOG_INFO, "[selftest] panel screenshots -> %s", sd);
 	}

@@ -111,6 +111,8 @@ struct Scheme {
 	QString danger;     // Annulla, and the health badge at its worst
 	QString action;     // THE ONE FILLED KEY: "Riproduci eventi"
 	QString actionHi;
+	QString fn;         // FUNCTION AZURE: the quick-clip keys (spec §4)
+	QString fnBg;       // the same, as a faint wash behind them
 
 	// two structural colours that are neither chrome nor signal
 	QString tabBar;     // the list tabs' selected fill
@@ -247,8 +249,12 @@ inline Scheme schemeFor(ThemeChoice choice, const QPalette &pal)
 	// where the panel is two feet away and lit from the side.
 	s.text = hex(mix(bg, fg, 0.95));
 	s.textKey = hex(mix(bg, fg, 0.70));
-	s.textMuted = hex(mix(bg, fg, 0.50));
-	s.textDim = hex(mix(bg, fg, 0.26));
+	// MARKED BUT NOT SHOUTING on the light theme (spec §6, 2026-09-07):
+	// captions, the + key and inactive tabs at 0.50 fell to a pale grey on
+	// white that reads as "disabled". A touch more ink there — and the same
+	// on the "empty slot" dim — without touching the dark themes.
+	s.textMuted = hex(mix(bg, fg, dark ? 0.50 : 0.60));
+	s.textDim = hex(mix(bg, fg, dark ? 0.26 : 0.36));
 	s.accent = hex(hl);
 	s.accentText = hex(hlText);
 	// THE ACTIVE LIST TAB IS A CONSTANT, not the theme's accent. The redesign
@@ -272,6 +278,11 @@ inline Scheme schemeFor(ThemeChoice choice, const QPalette &pal)
 	const QColor pvwHue = airHue;
 	const QColor warnHue("#E0A020");
 	const QColor actHue = airHue;
+	// FUNCTION AZURE (spec §4): the quick-clip keys carry a blue that says
+	// "this does something to the footage" without being a signal — it is
+	// not the take (red) nor a replay (green). Fixed hue, luminance follows
+	// the theme like the signals.
+	const QColor fnHue("#2E74C0");
 
 	const QColor rec = signalOn(recHue, bg, dark);
 	const QColor pvw = signalOn(pvwHue, bg, dark, 0);
@@ -279,6 +290,7 @@ inline Scheme schemeFor(ThemeChoice choice, const QPalette &pal)
 	const QColor air = signalOn(airHue, bg, dark, 0);
 	const QColor wrn = signalOn(warnHue, bg, dark);
 	const QColor act = signalOn(actHue, bg, dark, 0);
+	const QColor fnc = signalOn(fnHue, bg, dark, 0);
 
 	// THE LIT-KEY WASH IS WEAKER ON A LIGHT PANEL, and it is not taste.
 	// A lit toggle is drawn as its signal colour ON a wash of the same colour
@@ -316,6 +328,8 @@ inline Scheme schemeFor(ThemeChoice choice, const QPalette &pal)
 	s.danger = hex(rec);
 	s.action = hex(act);
 	s.actionHi = hex(mix(act, QColor(Qt::white), 0.18));
+	s.fn = hex(fnc);
+	s.fnBg = hex(mix(bg, fnc, 0.22 * wash));
 	s.seekBar = hex(mix(hl, fg, 0.10));
 
 	// The selected row. In Broadcast it is the reference controller's orange,
@@ -379,6 +393,10 @@ R"QSS(
 	border: 1px solid @border@;
 	border-radius: 5px;
 }
+/* FOLDED (Short / Tall): flat and tight — the box is a Wide feature, and
+   eight borders down a narrow column is the fragmentation the redesign
+   removed, plus ~100 px the Short floor cannot spare. */
+#MultiReplayDock QWidget#mrBlock[folded="true"] { border: 0; }
 #MultiReplayDock QWidget#mrPanelHeader {
 	border: 0;
 	border-bottom: 1px solid @border@;
@@ -819,6 +837,15 @@ QToolButton#mrGear {
 }
 QToolButton#mrGear:hover { background: @raise2@; color: @text@; border-color: @borderHi@; }
 
+/* CAM — pick an angle with the mouse when there are no tiles to click. A
+   DASHED border (spec §4) says "only here because Monitors is off". */
+QToolButton#mrCam {
+	background: @raise1@; border: 1px dashed @borderHi@; border-radius: 4px;
+	padding: 1px 8px; color: @textKey@; font-weight: 700; font-size: 10px;
+	letter-spacing: 1px;
+}
+QToolButton#mrCam:hover { background: @raise2@; color: @text@; border-color: @text@; }
+
 /* ── angle selector — STATE drives colour, not :checked ───── */
 QPushButton#mrAngle {
 	background: @raise1@; border: 1px solid @border@; border-radius: 3px;
@@ -873,6 +900,15 @@ QPushButton#mrAccent {
 }
 QPushButton#mrAccent:hover { background: @actionHi@; border-color: @actionHi@; }
 QPushButton#mrAccent:pressed { background: @action@; }
+
+/* FUNCTION AZURE (spec §4): the quick-clip keys read as "does something to the
+   footage" — a blue border on a faint blue wash, not a signal fill. */
+QPushButton#mrFn {
+	background: @fnBg@; border: 1px solid @fn@; border-radius: 4px;
+	color: @text@; font-weight: 700;
+}
+QPushButton#mrFn:hover { background: @fn@; color: #ffffff; border-color: @fn@; }
+QPushButton#mrFn:pressed { background: @fn@; color: #ffffff; }
 QPushButton#mrAccent:disabled {
 	background: @raise1@; border-color: @border@; color: @textDim@;
 }
@@ -1426,6 +1462,7 @@ inline QString dockStyle(const Scheme &s, int densityLevel = 0,
 		{"@onAir@", &s.onAir},         {"@warnBg@", &s.warnBg},
 		{"@warn@", &s.warn},           {"@danger@", &s.danger},
 		{"@actionHi@", &s.actionHi},   {"@action@", &s.action},
+		{"@fnBg@", &s.fnBg},           {"@fn@", &s.fn},
 		{"@tabBar@", &s.tabBar},       {"@seekBar@", &s.seekBar},
 	};
 	// LONGEST PREFIX FIRST, which is why @borderHi@ is listed above @border@
