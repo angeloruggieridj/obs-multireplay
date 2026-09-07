@@ -48,6 +48,7 @@
 class QGridLayout;
 class QLabel;
 class QPushButton;
+class QTabBar;
 
 namespace multireplay {
 
@@ -826,5 +827,75 @@ private:
 };
 
 void addStrip(QBoxLayout *parent, ControlStrip *s);
+
+// ---------------------------------------------------------------------------
+// TwoPanelStrip — MARCA | REVIEW
+// ---------------------------------------------------------------------------
+//
+// The redesign's command area: two titled panels instead of six folding
+// sections. MARCA (~40%) is what you do to the live feed — arm, mark, pick a
+// bay; REVIEW (~60%) is what you do to the replay — play, transport, modes,
+// speed. Each panel is a column of KeyBlock sub-boxes plus a footer (the
+// health badge under MARCA, the on-air band under REVIEW).
+//
+// THREE ARRANGEMENTS, driven by PanelMode like everything else:
+//   Wide   panels side by side, 2:3
+//   Short  panels stacked, MARCA over REVIEW
+//   Tall   one panel at a time behind a REVIEW / MARCA tab bar
+//
+// It reuses KeyBlock (a captioned section is exactly a sub-box) and drives
+// its flat/tall shape itself: tall in Wide, flat in the two narrow shapes.
+// It owns no keys — the caller builds the blocks and hands them over.
+//
+// It is added to its parent with a plain addWidget(): unlike ControlStrip it
+// does not carry two different heights at one width, because its mode is set
+// from the outside (applyPanelMode → setMode) rather than derived from the
+// height it is handed, so there is no chicken-and-egg to break.
+class TwoPanelStrip : public QWidget {
+public:
+	explicit TwoPanelStrip(QWidget *parent);
+
+	// Add a sub-box to a panel, in reading order top to bottom.
+	void addToMarca(KeyBlock *b);
+	void addToReview(KeyBlock *b);
+	// The strip under each panel: health badge (MARCA), on-air band (REVIEW).
+	// Either may be null.
+	void setFooters(QWidget *marcaFoot, QWidget *reviewFoot);
+
+	void setMode(PanelMode m);
+	PanelMode mode() const { return mode_; }
+
+	// Re-apply every block's shape — after a theme change or a gallery-scale
+	// flip, where a block's own flat/tall state has not changed but the keys
+	// inside it must be re-pinned.
+	void refreshAllBlocks();
+	// One block changed inside (a camera appeared, channel B switched off).
+	void blockChanged(KeyBlock *b);
+
+	QSize sizeHint() const override;
+	QSize minimumSizeHint() const override;
+
+protected:
+	void paintEvent(QPaintEvent *e) override;
+
+private:
+	void relayout();
+	int wantedHeight() const;
+
+	QWidget *marca_ = nullptr;
+	QWidget *review_ = nullptr;
+	QVBoxLayout *marcaCol_ = nullptr;
+	QVBoxLayout *reviewCol_ = nullptr;
+	QWidget *marcaFoot_ = nullptr;
+	QWidget *reviewFoot_ = nullptr;
+	QVector<KeyBlock *> marcaBlocks_;
+	QVector<KeyBlock *> reviewBlocks_;
+
+	// Tall only: a tab bar swaps the two panels.
+	QTabBar *tabs_ = nullptr;
+	QHBoxLayout *row_ = nullptr;
+
+	PanelMode mode_ = PanelMode::Wide;
+};
 
 } // namespace multireplay

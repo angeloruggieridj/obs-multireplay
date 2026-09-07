@@ -1484,21 +1484,14 @@ void MultiReplayDock::applyPanelMode(PanelMode m, bool force)
 			monitorSplit_->restoreState(savedMonitorSplit_[(int)m]);
 	}
 
-	// THE STRIP STACKS WHENEVER IT IS IN A COLUMN, which is Tall AND Short:
-	// in Short the keys move into the left-hand column beside the list, so
-	// they have about half the panel's width. Left on the wide two-macro-row
-	// shape there, the sections did not fit across that half and the strip
-	// folded anyway - into something so deep that the panel's own floor rose
-	// above the height at which Short is chosen, and the arrangement was
-	// undone by the resize it had just caused. From the operator's chair
-	// Short flashed on and vanished, at every width.
-	//
-	// Width alone cannot tell these apart — see setStacked.
+	// THE COMMAND PANEL FOLLOWS THE MODE DIRECTLY: side by side in Wide,
+	// MARCA over REVIEW in Short, one panel behind a tab bar in Tall
+	// (TwoPanelStrip::setMode).
 	if (strip_)
-		strip_->setStacked(m == PanelMode::Wide ? 0 : 1);
-	// §6.3: Tall collapses bay/clips/speed behind "more" — see the note on
-	// applyTallCollapse itself for why hiding them wholesale, rather than
-	// stacking all six, is what actually buys the height back.
+		strip_->setMode(m);
+	// (applyTallCollapse used to hide bay/clips/speed behind a "more" menu
+	// for Tall; the tab bar does that now. Kept as a no-op guard in case
+	// moreBlock_ is ever rebuilt.)
 	applyTallCollapse(m == PanelMode::Tall);
 
 	// The search box is the one control that can be asked to give width back:

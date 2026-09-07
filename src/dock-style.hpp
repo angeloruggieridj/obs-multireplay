@@ -363,8 +363,33 @@ R"QSS(
    panel. */
 #MultiReplayDock QWidget#mrBottomBar, #MultiReplayDock QWidget#mrStrip,
 #MultiReplayDock QWidget#mrBlock, #MultiReplayDock QWidget#mrLeftCol,
-#MultiReplayDock QWidget#mrListPane, #MultiReplayDock QWidget#mrPreviewPane {
+#MultiReplayDock QWidget#mrListPane, #MultiReplayDock QWidget#mrPreviewPane,
+#MultiReplayDock QWidget#mrMarca, #MultiReplayDock QWidget#mrReview {
 	background: transparent;
+}
+/* MARCA | REVIEW — the two command panels. Each carries a quiet title above
+   its blocks (hidden in Tall, where the tab bar prints the name instead). */
+#MultiReplayDock QLabel#mrPanelTitle {
+	color: @textMuted@;
+	font-size: 10px;
+	font-weight: 700;
+	letter-spacing: 1px;
+	padding: 1px 0 0 1px;
+}
+#MultiReplayDock QTabBar#mrPanelTabs { background: transparent; }
+#MultiReplayDock QTabBar#mrPanelTabs::tab {
+	background: @raise1@;
+	color: @textMuted@;
+	border: 1px solid @line@;
+	border-bottom: 0;
+	padding: 2px 12px;
+	margin-right: 2px;
+	font-weight: 700;
+	letter-spacing: 1px;
+}
+#MultiReplayDock QTabBar#mrPanelTabs::tab:selected {
+	background: @tabBar@;
+	color: #ffffff;
 }
 /* EVERY SURFACE THE PANEL OWNS, and BY ID so OBS's own theme cannot out-rank
    it. These were left to the application palette, which is invisible while the

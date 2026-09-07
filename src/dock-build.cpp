@@ -1026,26 +1026,9 @@ QWidget *MultiReplayDock::buildStatusBar(QWidget *parent)
 	h->setContentsMargins(6, 2, 6, 2);
 	h->setSpacing(6);
 
-	// The health badge moved here from beside REC. What it reports is a
-	// READING — how the take is going — and the record section is where the
-	// take is ARMED. It is hidden unless there is something to say: a badge
-	// that is always there is furniture, and furniture is what nobody looks
-	// at the day it finally turns red.
-	//
-	// DENSE, so the style sheet does not ask for a taller frame than the
-	// widget owns — which put its bottom border outside it and read as a box
-	// somebody forgot to close. Same trap as the skip key on the on-air band.
-	healthBtn_->setParent(statusBar_);
-	healthBtn_->setProperty("dense", true);
-	healthBtn_->setMinimumHeight(0);
-	healthBtn_->setFixedHeight(kStatusBarH - 6);
-	// AMBER, like the border and the number beside it. The badge is only ever
-	// on screen when it has something to report (it is hidden outright when it
-	// has not), so its mark has no resting chrome state to be drawn in.
-	setKeyIconRole(healthBtn_, Icon::Health, IconRole::Warn, tintsFor(sc()),
-		       11);
-	setKeyId(healthBtn_, QStringLiteral("health"));
-	h->addWidget(healthBtn_);
+	// (The health badge used to sit here. Spec §8 moves it to the footer of
+	// the MARCA panel — set up in buildRecBlock, placed by
+	// TwoPanelStrip::setFooters.)
 
 	statusNotice_ = new QLabel(statusBar_);
 	statusNotice_->setObjectName(QStringLiteral("mrChanStrip"));
@@ -1097,62 +1080,44 @@ QWidget *MultiReplayDock::buildBottomBar()
 	// is what absorbs a short dock.
 	box->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Minimum);
 
-	// -- THE CONTROL STRIP --------------------------------------------
-	// Two macro-rows:
-	//
-	//   MARK (3 rows)     A↔B A B ⇄        speeds / dial / Export
-	//   REC + clock       transport + NOW + PLAY      ▲ ▼ ⋯
-	//
-	// The first line is what you do to the FOOTAGE, the second is the take
-	// and the transport. Lanes put the same group in the same place on both
-	// rows, so the left lane starts at one x on each and the right lane ends
-	// at one x on each.
-	//
-	// Every section declares that wide arrangement AND a compact fold of the
-	// same keys; the strip wears the wide one whenever the dock is wide
-	// enough to carry it and folds otherwise (dock-layout.hpp). Nothing is
-	// ever clipped and nothing is ever hidden.
-	//
-	// addStrip(), not addWidget(): the strip tells its parent two different
-	// heights — the one it can live with and the one it would like — and only
-	// a layout item of its own can carry both. Added as a plain widget its
-	// floor becomes its preference, which is what pinned the panel at 680 px
-	// and made it look unresizable.
-	//
-	// The rank is the order when the strip FOLDS on a narrow dock: what an
-	// operator reaches for through a whole match comes first, and the running
-	// order and the exports — which nobody touches while the ball is in play —
-	// come last.
-	strip_ = new ControlStrip(box);
-	strip_->setObjectName(QStringLiteral("mrStrip"));
-	// REARRANGED (§6.2): row 1 is PREPARE (arm, mark, pile the clip up), row
-	// 2 is SEND IT LIVE (which bay, drive it, how fast). REC anchors row 1;
-	// MARK moves to the centre lane so it is the first thing the eye lands
-	// on after the picture, where the bay selector used to sit centred in a
-	// lane that went empty the moment channel B was off. The ranks are the
-	// order the strip folds into on a narrow dock: REC, mark, bay,
-	// transport, speed, clips — export (inside clips now) stays last there,
-	// "the one thing nobody touches while the ball is in play".
-	//
-	// buildAngleMatrix carries startsLine for row 2 unconditionally: with
-	// one bay it is not omitted, only collapsed to zero width by
-	// applyChannelBVisibility (see its own comment), so it stays the
-	// correct place for a new line to start whether or not it is drawn.
-	strip_->addBlock(buildRecBlock(), Lane::Left, /*startsLine*/ false, 0);
-	strip_->addBlock(buildMarkers(), Lane::Centre, false, 1);
-	clipsBlock_ = buildExportBlock();
-	strip_->addBlock(clipsBlock_, Lane::Right, false, 5);
-	strip_->addBlock(buildAngleMatrix(), Lane::Left, /*startsLine*/ true, 2);
-	strip_->addBlock(buildTransport(), Lane::Centre, false, 3);
+	// -- THE COMMAND PANEL: MARCA | REVIEW ---------------------------
+	// TWO PANELS, not six folding sections (spec §4). MARCA is what you do to
+	// the live feed — arm, mark, pick a bay; REVIEW is what you do to the
+	// replay — drive it, pick a mode, set a speed. Wide puts them side by
+	// side (2:3), Short stacks them, Tall swaps them behind a tab bar. The
+	// blocks themselves are the ones the strip already had — this changes how
+	// they are grouped and arranged, not what is in them.
+	strip_ = new TwoPanelStrip(box);
+
+	// MARCA — buildRecBlock() also creates healthBtn_, which goes in this
+	// panel's footer just below (spec §8: health moved out of the status
+	// line).
+	strip_->addToMarca(buildRecBlock());
+	strip_->addToMarca(buildMarkers());
+	strip_->addToMarca(buildAngleMatrix()); // sets angleBlock_
+
+	// REVIEW
+	strip_->addToReview(buildTransport());
 	speedBlock_ = buildSpeedBlock();
-	strip_->addBlock(speedBlock_, Lane::Right, false, 4);
-	// §6.3: built last, ranked last (a stack has a top, and this is the one
-	// thing on it nobody reaches for during a match), visible only in
-	// Tall — applyTallCollapse hides/shows it opposite the three sections
-	// it stands in for.
-	moreBlock_ = buildMoreBlock();
-	strip_->addBlock(moreBlock_, Lane::Right, false, 6);
-	addStrip(v, strip_);
+	strip_->addToReview(speedBlock_);
+	// Export/reorder/clip-actions. Spec §3 wants these on a toolbar over the
+	// event table; until that toolbar exists they stay here, as "what you do
+	// with a clip once it is marked", at the foot of REVIEW.
+	clipsBlock_ = buildExportBlock();
+	strip_->addToReview(clipsBlock_);
+
+	// Tall used to collapse bay/clips/speed behind a "more" menu; the tab bar
+	// does that job now, so the block is not built.
+	moreBlock_ = nullptr;
+
+	// FOOTERS: the health badge under MARCA, and a spacer of the same height
+	// under REVIEW so the two panels' bodies line up (spec §4: "in REVIEW il
+	// footer è riservato ma invisibile").
+	auto *reviewFootSpacer = new QWidget(box);
+	reviewFootSpacer->setFixedHeight(kKeyH);
+	strip_->setFooters(healthBtn_, reviewFootSpacer);
+
+	v->addWidget(strip_);
 
 	// ── THE STATUS LINE, ABOVE THE GREEN BAND ────────────────────────
 	// The band says what is ON AIR; this line says what the next replay will
@@ -1383,16 +1348,24 @@ KeyBlock *MultiReplayDock::buildRecBlock()
 		poll();
 	});
 
-	// M4: the health badge lives next to the record key because that is
-	// where the eye already goes when a take starts, and because what it
-	// reports is always about the take. Hidden unless there is something to
-	// say (see poll()).
+	// M4: the health badge. It reports how the take is going, so it sits in
+	// the footer of MARCA — the panel where the take is armed
+	// (TwoPanelStrip::setFooters puts it there). Hidden unless there is
+	// something to say (see poll()).
 	healthBtn_ = new QPushButton(this);
 	healthBtn_->setObjectName("mrHealth");
 	healthBtn_->setCursor(Qt::PointingHandCursor);
 	healthBtn_->setFlat(true);
+	healthBtn_->setProperty("dense", true);
+	healthBtn_->setMinimumHeight(0);
 	healthBtn_->setFixedHeight(kKeyH);
 	healthBtn_->hide();
+	// AMBER, like the border and the number beside it. The badge is only ever
+	// on screen when it has something to report, so its mark has no resting
+	// chrome state to be drawn in.
+	setKeyIconRole(healthBtn_, Icon::Health, IconRole::Warn, tintsFor(sc()),
+		       11);
+	setKeyId(healthBtn_, QStringLiteral("health"));
 	connect(healthBtn_, &QPushButton::clicked, this,
 		&MultiReplayDock::showHealthDetails);
 
@@ -1712,34 +1685,19 @@ KeyBlock *MultiReplayDock::buildMoreBlock()
 	return blk;
 }
 
-// §6.3's other half: bay/clips/speed disappear from the strip's own
-// arithmetic in Tall (see orderFor's isHidden() check, dock-layout.cpp),
-// and the "more" key takes their place. angleBlock_ is never null here —
-// unlike the mockup's bay_, this dock always builds it (§2.10 collapses
-// its CONTENT when B is off, via applyChannelBVisibility, not the section
-// itself) — but hiding it wholesale for Tall is independent of that and
-// composes with it fine: whichever reason hid it, orderFor stops reserving
-// its room, and the more menu's own aboutToShow decides on cfg.enableChannelB
-// whether to offer the channel items at all.
+// TALL USED TO COLLAPSE bay/clips/speed behind a "more" menu, because six
+// folding sections in a narrow column cost six lines. The MARCA | REVIEW
+// panel (spec §4) puts REVIEW behind a tab bar in Tall instead — all of its
+// blocks are on the one tab, none hidden — so there is nothing to collapse.
+// Kept as a guarded no-op: moreBlock_ is null now, and the three blocks stay
+// visible in every mode.
 void MultiReplayDock::applyTallCollapse(bool tall)
 {
 	if (tall == tallCollapsed_)
 		return;
 	tallCollapsed_ = tall;
-	if (angleBlock_)
-		angleBlock_->setVisible(!tall);
-	if (clipsBlock_)
-		clipsBlock_->setVisible(!tall);
-	if (speedBlock_)
-		speedBlock_->setVisible(!tall);
-	const bool anyCollapsed = angleBlock_ || clipsBlock_ || speedBlock_;
-	if (moreBlock_)
-		moreBlock_->setVisible(tall && anyCollapsed);
-	if (strip_)
-		for (KeyBlock *b :
-		     {angleBlock_, clipsBlock_, speedBlock_, moreBlock_})
-			if (b)
-				strip_->blockChanged(b);
+	if (moreBlock_) // not built any more; here in case it comes back
+		moreBlock_->setVisible(tall);
 }
 
 // ---------------------------------------------------------------------------

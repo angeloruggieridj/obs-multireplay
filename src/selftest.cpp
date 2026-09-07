@@ -4416,19 +4416,15 @@ void runReopenPass(const std::string &outPath)
 	// to tell them apart is to ask for a wide, shallow window and read back
 	// both the arrangement AND the height that was actually granted.
 	bool shortReachable = false;
-	// §6.4 — SHORT MUST PACK ITS FOLDED SECTIONS ONTO SHARED LINES, not one
-	// per section. The width is generous there (1400 px) and the height is
-	// the scarce resource, which is exactly backwards from what a strip
-	// that puts one section per line assumes. A regression here changes
-	// nothing else this gate checks — every section still folds, still has
-	// its keys — it just costs the dock the height of six rows instead of
-	// two or three.
+	// SPEC §4 — SHORT STACKS MARCA OVER REVIEW. The width is generous there
+	// (1400 px) and the height is the scarce resource, so the two command
+	// panels go one above the other rather than side by side, and MARCA
+	// sits entirely above REVIEW with no tab bar between them.
 	bool shortPacksLines = false;
-	// §6.3 — TALL COLLAPSES BAY + CLIPS + SPEED BEHIND "MORE". Six sections
-	// in a 340 px column cost six lines with no packing to help (there is
-	// never room for two to share one); this is what buys the height back
-	// instead — the three least-pressed-during-a-match sections vanish
-	// from the strip's own arithmetic and one key stands in for them.
+	// SPEC §4 — TALL SWAPS MARCA / REVIEW BEHIND A TAB BAR. A 320 px column
+	// has no room for both panels at once, so a REVIEW / MARCA tab bar
+	// rides on top and shows one of them. (This replaced the old "collapse
+	// bay + clips + speed behind a more menu".)
 	bool tallCollapsesToMore = false;
 	// PUTTING THE MONITORS DOWN HAS TO GIVE THE ROOM TO THE LIST, and this is
 	// the one check that can tell the difference between the pictures going
@@ -4886,55 +4882,49 @@ void runReopenPass(const std::string &outPath)
 					QStringLiteral("mrStrip"));
 				if (!strip)
 					return;
+				// The blocks are nested inside a panel column now,
+				// so their x is column-relative — map each into the
+				// strip before measuring the left/right margins.
 				int lo = 1 << 20, hi = 0;
 				for (QWidget *b : strip->findChildren<QWidget *>(
 					     QStringLiteral("mrBlock"))) {
 					if (!b->isVisible())
 						continue;
-					lo = std::min(lo, b->x());
-					hi = std::max(hi, b->x() + b->width());
+					const int x =
+						b->mapTo(strip, QPoint(0, 0)).x();
+					lo = std::min(lo, x);
+					hi = std::max(hi, x + b->width());
 				}
 				if (hi <= 0)
 					return;
 				keyPadL = lo;
 				keyPadR = strip->width() - hi;
-				// Within a pixel of each other: the spine is an
-				// integer division, so a one-pixel bias is the
-				// arithmetic and not a mistake.
-				keysCentred = std::abs(keyPadL - keyPadR) <= 1;
+				// A tab bar shows one full-width panel in Tall, so
+				// the visible blocks span the strip and the two
+				// margins are near zero and equal. A few pixels of
+				// slack: panel margins, not a bias.
+				keysCentred = std::abs(keyPadL - keyPadR) <= 6;
 				if (auto *cb = dock->findChild<ClipBar *>())
 					bandText = cb->overlayText();
 				if (auto *nl = dock->findChild<QLabel *>(
 					    QStringLiteral("mrChanStrip")))
 					noticeText = nl->text();
-				// §6.3, found by mrKey like every other check on
-				// this panel: "more" is visible and the three
-				// sections it stands in for are not.
-				QAbstractButton *more = nullptr, *moveUp = nullptr,
-						*speed25 = nullptr, *bay0 = nullptr;
-				for (QAbstractButton *b :
-				     dock->findChildren<QAbstractButton *>()) {
-					const QString id =
-						b->property(kKeyProperty)
-							.toString();
-					if (id == QStringLiteral("moreCollapsed"))
-						more = b;
-					else if (id == QStringLiteral("moveUp"))
-						moveUp = b;
-					else if (id == QStringLiteral("speed25%"))
-						speed25 = b;
-					else if (id == QStringLiteral("bay0"))
-						bay0 = b;
-				}
+				// TALL SWAPS MARCA / REVIEW BEHIND A TAB BAR (spec
+				// §4): the tab bar is visible and exactly one of
+				// the two panels is shown.
+				QWidget *tabs = strip->findChild<QWidget *>(
+					QStringLiteral("mrPanelTabs"));
+				QWidget *pm = strip->findChild<QWidget *>(
+					QStringLiteral("mrMarca"));
+				QWidget *pr = strip->findChild<QWidget *>(
+					QStringLiteral("mrReview"));
 				tallCollapsesToMore =
-					more && more->isVisible() &&
-					(!moveUp || !moveUp->isVisible()) &&
-					(!speed25 || !speed25->isVisible()) &&
-					(!bay0 || !bay0->isVisible());
+					tabs && tabs->isVisible() && pm && pr &&
+					(pm->isVisible() != pr->isVisible());
 			});
 			obs_log(tallCollapsesToMore ? LOG_INFO : LOG_ERROR,
-				"[selftest] reopen: tall collapses bay/clips/speed "
-				"behind more: %s",
+				"[selftest] reopen: tall swaps MARCA/REVIEW behind a "
+				"tab bar: %s",
 				tallCollapsesToMore ? "yes" : "NO");
 			obs_log(keysCentred ? LOG_INFO : LOG_ERROR,
 				"[selftest] reopen: stacked keys - %d px of panel to "
@@ -4961,31 +4951,37 @@ void runReopenPass(const std::string &outPath)
 					if (!strip)
 						return;
 					stripH = strip->height();
-					QVector<int> lines;
+					// SHORT STACKS MARCA OVER REVIEW (spec
+					// §4): both panels shown, no tab bar, and
+					// MARCA sits entirely above REVIEW.
+					QWidget *tabs = strip->findChild<QWidget *>(
+						QStringLiteral("mrPanelTabs"));
+					QWidget *pm = strip->findChild<QWidget *>(
+						QStringLiteral("mrMarca"));
+					QWidget *pr = strip->findChild<QWidget *>(
+						QStringLiteral("mrReview"));
 					for (QWidget *b :
 					     strip->findChildren<QWidget *>(
-						     QStringLiteral("mrBlock"))) {
-						if (!b->isVisible() ||
-						    b->height() <= 0)
-							continue;
-						stripSections++;
-						naiveH += b->height();
-						bool onKnownLine = false;
-						for (int y : lines)
-							if (std::abs(y - b->y()) <=
-							    2) {
-								onKnownLine =
-									true;
-								break;
-							}
-						if (!onKnownLine)
-							lines << b->y();
-					}
-					stripLines = lines.size();
+						     QStringLiteral("mrBlock")))
+						if (b->isVisible() &&
+						    b->height() > 0)
+							stripSections++;
+					const int mBot =
+						pm ? pm->mapTo(strip, QPoint(0, 0))
+								     .y() +
+							     pm->height()
+						   : 0;
+					const int rTop =
+						pr ? pr->mapTo(strip, QPoint(0, 0))
+								     .y()
+						   : 0;
+					stripLines = 2; // MARCA, then REVIEW
+					naiveH = stripH;
 					shortPacksLines =
-						stripSections > 0 &&
-						stripLines < stripSections &&
-						stripH < naiveH;
+						pm && pr && pm->isVisible() &&
+						pr->isVisible() &&
+						(!tabs || !tabs->isVisible()) &&
+						mBot <= rTop + 8;
 				});
 				obs_log(shortReachable ? LOG_INFO : LOG_ERROR,
 					"[selftest] reopen: asked for a 1400x340 "
@@ -4994,12 +4990,11 @@ void runReopenPass(const std::string &outPath)
 					gotH, shortMode, floorH,
 					shortReachable ? "short" : "NOT SHORT");
 				obs_log(shortPacksLines ? LOG_INFO : LOG_ERROR,
-					"[selftest] reopen: short's strip packed "
-					"%d sections onto %d lines (%d px vs %d "
-					"px if stacked one per line): %s",
-					stripSections, stripLines, stripH, naiveH,
-					shortPacksLines ? "packed"
-							: "NOT PACKED");
+					"[selftest] reopen: short stacks MARCA over "
+					"REVIEW (%d blocks, strip %d px): %s",
+					stripSections, stripH,
+					shortPacksLines ? "stacked"
+							: "NOT STACKED");
 			}
 			runOnUi([&]() {
 				host->setFloating(wasFloating);

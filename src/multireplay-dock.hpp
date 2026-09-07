@@ -629,7 +629,9 @@ private:
 	// section places it — under the dial, with the rest of what is done to a
 	// clip once it is marked.
 	QPushButton *buildExportKey();
-	ControlStrip *strip_ = nullptr;
+	// The command area: MARCA | REVIEW (dock-layout.hpp). It replaced the
+	// six-section ControlStrip.
+	TwoPanelStrip *strip_ = nullptr;
 	// The camera section, kept because switching the second bay on or off
 	// changes how many rows it has and the strip has to be told.
 	KeyBlock *angleBlock_ = nullptr;

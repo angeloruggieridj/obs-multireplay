@@ -14,6 +14,9 @@
 #include <QPaintEvent>
 #include <QResizeEvent>
 #include <QVBoxLayout>
+#include <QHBoxLayout>
+#include <QMargins>
+#include <QTabBar>
 
 #include <algorithm>
 #include <climits>
@@ -1413,6 +1416,211 @@ void addStrip(QBoxLayout *parent, ControlStrip *s)
 {
 	s->setParent(parent->parentWidget());
 	parent->addItem(new ControlStripItem(s));
+}
+
+// ---------------------------------------------------------------------------
+// TwoPanelStrip
+// ---------------------------------------------------------------------------
+
+static QLabel *makePanelTitle(const QString &text, QWidget *parent)
+{
+	auto *l = new QLabel(text, parent);
+	l->setObjectName(QStringLiteral("mrPanelTitle"));
+	l->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+	l->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
+	return l;
+}
+
+TwoPanelStrip::TwoPanelStrip(QWidget *parent) : QWidget(parent)
+{
+	setObjectName(QStringLiteral("mrStrip"));
+	setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Minimum);
+
+	auto *outer = new QVBoxLayout(this);
+	outer->setContentsMargins(0, 0, 0, 0);
+	outer->setSpacing(4);
+
+	// The Tall tab bar rides on top; it is hidden in the other two shapes,
+	// where the two panels stand together and each carries its own title.
+	tabs_ = new QTabBar(this);
+	tabs_->setObjectName(QStringLiteral("mrPanelTabs"));
+	tabs_->setDrawBase(false);
+	tabs_->setExpanding(false);
+	tabs_->setFocusPolicy(Qt::NoFocus);
+	tabs_->addTab(QStringLiteral("REVIEW"));
+	tabs_->addTab(QStringLiteral("MARCA"));
+	tabs_->hide();
+	outer->addWidget(tabs_);
+
+	marca_ = new QWidget(this);
+	marca_->setObjectName(QStringLiteral("mrMarca"));
+	marcaCol_ = new QVBoxLayout(marca_);
+	marcaCol_->setContentsMargins(0, 0, 0, 0);
+	marcaCol_->setSpacing(4);
+	marcaCol_->addWidget(makePanelTitle(QStringLiteral("MARCA"), marca_));
+
+	review_ = new QWidget(this);
+	review_->setObjectName(QStringLiteral("mrReview"));
+	reviewCol_ = new QVBoxLayout(review_);
+	reviewCol_->setContentsMargins(0, 0, 0, 0);
+	reviewCol_->setSpacing(4);
+	reviewCol_->addWidget(makePanelTitle(QStringLiteral("REVIEW"), review_));
+
+	// The body row: horizontal in Wide (side by side), vertical in the two
+	// narrow shapes. setDirection() flips it without re-parenting a child.
+	auto *body = new QWidget(this);
+	row_ = new QHBoxLayout(body);
+	row_->setContentsMargins(0, 0, 0, 0);
+	row_->setSpacing(6);
+	row_->addWidget(marca_, 2);
+	row_->addWidget(review_, 3);
+	outer->addWidget(body, 1);
+
+	connect(tabs_, &QTabBar::currentChanged, this,
+		[this](int) { relayout(); });
+}
+
+static void addBlockToCol(QVBoxLayout *col, QWidget *foot, KeyBlock *b)
+{
+	// Blocks after the title, footer pinned at the bottom. Insert before the
+	// footer if it is already there, else append.
+	const int idx = foot ? std::max(0, col->indexOf(foot)) : col->count();
+	col->insertWidget(idx, b);
+}
+
+void TwoPanelStrip::addToMarca(KeyBlock *b)
+{
+	if (!b)
+		return;
+	marcaBlocks_ << b;
+	addBlockToCol(marcaCol_, marcaFoot_, b);
+}
+
+void TwoPanelStrip::addToReview(KeyBlock *b)
+{
+	if (!b)
+		return;
+	reviewBlocks_ << b;
+	addBlockToCol(reviewCol_, reviewFoot_, b);
+}
+
+void TwoPanelStrip::setFooters(QWidget *marcaFoot, QWidget *reviewFoot)
+{
+	marcaFoot_ = marcaFoot;
+	reviewFoot_ = reviewFoot;
+	if (marcaFoot_) {
+		marcaFoot_->setParent(marca_);
+		marcaCol_->addWidget(marcaFoot_);
+	}
+	if (reviewFoot_) {
+		reviewFoot_->setParent(review_);
+		reviewCol_->addWidget(reviewFoot_);
+	}
+}
+
+void TwoPanelStrip::setMode(PanelMode m)
+{
+	mode_ = m;
+	relayout();
+}
+
+void TwoPanelStrip::relayout()
+{
+	const bool tall = mode_ == PanelMode::Tall;
+	const bool wide = mode_ == PanelMode::Wide;
+
+	tabs_->setVisible(tall);
+	row_->setDirection(wide ? QBoxLayout::LeftToRight
+				: QBoxLayout::TopToBottom);
+	row_->setStretch(0, wide ? 2 : 0);
+	row_->setStretch(1, wide ? 3 : 0);
+
+	// TALL SHOWS ONE PANEL AT A TIME. review is tab 0, marca is tab 1.
+	if (tall) {
+		const bool showReview = tabs_->currentIndex() != 1;
+		marca_->setVisible(!showReview);
+		review_->setVisible(showReview);
+	} else {
+		marca_->setVisible(true);
+		review_->setVisible(true);
+	}
+
+	// The per-panel titles are redundant behind the Tall tab bar, which
+	// already prints REVIEW / MARCA — one line of a panel short of height.
+	for (QWidget *p : {marca_, review_})
+		if (QLabel *t = p->findChild<QLabel *>(
+			    QStringLiteral("mrPanelTitle")))
+			t->setVisible(!tall);
+
+	// The sub-boxes wear their tall shape only in Wide; folded otherwise.
+	for (KeyBlock *b : marcaBlocks_)
+		b->setFlat(!wide);
+	for (KeyBlock *b : reviewBlocks_)
+		b->setFlat(!wide);
+
+	updateGeometry();
+	update();
+}
+
+void TwoPanelStrip::refreshAllBlocks()
+{
+	for (KeyBlock *b : marcaBlocks_)
+		b->refresh();
+	for (KeyBlock *b : reviewBlocks_)
+		b->refresh();
+	updateGeometry();
+}
+
+void TwoPanelStrip::blockChanged(KeyBlock *b)
+{
+	if (b)
+		b->refresh();
+	updateGeometry();
+	update();
+}
+
+int TwoPanelStrip::wantedHeight() const
+{
+	const int mH = marca_->layout()->sizeHint().height();
+	const int rH = review_->layout()->sizeHint().height();
+	int h = 0;
+	if (mode_ == PanelMode::Wide)
+		h = std::max(mH, rH);
+	else if (mode_ == PanelMode::Short)
+		h = mH + rH + (row_ ? row_->spacing() : 0);
+	else
+		h = tabs_->sizeHint().height() + 4 + std::max(mH, rH);
+	const QMargins mg = layout()->contentsMargins();
+	return h + mg.top() + mg.bottom();
+}
+
+QSize TwoPanelStrip::sizeHint() const
+{
+	// WIDTH comes from the layout (the two panels' own minimums, side by
+	// side in Wide); only the HEIGHT is ours to state, and it is exactly
+	// the height the current arrangement needs — nothing spare goes here,
+	// it goes to the picture and the list above.
+	return QSize(QWidget::sizeHint().width(), wantedHeight());
+}
+
+QSize TwoPanelStrip::minimumSizeHint() const
+{
+	return QSize(QWidget::minimumSizeHint().width(), wantedHeight());
+}
+
+void TwoPanelStrip::paintEvent(QPaintEvent *)
+{
+	// A hairline down the gap between the two panels in Wide, the same cue
+	// ControlStrip drew between its lanes: it says "two groups" in one pixel
+	// of width rather than a line of height.
+	if (mode_ != PanelMode::Wide || !marca_->isVisible())
+		return;
+	const int x = (marca_->geometry().right() + review_->geometry().left()) /
+		      2;
+	QPainter p(this);
+	p.setPen(QColor(255, 255, 255, 28));
+	p.drawLine(x, marca_->geometry().top() + 2, x,
+		   marca_->geometry().bottom() - 2);
 }
 
 } // namespace multireplay
