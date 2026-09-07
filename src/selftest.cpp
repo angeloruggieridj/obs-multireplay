@@ -4605,22 +4605,20 @@ void runReopenPass(const std::string &outPath)
 			runOnUi([&]() {
 				back = host->geometry();
 				stillFull = host->isFullScreen();
-				// Back to roughly the size it had — NOT a postage
-				// stamp in a corner, which is the fault this
-				// guards. The tolerance is generous on height
-				// because Qt floats this dock at exactly its
-				// minimum, and the MARCA | REVIEW panel's minimum
-				// sits right on the width at which panelModeFor's
-				// 40 px hysteresis tips it into Short — so a
-				// faithful restore can still land one Short-floor
-				// (~30-40 px) taller than the pre-full-screen
-				// height. Width has no such give and stays tight.
+				// Back to the size it had, not a postage stamp in
+				// a corner. panelModeFor is sticky out of Wide
+				// now, so a restore no longer tips into Short and
+				// clamps ~40 px taller; the taller MARCA | REVIEW
+				// panel (spec §4 stacks more rows than the old
+				// strip) still settles its own layout for a pass
+				// on showNormal(), which leaves the height within
+				// ~15 px of the operator's window. Width is exact.
 				fsRestoresTheWindow =
 					!stillFull &&
 					std::abs(back.width() -
 						 windowed.width()) <= 8 &&
 					std::abs(back.height() -
-						 windowed.height()) <= 48;
+						 windowed.height()) <= 16;
 			});
 			obs_log(fsRestoresTheWindow ? LOG_INFO : LOG_ERROR,
 				"[selftest] reopen: fullscreen -> back: window "

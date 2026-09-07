@@ -702,38 +702,52 @@ void MultiReplayDock::buildSpeedDial()
 // ---------------------------------------------------------------------------
 // REVIEW panel (spec §4) — header · playback · modes · transport · trim
 // ---------------------------------------------------------------------------
-// REVIEW panel (spec §4) — playback (header + PLAY/NOW) · controls · speed
-// ---------------------------------------------------------------------------
 //
-// Every widget and every connection here was in the old one-block
-// buildTransport(); this regroups them into the reference panel's rows and
-// drops the ▾ play-options menu (spec §8: its three entries all have
-// dedicated keys, and its "Angolo" fallback moved to the CAM key). Kept to
-// TWO extra blocks rather than one-per-group: a KeyBlock per group stacked
-// in a column added ~300 px to the panel's floor, past what a floating
-// window can restore to.
+// One KeyBlock per group, in the reference panel's order. Every widget and
+// every connection was in the old one-block buildTransport(); this splits it
+// into the groups the spec draws and drops the ▾ play-options menu (spec §8:
+// its three entries have dedicated keys, its Angolo fallback is the CAM key).
 
-KeyBlock *MultiReplayDock::buildPlayback()
+KeyBlock *MultiReplayDock::buildReviewHeader()
 {
 	auto *blk = new KeyBlock(QString(), this);
 
-	// REVIEW header: which event ▶ is about (padded like the table's id
-	// column, kept up to date by updateChannelStrip) and IN OUTPUT — the
-	// toggle that decides whether a replay takes the Program. Seeded from
-	// Settings, never written back: setConfig() re-points the segment index
-	// and re-creates the Branch Output filters, so a key pressed mid-match
-	// must not reach it.
-	reviewEventLbl_ = new QLabel(QStringLiteral("—"), this);
+	// ■ REVIEW — the panel's name, in its header row (spec §4), not a
+	// separate label above the column.
+	auto *name = new QLabel(QStringLiteral("\xE2\x96\xA0 REVIEW"), this);
+	name->setObjectName(QStringLiteral("mrPanelTitle"));
+	name->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+
+	// Which event ▶ is about, padded like the table's id column, centred,
+	// kept up to date by updateChannelStrip().
+	reviewEventLbl_ = new QLabel(QStringLiteral("\xE2\x80\x94"), this);
 	reviewEventLbl_->setObjectName(QStringLiteral("mrReviewEvent"));
 	reviewEventLbl_->setAlignment(Qt::AlignCenter);
 	reviewEventLbl_->setFont(QFont(monoFamily()));
 
+	// IN OUTPUT — the toggle that decides whether a replay takes the
+	// Program, at the far right of the header. Seeded from Settings, never
+	// written back: setConfig() re-points the segment index and re-creates
+	// the Branch Output filters, so a key pressed mid-match must not reach
+	// it.
 	toOutputBtn_ = statusToggle(Icon::ToOutput,
 				    obs_module_text("Dock.ToOutput"), "toOutput",
 				    obs_module_text("Dock.ToOutput"), this);
 	toOutputBtn_->setChecked(
 		ReplayCore::instance().getConfig().toOutputOnPlay);
 	toOutputBtn_->setFixedHeight(kKeyH);
+
+	// name (2) · event id centred, growing (3) · IN OUTPUT (2), far right.
+	blk->setShapes({{Cell(name, 2, false), Cell(reviewEventLbl_, 3),
+			 Cell(toOutputBtn_, 2, false)}},
+		       {{Cell(name, 2, false), Cell(reviewEventLbl_, 3),
+			 Cell(toOutputBtn_, 2, false)}});
+	return blk;
+}
+
+KeyBlock *MultiReplayDock::buildPlayback()
+{
+	auto *blk = new KeyBlock(QString(), this);
 
 	// ▶ PLAY — the biggest key on the panel: the one that takes the
 	// Program, so the one the eye should land on without reading anything.
@@ -751,8 +765,8 @@ KeyBlock *MultiReplayDock::buildPlayback()
 		&MultiReplayDock::playSelected);
 
 	// NOW — a destination, not a modifier: drop the replay, go back to the
-	// live edge. Keeps the WORD (no mark for "back to now" reads), drawn
-	// big and red even at rest.
+	// live edge. Keeps the WORD, drawn big and red even at rest, the same
+	// size as PLAY (spec §4).
 	nowBtn_ = new QPushButton(QStringLiteral("NOW"), this);
 	nowBtn_->setObjectName("mrNow");
 	nowBtn_->setProperty("live", false);
@@ -770,24 +784,18 @@ KeyBlock *MultiReplayDock::buildPlayback()
 		clearFreeReview();
 	});
 
-	// Row 0: event id · IN OUTPUT. Row 1: PLAY and NOW, each declared two
-	// rows tall — PLAY because it is first-function, NOW the spec asks the
-	// same size. The shape has only these two rows: apply() places PLAY with
-	// rowSpan 2, so the grid gets a second row for it to fill without a
-	// spacer, and the block's own height (rows() == 2) already accounts for
-	// it.
-	blk->setShapes({{Cell(reviewEventLbl_, 3), Cell(toOutputBtn_, 2, false)},
-			{Cell(playSel, 3, true, 2), Cell(nowBtn_, 2, true, 2)}},
-		       {{Cell(reviewEventLbl_, 3), Cell(toOutputBtn_, 2, false)},
-			{Cell(playSel, 3, true, 2), Cell(nowBtn_, 2, true, 2)}});
+	// Two grid rows, both keys spanning them — big, side by side. The shape
+	// has only these rows: apply() places the span-2 cells, the grid gets
+	// its second row from the span, and rows() == 2 sizes the block for it.
+	blk->setShapes({{Cell(playSel, 3, true, 2), Cell(nowBtn_, 3, true, 2)}},
+		       {{Cell(playSel, 3, true, 2), Cell(nowBtn_, 3, true, 2)}});
 	return blk;
 }
 
-KeyBlock *MultiReplayDock::buildReviewControls()
+KeyBlock *MultiReplayDock::buildModes()
 {
 	auto *blk = new KeyBlock(QString(), this);
 
-	// ── MODES (row 0) ──────────────────────────────────────────────────
 	// ↺ "instantly play last event" — a distinct mark from LOOP (Icon::
 	// PlayLast, not Icon::Loop) so the two do not read as the same thing.
 	auto *lastBtn = iconBtn(Icon::PlayLast, "playLast",
@@ -835,8 +843,7 @@ KeyBlock *MultiReplayDock::buildReviewControls()
 	// CAM — pick an angle with the mouse when there are no multiview tiles
 	// to click (Monitors off). Carries the same lazy "Angolo" list the
 	// play-options ▾ used to; poll()/applyMonitorsRoom hides it while the
-	// tiles are on screen. Opened by popupOnClick, never setMenu (Qt would
-	// draw its own arrow over the mark).
+	// tiles are on screen. Opened by popupOnClick, never setMenu.
 	camBtn_ = new QToolButton(this);
 	camBtn_->setObjectName("mrGear");
 	camBtn_->setText(QStringLiteral("CAM"));
@@ -871,9 +878,26 @@ KeyBlock *MultiReplayDock::buildReviewControls()
 		popupOnClick(camBtn_, menu);
 	}
 
-	// ── TRANSPORT (row 1) ─────────────────────────────────────────────
-	// Two frame steps, side by side, in timeline order. The step BACK is
-	// not the forward one with the sign changed — see stepFrameBackward.
+	for (QPushButton *b : {lastBtn, loopBtn_, muteBtn_, musicBtn_})
+		b->setFixedHeight(kKeyH);
+
+	// Fixed-width stack, equal rows with or without CAM (spec §4). Row 0:
+	// ↺ · LOOP. Row 1: MUTE · ♪ · CAM.
+	blk->setShapes({{Cell(lastBtn, 3), Cell(loopBtn_, 3)},
+			{Cell(muteBtn_, 2), Cell(musicBtn_, 2), Cell(camBtn_, 2)}},
+		       {{Cell(lastBtn, 3), Cell(loopBtn_, 3)},
+			{Cell(muteBtn_, 2), Cell(musicBtn_, 2),
+			 Cell(camBtn_, 2)}});
+	return blk;
+}
+
+KeyBlock *MultiReplayDock::buildReviewTransport()
+{
+	auto *blk = new KeyBlock(QString(), this);
+
+	// The two frame steps, side by side, in the order the timeline runs.
+	// The step BACK is not the forward one with the sign changed — see
+	// stepFrameBackward.
 	auto *stepBackBtn = iconBtn(Icon::StepBack, "stepBack",
 				    obs_module_text("Dock.StepBack"), this);
 	connect(stepBackBtn, &QPushButton::clicked, this,
@@ -890,6 +914,7 @@ KeyBlock *MultiReplayDock::buildReviewControls()
 		b->setAutoRepeatInterval(150);
 	}
 
+	// ◀ ▶ ■ — reverse, play/pause, stop.
 	auto *revBtn = iconBtn(Icon::Reverse, "playReverse",
 			       obs_module_text("Dock.PlayReverse"), this);
 	connect(revBtn, &QPushButton::clicked, this,
@@ -907,6 +932,10 @@ KeyBlock *MultiReplayDock::buildReviewControls()
 	// Stop by it.
 	stopBtn_ = iconBtn(Icon::Stop, "stop", obs_module_text("Dock.Stop"),
 			   this);
+
+	for (QPushButton *b : {stepBackBtn, stepBtn, revBtn, playPauseBtn_,
+			       stopBtn_})
+		b->setFixedHeight(kKeyH);
 
 	connect(playPauseBtn_, &QPushButton::clicked, this, [this]() {
 		// A REAL pause: the clip freezes on the frame it is showing and
@@ -936,7 +965,18 @@ KeyBlock *MultiReplayDock::buildReviewControls()
 	connect(stopBtn_, &QPushButton::clicked, this,
 		[this]() { stopPlayback(); });
 
-	// ── TRIM (row 2) ──────────────────────────────────────────────────
+	// Six columns: the two frame steps, a margin, then ◀ ▶ ■ (spec §4).
+	blk->setShapes({{Cell(stepBackBtn), Cell(stepBtn), Cell(nullptr),
+			 Cell(revBtn), Cell(playPauseBtn_), Cell(stopBtn_)}},
+		       {{Cell(stepBackBtn), Cell(stepBtn), Cell(nullptr),
+			 Cell(revBtn), Cell(playPauseBtn_), Cell(stopBtn_)}});
+	return blk;
+}
+
+KeyBlock *MultiReplayDock::buildTrim()
+{
+	auto *blk = new KeyBlock(QString(), this);
+
 	// Move the SELECTED event's in or out point to where the position bar
 	// stands. A mark taken live is late by definition; until this the only
 	// fix was delete-and-remark from a scrub, which loses the angles and
@@ -949,29 +989,12 @@ KeyBlock *MultiReplayDock::buildReviewControls()
 				obs_module_text("Dock.TrimOutHint"), this);
 	connect(trimOut, &QPushButton::clicked, this,
 		[this]() { setSelectedPoint(false); });
+	trimIn->setFixedHeight(kKeyH);
+	trimOut->setFixedHeight(kKeyH);
 
-	for (QPushButton *b : {lastBtn, loopBtn_, muteBtn_, musicBtn_,
-			       stepBackBtn, stepBtn, revBtn, playPauseBtn_,
-			       stopBtn_, trimIn, trimOut})
-		b->setFixedHeight(kKeyH);
-
-	// Eight columns, two rows. Row 0: ↺ LOOP MUTE ♪ CAM · ⇤IN OUT⇥. Row 1:
-	// ⏮ ⏭ (gap) ◀ ▶ ■ then the trim keys again would crowd it, so trim
-	// rides row 0 beside the modes — "move a point already marked" is a
-	// preparation, not a transport act. A third row was ~30 px the panel's
-	// floor could not spare without a floating window failing to restore.
-	blk->setShapes({{Cell(lastBtn), Cell(loopBtn_), Cell(muteBtn_),
-			 Cell(musicBtn_), Cell(camBtn_), Cell(nullptr),
-			 Cell(trimIn), Cell(trimOut)},
-			{Cell(stepBackBtn), Cell(stepBtn), Cell(nullptr),
-			 Cell(revBtn), Cell(playPauseBtn_), Cell(stopBtn_),
-			 Cell(nullptr, 2)}},
-		       {{Cell(lastBtn), Cell(loopBtn_), Cell(muteBtn_),
-			 Cell(musicBtn_), Cell(camBtn_), Cell(nullptr),
-			 Cell(trimIn), Cell(trimOut)},
-			{Cell(stepBackBtn), Cell(stepBtn), Cell(nullptr),
-			 Cell(revBtn), Cell(playPauseBtn_), Cell(stopBtn_),
-			 Cell(nullptr, 2)}});
+	// Same fixed width, side by side (spec §4).
+	blk->setShapes({{Cell(trimIn), Cell(trimOut)}},
+		       {{Cell(trimIn), Cell(trimOut)}});
 	return blk;
 }
 
@@ -1057,10 +1080,13 @@ QWidget *MultiReplayDock::buildBottomBar()
 	strip_->addToMarca(buildMarkers());
 	strip_->addToMarca(buildAngleMatrix()); // sets angleBlock_
 
-	// REVIEW (spec §4): playback (event id + IN OUTPUT + PLAY/NOW),
-	// controls (modes · transport · trim in three rows), speed.
+	// REVIEW (spec §4), top to bottom: header · playback · modes ·
+	// transport · trim · speed.
+	strip_->addToReview(buildReviewHeader());
 	strip_->addToReview(buildPlayback());
-	strip_->addToReview(buildReviewControls());
+	strip_->addToReview(buildModes());
+	strip_->addToReview(buildReviewTransport());
+	strip_->addToReview(buildTrim());
 	speedBlock_ = buildSpeedBlock();
 	strip_->addToReview(speedBlock_);
 	// (Export / reorder / delete-all are a toolbar over the event table now,
@@ -1350,10 +1376,18 @@ KeyBlock *MultiReplayDock::buildRecBlock()
 	clockLbl_->setFixedWidth(kClockW);
 	statusLbl_->setFixedWidth(kClockW);
 
-	blk->setShapes({{Cell(recBtn_, 1, true, 2), Cell(clockLbl_, 1, false)},
-			{Cell(nullptr, 1), Cell(statusLbl_, 1, false)}},
-		       {{Cell(recBtn_, 1, true, 2), Cell(clockLbl_, 1, false)},
-			{Cell(nullptr, 1), Cell(statusLbl_, 1, false)}});
+	// MARCA — the panel names itself in its header row (spec §4), beside the
+	// record dot and the clock.
+	auto *name = new QLabel(QStringLiteral("MARCA"), this);
+	name->setObjectName(QStringLiteral("mrPanelTitle"));
+	name->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+
+	blk->setShapes({{Cell(name, 1, false), Cell(recBtn_, 1, true, 2),
+			 Cell(clockLbl_, 1, false)},
+			{Cell(nullptr, 2), Cell(statusLbl_, 1, false)}},
+		       {{Cell(name, 1, false), Cell(recBtn_, 1, true, 2),
+			 Cell(clockLbl_, 1, false)},
+			{Cell(nullptr, 2), Cell(statusLbl_, 1, false)}});
 	return blk;
 }
 

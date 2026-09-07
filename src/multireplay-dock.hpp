@@ -615,13 +615,14 @@ private:
 	KeyBlock *buildRecBlock();
 	KeyBlock *buildMarkers();
 	KeyBlock *buildAngleMatrix();
-	// REVIEW panel (spec §4): buildPlayback() is the header (event id + IN
-	// OUTPUT) plus PLAY/NOW; buildReviewControls() is modes (↺/LOOP,
-	// MUTE/♪/CAM), transport (⏮⏭ · ◀▶■) and trim (⇤IN OUT⇥) in three rows
-	// of one block. Kept to two blocks: one KeyBlock per group stacked in a
-	// column added ~300 px to the panel's floor.
+	// REVIEW panel (spec §4), in order: header (■ REVIEW · event id · IN
+	// OUTPUT), playback (PLAY + NOW), modes (↺/LOOP, MUTE/♪/CAM), transport
+	// (⏮ ⏭ · ◀ ▶ ■), trim (⇤IN OUT⇥). Speed is buildSpeedBlock().
+	KeyBlock *buildReviewHeader();
 	KeyBlock *buildPlayback();
-	KeyBlock *buildReviewControls();
+	KeyBlock *buildModes();
+	KeyBlock *buildReviewTransport();
+	KeyBlock *buildTrim();
 	KeyBlock *buildSpeedBlock();
 	// The toolbar over the event table (spec §3): ⇅ Tempo, ▲ ▼, Elimina
 	// tutto, ⤓ Esporta. It used to be a "clips" section in the command

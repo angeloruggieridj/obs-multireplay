@@ -44,8 +44,16 @@ PanelMode panelModeFor(const QSize &size, PanelMode current, int wideFloorH)
 	// go comes to rest exactly ON its floor, so the test has to fire AT that
 	// height, not below it - the hysteresis is what gives it room to.
 	const int need = std::max(kShortMaxHeight, wideFloorH + kModeHysteresis);
-	const int hLimit = need + (current == PanelMode::Short ? kModeHysteresis
-								 : 0);
+	// Sticky in BOTH directions, like the Tall boundary above: coming out
+	// of Wide costs 40 px more than going in. It also fixes a real trap —
+	// Qt floats this dock at exactly its minimum height, so a faithful
+	// restore from full screen lands right on `need` and, without this,
+	// tips straight into Short and clamps ~40 px taller than the operator's
+	// window.
+	const int hLimit =
+		need + (current == PanelMode::Short  ? kModeHysteresis
+			: current == PanelMode::Wide ? -kModeHysteresis
+						     : 0);
 	if (size.height() < hLimit)
 		return PanelMode::Short;
 
@@ -1422,15 +1430,6 @@ void addStrip(QBoxLayout *parent, ControlStrip *s)
 // TwoPanelStrip
 // ---------------------------------------------------------------------------
 
-static QLabel *makePanelTitle(const QString &text, QWidget *parent)
-{
-	auto *l = new QLabel(text, parent);
-	l->setObjectName(QStringLiteral("mrPanelTitle"));
-	l->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
-	l->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
-	return l;
-}
-
 TwoPanelStrip::TwoPanelStrip(QWidget *parent) : QWidget(parent)
 {
 	setObjectName(QStringLiteral("mrStrip"));
@@ -1441,7 +1440,8 @@ TwoPanelStrip::TwoPanelStrip(QWidget *parent) : QWidget(parent)
 	outer->setSpacing(4);
 
 	// The Tall tab bar rides on top; it is hidden in the other two shapes,
-	// where the two panels stand together and each carries its own title.
+	// where the two panels stand together and each names itself in its own
+	// header row (buildReviewHeader / the MARCA label in buildRecBlock).
 	tabs_ = new QTabBar(this);
 	tabs_->setObjectName(QStringLiteral("mrPanelTabs"));
 	tabs_->setDrawBase(false);
@@ -1457,14 +1457,12 @@ TwoPanelStrip::TwoPanelStrip(QWidget *parent) : QWidget(parent)
 	marcaCol_ = new QVBoxLayout(marca_);
 	marcaCol_->setContentsMargins(0, 0, 0, 0);
 	marcaCol_->setSpacing(4);
-	marcaCol_->addWidget(makePanelTitle(QStringLiteral("MARCA"), marca_));
 
 	review_ = new QWidget(this);
 	review_->setObjectName(QStringLiteral("mrReview"));
 	reviewCol_ = new QVBoxLayout(review_);
 	reviewCol_->setContentsMargins(0, 0, 0, 0);
 	reviewCol_->setSpacing(4);
-	reviewCol_->addWidget(makePanelTitle(QStringLiteral("REVIEW"), review_));
 
 	// The body row: horizontal in Wide (side by side), vertical in the two
 	// narrow shapes. setDirection() flips it without re-parenting a child.
@@ -1545,12 +1543,9 @@ void TwoPanelStrip::relayout()
 		review_->setVisible(true);
 	}
 
-	// The per-panel titles are redundant behind the Tall tab bar, which
-	// already prints REVIEW / MARCA — one line of a panel short of height.
-	for (QWidget *p : {marca_, review_})
-		if (QLabel *t = p->findChild<QLabel *>(
-			    QStringLiteral("mrPanelTitle")))
-			t->setVisible(!tall);
+	// Each panel names itself in its own header block (■ REVIEW / the MARCA
+	// label in the record block); in Tall the tab bar prints the name and
+	// the header still carries the event id and IN OUTPUT.
 
 	// The sub-boxes wear their tall shape only in Wide; folded otherwise.
 	for (KeyBlock *b : marcaBlocks_)
