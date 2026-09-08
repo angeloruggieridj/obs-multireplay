@@ -393,7 +393,12 @@ R"QSS(
    Each group in MARCA and REVIEW is a rounded box whose legend interrupts
    the top-left of the border. The panel header rows (#mrPanelHeader) are
    NOT boxed — they carry a divider under them instead. */
-#MultiReplayDock QWidget#mrBlock {
+/* THE BOX IS DRAWN BY THE INNER FRAME, NOT BY THE SECTION. A child widget
+   cannot be painted above y=0 of its parent, so a caption can never straddle a
+   border the parent draws. The frame is inset by half a caption and the legend
+   is laid over it (KeyBlock::placeCaption). */
+#MultiReplayDock QWidget#mrBlock { background: transparent; border: 0; }
+#MultiReplayDock QWidget#mrBlockFrame {
 	background: transparent;
 	border: 1px solid @border@;
 	border-radius: 5px;
@@ -401,7 +406,7 @@ R"QSS(
 /* FOLDED (Short / Tall): flat and tight — the box is a Wide feature, and
    eight borders down a narrow column is the fragmentation the redesign
    removed, plus ~100 px the Short floor cannot spare. */
-#MultiReplayDock QWidget#mrBlock[folded="true"] { border: 0; }
+#MultiReplayDock QWidget#mrBlock[folded="true"] QWidget#mrBlockFrame { border: 0; }
 #MultiReplayDock QWidget#mrPanelHeader {
 	border: 0;
 	border-bottom: 1px solid @border@;
@@ -500,6 +505,34 @@ QLabel#mrMuted[mrProject="true"] { color: @accent@; font-size: 9px; padding: 0 4
 }
 #MultiReplayDock QToolButton#mrProjectSel:hover { background: @raise1@; }
 #MultiReplayDock QToolButton#mrProjectSel::menu-indicator { image: none; width: 0; }
+
+/* ── THE TOOLBAR'S TYPEFACE IS DECLARED ON THE BAR, NOT ON EACH KEY ──────
+   Toolbar concept: `.tbar{font-family:var(--ff-label)}`. The whole bar is set
+   in the condensed label face, and exactly three things step out of it — the
+   project name and LIVE go UP to display (`.tb-name`, `.tb-live`), the search
+   field goes DOWN to body (`.tb-search`).
+
+   THIS IS ALSO WHY THE ROW FITS. Left to inherit the panel's body family, the
+   bar is set in a wider face than the drawing uses; at 1180 px it overran its
+   own width and LIVE was clipped against the panel edge. A condensed bar is not
+   a preference here, it is the geometry that makes the row fit. */
+#MultiReplayDock QWidget#mrToolbar,
+#MultiReplayDock QWidget#mrToolbar QPushButton,
+#MultiReplayDock QWidget#mrToolbar QToolButton,
+#MultiReplayDock QWidget#mrToolbar QLabel,
+#MultiReplayDock QTabBar#mrListTabs {
+	font-family: "@ffLabel@";
+}
+/* THREE ids each, so these beat the bar rule above whatever the cascade order
+   turns out to be — a tie on specificity is decided by document order, and that
+   is not a thing to leave to where a block happens to sit in the file. */
+#MultiReplayDock QWidget#mrToolbar QPushButton#mrLive,
+#MultiReplayDock QWidget#mrToolbar QToolButton#mrProjectSel {
+	font-family: "@ffDisplay@";
+}
+#MultiReplayDock QWidget#mrToolbar QLineEdit {
+	font-family: "@ffBody@";
+}
 QLabel#mrTimecode   { color: @text@; font-family: "@ffMono@"; font-size: 12px;
                       font-weight: 700; letter-spacing: 0.3px; }
 QLabel#mrSectionLabel { color: @textMuted@; font-family: "@ffLabel@";
@@ -612,6 +645,25 @@ QPushButton#mrToggle:checked {
 	font-weight: 700;
 }
 QPushButton#mrToggle:checked:hover { background: @pvwBg@; color: @pvw@; }
+
+)QSS"
+/* This SECOND break is the same compiler rule as the one further down: the
+   first chunk had grown past 16380 bytes again - this time by the toolbar's
+   typeface rules and the + key - and MSVC truncates a literal that big in
+   SILENCE (C2026 calls it 'trailing characters'), so the sheet would simply
+   lose its tail. The sheet is still one string; only the literal is cut. */
+R"QSS(
+/* ── the + that creates a bank — .tb-add ─────────────────────────────
+   Not a latch, so not the latch's clothes: a key that CREATES, in the
+   drawing's own azure on its own square. The 25x25 is nailed on the widget
+   (kAddBankSide) and deliberately NOT stated here — a min-height in a sheet
+   is written onto the widget during polish and would fight it. */
+QToolButton#mrAddBank {
+	background: transparent; color: @accent@;
+	border: 1px solid @accent@; border-radius: 5px;
+	font-weight: 700; padding: 0;
+}
+QToolButton#mrAddBank:hover { background: @raise2@; color: @accentText@; }
 
 /* ── list tabs (one tab per event list) ─────────────────────── */
 QTabBar#mrListTabs { background: transparent; }
@@ -1123,9 +1175,13 @@ QLabel#mrZoneTitle {
 	/* Lift onto the box border and clear it behind the text. The box's
 	   contents margin reserves 8 px at the top; -8 px puts the legend on
 	   the border line. */
+	/* The panel-coloured ground is what CLEARS THE BORDER behind the text -
+	   that is the whole trick. The negative margins that used to be here did
+	   nothing: a style-sheet margin is applied inside the geometry a layout
+	   already handed the widget, so it cannot lift a label out of its cell.
+	   The lifting is now geometry (KeyBlock::placeCaption). */
 	background: @panel@;
-	padding: 0px 4px 0px 3px;
-	margin-top: -8px; margin-left: 3px; margin-bottom: 1px;
+	padding: 0px 4px 0px 4px;
 }
 /* FOLDED: the same caption in a narrow column, where there is one per group
    down the panel instead of one per group across it. Smaller type, tighter

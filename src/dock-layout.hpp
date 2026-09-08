@@ -74,6 +74,24 @@ inline constexpr int kKeyFoldedH = 22;
 // Between two rows of one section.
 inline constexpr int kBandVGap = 4;
 
+// ── TOOLBAR — la geometria che l'artifact «La toolbar» DICHIARA ──────────
+//
+// Sono costanti e non numeri scritti al call site perché esistono in due posti
+// che devono concordare: dock-build.cpp le scrive sui widget, e selftest.cpp le
+// rilegge per asserire che li ha scritti. Un numero duplicato è due numeri, e
+// quello che va alla deriva è sempre quello senza check.
+//
+// Il mockup NON può verificarle: compila dock-layout e dock-icons, non
+// dock-build, quindi la sua toolbar è una copia. Queste vivono nel gate.
+inline constexpr int kProjectSelMinW = 132;   // .tb-name{min-width:132px}
+inline constexpr int kToolIcoW = 26;          // .tb-ico{width:26px}
+inline constexpr int kToolIcoH = 25;          // .tb-ico{height:25px}
+inline constexpr int kToolIcoWTall = 23;      // .tbar.tall .tb-ico{width:23px}
+inline constexpr int kAddBankSide = 25;       // .tb-add{width:25px;height:25px}
+inline constexpr int kSearchMinW = 150;       // .tb-search{min-width:150px}
+inline constexpr int kSearchMinWNarrow = 112; // .tb-search.narrow{min-width:112px}
+inline constexpr int kBankTabGap = 3;         // .tb-tabs{gap:3px}
+
 // ---------------------------------------------------------------------------
 // GALLERY SCALE (§6.5) — the operator is 1-2 m from the screen, not the ~60 cm
 // a dock normally assumes, and 26 px is a smaller target from there.
@@ -572,6 +590,20 @@ public:
 	// (most of them).
 	QLabel *captionLabel() const { return cap_; }
 
+	// The bordered box. THE BORDER IS NOT ON THIS WIDGET, and that is the
+	// whole reason the legend can sit ON the border line: a child cannot be
+	// drawn above y=0 of the widget that draws the frame, so the frame is
+	// inset by half a caption and the caption is a free child laid over it.
+	QWidget *frame() const { return frame_; }
+
+protected:
+	void resizeEvent(QResizeEvent *e) override;
+
+public: // restored: everything below was public before resizeEvent was
+	// slotted in here; without this line the section-hidden API below
+	// silently became protected and every caller outside the class broke.
+
+
 	// TELL THE SECTION IT HAS NOTHING TO SHOW, RIGHT NOW, FOR A REASON THAT
 	// IS NOT ITS SHAPE — channel B switched off, and the bay-selector
 	// section (camera-dedup.hpp's matching case one layer up) is meant to
@@ -644,6 +676,8 @@ private:
 
 	QString caption_;
 	QLabel *cap_ = nullptr;
+	QWidget *frame_ = nullptr;
+	void placeCaption();
 	QWidget *body_ = nullptr;
 	QGridLayout *grid_ = nullptr;
 	BlockShape tall_, flat_;

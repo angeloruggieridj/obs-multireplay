@@ -330,8 +330,13 @@ void AspectBox::setTallyFrame(const QColor &c, int width)
 {
 	if (tallyC_ == c && tallyW_ == width)
 		return;
+	const bool insetChanged = (tallyW_ > 0) != (width > 0) || tallyW_ != width;
 	tallyC_ = c;
 	tallyW_ = width;
+	// A CHANGED WIDTH CHANGES THE PICTURE'S GEOMETRY, not just the paint:
+	// the ring the frame is drawn in is made by insetting the child.
+	if (insetChanged)
+		relayout();
 	update();
 }
 
@@ -349,7 +354,11 @@ void AspectBox::paintEvent(QPaintEvent *)
 	p.setBrush(Qt::NoBrush);
 	p.setPen(QPen(tallyC_, tallyW_));
 	const qreal h = tallyW_ / 2.0;
-	p.drawRect(QRectF(picRect_).adjusted(h, h, -h, -h));
+	// OUTSIDE the picture: the ring was reserved for it in relayout(), and
+	// drawing inside would put the line under a native child that paints
+	// over its parent (OBSQTDisplay in the real dock) - which is why this
+	// frame was invisible on the panel and fine everywhere else.
+	p.drawRect(QRectF(picRect_).adjusted(-h, -h, h, h));
 }
 
 void AspectBox::relayout()
@@ -368,11 +377,31 @@ void AspectBox::relayout()
 		pic_->setGeometry(picRect_);
 		return;
 	}
-	const int w = std::max(1, std::min(width(), availH * rw_ / rh_));
+	// RESERVE THE RING FIRST. The tally is a ring AROUND the picture, so the
+	// space it needs comes off the box before the 16:9 rectangle is fitted
+	// - never off the picture afterwards. Insetting the picture instead
+	// changes its ratio by the frame width (a constant inset on all four
+	// sides is not proportional), and the mockup's "every picture is 16:9"
+	// check caught exactly that: 172x95 where 96 was wanted.
+	const int ring = std::max(0, tallyW_);
+	const int availW2 = std::max(1, width() - 2 * ring);
+	const int availH2 = std::max(1, availH - 2 * ring);
+	const int w = std::max(1, std::min(availW2, availH2 * rw_ / rh_));
 	const int h = std::max(1, w * rh_ / rw_);
 	const int x = (width() - w) / 2;
 	const int y = (availH - h) / 2;
 	picRect_ = QRect(x, y, w, h);
+	// THE PICTURE IS INSET BY THE TALLY, and it has to be. The frame is
+	// painted by THIS widget, and in the real dock the picture is an
+	// OBSQTDisplay - a native window, which paints over whatever its parent
+	// drew underneath, whoever was raised last. So a frame drawn inside
+	// picRect_ was invisible on the panel while looking perfectly right
+	// anywhere the picture is an ordinary widget. Insetting leaves an
+	// exposed ring no native child covers.
+	//
+	// The name badge hit the same wall and was fixed by giving IT a native
+	// window too; a frame cannot take that route - there is nothing in the
+	// middle of it to give a window to.
 	pic_->setGeometry(picRect_);
 	if (!tag_)
 		return;
@@ -538,8 +567,31 @@ KeyBlock::KeyBlock(const QString &caption, QWidget *parent)
 	// at the top for the legend to sit on the border line — but only when
 	// there IS a legend. The header blocks pass an empty caption and want
 	// the whole height for their key.
-	v->setContentsMargins(6, caption_.isEmpty() ? 2 : 8, 6, 4);
-	v->setSpacing(2);
+	// THE OUTER WIDGET NO LONGER DRAWS THE BOX. It carries nothing but the
+	// inset that lets the legend straddle the frame's top line: a child
+	// cannot be drawn above y=0 of its parent, so a caption can never sit ON
+	// a border that this widget draws. The border moves to frame_, inset by
+	// half a caption, and the caption is laid OVER it (see placeCaption).
+	// The old attempt did this with `margin-top: -8px` in the sheet, which
+	// cannot work: a style-sheet margin is applied INSIDE the geometry the
+	// layout already assigned, so it never moved the label out of its cell.
+	v->setContentsMargins(0, caption_.isEmpty() ? 0 : kCaptionH / 2, 0, 0);
+	v->setSpacing(0);
+
+	frame_ = new QWidget(this);
+	frame_->setObjectName(QStringLiteral("mrBlockFrame"));
+	frame_->setAttribute(Qt::WA_StyledBackground, true);
+	auto *fv = new QVBoxLayout(frame_);
+	// THE TWO TOP NUMBERS SUM TO WHAT blockHeight() DECLARES (kCaptionH + 2):
+	// kCaptionH/2 on the outer, the remainder here. The strip measures with
+	// blockHeight() and apply() draws with these; two ways of asking the same
+	// question is two answers waiting to differ.
+	fv->setContentsMargins(6,
+			       caption_.isEmpty() ? 2
+						  : kCaptionH + 2 - kCaptionH / 2,
+			       6, 4);
+	fv->setSpacing(2);
+	v->addWidget(frame_);
 
 	// The caption sits ABOVE the keys. It names the group instead of
 	// competing with the first key for the same line, and it lets every
@@ -559,10 +611,12 @@ KeyBlock::KeyBlock(const QString &caption, QWidget *parent)
 		cap_->setWordWrap(false);
 		cap_->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
 		cap_->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
-		v->addWidget(cap_, 0);
+		// DELIBERATELY NOT ADDED TO A LAYOUT. It is placed by hand over the
+		// frame's top border - that is the only way it can interrupt the line
+		// rather than sit under it. See placeCaption().
 	}
 
-	body_ = new QWidget(this);
+	body_ = new QWidget(frame_);
 	grid_ = bandGrid(body_);
 	// CENTRED IN THE LINE, not hung from the top of it.
 	//
@@ -577,9 +631,30 @@ KeyBlock::KeyBlock(const QString &caption, QWidget *parent)
 	//
 	// Split evenly, the group sits on the line's optical centre, which is
 	// where a shorter group belongs beside a taller one.
-	v->addWidget(body_, 0);
-	v->addStretch(1);
+	fv->addWidget(body_, 0);
+	fv->addStretch(1);
 	setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Preferred);
+}
+
+void KeyBlock::resizeEvent(QResizeEvent *e)
+{
+	QWidget::resizeEvent(e);
+	placeCaption();
+}
+
+// THE LEGEND INTERRUPTS THE BORDER (the artifact's
+// `.fbox > .flabel{position:absolute;top:-7px;left:12px}`): it is centred on
+// the frame's top line, and its panel-coloured background clears the line
+// behind the text. x is the artifact's 12 px.
+void KeyBlock::placeCaption()
+{
+	if (!cap_ || !frame_)
+		return;
+	const int w = std::min(cap_->sizeHint().width(), std::max(0, width() - 16));
+	cap_->setGeometry(12, 0, w, kCaptionH);
+	// The frame is a sibling added after it, so without this the border is
+	// painted OVER the text it is supposed to be interrupted by.
+	cap_->raise();
 }
 
 void KeyBlock::setShapes(const BlockShape &tall, const BlockShape &flat)

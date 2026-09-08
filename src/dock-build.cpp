@@ -117,8 +117,11 @@ QWidget *MultiReplayDock::buildToolbar()
 {
 	auto *box = new QWidget(this);
 	auto *v = new QVBoxLayout(box);
-	v->setContentsMargins(0, 0, 0, 0);
-	v->setSpacing(2);
+	// .tbar{padding:7px 9px} and .tbar.tall{row-gap:7px}. Without the
+	// horizontal pad the last key on the row - LIVE, deliberately at the far
+	// right - sits with its border ON the panel edge and reads as cut off.
+	v->setContentsMargins(9, 7, 9, 7);
+	v->setSpacing(7);
 	toolbarV_ = v;
 
 	// A THIN VERTICAL RULE (spec §1: "tre zone separate da filetti"). A
@@ -136,13 +139,21 @@ QWidget *MultiReplayDock::buildToolbar()
 	toolSepC_ = mkVSep();
 
 	auto *topRow = new QWidget(box);
+	// NAMED so the sheet can reach the whole bar at once. The artifact
+	// declares the typeface on the BAR (.tbar{font-family:var(--ff-label)}),
+	// not on each key; only the project name, LIVE and the search field step
+	// out of it. Left unnamed, the bar inherited the BODY family, which is
+	// wider than the condensed one the drawing uses - and the row overflowed,
+	// clipping LIVE against the panel edge.
+	topRow->setObjectName(QStringLiteral("mrToolbar"));
 	toolRow1_ = topRow;
 	auto *h = new QHBoxLayout(topRow);
 	h->setContentsMargins(0, 0, 0, 0);
-	h->setSpacing(5);
+	h->setSpacing(7); // .tbar{gap:7px}
 	// TALL'S OWN SEARCH ROW (spec §5): built here so arrangeToolbar() only
 	// ever moves widgets, never creates them. Hidden until Tall asks for it.
 	toolRow2_ = new QWidget(box);
+	toolRow2_->setObjectName(QStringLiteral("mrToolbar"));
 	auto *h2 = new QHBoxLayout(toolRow2_);
 	h2->setContentsMargins(0, 0, 0, 0);
 	h2->setSpacing(5);
@@ -158,7 +169,7 @@ QWidget *MultiReplayDock::buildToolbar()
 	projectBtn_->setCursor(Qt::PointingHandCursor);
 	projectBtn_->setToolButtonStyle(Qt::ToolButtonTextOnly);
 	projectBtn_->setToolTip(obs_module_text("Dock.ProjectMenuHint"));
-	projectBtn_->setMinimumWidth(132);
+	projectBtn_->setMinimumWidth(kProjectSelMinW);
 	projectBtn_->setMaximumWidth(280);
 	projectBtn_->setFixedHeight(kKeyH);
 	setKeyId(projectBtn_, QStringLiteral("project"));
@@ -316,7 +327,9 @@ QWidget *MultiReplayDock::buildToolbar()
 	setKeyId(fullScreenBtn_, QStringLiteral("layout"));
 	fullScreenBtn_->setCursor(Qt::PointingHandCursor);
 	fullScreenBtn_->setToolTip(obs_module_text("Dock.LayoutHint"));
-	fullScreenBtn_->setFixedHeight(kKeyH);
+	// .tb-ico{width:26px;height:25px} - icon-only in every arrangement, so
+	// unlike Monitors this one takes the size at construction.
+	fullScreenBtn_->setFixedSize(kToolIcoW, kToolIcoH);
 	{
 		auto *menu = new QMenu(fullScreenBtn_);
 		auto *shapes = new QActionGroup(menu);
@@ -406,17 +419,21 @@ QWidget *MultiReplayDock::buildToolbar()
 	// kEventLists, with the number as the name. Pinned to the right of the
 	// strip so the tabs scroll under it, not past it.
 	bankRow_ = new QWidget(box);
+	bankRow_->setObjectName(QStringLiteral("mrToolbar"));
 	auto *tr = new QHBoxLayout(bankRow_);
 	tr->setContentsMargins(0, 0, 0, 0);
 	tr->setSpacing(3);
 	tr->addWidget(listTabs_, 1);
 	addBankBtn_ = new QToolButton(bankRow_);
-	addBankBtn_->setObjectName(QStringLiteral("mrToggle"));
+	// ITS OWN NAME, not mrToggle: the + is not a state, it is a key that
+	// creates, and the drawing gives it a square box and an ink of its own
+	// (.tb-add). Under mrToggle no rule could tell it from a latch.
+	addBankBtn_->setObjectName(QStringLiteral("mrAddBank"));
 	addBankBtn_->setText(QStringLiteral("+"));
 	addBankBtn_->setCursor(Qt::PointingHandCursor);
 	addBankBtn_->setToolTip(obs_module_text("Dock.AddBankHint"));
 	setKeyId(addBankBtn_, QStringLiteral("addBank"));
-	addBankBtn_->setFixedHeight(kKeyH);
+	addBankBtn_->setFixedSize(kAddBankSide, kAddBankSide); // .tb-add{25x25}
 	connect(addBankBtn_, &QToolButton::clicked, this, [this]() {
 		auto &core = ReplayCore::instance();
 		const int n = core.getConfig().eventListCount;
@@ -1417,6 +1434,7 @@ QToolButton *MultiReplayDock::buildGearMenu()
 	// read as part of arming a take.
 	auto *gear = new QToolButton(this);
 	gear->setObjectName("mrGear");
+	gear->setFixedSize(kToolIcoW, kToolIcoH); // .tb-ico
 	setKeyIcon(gear, Icon::Gear, tintsFor(sc()), 15);
 	setKeyId(gear, QStringLiteral("settings"));
 	gear->setCursor(Qt::PointingHandCursor);

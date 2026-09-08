@@ -263,6 +263,18 @@ public:
 	void setTally(const char *what)
 	{
 		tag_->setProperty("tally", QString::fromLatin1(what));
+		// AND THE FRAME, which this tool never asked for and therefore could
+		// never show missing. The panel has called setTallyFrame all along;
+		// the mockup only coloured the badge, so a tally bug looked identical
+		// here whether the frame worked or not. Same colours and widths the
+		// dock uses: green 2 px for the angle being watched, red 3 px for air.
+		const QString w = QString::fromLatin1(what);
+		if (w == QStringLiteral("pgm"))
+			setTallyFrame(QColor(g_sc.rec), 3);
+		else if (w == QStringLiteral("pvw"))
+			setTallyFrame(QColor(g_sc.pvw), 2);
+		else
+			setTallyFrame(QColor(), 0);
 	}
 
 private:
@@ -1002,7 +1014,7 @@ private:
 	{
 		auto *box = new QWidget(parent);
 		auto *v = new QVBoxLayout(box);
-		v->setContentsMargins(0, 0, 0, 0);
+		v->setContentsMargins(9, 7, 9, 7); // .tbar{padding:7px 9px}
 		v->setSpacing(2);
 		toolbarV_ = v;
 
@@ -1017,10 +1029,12 @@ private:
 		toolSepC_ = mkVSep();
 
 		toolRow1_ = new QWidget(box);
+		toolRow1_->setObjectName(QStringLiteral("mrToolbar"));
 		auto *h = new QHBoxLayout(toolRow1_);
 		h->setContentsMargins(0, 0, 0, 0);
 		h->setSpacing(5);
 		toolRow2_ = new QWidget(box);
+		toolRow2_->setObjectName(QStringLiteral("mrToolbar"));
 		auto *h2 = new QHBoxLayout(toolRow2_);
 		h2->setContentsMargins(0, 0, 0, 0);
 		h2->setSpacing(5);
@@ -1100,6 +1114,7 @@ private:
 		// its own so arrangeToolbar() can move the whole strip between
 		// h (Wide/Short) and its own row (Tall).
 		bankRow_ = new QWidget(box);
+		bankRow_->setObjectName(QStringLiteral("mrToolbar"));
 		auto *br = new QHBoxLayout(bankRow_);
 		br->setContentsMargins(0, 0, 0, 0);
 		br->setSpacing(3);

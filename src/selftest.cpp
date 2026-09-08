@@ -4548,6 +4548,15 @@ void runReopenPass(const std::string &outPath)
 	bool panelFontsAreEmbedded = false;
 	int pluginFontsRegistered = 0;
 	QString pluginCaptionFamily;
+	// TOOLBAR GEOMETRY (spec §8) — the constants live once, in
+	// dock-layout.hpp; this reads back the widgets the constructor wrote
+	// them onto, rather than re-declaring the numbers here.
+	int toolbarProjectMinW = -1;
+	int toolbarAddBankW = -1, toolbarAddBankH = -1;
+	int toolbarGearW = -1, toolbarGearH = -1;
+	bool toolbarProjectSelectorIs132Wide = false;
+	bool toolbarAddBankKeyIsSquare25 = false;
+	bool toolbarToolIconsAre26x25 = false;
 	int playKeyH = 0, stepKeyH = 0;
 	int keyPadL = 0, keyPadR = 0;
 	QString bandText, noticeText;
@@ -4933,6 +4942,35 @@ void runReopenPass(const std::string &outPath)
 					allFonts &&
 					pluginCaptionFamily ==
 						multireplay::fonts::labelFamily();
+
+				// TOOLBAR, geometry of the real widgets — spec §8. Each
+				// line cites the artifact selector the number came from.
+				// The constants live in dock-layout.hpp: this asserts the
+				// constructor wrote them, it does not re-declare the value.
+				auto *sel = dock->findChild<QWidget *>(
+					QStringLiteral("mrProjectSel"));
+				toolbarProjectMinW = sel ? sel->minimumWidth() : -1;
+				toolbarProjectSelectorIs132Wide =
+					sel && sel->minimumWidth() ==
+						       multireplay::kProjectSelMinW;
+
+				auto *add = dock->findChild<QWidget *>(
+					QStringLiteral("mrAddBank"));
+				toolbarAddBankW = add ? add->width() : -1;
+				toolbarAddBankH = add ? add->height() : -1;
+				toolbarAddBankKeyIsSquare25 =
+					add &&
+					add->width() == multireplay::kAddBankSide &&
+					add->height() == multireplay::kAddBankSide;
+
+				auto *gear = dock->findChild<QWidget *>(
+					QStringLiteral("mrGear"));
+				toolbarGearW = gear ? gear->width() : -1;
+				toolbarGearH = gear ? gear->height() : -1;
+				toolbarToolIconsAre26x25 =
+					gear &&
+					gear->width() == multireplay::kToolIcoW &&
+					gear->height() == multireplay::kToolIcoH;
 			});
 			obs_log(panelPaintsItself ? LOG_INFO : LOG_ERROR,
 				"[selftest] reopen: panel styled background: %s",
@@ -4953,6 +4991,20 @@ void runReopenPass(const std::string &outPath)
 				qUtf8Printable(pluginCaptionFamily),
 				qUtf8Printable(multireplay::fonts::labelFamily()),
 				panelFontsAreEmbedded ? "yes" : "NO");
+			obs_log((toolbarProjectSelectorIs132Wide &&
+				  toolbarAddBankKeyIsSquare25 &&
+				  toolbarToolIconsAre26x25)
+					? LOG_INFO
+					: LOG_ERROR,
+				"[selftest] reopen: toolbar geometry — project "
+				"selector %d px (want %d), + key %dx%d (want "
+				"%dx%d), gear %dx%d (want %dx%d)",
+				toolbarProjectMinW, multireplay::kProjectSelMinW,
+				toolbarAddBankW, toolbarAddBankH,
+				multireplay::kAddBankSide,
+				multireplay::kAddBankSide, toolbarGearW,
+				toolbarGearH, multireplay::kToolIcoW,
+				multireplay::kToolIcoH);
 			obs_log(playKeyIsTall ? LOG_INFO : LOG_ERROR,
 				"[selftest] reopen: green play key %d px against a "
 				"%d px frame step: %s",
@@ -5231,7 +5283,10 @@ void runReopenPass(const std::string &outPath)
 			  bandInReviewFooter && healthInMarcaFooter &&
 			  panelPaintsItself && panelMarksAreDrawn &&
 			  panelFontsAreEmbedded &&
-			  monitorsGiveRoom && eventsBackupCreated;
+			  monitorsGiveRoom && eventsBackupCreated &&
+			  toolbarProjectSelectorIs132Wide &&
+			  toolbarAddBankKeyIsSquare25 &&
+			  toolbarToolIconsAre26x25;
 
 	// --- Put everything back ----------------------------------------------
 	// The operator's project first (so nothing is pointing into the test one),
@@ -5304,6 +5359,16 @@ void runReopenPass(const std::string &outPath)
 	obs_data_set_bool(checks, "panel_marks_are_drawn", panelMarksAreDrawn);
 	obs_data_set_bool(checks, "panel_fonts_are_embedded",
 			  panelFontsAreEmbedded);
+	// TOOLBAR, geometry of the real widgets — spec §8. Each line cites the
+	// artifact selector the number came from; the constants live once, in
+	// dock-layout.hpp, and dock-build.cpp writes them onto the widgets this
+	// reads back.
+	obs_data_set_bool(checks, "toolbar_project_selector_is_132_wide",
+			  toolbarProjectSelectorIs132Wide);
+	obs_data_set_bool(checks, "toolbar_add_bank_key_is_square_25",
+			  toolbarAddBankKeyIsSquare25);
+	obs_data_set_bool(checks, "toolbar_tool_icons_are_26x25",
+			  toolbarToolIconsAre26x25);
 	obs_data_set_obj(root, "checks", checks);
 	obs_data_release(checks);
 	// Numbers, not checks: how much panel there was to centre the keys in.
@@ -5322,6 +5387,11 @@ void runReopenPass(const std::string &outPath)
 	obs_data_set_int(root, "plugin_fonts_registered", pluginFontsRegistered);
 	obs_data_set_string(root, "plugin_caption_family",
 			    pluginCaptionFamily.toUtf8().constData());
+	obs_data_set_int(root, "toolbar_project_min_w", toolbarProjectMinW);
+	obs_data_set_int(root, "toolbar_addbank_w", toolbarAddBankW);
+	obs_data_set_int(root, "toolbar_addbank_h", toolbarAddBankH);
+	obs_data_set_int(root, "toolbar_gear_w", toolbarGearW);
+	obs_data_set_int(root, "toolbar_gear_h", toolbarGearH);
 
 	if (!obs_data_save_json_safe(root, outPath.c_str(), "tmp", "bak"))
 		obs_log(LOG_ERROR, "[selftest] could not write report to %s",
