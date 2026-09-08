@@ -883,7 +883,7 @@ private:
 	QVector<Worded> worded_;
 	QWidget *statusDetail_ = nullptr;
 	QLabel *search_ = nullptr;
-	QLabel *projectLbl_ = nullptr;
+	QToolButton *projectLbl_ = nullptr;
 	bool compactChrome_ = false;
 
 	// THE TOOLBAR'S ROW COUNT FOLLOWS THE PANEL MODE, the same as the real
@@ -895,7 +895,7 @@ private:
 	QVBoxLayout *toolbarV_ = nullptr;
 	QWidget *bankRow_ = nullptr;
 	QLabel *searchIcon_ = nullptr;
-	QLabel *projectBtn_ = nullptr; // same widget as projectLbl_
+	QToolButton *projectBtn_ = nullptr; // same widget as projectLbl_
 	QPushButton *liveBtn_ = nullptr;
 	QPushButton *monitorsBtn_ = nullptr;
 	QToolButton *gearBtn_ = nullptr;
@@ -1026,12 +1026,16 @@ private:
 		h2->setSpacing(5);
 		toolRow2_->hide();
 
-		auto *proj = new QLabel(QStringLiteral("Partita"), box);
-		proj->setObjectName(QStringLiteral("mrMuted"));
-		// Same property the real dock sets (multireplay-dock.cpp): the
-		// project name is the theme's accent, not the plain muted grey
-		// other #mrMuted labels get.
-		proj->setProperty("mrProject", true);
+		// A QToolButton, matching dock-build.cpp exactly (not the QLabel
+		// stand-in this used to be): the real sheet styles
+		// "#MultiReplayDock QToolButton#mrProjectSel" by element type, so a
+		// stand-in of a different widget class would never pick up that
+		// rule — measuring a control that does not exist in the real panel.
+		auto *proj = new QToolButton(box);
+		proj->setText(QStringLiteral("Partita"));
+		proj->setObjectName(QStringLiteral("mrProjectSel"));
+		proj->setToolButtonStyle(Qt::ToolButtonTextOnly);
+		setKeyId(proj, QStringLiteral("project")); // same id as dock-build.cpp
 		projectLbl_ = proj;
 		projectBtn_ = proj;
 
@@ -3764,6 +3768,32 @@ int runChecks(QPalette pal, QApplication &app, const QString &outDir)
 		checkShortStripPacks(w, label);
 		checkTallCollapsesToMore(w, label);
 		checkMonitorsGiveRoom(w, label);
+		// ── TIPOGRAFIA APPLICATA — spec §3. Che le famiglie siano registrate
+		// (Task 1) non dice che il pannello le USI: il foglio è l'unico posto
+		// che lo decide, e un token non sostituito resta la stringa "@ffLabel@",
+		// che Qt scarta in silenzio.
+		//
+		// "mrSectionLabel" (dock-internal.hpp's sectionLabel() helper) is
+		// never instantiated anywhere in this tree — grep confirms it: the
+		// widget every KeyBlock caption actually gets is "mrZoneTitle"
+		// (dock-layout.cpp:558, zoneBox() in dock-internal.hpp:499). That is
+		// the real "section caption", so it is what this check reads.
+		{
+			auto *cap = w->findChild<QLabel *>(
+				QStringLiteral("mrZoneTitle"));
+			if (check(cap != nullptr, label + ": a section caption exists")) {
+				const QString fam = QFontInfo(cap->font()).family();
+				check(fam == multireplay::fonts::labelFamily(),
+				      label + ": caption uses the label family", fam);
+			}
+			auto *sel = w->findChild<QWidget *>(
+				QStringLiteral("mrProjectSel"));
+			if (check(sel != nullptr, label + ": the project selector exists")) {
+				const QString fam = QFontInfo(sel->font()).family();
+				check(fam == multireplay::fonts::displayFamily(),
+				      label + ": selector uses the display family", fam);
+			}
+		}
 		if (label == QStringLiteral("wide"))
 			checkKeyIds(w);
 		w->hide();

@@ -21,6 +21,7 @@ including this.
 
 #pragma once
 
+#include "dock-fonts.hpp"
 #include "dock-icons.hpp"
 #include "dock-layout.hpp"
 #include "dock-style.hpp"
@@ -377,11 +378,13 @@ inline int camPairIndex(int column)
 // reaches the store (see camNoteFromCell).
 inline const QString kNoNote = QStringLiteral("-");
 
+// One seam for the fixed-pitch family, and it is now dock-fonts' answer: the
+// panel's numbers and timecodes are IBM Plex Mono because the artifacts say so,
+// not whatever the host calls its fixed font. Kept as a name here so the four
+// call sites (dock-build, dock-settings) do not change.
 inline QString monoFamily()
 {
-	// Prefer a real fixed-pitch family for timecodes; fall back gracefully.
-	QFont f = QFontDatabase::systemFont(QFontDatabase::FixedFont);
-	return f.family();
+	return fonts::monoFamily();
 }
 
 inline QString formatTc(int64_t ns)

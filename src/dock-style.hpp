@@ -45,6 +45,8 @@
 // dock-layout.hpp) went 24 → 22 with it.
 #pragma once
 
+#include "dock-fonts.hpp"
+
 #include <QColor>
 #include <QPalette>
 #include <QString>
@@ -370,7 +372,10 @@ R"QSS(
    middle is a QFrame, which Qt DOES style, and that is exactly why the
    pictures and the list came out light while everything around them did not.
    See MultiReplayDock's constructor. */
-#MultiReplayDock { background: @panel@; }
+/* Il pannello intero parte dal corpo; le regole sotto lo scavalcano dove serve.
+   UN FOGLIO CHE NON NOMINA UNA FAMIGLIA LASCIA DECIDERE OBS, ed è per questo
+   che il pannello si leggeva come OBS invece che come il disegno. */
+#MultiReplayDock { background: @panel@; font-family: "@ffBody@"; }
 /* THE PANEL'S OWN CONTAINERS ARE TRANSPARENT, and they have to SAY so: a plain
    QWidget with no rule is styled by OBS, and a theme that paints QWidget paints
    the strip and every section in it. That is the dark band under a light
@@ -486,17 +491,19 @@ QLabel#mrMuted[mrProject="true"] { color: @accent@; font-size: 9px; padding: 0 4
 #MultiReplayDock QToolButton#mrProjectSel {
 	background: transparent;
 	border: 1px solid @border@;
-	border-radius: 3px;
+	border-radius: 5px;   /* toolbar: .tb-el{border-radius:5px} */
 	color: @text@;
+	font-family: "@ffDisplay@";
 	font-weight: 700;
-	padding: 0 8px;
+	padding: 4px 9px;     /* toolbar: .tb-el{padding:4px 9px} */
 	text-align: left;
 }
 #MultiReplayDock QToolButton#mrProjectSel:hover { background: @raise1@; }
 #MultiReplayDock QToolButton#mrProjectSel::menu-indicator { image: none; width: 0; }
-QLabel#mrTimecode   { color: @text@; font-size: 12px; font-weight: 700;
-                      letter-spacing: 0.3px; }
-QLabel#mrSectionLabel { color: @textMuted@; font-size: 9px; font-weight: 700;
+QLabel#mrTimecode   { color: @text@; font-family: "@ffMono@"; font-size: 12px;
+                      font-weight: 700; letter-spacing: 0.3px; }
+QLabel#mrSectionLabel { color: @textMuted@; font-family: "@ffLabel@";
+                        font-size: 9px; font-weight: 700;
                         letter-spacing: 1.4px; text-transform: uppercase; }
 /* wall clock over the "remaining" line, signal-red while a take is running */
 QLabel#mrClock      { color: @textMuted@; font-size: 10px; }
@@ -1107,7 +1114,12 @@ QFrame#mrZone {
 	border: 0; border-top: 1px solid @border@; background: transparent;
 }
 QLabel#mrZoneTitle {
-	color: @textMuted@; font-size: 9px; font-weight: 700; letter-spacing: 1.1px;
+	/* This IS "a section caption" (KeyBlock's cap_, dock-layout.cpp:558) —
+	   the label-family rule belongs here, not on QLabel#mrSectionLabel
+	   above, whose helper (dock-internal.hpp sectionLabel()) nothing ever
+	   calls. Kept in sync anyway: same family, same reasoning. */
+	color: @textMuted@; font-family: "@ffLabel@";
+	font-size: 9px; font-weight: 700; letter-spacing: 1.1px;
 	/* Lift onto the box border and clear it behind the text. The box's
 	   contents margin reserves 8 px at the top; -8 px puts the legend on
 	   the border line. */
@@ -1456,6 +1468,14 @@ inline QString dockStyle(const Scheme &s, int densityLevel = 0,
 	out.replace(QLatin1String("@headerFont@"), QString::number(d.headerFont));
 	out.replace(QLatin1String("@rowFont@"),
 		    QString::number(rowFontPx > 0 ? rowFontPx : 12));
+	// ── LE QUATTRO FAMIGLIE ──────────────────────────────────────────────
+	// Il foglio è l'unico posto che decide che tipo ha il pannello. Sono
+	// token e non letterali perché un font che non registra deve ripiegare,
+	// e il ripiego lo conosce dock-fonts, non questa stringa.
+	out.replace(QLatin1String("@ffLabel@"), fonts::labelFamily());
+	out.replace(QLatin1String("@ffDisplay@"), fonts::displayFamily());
+	out.replace(QLatin1String("@ffBody@"), fonts::bodyFamily());
+	out.replace(QLatin1String("@ffMono@"), fonts::monoFamily());
 	const std::pair<const char *, const QString *> tokens[] = {
 		{"@panel@", &s.panel},         {"@raise1@", &s.raise1},
 		{"@raise2@", &s.raise2},       {"@sink1@", &s.sink1},
