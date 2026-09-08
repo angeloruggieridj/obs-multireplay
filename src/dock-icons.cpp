@@ -551,7 +551,7 @@ void restyleIcons(QObject *root, const IconTints &tints)
 	}
 }
 
-void setKeyId(QAbstractButton *b, const QString &id)
+void setKeyId(QWidget *b, const QString &id)
 {
 	if (b)
 		b->setProperty(kKeyProperty, id);

@@ -118,6 +118,12 @@ struct Scheme {
 
 	// two structural colours that are neither chrome nor signal
 	QString tabBar;     // the list tabs' selected fill
+	QString tabBarBorder; // its outline: a step toward the text, so the
+			      // active tab keeps a contour even where the theme's
+			      // accent IS the navy (Broadcast) — fill and border
+			      // in one colour fuse the tab into its strip
+			      // (artifact toolbar: .tb-tab.on fill #1d3d74,
+			      // border #3a6bb0).
 	QString seekBar;    // the position bar's played portion
 };
 
@@ -267,6 +273,7 @@ inline Scheme schemeFor(ThemeChoice choice, const QPalette &pal)
 	// "follow the OBS theme" could be any hue. On Broadcast this is a no-op:
 	// hl there already IS #1D3D74.
 	s.tabBar = hex(signalOn(QColor("#1D3D74"), bg, dark, 0));
+	s.tabBarBorder = hex(mix(QColor(s.tabBar), fg, 0.30));
 
 	// SIGNAL. Fixed hues; only their lightness is answerable to the theme.
 	const QColor recHue("#C0202A");
@@ -613,18 +620,21 @@ QPushButton#mrNow {
 QPushButton#mrNow:hover { color: @rec@; border-color: @rec@; background: @recBg@; }
 QPushButton#mrNow[live="true"] { background: @recBg@; border-color: @rec@; color: @rec@; }
 
-/* ── "Live" mode toggle — red when marks are taken as they happen ── */
+/* ── "Live" — la modalità dell'intero pannello ──────────────────────────
+   ROSSA GIÀ A RIPOSO, come NOW e per lo stesso motivo: è il controllo che
+   riporta l'operatore al fronte, e nel disegno (.tb-live) porta un fondo
+   rosso cupo con inchiostro salmone anche quando è spento. I colori sono
+   token dello Scheme e non i letterali del concept, che è disegnato su un
+   tema scuro: @recBg@ su carta cammina verso il chiaro da sé. */
 QPushButton#mrLive {
-	background: @raise1@; color: @textKey@;
-	border: 1px solid @border@; border-radius: 3px;
+	background: @recBg@; color: @rec@;
+	border: 1px solid @rec@; border-radius: 5px;
 	font-weight: 700; font-size: 11px; letter-spacing: 0.6px;
-	/* min-width is the ICON-ONLY floor, not the labelled one: in a column
-	   these two lose their words and keep their marks (see
-	   applyCompactChrome), and a 54 px floor stated here would have kept the
-	   width the word needed long after the word was gone. */
-	min-height: 20px; /* + 2px padding + 2px border = 26 */ min-width: 22px; padding: 2px 10px;
+	/* min-width è il PAVIMENTO A SOLA ICONA, non quello con la parola. */
+	min-height: 15px; /* + 4px padding + 1px bordo = 25 */ min-width: 22px;
+	padding: 4px 9px;
 }
-QPushButton#mrLive:hover { border-color: @borderHi@; color: @text@; }
+QPushButton#mrLive:hover { border-color: @rec@; color: @text@; }
 QPushButton#mrLive:checked {
 	background: @rec@; color: #ffffff; border-color: @rec@;
 }
@@ -636,7 +646,7 @@ QPushButton#mrLive:checked {
    one colour is one meaning too many. */
 QPushButton#mrToggle {
 	background: @raise1@; color: @textKey@;
-	border: 1px solid @border@; border-radius: 3px;
+	border: 1px solid @border@; border-radius: 5px; /* toolbar: .tb-el */
 	font-size: 10px; min-height: 20px; padding: 2px 9px;
 }
 QPushButton#mrToggle:hover { border-color: @borderHi@; color: @text@; }
@@ -661,9 +671,28 @@ R"QSS(
 QToolButton#mrAddBank {
 	background: transparent; color: @accent@;
 	border: 1px solid @accent@; border-radius: 5px;
-	font-weight: 700; padding: 0;
+	font-size: 14px; /* toolbar: .tb-add{.95rem} */ font-weight: 700;
+	padding: 0;
 }
 QToolButton#mrAddBank:hover { background: @raise2@; color: @accentText@; }
+
+/* ── il campo di ricerca — .tb-search ───────────────────────────────────
+   Non aveva NESSUNA regola, quindi lo disegnava OBS: su un pannello chiaro
+   dentro un OBS scuro era una macchia. Il segnaposto è in corsivo perché
+   nel disegno lo è, ed è ciò che lo distingue da un valore digitato — Qt
+   non ha uno stato "solo segnaposto" per il font, quindi il widget porta
+   la property searchEmpty che buildToolbar gira a ogni battitura. */
+#MultiReplayDock QLineEdit#mrSearch {
+	background: @sink1@; color: @text@;
+	border: 1px solid @border@; border-radius: 5px;
+	font-family: "@ffBody@"; font-size: 11px;
+	min-height: 15px; /* + 4px padding + 1px bordo = 25 */
+	min-width: 150px; padding: 4px 9px;
+}
+#MultiReplayDock QLineEdit#mrSearch:focus { border-color: @accent@; }
+/* .tb-search.narrow{min-width:112px} — la property la mette applyPanelMode */
+#MultiReplayDock QLineEdit#mrSearch[mrNarrow="true"] { min-width: 112px; }
+#MultiReplayDock QLineEdit#mrSearch[searchEmpty="true"] { font-style: italic; }
 
 /* ── list tabs (one tab per event list) ─────────────────────── */
 QTabBar#mrListTabs { background: transparent; }
@@ -677,12 +706,14 @@ QTabBar#mrListTabs::tab {
 	   On the light theme @textMuted@ (0.50 mix) fell to ~2.9:1 and the names
 	   under it read as grey mush. */
 	background: @raise1@; color: @textKey@;
-	border: 1px solid @border@; border-bottom: 0;
-	padding: 3px 9px; margin-right: 1px; min-width: 16px;
+	/* toolbar: .tb-tab — un rettangolo CHIUSO (il bordo inferiore c'è),
+	   raggio 5, 3 px dal vicino. Era una linguetta senza fondo e a 1 px. */
+	border: 1px solid @border@; border-radius: 5px;
+	padding: 4px 10px; margin-right: 3px; min-width: 16px;
 }
 QTabBar#mrListTabs::tab:hover { background: @raise2@; color: @text@; }
 QTabBar#mrListTabs::tab:selected {
-	background: @tabBar@; color: @accentText@; border-color: @tabBar@;
+	background: @tabBar@; color: @accentText@; border-color: @tabBarBorder@;
 }
 
 )QSS"
@@ -899,11 +930,16 @@ QPushButton#mrHealth[dense="true"] {
    READABLE. They were drawn at #484848 on #181818 — the faintest things on the
    panel — and behind them are Stop, Play-to-output, Duplicate and Delete. A
    menu nobody can see is a menu nobody opens. */
-QToolButton#mrGear, QToolButton#mrMore {
+QToolButton#mrGear {
+	background: @raise1@; border: 1px solid @border@; border-radius: 5px;
+	padding: 3px 7px; color: @textKey@; font-size: 14px;
+}
+QToolButton#mrGear:hover { background: @raise2@; color: @text@; border-color: @borderHi@; }
+QToolButton#mrMore {
 	background: @raise1@; border: 1px solid @border@; border-radius: 4px;
 	padding: 3px 7px; color: @textKey@; font-size: 14px;
 }
-QToolButton#mrGear:hover, QToolButton#mrMore:hover { background: @raise2@; color: @text@; border-color: @borderHi@; }
+QToolButton#mrMore:hover { background: @raise2@; color: @text@; border-color: @borderHi@; }
 
 /* CAM — pick an angle with the mouse when there are no tiles to click. A
    DASHED border (spec §4) says "only here because Monitors is off". */
@@ -953,7 +989,7 @@ QPushButton#mrSpeedChip[active="true"] {
 }
 
 /* ── section separator line ─────────────────────────────── */
-QWidget#mrSepLine { background: @border@; }
+QWidget#mrSepLine { background: @border@; margin: 0 1px; } /* toolbar: .tb-sep */
 
 /* ── ACTION: the one filled key in the panel ──────────────────
    "Play the selected events" is the action the operator reaches for more than
@@ -1549,6 +1585,7 @@ inline QString dockStyle(const Scheme &s, int densityLevel = 0,
 		{"@actionHi@", &s.actionHi},   {"@action@", &s.action},
 		{"@fnBg@", &s.fnBg},           {"@fn@", &s.fn},
 		{"@tabBar@", &s.tabBar},       {"@seekBar@", &s.seekBar},
+		{"@tabBarBorder@", &s.tabBarBorder},
 	};
 	// LONGEST PREFIX FIRST, which is why @borderHi@ is listed above @border@
 	// and @text@ below @textMuted@: these are delimited by @ at both ends, so

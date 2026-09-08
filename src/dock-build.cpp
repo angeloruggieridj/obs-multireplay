@@ -132,6 +132,8 @@ QWidget *MultiReplayDock::buildToolbar()
 		auto *s = new QWidget(this);
 		s->setObjectName(QStringLiteral("mrSepLine"));
 		s->setFixedWidth(1);
+		// .tb-sep{stretch}: the rule runs the row's full height.
+		s->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Expanding);
 		return s;
 	};
 	toolSepA_ = mkVSep();
@@ -239,19 +241,32 @@ QWidget *MultiReplayDock::buildToolbar()
 	searchIcon_->installEventFilter(this);
 	restyleSearchIcon();
 	search_ = new QLineEdit(box);
+	// ITS OWN NAME (.tb-search): without a rule of its own the field was
+	// drawn by OBS — a smudge on a light panel inside a dark OBS.
+	search_->setObjectName(QStringLiteral("mrSearch"));
+	// The gate reads the cluster order by id (toolbar_tool_cluster_order):
+	// the field is the cluster's left edge in Wide.
+	setKeyId(search_, QStringLiteral("search"));
 	search_->setPlaceholderText(obs_module_text("Dock.Search"));
 	search_->setClearButtonEnabled(true);
-	// IN EM, not fixed pixels: 190/90 px was sized for OBS's default font.
-	// At Settings > Appearance font-scale 125-150% the same box stayed 190
-	// px while the placeholder and the clear button grew, so the text was
-	// clipped and the button sat outside the visible field. The clock
-	// label's kClockW already derives its width from fontMetrics for the
-	// same reason; the search box did not.
-	const int searchEm = fontMetrics().horizontalAdvance(QLatin1Char('M'));
-	search_->setMaximumWidth(qMax(140, 13 * searchEm));
-	search_->setMinimumWidth(qMax(80, 7 * searchEm));
+	// FIXED WIDTHS FROM THE DRAWING, not ems: .tb-search{min-width:150px}
+	// (.narrow: 112, applied by applyPanelMode). An em derivation used to
+	// sit here for 150% font scales; the artifact states pixels and the
+	// gate asserts them, so pixels win.
+	search_->setMinimumWidth(kSearchMinW);
+	search_->setProperty("searchEmpty", true);
 	connect(search_, &QLineEdit::textChanged, this,
-		[this](const QString &) { refreshEvents(); });
+		[this](const QString &text) {
+			// The placeholder reads italic (.tb-search, italic) while a
+			// typed value does not: Qt has no placeholder-only font
+			// state, so the widget carries it and flips when text
+			// arrives. An unpolish/polish round trips the dynamic
+			// property into the sheet rule below.
+			search_->setProperty("searchEmpty", text.isEmpty());
+			search_->style()->unpolish(search_);
+			search_->style()->polish(search_);
+			refreshEvents();
+		});
 
 	// the reference controller's Live button, in the reference controller's place and the reference controller's colour: red means the
 	// marks land where the action is happening, off means they land where the
@@ -393,6 +408,10 @@ QWidget *MultiReplayDock::buildToolbar()
 	listTabs_->setUsesScrollButtons(true);
 	listTabs_->setElideMode(Qt::ElideNone);
 	listTabs_->setFocusPolicy(Qt::NoFocus);
+	// .tb-tabs{max-width:300px}: about five banks show, then the strip
+	// scrolls under the pinned "+". Without the cap a wide panel spreads
+	// the tabs across the whole row and the "+" strands an inch past them.
+	listTabs_->setMaximumWidth(300);
 	// Slightly smaller than the dock's font, and set on the WIDGET rather
 	// than in the stylesheet: this is the font the tabs are measured AND
 	// painted with, so "the tab is at least as wide as its own name" is a
@@ -422,7 +441,7 @@ QWidget *MultiReplayDock::buildToolbar()
 	bankRow_->setObjectName(QStringLiteral("mrToolbar"));
 	auto *tr = new QHBoxLayout(bankRow_);
 	tr->setContentsMargins(0, 0, 0, 0);
-	tr->setSpacing(3);
+	tr->setSpacing(kBankTabGap); // .tb-tabs{gap:3px}
 	tr->addWidget(listTabs_, 1);
 	addBankBtn_ = new QToolButton(bankRow_);
 	// ITS OWN NAME, not mrToggle: the + is not a state, it is a key that
@@ -455,20 +474,33 @@ QWidget *MultiReplayDock::buildToolbar()
 }
 
 // ---------------------------------------------------------------------------
-// The toolbar's row count follows the panel mode (spec §1/§5): ONE row in
-// Wide/Short — project · banks · search+tools · Live, three thin rules
-// between the four zones — and THREE in Tall (project/Live/tools · search
-// alone · banks). Every widget here already exists (buildToolbar built it
-// once); this only ever MOVES them between h (toolRow1_), h2 (toolRow2_) and
-// toolbarV_ (bankRow_'s own row) — never a second copy of a button whose
+// The toolbar's row count follows the panel mode (artifact «La toolbar»,
+// dcd11c4d, and spec-unico §1/§7): ONE row in Wide — project · banks ·
+// search+tools · Live — the SAME row in Short but with search and Monitors
+// worn as icons (tabella responsive: "Short ~900px, 1 riga icone"), and
+// THREE rows in Tall (project/Live/tools · search alone · banks). Every
+// widget here already exists (buildToolbar built it once); this only ever
+// MOVES them between h (toolRow1_), h2 (toolRow2_) and toolbarV_
+// (bankRow_'s own row) — never a second copy of a button whose
 // checked/current state could go stale against the first.
+//
+// THE CLUSTER ORDER IS THE SPEC'S, NOT THE CONCEPT'S (spec-unico §1 wins:
+// "🔍 ▦Monitors ⛶ ⚙"). The row used to run search · Monitors · gear ·
+// layout, which matched neither document — it was in one of the two
+// positions by accident, and the gate (toolbar_tool_cluster_order) now
+// asserts it instead.
 // ---------------------------------------------------------------------------
 
 void MultiReplayDock::arrangeToolbar(PanelMode m)
 {
 	if (!toolRow1_ || !toolRow2_ || !bankRow_ || !toolbarV_)
 		return;
-	const int want = (m == PanelMode::Tall) ? 1 : 0;
+	// THREE arrangements: Wide keeps every word, Short keeps the one row
+	// but iconises search+Monitors, Tall stacks three rows. Short used to
+	// ride the Wide branch, leaving "Monitors" spelled out at 900 px — the
+	// exact row the drawing shows icon-only.
+	const int want =
+		(m == PanelMode::Tall) ? 2 : (m == PanelMode::Short) ? 1 : 0;
 	if (want == toolbarArrangement_)
 		return;
 	toolbarArrangement_ = want;
@@ -493,14 +525,28 @@ void MultiReplayDock::arrangeToolbar(PanelMode m)
 	toolbarV_->removeWidget(bankRow_);
 
 	if (want == 0) {
-		// WIDE / SHORT (spec §1): one row, three zones behind thin
+		// WIDE (spec-unico §1): one row, three zones behind thin
 		// rules, Live isolated past its own gap and rule. Full words on
 		// both keys — there is room for them beside a whole extra zone
 		// (the banks) that Tall's row does not carry at all.
+		// Order: search · Monitors · ⛶▾(layout) · ⚙ — the spec's, with
+		// the layout menu BEFORE the gear.
 		liveBtn_->setText(QString::fromUtf8(obs_module_text("Dock.LiveMode"))
 					  .toUpper());
 		monitorsBtn_->setText(
 			QString::fromUtf8(obs_module_text("Dock.Monitors")));
+		// A word key again: release the icon size Short/Tall pinned.
+		monitorsBtn_->setMinimumSize(QSize(0, 0));
+		monitorsBtn_->setMaximumSize(
+			QSize(QWIDGETSIZE_MAX, QWIDGETSIZE_MAX));
+		// Icon-only keys wear the drawing's size in every arrangement;
+		// re-asserted here because Tall shrinks them (below) and a mode
+		// change must not leave them shrunk.
+		gearBtn_->setFixedSize(kToolIcoW, kToolIcoH);
+		fullScreenBtn_->setFixedSize(kToolIcoW, kToolIcoH);
+		// .tb-name{min-width:132px}, elided past 280.
+		projectBtn_->setMinimumWidth(kProjectSelMinW);
+		projectBtn_->setMaximumWidth(280);
 		h1->addWidget(projectBtn_);
 		h1->addWidget(toolSepA_);
 		// bankRow_ keeps ITS natural width — it carries its own internal
@@ -517,8 +563,38 @@ void MultiReplayDock::arrangeToolbar(PanelMode m)
 		h1->addWidget(searchIcon_);
 		h1->addWidget(search_);
 		h1->addWidget(monitorsBtn_);
-		h1->addWidget(gearBtn_);
 		h1->addWidget(fullScreenBtn_);
+		h1->addWidget(gearBtn_);
+		h1->addSpacing(10);
+		h1->addWidget(toolSepC_);
+		h1->addWidget(liveBtn_);
+		toolSepA_->show();
+		toolSepB_->show();
+		toolSepC_->show();
+		toolRow2_->hide();
+	} else if (want == 1) {
+		// SHORT (tabella responsive): the Wide row, but search and
+		// Monitors as icons — .tb-ico{26x25} (only Tall narrows to 23).
+		// search_ itself hides until tapped (applyPanelMode's narrow
+		// logic); LIVE keeps its word (wireframe Short).
+		liveBtn_->setText(QString::fromUtf8(obs_module_text("Dock.LiveMode"))
+					  .toUpper());
+		monitorsBtn_->setText(QString());
+		monitorsBtn_->setFixedSize(kToolIcoW, kToolIcoH);
+		gearBtn_->setFixedSize(kToolIcoW, kToolIcoH);
+		fullScreenBtn_->setFixedSize(kToolIcoW, kToolIcoH);
+		projectBtn_->setMinimumWidth(kProjectSelMinW);
+		projectBtn_->setMaximumWidth(280);
+		h1->addWidget(projectBtn_);
+		h1->addWidget(toolSepA_);
+		h1->addWidget(bankRow_, 0);
+		h1->addStretch(1);
+		h1->addWidget(toolSepB_);
+		h1->addWidget(searchIcon_);
+		h1->addWidget(search_);
+		h1->addWidget(monitorsBtn_);
+		h1->addWidget(fullScreenBtn_);
+		h1->addWidget(gearBtn_);
 		h1->addSpacing(10);
 		h1->addWidget(toolSepC_);
 		h1->addWidget(liveBtn_);
@@ -540,14 +616,21 @@ void MultiReplayDock::arrangeToolbar(PanelMode m)
 		// key this tight can still afford; see dock-icons for the two.
 		liveBtn_->setText(QString());
 		monitorsBtn_->setText(QString());
+		// .tbar.tall .tb-ico{width:23px} — height stays 25.
+		monitorsBtn_->setFixedSize(kToolIcoWTall, kToolIcoH);
+		gearBtn_->setFixedSize(kToolIcoWTall, kToolIcoH);
+		fullScreenBtn_->setFixedSize(kToolIcoWTall, kToolIcoH);
+		// .tbar.tall .tb-name{min-width:0}, .pn elided past 150.
+		projectBtn_->setMinimumWidth(0);
+		projectBtn_->setMaximumWidth(150);
 		h1->addWidget(projectBtn_);
 		h1->addStretch(1);
 		h1->addWidget(toolSepA_);
 		h1->addWidget(liveBtn_);
 		h1->addWidget(toolSepB_);
 		h1->addWidget(monitorsBtn_);
-		h1->addWidget(gearBtn_);
 		h1->addWidget(fullScreenBtn_);
+		h1->addWidget(gearBtn_);
 		toolSepA_->show();
 		toolSepB_->show();
 		toolSepC_->hide();

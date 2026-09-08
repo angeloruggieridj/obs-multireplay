@@ -4557,6 +4557,14 @@ void runReopenPass(const std::string &outPath)
 	bool toolbarProjectSelectorIs132Wide = false;
 	bool toolbarAddBankKeyIsSquare25 = false;
 	bool toolbarToolIconsAre26x25 = false;
+	// TOOLBAR CLUSTER ORDER (spec-unico §1 wins: search Monitors layout
+	// gear) + search width + Tall icon width (.tbar.tall .tb-ico).
+	QString toolbarClusterOrder;
+	bool toolbarToolClusterOrder = false;
+	int toolbarSearchMinW = -1;
+	bool toolbarSearchIs150Wide = false;
+	int toolbarTallIcoW = -1, toolbarTallIcoH = -1;
+	bool toolbarTallIconsAre23Wide = false;
 	int playKeyH = 0, stepKeyH = 0;
 	int keyPadL = 0, keyPadR = 0;
 	QString bandText, noticeText;
@@ -4893,6 +4901,23 @@ void runReopenPass(const std::string &outPath)
 				});
 			};
 			measure(1100, 700, tilesWideOk, wideTileW, wideTiles, wideMode);
+			// WIDE BEFORE THE TOOLBAR READS. The geometry below (cluster
+			// order, search width) only exists in Wide: in Short the
+			// search field hides until tapped (narrow, 112) and Monitors
+			// loses its word. measure(1100, 700) above leaves some rigs
+			// in Short (height under the wide floor), so this asserts
+			// the arrangement instead of inheriting whatever the window
+			// happens to be wearing. Settled twice: a mode change
+			// rewrites the floor, and only the second resize lands it.
+			runOnUi([&]() {
+				host->setFloating(true);
+				host->resize(1500, 900);
+			});
+			std::this_thread::sleep_for(
+				std::chrono::milliseconds(700));
+			runOnUi([&]() { host->resize(1500, 900); });
+			std::this_thread::sleep_for(
+				std::chrono::milliseconds(700));
 			runOnUi([&]() {
 				for (QPushButton *b :
 				     dock->findChildren<QPushButton *>()) {
@@ -4963,15 +4988,64 @@ void runReopenPass(const std::string &outPath)
 					add->width() == multireplay::kAddBankSide &&
 					add->height() == multireplay::kAddBankSide;
 
-				auto *gear = dock->findChild<QWidget *>(
-					QStringLiteral("mrGear"));
-				toolbarGearW = gear ? gear->width() : -1;
-				toolbarGearH = gear ? gear->height() : -1;
-				toolbarToolIconsAre26x25 =
-					gear &&
-					gear->width() == multireplay::kToolIcoW &&
-					gear->height() == multireplay::kToolIcoH;
-			});
+			auto *gear = dock->findChild<QWidget *>(
+				QStringLiteral("mrGear"));
+			toolbarGearW = gear ? gear->width() : -1;
+			toolbarGearH = gear ? gear->height() : -1;
+			toolbarToolIconsAre26x25 =
+				gear &&
+				gear->width() == multireplay::kToolIcoW &&
+				gear->height() == multireplay::kToolIcoH;
+
+			// ── CLUSTER ORDER — spec-unico §1, the contradiction §9
+			// recorded: the spec orders search · Monitors · layout ·
+			// gear, the toolbar concept the last two the other way.
+			// By mrKey property, never objectName: three toolbar
+			// widgets share "mrToggle" for the look, and findChild
+			// returns whichever Qt walks into first (see 735ebec).
+			{
+				const QStringList want{
+					QStringLiteral("search"),
+					QStringLiteral("monitors"),
+					QStringLiteral("layout"),
+					QStringLiteral("settings")};
+				struct Hit {
+					QString id;
+					int x;
+				};
+				QList<Hit> hits;
+				for (QWidget *v :
+				     dock->findChildren<QWidget *>()) {
+					const QString id = v->property(
+								   kKeyProperty)
+							   .toString();
+					if (!want.contains(id) ||
+					    !v->isVisible())
+						continue;
+					hits.append(
+						{id, v->mapTo(dock, QPoint(0, 0))
+							      .x()});
+				}
+				std::sort(hits.begin(), hits.end(),
+					  [](const Hit &a, const Hit &b) {
+						  return a.x < b.x;
+					  });
+				QStringList names;
+				for (const Hit &h : hits)
+					names.append(h.id);
+				toolbarClusterOrder = names.join(',');
+				toolbarToolClusterOrder = (names == want);
+			}
+
+			// ── SEARCH WIDTH — .tb-search{min-width:150px}.
+			if (auto *sf = dock->findChild<QWidget *>(
+				    QStringLiteral("mrSearch"))) {
+				toolbarSearchMinW = sf->minimumWidth();
+				toolbarSearchIs150Wide =
+					toolbarSearchMinW ==
+					multireplay::kSearchMinW;
+			}
+		});
 			obs_log(panelPaintsItself ? LOG_INFO : LOG_ERROR,
 				"[selftest] reopen: panel styled background: %s",
 				panelPaintsItself ? "yes" : "NO (it will show "
@@ -5089,6 +5163,19 @@ void runReopenPass(const std::string &outPath)
 						: "THE ROOM WAS NOT GIVEN BACK");
 			}
 			measure(340, 900, tilesTallOk, tallTileW, tallTiles, tallMode);
+		// ── TALL ICONS — .tbar.tall .tb-ico{width:23px}, height stays
+		// 25. Measured here because measure() just left the window at
+		// 340x900, i.e. Tall — no extra resize.
+		runOnUi([&]() {
+			auto *g = dock->findChild<QWidget *>(
+				QStringLiteral("mrGear"));
+			toolbarTallIcoW = g ? g->width() : -1;
+			toolbarTallIcoH = g ? g->height() : -1;
+			toolbarTallIconsAre23Wide =
+				g &&
+				g->width() == multireplay::kToolIcoWTall &&
+				g->height() == multireplay::kToolIcoH;
+		});
 			runOnUi([&]() {
 				QWidget *strip = dock->findChild<QWidget *>(
 					QStringLiteral("mrStrip"));
@@ -5284,9 +5371,10 @@ void runReopenPass(const std::string &outPath)
 			  panelPaintsItself && panelMarksAreDrawn &&
 			  panelFontsAreEmbedded &&
 			  monitorsGiveRoom && eventsBackupCreated &&
-			  toolbarProjectSelectorIs132Wide &&
-			  toolbarAddBankKeyIsSquare25 &&
-			  toolbarToolIconsAre26x25;
+		  toolbarProjectSelectorIs132Wide &&
+		  toolbarAddBankKeyIsSquare25 &&
+		  toolbarToolIconsAre26x25 && toolbarToolClusterOrder &&
+		  toolbarSearchIs150Wide && toolbarTallIconsAre23Wide;
 
 	// --- Put everything back ----------------------------------------------
 	// The operator's project first (so nothing is pointing into the test one),
@@ -5369,6 +5457,12 @@ void runReopenPass(const std::string &outPath)
 			  toolbarAddBankKeyIsSquare25);
 	obs_data_set_bool(checks, "toolbar_tool_icons_are_26x25",
 			  toolbarToolIconsAre26x25);
+	obs_data_set_bool(checks, "toolbar_tool_cluster_order",
+			  toolbarToolClusterOrder);
+	obs_data_set_bool(checks, "toolbar_search_is_150_wide",
+			  toolbarSearchIs150Wide);
+	obs_data_set_bool(checks, "toolbar_tall_icons_are_23_wide",
+			  toolbarTallIconsAre23Wide);
 	obs_data_set_obj(root, "checks", checks);
 	obs_data_release(checks);
 	// Numbers, not checks: how much panel there was to centre the keys in.
@@ -5392,6 +5486,11 @@ void runReopenPass(const std::string &outPath)
 	obs_data_set_int(root, "toolbar_addbank_h", toolbarAddBankH);
 	obs_data_set_int(root, "toolbar_gear_w", toolbarGearW);
 	obs_data_set_int(root, "toolbar_gear_h", toolbarGearH);
+	obs_data_set_string(root, "toolbar_cluster_order",
+			    toolbarClusterOrder.toUtf8().constData());
+	obs_data_set_int(root, "toolbar_search_min_w", toolbarSearchMinW);
+	obs_data_set_int(root, "toolbar_tall_ico_w", toolbarTallIcoW);
+	obs_data_set_int(root, "toolbar_tall_ico_h", toolbarTallIcoH);
 
 	if (!obs_data_save_json_safe(root, outPath.c_str(), "tmp", "bak"))
 		obs_log(LOG_ERROR, "[selftest] could not write report to %s",

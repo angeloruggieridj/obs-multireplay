@@ -1522,15 +1522,17 @@ void MultiReplayDock::applyPanelMode(PanelMode m, bool force)
 					      : Qt::ArrowCursor);
 		if (narrow) {
 			// Hidden until the icon is tapped; the tap sets this
-			// property so the state survives a relayout.
+			// property so the state survives a relayout. When shown
+			// it wears the narrow width (.tb-search.narrow).
 			search_->setVisible(
 				searchIcon_->property("expanded").toBool());
+			search_->setProperty("mrNarrow", true);
+			search_->setMinimumWidth(kSearchMinWNarrow);
 		} else {
 			search_->setVisible(true);
 			searchIcon_->setProperty("expanded", false);
-			const int em = search_->fontMetrics().horizontalAdvance(
-				QLatin1Char('M'));
-			search_->setMinimumWidth(qMax(80, 7 * em));
+			search_->setProperty("mrNarrow", false);
+			search_->setMinimumWidth(kSearchMinW);
 		}
 	}
 

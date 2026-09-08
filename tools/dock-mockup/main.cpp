@@ -665,8 +665,11 @@ public:
 			h1->addWidget(searchIcon_);
 			h1->addWidget(search_);
 			h1->addWidget(monitorsBtn_);
-			h1->addWidget(gearBtn_);
+			// 🔍 ▦ ⛶ ⚙ — the spec's order (spec-unico §1 wins over the
+			// toolbar concept): the layout menu BEFORE the gear.
+			// Mirrors dock-build.cpp.
 			h1->addWidget(fullScreenBtn_);
+			h1->addWidget(gearBtn_);
 			h1->addSpacing(10);
 			h1->addWidget(toolSepC_);
 			h1->addWidget(liveBtn_);
@@ -692,8 +695,8 @@ public:
 			h1->addWidget(liveBtn_);
 			h1->addWidget(toolSepB_);
 			h1->addWidget(monitorsBtn_);
-			h1->addWidget(gearBtn_);
 			h1->addWidget(fullScreenBtn_);
+			h1->addWidget(gearBtn_);
 			toolSepA_->show();
 			toolSepB_->show();
 			toolSepC_->hide();
@@ -1022,6 +1025,8 @@ private:
 			auto *s = new QWidget(this);
 			s->setObjectName(QStringLiteral("mrSepLine"));
 			s->setFixedWidth(1);
+			// toolbar: .tb-sep{stretch} — same as dock-build.cpp.
+			s->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Expanding);
 			return s;
 		};
 		toolSepA_ = mkVSep();
@@ -3811,6 +3816,61 @@ int runChecks(QPalette pal, QApplication &app, const QString &outDir)
 		}
 		if (label == QStringLiteral("wide"))
 			checkKeyIds(w);
+		// ── TOOLBAR, SHEET — artifact «La toolbar» (dcd11c4d). The mockup
+		// compiles the REAL dock-style.hpp, so these read the same bytes
+		// the panel wears. The sheet is already token-resolved here, so
+		// the checks name resolved Scheme values (w->sc_), never "@…@".
+		{
+			const QString qss = w->styleSheet();
+			// 1200 chars, not 500: the tab rule carries two long
+			// comments before its first declaration, and a 500-char
+			// window ended mid-comment — every frag check after the
+			// prose failed while the rule was right there.
+			const auto ruleHas = [&](const char *sel,
+						 const QString &frag) {
+				const int at = qss.indexOf(
+					QString::fromLatin1(sel));
+				if (at < 0)
+					return false;
+				return qss.mid(at, 1200).contains(frag);
+			};
+			check(ruleHas("QPushButton#mrLive {",
+				      "border-radius: 5px"),
+			      label + ": LIVE is 5px-rounded");
+			check(ruleHas("QPushButton#mrLive {",
+				      "background: " + w->sc_.recBg),
+			      label + ": LIVE rests red", w->sc_.recBg);
+			check(ruleHas("QPushButton#mrToggle {",
+				      "border-radius: 5px"),
+			      label + ": toggles are 5px-rounded");
+			check(ruleHas("QToolButton#mrGear {",
+				      "border-radius: 5px"),
+			      label + ": the gear is 5px-rounded");
+			check(ruleHas("QTabBar#mrListTabs::tab {",
+				      "border-radius: 5px"),
+			      label + ": bank tabs are 5px-rounded");
+			check(ruleHas("QTabBar#mrListTabs::tab {",
+				      "margin-right: 3px"),
+			      label + ": bank tabs are 3px apart");
+			check(ruleHas("QTabBar#mrListTabs::tab {",
+				      "padding: 4px 10px"),
+			      label + ": bank tabs keep the drawn padding");
+			check(!ruleHas("QTabBar#mrListTabs::tab {",
+				       "border-bottom: 0"),
+			      label + ": a bank tab is a closed rectangle");
+			check(ruleHas("QTabBar#mrListTabs::tab:selected",
+				      "border-color: " + w->sc_.tabBarBorder),
+			      label + ": the active tab keeps its outline",
+			      w->sc_.tabBarBorder);
+			// Fill and border in one colour fuse the tab into its
+			// strip (that was @accent@ on Broadcast, where the
+			// accent IS the navy). The relationship, not the hex.
+			check(w->sc_.tabBarBorder != w->sc_.tabBar,
+			      label + ": outline differs from fill",
+			      w->sc_.tabBar + " vs " + w->sc_.tabBarBorder);
+			check(qss.contains(QStringLiteral("QLineEdit#mrSearch")),
+			      label + ": the search field has a rule of its own");
+		}
 		w->hide();
 		delete w;
 	}

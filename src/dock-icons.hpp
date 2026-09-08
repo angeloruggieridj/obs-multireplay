@@ -250,8 +250,10 @@ void restyleIcons(QObject *root, const IconTints &tints);
 // looks for that. It cannot be changed by a locale, a font, or a redesign.
 inline const char *kKeyProperty = "mrKey";
 
-// Stamp the id on a button. Separate from setKeyIcon because keys that stay
-// TEXT ("-5s", "IN") need an identity too.
-void setKeyId(QAbstractButton *b, const QString &id);
+// Stamp the id on a widget. Separate from setKeyIcon because keys that stay
+// TEXT ("-5s", "IN") need an identity too — and because the toolbar's order
+// check reads the search FIELD, which is a QLineEdit, not a button. Takes a
+// QWidget since 2026-09-08; every QAbstractButton still converts.
+void setKeyId(QWidget *b, const QString &id);
 
 } // namespace multireplay
