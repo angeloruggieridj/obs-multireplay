@@ -171,6 +171,11 @@ target_sources(
     src/dock-build.cpp
     src/dock-layout.cpp
     src/dock-layout.hpp
+    # The panel's typefaces, embedded so "identical to the artifact" is the same
+    # answer on every rig. Pure Qt: the mockup compiles this too.
+    src/dock-fonts.cpp
+    src/dock-fonts.hpp
+    src/multireplay-fonts.qrc
     src/dock-style.hpp
     src/dock-icons.cpp
     src/dock-icons.hpp

@@ -12,8 +12,12 @@ project(dock-mockup LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
+set(CMAKE_AUTORCC ON)
 
 find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets)
 
-add_executable(dock-mockup main.cpp ../../src/dock-layout.cpp ../../src/dock-icons.cpp)
+add_executable(
+  dock-mockup main.cpp ../../src/dock-layout.cpp ../../src/dock-icons.cpp
+              ../../src/dock-fonts.cpp ../../src/multireplay-fonts.qrc
+)
 target_link_libraries(dock-mockup PRIVATE Qt6::Core Qt6::Gui Qt6::Widgets)

@@ -29,6 +29,7 @@
 // NOT EXIST. Whenever this file and multireplay-dock.cpp disagree about where
 // something goes, this one is wrong.
 #include "../../src/dock-assets.hpp"
+#include "../../src/dock-fonts.hpp"
 #include "../../src/dock-icons.hpp"
 #include "../../src/dock-layout.hpp"
 #include "../../src/dock-style.hpp"
@@ -3689,6 +3690,31 @@ int runChecks(QPalette pal, QApplication &app, const QString &outDir)
 		{"short", 1400, 340, PanelMode::Short},
 		{"tall", 340, 900, PanelMode::Tall},
 	};
+
+	// ── FONT — spec §5. Questo check guarda una cosa NEGATIVA: se l'embed
+	// fallisce, il pannello continua a funzionare e a somigliare a com'era
+	// prima, cioè il guasto si spedisce in silenzio. Stessa famiglia di
+	// floating_window_offers_maximise, che asserisce un'assenza.
+	{
+		using namespace multireplay::fonts;
+		check(allEmbedded(), "fonts: all eight faces embedded",
+		      QStringLiteral("%1 registered").arg(registerEmbedded()));
+		check(labelFamily() == QStringLiteral("Barlow Condensed"),
+		      "fonts: label family is Barlow Condensed", labelFamily());
+		check(displayFamily() ==
+			      QStringLiteral("Barlow Semi Condensed"),
+		      "fonts: display family is Barlow Semi Condensed",
+		      displayFamily());
+		check(bodyFamily() == QStringLiteral("IBM Plex Sans"),
+		      "fonts: body family is IBM Plex Sans", bodyFamily());
+		check(monoFamily() == QStringLiteral("IBM Plex Mono"),
+		      "fonts: mono family is IBM Plex Mono", monoFamily());
+		// Nessuna delle quattro può essere vuota nemmeno quando l'embed
+		// fallisce: una famiglia vuota è una regola che Qt ignora.
+		check(!labelFamily().isEmpty() && !displayFamily().isEmpty() &&
+			      !bodyFamily().isEmpty() && !monoFamily().isEmpty(),
+		      "fonts: no family is ever empty");
+	}
 
 	for (const Want &t : targets) {
 		auto *w = new Mock();

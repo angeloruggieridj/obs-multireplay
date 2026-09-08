@@ -1,0 +1,12 @@
+<!DOCTYPE RCC><RCC version="1.0">
+<qresource prefix="/multireplay/fonts">
+    <file>fonts/BarlowCondensed-SemiBold.ttf</file>
+    <file>fonts/BarlowCondensed-Bold.ttf</file>
+    <file>fonts/BarlowSemiCondensed-SemiBold.ttf</file>
+    <file>fonts/BarlowSemiCondensed-Bold.ttf</file>
+    <file>fonts/IBMPlexSans-Regular.ttf</file>
+    <file>fonts/IBMPlexSans-SemiBold.ttf</file>
+    <file>fonts/IBMPlexMono-Regular.ttf</file>
+    <file>fonts/IBMPlexMono-SemiBold.ttf</file>
+</qresource>
+</RCC>
