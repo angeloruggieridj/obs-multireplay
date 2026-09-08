@@ -2465,16 +2465,24 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 			const bool want =
 				ReplayCore::instance().getConfig().enableChannelB;
 			bool selectorShown = false;
-			// The CAPTION above the selector ("OUTPUT") has to collapse
-			// with it: a KeyBlock's own visibility does not propagate to
-			// its children's sizeHint (Qt checks each child's OWN hidden
-			// flag), so a caption never explicitly hidden stays measured
-			// — and painted — even while the section under it is gone.
-			// Matched by TEXT, not just objectName: every captioned
-			// section shares "mrZoneTitle", so the name alone would find
-			// four other labels that have nothing to do with channel B.
+			// The CAPTION above the selector ("Replay channels") has to
+			// collapse with it: a KeyBlock's own visibility does not
+			// propagate to its children's sizeHint (Qt checks each
+			// child's OWN hidden flag), so a caption never explicitly
+			// hidden stays measured — and painted — even while the
+			// section under it is gone. Matched by TEXT, not just
+			// objectName: every captioned section shares "mrZoneTitle",
+			// so the name alone would find four other labels that have
+			// nothing to do with channel B. The KEY is
+			// "Dock.ZoneChannels" — buildAngleMatrix() renamed the
+			// caption from "Dock.ZoneOutput" (dock-build.cpp), and this
+			// check went stale against it: with the old key looked up
+			// here, no live label ever matched the text, so
+			// captionShown was vacuously false for BOTH states and this
+			// assertion only ever caught the off-state by accident.
 			const QString outputCaption =
-				QString::fromUtf8(obs_module_text("Dock.ZoneOutput"))
+				QString::fromUtf8(
+					obs_module_text("Dock.ZoneChannels"))
 					.toUpper();
 			bool captionShown = false;
 			runOnUi([&]() {
@@ -5393,9 +5401,11 @@ void runSelfTest()
 		if (startedOff) {
 			MultiReplayDock *dock = nullptr;
 			bool captionShown = false, selectorShown = false;
+			// Same key as the other channel-B check above:
+			// "Dock.ZoneChannels", not the retired "Dock.ZoneOutput".
 			const QString outputCaption =
 				QString::fromUtf8(
-					obs_module_text("Dock.ZoneOutput"))
+					obs_module_text("Dock.ZoneChannels"))
 					.toUpper();
 			runOnUi([&]() {
 				auto *main = static_cast<QMainWindow *>(
