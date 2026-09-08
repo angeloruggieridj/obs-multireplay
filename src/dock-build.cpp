@@ -1434,12 +1434,14 @@ QToolButton *MultiReplayDock::buildGearMenu()
 	// read as part of arming a take.
 	auto *gear = new QToolButton(this);
 	gear->setObjectName("mrGear");
-	gear->setFixedSize(kToolIcoW, kToolIcoH); // .tb-ico
+	// .tb-ico{width:26px;height:25px}. This REPLACES a setFixedHeight(kKeyH)
+	// that used to sit a few lines below and silently won, because it ran
+	// last: the key was set to 25 and measured 26, and the gate check said so.
+	gear->setFixedSize(kToolIcoW, kToolIcoH);
 	setKeyIcon(gear, Icon::Gear, tintsFor(sc()), 15);
 	setKeyId(gear, QStringLiteral("settings"));
 	gear->setCursor(Qt::PointingHandCursor);
 	gear->setToolTip(obs_module_text("Dock.Settings"));
-	gear->setFixedHeight(kKeyH);
 	{
 		// (Nuovo / Apri… moved to the project selector button, spec §1.
 		// The gear keeps the configuration of the whole panel — setup,
