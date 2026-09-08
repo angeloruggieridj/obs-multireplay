@@ -4565,6 +4565,14 @@ void runReopenPass(const std::string &outPath)
 	bool toolbarSearchIs150Wide = false;
 	int toolbarTallIcoW = -1, toolbarTallIcoH = -1;
 	bool toolbarTallIconsAre23Wide = false;
+	// Operator round 2026-09-08: the magnifier is a real key, the bank tabs
+	// carry their own menu, Tall keeps a whole-word LIVE, and the bank
+	// strip spends the row's slack instead of capping at 300px.
+	bool toolbarSearchIsAKey = false;
+	bool toolbarTabsHaveMenu = false;
+	bool toolbarTallLiveHasWord = false;
+	int toolbarStripW = -1;
+	bool toolbarStripUsesSlack = false;
 	int playKeyH = 0, stepKeyH = 0;
 	int keyPadL = 0, keyPadR = 0;
 	QString bandText, noticeText;
@@ -5045,6 +5053,39 @@ void runReopenPass(const std::string &outPath)
 					toolbarSearchMinW ==
 					multireplay::kSearchMinW;
 			}
+			// ── SEARCH IS A KEY (operator request, 2026-09-08): where
+			// the field hides, the magnifier is what opens it — a QLabel
+			// with an event filter is not pressable-looking. The gate
+			// reads the cluster order off it (visible in all modes).
+			for (QWidget *v : dock->findChildren<QWidget *>()) {
+				if (v->property(kKeyProperty).toString() !=
+				    QStringLiteral("search"))
+					continue;
+				toolbarSearchIsAKey =
+					qobject_cast<QToolButton *>(v) !=
+					nullptr;
+				break;
+			}
+			// ── THE BANK TABS' OWN MENU: right-click a label offers
+			// Rinomina · Elimina tutto · Elimina scheda. Wired is
+			// what this asserts (the policy); the actions are an
+			// operator's right-click away, not a gate's.
+			if (auto *tabs = dock->findChild<QTabBar *>(
+				    QStringLiteral("mrListTabs"))) {
+				toolbarTabsHaveMenu =
+					tabs->contextMenuPolicy() ==
+					Qt::CustomContextMenu;
+				// ── THE STRIP SPENDS THE SLACK (operator override,
+				// 2026-09-08 — no 300px cap): at 1500px Wide with the
+				// gate's 20 lists, the strip must stand wider than the
+				// old 300+25+3 box, instead of stranding slack between
+				// "+" and the tools.
+				if (QWidget *strip = tabs->parentWidget()) {
+					toolbarStripW = strip->width();
+					toolbarStripUsesSlack =
+						toolbarStripW > 328;
+				}
+			}
 		});
 			obs_log(panelPaintsItself ? LOG_INFO : LOG_ERROR,
 				"[selftest] reopen: panel styled background: %s",
@@ -5175,6 +5216,12 @@ void runReopenPass(const std::string &outPath)
 				g &&
 				g->width() == multireplay::kToolIcoWTall &&
 				g->height() == multireplay::kToolIcoH;
+			// ── TALL KEEPS A WHOLE-WORD LIVE (operator request,
+			// 2026-09-08 — the drawing shows it full on Tall's first
+			// row). Only Monitors goes to icon here.
+			if (auto *live = dock->findChild<QPushButton *>(
+				    QStringLiteral("mrLive")))
+				toolbarTallLiveHasWord = !live->text().isEmpty();
 		});
 			runOnUi([&]() {
 				QWidget *strip = dock->findChild<QWidget *>(
@@ -5374,7 +5421,9 @@ void runReopenPass(const std::string &outPath)
 		  toolbarProjectSelectorIs132Wide &&
 		  toolbarAddBankKeyIsSquare25 &&
 		  toolbarToolIconsAre26x25 && toolbarToolClusterOrder &&
-		  toolbarSearchIs150Wide && toolbarTallIconsAre23Wide;
+		  toolbarSearchIs150Wide && toolbarTallIconsAre23Wide &&
+		  toolbarSearchIsAKey && toolbarTabsHaveMenu &&
+		  toolbarTallLiveHasWord && toolbarStripUsesSlack;
 
 	// --- Put everything back ----------------------------------------------
 	// The operator's project first (so nothing is pointing into the test one),
@@ -5463,6 +5512,14 @@ void runReopenPass(const std::string &outPath)
 			  toolbarSearchIs150Wide);
 	obs_data_set_bool(checks, "toolbar_tall_icons_are_23_wide",
 			  toolbarTallIconsAre23Wide);
+	obs_data_set_bool(checks, "toolbar_search_is_a_key",
+			  toolbarSearchIsAKey);
+	obs_data_set_bool(checks, "toolbar_tabs_have_menu",
+			  toolbarTabsHaveMenu);
+	obs_data_set_bool(checks, "toolbar_tall_live_has_word",
+			  toolbarTallLiveHasWord);
+	obs_data_set_bool(checks, "toolbar_strip_uses_slack",
+			  toolbarStripUsesSlack);
 	obs_data_set_obj(root, "checks", checks);
 	obs_data_release(checks);
 	// Numbers, not checks: how much panel there was to centre the keys in.
@@ -5491,6 +5548,7 @@ void runReopenPass(const std::string &outPath)
 	obs_data_set_int(root, "toolbar_search_min_w", toolbarSearchMinW);
 	obs_data_set_int(root, "toolbar_tall_ico_w", toolbarTallIcoW);
 	obs_data_set_int(root, "toolbar_tall_ico_h", toolbarTallIcoH);
+	obs_data_set_int(root, "toolbar_strip_w", toolbarStripW);
 
 	if (!obs_data_save_json_safe(root, outPath.c_str(), "tmp", "bak"))
 		obs_log(LOG_ERROR, "[selftest] could not write report to %s",
@@ -5607,6 +5665,34 @@ void runSelfTest()
 	// all — 0 anchored and 0 unanchored, which reads like a broken anchor and
 	// is really a wrong folder.
 	const std::string projectFolder = folder.string();
+
+	// THE TAKE DOCKS WIDE, BY CONTRACT (2026-09-08). A fresh collection
+	// docks the panel at whatever width OBS grants — 300px on this rig, but
+	// that is OBS's default, not a promise — and every dock-geometry check
+	// below (zones order, channel-B box, bay selector) assumes both panels
+	// visible, i.e. Wide. One run in three docked narrow and read a Tall
+	// panel instead: bank strip above the search row, MARCA behind REVIEW's
+	// tab, and the A|B selector "hidden" by the tab bar rather than by any
+	// fault. Floating + 1200x760 before anything records (the "Normale"
+	// form: Wide arrangement at the size the last green take settled at on
+	// its own — a 1500px panel costs the render thread pixels the lag budget
+	// notices): nothing measures yet, so the settle stall lands nowhere
+	// sensitive. ONE resize, not two: 1200 clears the ~600px floor on the
+	// first go, and every relayout at this size renders live previews the
+	// lag budget counts.
+	runOnUi([&]() {
+		auto *main = static_cast<QMainWindow *>(
+			obs_frontend_get_main_window());
+		MultiReplayDock *dock =
+			main ? main->findChild<MultiReplayDock *>() : nullptr;
+		if (QDockWidget *host = dock ? qobject_cast<QDockWidget *>(
+						       dock->parentWidget())
+					     : nullptr) {
+			host->setFloating(true);
+			host->resize(1200, 760);
+		}
+	});
+	std::this_thread::sleep_for(std::chrono::milliseconds(700));
 
 	// --- CHANNEL B IS ABSENT FROM THE DOCK'S VERY FIRST PAINT ---------------
 	// Not "eventually hidden once something re-applies the flag" — absent from

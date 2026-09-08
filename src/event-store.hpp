@@ -86,6 +86,16 @@ public:
 	void shutdown();
 	void clearAll();                                  // the reference controller "Delete All"
 
+	// --- Per-list clearing and list removal (the bank tab's context menu) --
+	// clearList drops one list's events and keeps its name; removeList drops
+	// the list itself and compacts the lists above it down (events AND names),
+	// so 1..count stays contiguous — count is the caller's Config to shrink.
+	// Returns false for an out-of-range list. version_++ even when empty, like
+	// clearAll: the table must repaint either way.
+	bool clearList(int list);
+	bool removeList(int list, int count);
+	int eventCount(int list) const;
+
 	// --- Live / Recorded mode (the reference controller Live button) ---
 	void setLiveMode(bool live) { liveMode_ = live; }
 	bool liveMode() const { return liveMode_; }

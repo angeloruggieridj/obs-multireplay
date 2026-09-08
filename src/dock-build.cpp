@@ -226,27 +226,32 @@ QWidget *MultiReplayDock::buildToolbar()
 	// row and Tall's three (spec §1/§5); building that placement twice would
 	// be two copies of the same decision to keep in step.
 
-	// A DRAWN MAGNIFIER, not the emoji. U+1F50D carries
-	// Emoji_Presentation=Yes, so Windows painted it in full colour from Segoe
-	// UI Emoji — a bright blue blob beside a grey search box, on a panel
-	// whose every other mark is a grey line.
-	// A LABEL, so restyleIcons cannot reach it — it only walks buttons. Kept
-	// so applyTheme can redraw it: it is the one mark on this panel that is
-	// not on a key, and it was the one that stayed the old grey after a theme
-	// change.
-	searchIcon_ = new QLabel(box);
-	// Clickable in the narrow arrangements (spec §7): a tap toggles the
-	// field it stands in for. applyPanelMode sets the `clickable` property;
-	// this filter only acts when it is set.
-	searchIcon_->installEventFilter(this);
-	restyleSearchIcon();
+	// A KEY, not a label: where the field hides (Short) the magnifier is
+	// what opens it, and a QLabel with an event filter is not a thing an
+	// operator can tell is pressable. Wears the tool-icon size in every
+	// arrangement (set by arrangeToolbar, 26x25 — 23 in Tall); in Wide/Tall
+	// the field is always out, so the key just hands it the focus.
+	searchIcon_ = new QToolButton(box);
+	// ITS OWN NAME (see mrGear, same trap): the look is shared in the sheet,
+	// the identity is not. Carries the cluster's "search" id — the gate
+	// reads the order off it, visible in all three arrangements, while the
+	// field itself hides in Short.
+	searchIcon_->setObjectName(QStringLiteral("mrSearchKey"));
+	setKeyId(searchIcon_, QStringLiteral("search"));
+	setKeyIcon(searchIcon_, Icon::Search, tintsFor(sc()), 13);
+	searchIcon_->setCursor(Qt::PointingHandCursor);
+	searchIcon_->setToolTip(obs_module_text("Dock.Search"));
+	connect(searchIcon_, &QToolButton::clicked, this, [this]() {
+		if (!search_)
+			return;
+		if (!search_->isVisible())
+			search_->setVisible(true);
+		search_->setFocus(Qt::MouseFocusReason);
+	});
 	search_ = new QLineEdit(box);
 	// ITS OWN NAME (.tb-search): without a rule of its own the field was
 	// drawn by OBS — a smudge on a light panel inside a dark OBS.
 	search_->setObjectName(QStringLiteral("mrSearch"));
-	// The gate reads the cluster order by id (toolbar_tool_cluster_order):
-	// the field is the cluster's left edge in Wide.
-	setKeyId(search_, QStringLiteral("search"));
 	search_->setPlaceholderText(obs_module_text("Dock.Search"));
 	search_->setClearButtonEnabled(true);
 	// FIXED WIDTHS FROM THE DRAWING, not ems: .tb-search{min-width:150px}
@@ -408,10 +413,11 @@ QWidget *MultiReplayDock::buildToolbar()
 	listTabs_->setUsesScrollButtons(true);
 	listTabs_->setElideMode(Qt::ElideNone);
 	listTabs_->setFocusPolicy(Qt::NoFocus);
-	// .tb-tabs{max-width:300px}: about five banks show, then the strip
-	// scrolls under the pinned "+". Without the cap a wide panel spreads
-	// the tabs across the whole row and the "+" strands an inch past them.
-	listTabs_->setMaximumWidth(300);
+	// NO max-width on the strip: the drawing caps it at 300px, but the
+	// operator overrode that on 2026-09-08 (recorded in the design spec §9)
+	// — the slack between "+" and the tools is spent showing MORE of the
+	// defined banks instead. arrangeToolbar() gives bankRow_ the row's
+	// stretch, so it grows into that slack and only scrolls on overflow.
 	// Slightly smaller than the dock's font, and set on the WIDGET rather
 	// than in the stylesheet: this is the font the tabs are measured AND
 	// painted with, so "the tab is at least as wide as its own name" is a
@@ -434,6 +440,85 @@ QWidget *MultiReplayDock::buildToolbar()
 		EventStore::instance().selectList(idx + 1);
 		refreshEvents();
 	});
+	// THE TAB'S OWN MENU (operator request, 2026-09-08): right-click a label
+	// offers Rinomina · Elimina tutto (this list's events) · Elimina scheda,
+	// in that order. Creation had the "+" for years with no way back.
+	// Clearing keeps the name; deleting compacts the lists above down so
+	// 1..count stays contiguous (EventStore::removeList) and shrinks the
+	// count — the last remaining tab refuses, with a notice saying why.
+	listTabs_->setContextMenuPolicy(Qt::CustomContextMenu);
+	connect(listTabs_, &QTabBar::customContextMenuRequested, this,
+		[this](const QPoint &pos) {
+			const int idx = listTabs_->tabAt(pos);
+			if (idx < 0)
+				return;
+			// Tabs past the count are HIDDEN, never removed
+			// (refreshListNames), so a visible index is its own list.
+			const int list = idx + 1;
+			auto &store = EventStore::instance();
+			const std::string nm = store.listName(list);
+			const QString shown =
+				nm.empty() ? QString::number(list)
+					   : QString::fromStdString(nm);
+			QMenu menu(listTabs_);
+			QAction *actRename = menu.addAction(
+				obs_module_text("Dock.RenameList"));
+			QAction *actClear = menu.addAction(
+				obs_module_text("Dock.DeleteAll"));
+			QAction *actDelete = menu.addAction(
+				obs_module_text("Dock.TabDelete"));
+			QAction *picked = menu.exec(
+				listTabs_->mapToGlobal(pos));
+			if (!picked)
+				return;
+			if (picked == actRename) {
+				renameListAt(list);
+				return;
+			}
+			const auto confirm = [&](const char *key) {
+				QMessageBox box(this);
+				box.setWindowTitle("obs-multireplay");
+				box.setText(QString(obs_module_text(key))
+						    .arg(shown)
+						    .arg(store.eventCount(list)));
+				QPushButton *yes = box.addButton(
+					obs_module_text("Dock.Yes"),
+					QMessageBox::YesRole);
+				box.addButton(obs_module_text("Dock.No"),
+					      QMessageBox::NoRole);
+				box.exec();
+				return box.clickedButton() == yes;
+			};
+			if (picked == actClear) {
+				if (store.eventCount(list) > 0 && !confirm("Dock.TabClearConfirm"))
+					return;
+				pc().stopEvents();
+				store.clearList(list);
+				poll();
+				return;
+			}
+			// Elimina scheda.
+			const int count = std::clamp(
+				ReplayCore::instance().getConfig().eventListCount,
+				1, kEventLists);
+			if (count <= 1) {
+				showNotice(obs_module_text("Dock.TabDeleteLast"));
+				return;
+			}
+			if (!confirm("Dock.TabDeleteConfirm"))
+				return;
+			pc().stopEvents();
+			if (!store.removeList(list, count))
+				return;
+			ReplayCore::instance().setEventListCount(count - 1);
+			const int sel = store.selectedList();
+			if (sel > list)
+				store.selectList(sel - 1);
+			else if (sel == list)
+				store.selectList(std::max(1, list - 1));
+			refreshListNames();
+			poll();
+		});
 	// THE "+" KEY (spec §1): ~5 tabs show; + raises the count by one, up to
 	// kEventLists, with the number as the name. Pinned to the right of the
 	// strip so the tabs scroll under it, not past it.
@@ -544,21 +629,18 @@ void MultiReplayDock::arrangeToolbar(PanelMode m)
 		// change must not leave them shrunk.
 		gearBtn_->setFixedSize(kToolIcoW, kToolIcoH);
 		fullScreenBtn_->setFixedSize(kToolIcoW, kToolIcoH);
+		searchIcon_->setFixedSize(kToolIcoW, kToolIcoH);
 		// .tb-name{min-width:132px}, elided past 280.
 		projectBtn_->setMinimumWidth(kProjectSelMinW);
 		projectBtn_->setMaximumWidth(280);
 		h1->addWidget(projectBtn_);
 		h1->addWidget(toolSepA_);
-		// bankRow_ keeps ITS natural width — it carries its own internal
-		// stretch (the tabs, ahead of the pinned "+"), and giving it a
-		// SECOND stretch here as well let it swallow the whole row: the
-		// "+" ended up stranded, an inch past the last tab, on any panel
-		// wider than the tabs needed. The row's leftover space belongs
-		// in the gap that actually separates the two clusters — banks on
-		// the left, search/tools/Live on the right — not inside one of
-		// them.
-		h1->addWidget(bankRow_, 0);
-		h1->addStretch(1);
+		// bankRow_ takes the row's stretch (operator override, 2026-09-08:
+		// no 300px cap — the defined banks use the slack, the tools keep
+		// the right edge). No second free stretch: two shares of leftover
+		// space let the strip swallow the row and strand the "+" an inch
+		// past the last tab.
+		h1->addWidget(bankRow_, 1);
 		h1->addWidget(toolSepB_);
 		h1->addWidget(searchIcon_);
 		h1->addWidget(search_);
@@ -583,12 +665,12 @@ void MultiReplayDock::arrangeToolbar(PanelMode m)
 		monitorsBtn_->setFixedSize(kToolIcoW, kToolIcoH);
 		gearBtn_->setFixedSize(kToolIcoW, kToolIcoH);
 		fullScreenBtn_->setFixedSize(kToolIcoW, kToolIcoH);
+		searchIcon_->setFixedSize(kToolIcoW, kToolIcoH);
 		projectBtn_->setMinimumWidth(kProjectSelMinW);
 		projectBtn_->setMaximumWidth(280);
 		h1->addWidget(projectBtn_);
 		h1->addWidget(toolSepA_);
-		h1->addWidget(bankRow_, 0);
-		h1->addStretch(1);
+		h1->addWidget(bankRow_, 1);
 		h1->addWidget(toolSepB_);
 		h1->addWidget(searchIcon_);
 		h1->addWidget(search_);
@@ -608,18 +690,20 @@ void MultiReplayDock::arrangeToolbar(PanelMode m)
 		//   2) the search field, extended to the row's full width
 		//   3) banks + "+" (bankRow_, in its own row of toolbarV_)
 		//
-		// LIVE AND MONITORS LOSE THEIR WORD HERE. Row 1 now carries the
+		// MONITORS LOSES ITS WORD HERE, LIVE DOES NOT. Row 1 carries the
 		// project selector AND both panel keys AND the layout/gear pair
-		// in a column as narrow as 320 px — five controls where Wide
-		// spends the same row on four plus a whole bank strip. Their
-		// icon and tooltip already say what they do; the mark is what a
-		// key this tight can still afford; see dock-icons for the two.
-		liveBtn_->setText(QString());
+		// in a column as narrow as 320 px; Monitors' icon and tooltip say
+		// what it does, but LIVE stays whole (operator request, 2026-09-08
+		// — the drawing shows it full on Tall's first row, fenced by rules
+		// past the selector). The Tall selector cap (150) pays for it.
+		liveBtn_->setText(QString::fromUtf8(obs_module_text("Dock.LiveMode"))
+					  .toUpper());
 		monitorsBtn_->setText(QString());
 		// .tbar.tall .tb-ico{width:23px} — height stays 25.
 		monitorsBtn_->setFixedSize(kToolIcoWTall, kToolIcoH);
 		gearBtn_->setFixedSize(kToolIcoWTall, kToolIcoH);
 		fullScreenBtn_->setFixedSize(kToolIcoWTall, kToolIcoH);
+		searchIcon_->setFixedSize(kToolIcoWTall, kToolIcoH);
 		// .tbar.tall .tb-name{min-width:0}, .pn elided past 150.
 		projectBtn_->setMinimumWidth(0);
 		projectBtn_->setMaximumWidth(150);

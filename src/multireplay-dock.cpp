@@ -1508,29 +1508,22 @@ void MultiReplayDock::applyPanelMode(PanelMode m, bool force)
 	// right now, and arrangeToolbar is what just decided that.
 	arrangeToolbar(m);
 
-	// SEARCH COLLAPSES TO ITS ICON only in SHORT (spec §7: "sotto ~1000 px
-	// si riduce a icona 🔍 che apre il campo"). Wide keeps the field always
+	// SEARCH COLLAPSES TO ITS KEY only in SHORT (spec §7: "sotto ~1000 px
+	// si riduce a icona 🔍 che apre il campo"). The key is a real QToolButton
+	// (buildToolbar): no event filter, no "clickable" property — a press
+	// shows the field and hands it the focus. Wide keeps the field always
 	// visible because there is room for it beside the rest of the row; Tall
 	// ALSO keeps it always visible, but on a row of its own (spec §5's
 	// "campo ricerca esteso") — collapsing it there would leave that whole
-	// second row empty. The icon (searchIcon_) is clickable only in Short —
-	// its eventFilter (buildToolbar) toggles the field.
+	// second row empty.
 	if (search_ && searchIcon_) {
 		const bool narrow = m == PanelMode::Short;
-		searchIcon_->setProperty("clickable", narrow);
-		searchIcon_->setCursor(narrow ? Qt::PointingHandCursor
-					      : Qt::ArrowCursor);
 		if (narrow) {
-			// Hidden until the icon is tapped; the tap sets this
-			// property so the state survives a relayout. When shown
-			// it wears the narrow width (.tb-search.narrow).
-			search_->setVisible(
-				searchIcon_->property("expanded").toBool());
+			search_->setVisible(false);
 			search_->setProperty("mrNarrow", true);
 			search_->setMinimumWidth(kSearchMinWNarrow);
 		} else {
 			search_->setVisible(true);
-			searchIcon_->setProperty("expanded", false);
 			search_->setProperty("mrNarrow", false);
 			search_->setMinimumWidth(kSearchMinW);
 		}
@@ -2183,11 +2176,12 @@ SheetAssetPaths MultiReplayDock::sheetAssets() const
 
 void MultiReplayDock::restyleSearchIcon()
 {
+	// A DRAWN MAGNIFIER, not the emoji (U+1F50D paints in full colour from
+	// Segoe UI Emoji). On a key now, so it rides restyleIcons' path like
+	// every other mark: setKeyIcon, not a QLabel pixmap.
 	if (!searchIcon_)
 		return;
-	searchIcon_->setPixmap(iconFor(Icon::Search, QColor(sc().textMuted), 13,
-				       devicePixelRatioF())
-				       .pixmap(13, 13));
+	setKeyIcon(searchIcon_, Icon::Search, tintsFor(sc()), 13);
 }
 
 void MultiReplayDock::applyTheme()
@@ -4942,20 +4936,6 @@ bool MultiReplayDock::eventFilter(QObject *watched, QEvent *event)
 			}
 		}
 	}
-	// THE SEARCH ICON OPENS THE FIELD in the narrow arrangements (spec §7).
-	if (watched == searchIcon_ && searchIcon_ &&
-	    searchIcon_->property("clickable").toBool() &&
-	    event->type() == QEvent::MouseButtonPress) {
-		const bool now = !searchIcon_->property("expanded").toBool();
-		searchIcon_->setProperty("expanded", now);
-		if (search_) {
-			search_->setVisible(now);
-			if (now)
-				search_->setFocus(Qt::MouseFocusReason);
-		}
-		return true;
-	}
-
 	// THE TABLE EATS THE KEYS THAT MATTER. A QTableWidget with focus takes
 	// Enter to open an editor and ←/→ to walk across columns, and the table is
 	// where the operator's focus is for most of a match — so without this the

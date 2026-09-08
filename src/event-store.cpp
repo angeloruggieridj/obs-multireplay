@@ -62,6 +62,58 @@ void EventStore::clearAll()
 	save();
 }
 
+bool EventStore::clearList(int list)
+{
+	if (list < 1 || list > kEventLists)
+		return false;
+	std::lock_guard<std::mutex> lock(mutex_);
+	events_.erase(std::remove_if(events_.begin(), events_.end(),
+				     [list](const ReplayEvent &e) {
+					     return e.list == list;
+				     }),
+		      events_.end());
+	version_++;
+	save();
+	return true;
+}
+
+int EventStore::eventCount(int list) const
+{
+	if (list < 1 || list > kEventLists)
+		return 0;
+	std::lock_guard<std::mutex> lock(mutex_);
+	int n = 0;
+	for (const auto &ev : events_)
+		if (ev.list == list)
+			n++;
+	return n;
+}
+
+bool EventStore::removeList(int list, int count)
+{
+	if (list < 1 || list > count || count < 1 || count > kEventLists)
+		return false;
+	std::lock_guard<std::mutex> lock(mutex_);
+	// The list itself goes first; the ones above slide down one step, each
+	// keeping its own running order (whole lists move, so orders stay dense
+	// and normalizeOrder has nothing to fix).
+	events_.erase(std::remove_if(events_.begin(), events_.end(),
+				     [list](const ReplayEvent &e) {
+					     return e.list == list;
+				     }),
+		      events_.end());
+	for (int j = list + 1; j <= count; j++) {
+		for (auto &ev : events_)
+			if (ev.list == j)
+				ev.list = j - 1;
+		listNames_[(size_t)(j - 2)] = listNames_[(size_t)(j - 1)];
+	}
+	listNames_[(size_t)(count - 1)].clear();
+	version_++;
+	save();
+	return true;
+}
+
 void EventStore::setRollNs(int64_t preNs, int64_t postNs)
 {
 	// Negative rolls would shorten the event instead of padding it, which is

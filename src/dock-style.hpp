@@ -935,6 +935,14 @@ QToolButton#mrGear {
 	padding: 3px 7px; color: @textKey@; font-size: 14px;
 }
 QToolButton#mrGear:hover { background: @raise2@; color: @text@; border-color: @borderHi@; }
+/* The search key: an icon-only tool like the gear (its own name AND its own
+   rule — sharing either repeats the two-widgets-one-name fault). Wears the
+   .tb-ico size from code (26x25, 23 in Tall), like the gear. */
+QToolButton#mrSearchKey {
+	background: @raise1@; border: 1px solid @border@; border-radius: 5px;
+	padding: 0; color: @textKey@;
+}
+QToolButton#mrSearchKey:hover { background: @raise2@; color: @text@; border-color: @borderHi@; }
 QToolButton#mrMore {
 	background: @raise1@; border: 1px solid @border@; border-radius: 4px;
 	padding: 3px 7px; color: @textKey@; font-size: 14px;
@@ -990,6 +998,10 @@ QPushButton#mrSpeedChip[active="true"] {
 
 /* ── section separator line ─────────────────────────────── */
 QWidget#mrSepLine { background: @border@; margin: 0 1px; } /* toolbar: .tb-sep */
+/* The toolbar's rules stand a breath further apart (operator request,
+   2026-09-08 — the Monitors word read cramped): scoped to the toolbar's own
+   rows so the horizontal 1px rules elsewhere keep their tight margins. */
+#MultiReplayDock QWidget#mrToolbar > QWidget#mrSepLine { margin: 0 3px; }
 
 /* ── ACTION: the one filled key in the panel ──────────────────
    "Play the selected events" is the action the operator reaches for more than

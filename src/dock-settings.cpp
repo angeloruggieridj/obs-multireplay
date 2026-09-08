@@ -1592,8 +1592,14 @@ void MultiReplayDock::copyYouTubeChapters()
 // from the rest of this group by everything now in dock-poll.cpp.
 void MultiReplayDock::renameListDialog()
 {
+	renameListAt(EventStore::instance().selectedList());
+}
+
+void MultiReplayDock::renameListAt(int list)
+{
 	auto &store = EventStore::instance();
-	const int list = store.selectedList();
+	if (list < 1 || list > kEventLists)
+		return;
 	bool ok = false;
 	const QString cur = QString::fromStdString(store.listName(list));
 	const QString name = QInputDialog::getText(

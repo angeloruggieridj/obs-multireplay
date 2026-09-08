@@ -927,6 +927,7 @@ private:
 	// IN/OUT offsets, timecode, speed. Same fields the reference controller puts there.
 	void updateChannelStrip();
 	void renameListDialog(); // gear menu → rename the selected list
+	void renameListAt(int list); // the bank tab's own menu → rename that one
 	void onEventItemChanged(QTableWidgetItem *item);
 	// The selection is painted by the view, which draws AROUND a cell widget:
 	// the comment and the speed have to be told, or they keep the panel ink.
@@ -1474,7 +1475,7 @@ private:
 	QToolButton *projectBtn_ = nullptr; // project selector menu (spec §1)
 	// The magnifier beside the search box: the one mark on this panel that is
 	// not on a button, and therefore the one restyleIcons cannot redraw.
-	QLabel *searchIcon_ = nullptr;
+	QToolButton *searchIcon_ = nullptr;
 	// M4: what the health monitor found, next to the record key. Hidden while
 	// there is nothing to say — a badge that is always there is furniture, and
 	// furniture does not get looked at when it finally turns red. Amber for a

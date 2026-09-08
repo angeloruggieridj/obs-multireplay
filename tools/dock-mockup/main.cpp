@@ -621,7 +621,11 @@ public:
 	{
 		if (!toolRow1_ || !toolRow2_ || !bankRow_ || !toolbarV_)
 			return;
-		const int want = (m == PanelMode::Tall) ? 1 : 0;
+		// THREE arrangements, mirroring dock-build.cpp: Wide keeps every
+		// word, Short keeps the row but iconises search+Monitors, Tall
+		// stacks three rows with a whole-word LIVE on the first.
+		const int want =
+			(m == PanelMode::Tall) ? 2 : (m == PanelMode::Short) ? 1 : 0;
 		if (want == toolbarArrangement_)
 			return;
 		toolbarArrangement_ = want;
@@ -647,6 +651,7 @@ public:
 			liveBtn_->setText(QStringLiteral("LIVE"));
 			monitorsBtn_->setText(QStringLiteral("Monitors"));
 			search_->setFixedWidth(150);
+			search_->show();
 			h1->addWidget(projectBtn_);
 			h1->addWidget(toolSepA_);
 			// bankRow_ gets a CAPPED stretch, not an open one: an
@@ -677,18 +682,41 @@ public:
 			toolSepB_->show();
 			toolSepC_->show();
 			toolRow2_->hide();
+		} else if (want == 1) {
+			// SHORT, mirroring dock-build.cpp: the Wide row with search
+			// and Monitors as icons (the search stand-in hides; the real
+			// panel swaps its QLabel for a key that opens the field).
+			liveBtn_->setText(QStringLiteral("LIVE"));
+			monitorsBtn_->setText(QString());
+			search_->hide();
+			h1->addWidget(projectBtn_);
+			h1->addWidget(toolSepA_);
+			bankRow_->setMaximumWidth(kBankRowMaxWidth);
+			h1->addWidget(bankRow_, 1);
+			h1->addStretch(1);
+			h1->addWidget(toolSepB_);
+			h1->addWidget(searchIcon_);
+			h1->addWidget(search_);
+			h1->addWidget(monitorsBtn_);
+			h1->addWidget(fullScreenBtn_);
+			h1->addWidget(gearBtn_);
+			h1->addSpacing(10);
+			h1->addWidget(toolSepC_);
+			h1->addWidget(liveBtn_);
+			toolSepA_->show();
+			toolSepB_->show();
+			toolSepC_->show();
+			toolRow2_->hide();
 		} else {
-			// TALL: three rows — 1) project · LIVE (fenced) ·
+			// TALL: three rows — 1) project · LIVE (whole word, fenced) ·
 			// Monitors/gear/full-screen  2) search, full width
-			// 3) banks + "+". Live/Monitors lose their word: row 1
-			// now carries five controls in a column as narrow as
-			// 320 px, where Wide spends the same row on four plus a
-			// whole bank strip.
-			liveBtn_->setText(QString());
+			// 3) banks + "+". Only Monitors loses its word here.
+			liveBtn_->setText(QStringLiteral("LIVE"));
 			monitorsBtn_->setText(QString());
 			// EXTENDED, not the single-row width: spec §5's own words
 			// for this row are "campo ricerca esteso".
 			search_->setFixedWidth(220);
+			search_->show();
 			h1->addWidget(projectBtn_);
 			h1->addStretch(1);
 			h1->addWidget(toolSepA_);
@@ -909,14 +937,14 @@ private:
 	QWidget *toolRow2_ = nullptr;
 	QVBoxLayout *toolbarV_ = nullptr;
 	QWidget *bankRow_ = nullptr;
-	QLabel *searchIcon_ = nullptr;
+	QToolButton *searchIcon_ = nullptr;
 	QToolButton *projectBtn_ = nullptr; // same widget as projectLbl_
 	QPushButton *liveBtn_ = nullptr;
 	QPushButton *monitorsBtn_ = nullptr;
 	QToolButton *gearBtn_ = nullptr;
 	QAbstractButton *fullScreenBtn_ = nullptr;
 	QWidget *toolSepA_ = nullptr, *toolSepB_ = nullptr, *toolSepC_ = nullptr;
-	int toolbarArrangement_ = -1; // -1 = unset, 0 = single row, 1 = Tall's three
+	int toolbarArrangement_ = -1; // -1 = unset, 0 = single row, 1 = Short's icons, 2 = Tall's three
 
 	void remember(QPushButton *b)
 	{
@@ -1058,10 +1086,14 @@ private:
 		projectLbl_ = proj;
 		projectBtn_ = proj;
 
-		searchIcon_ = new QLabel(box);
-		searchIcon_->setPixmap(iconFor(Icon::Search, QColor(sc_.textMuted),
-						13, devicePixelRatioF())
-						.pixmap(13, 13));
+		// A KEY, mirroring dock-build.cpp (operator request, 2026-09-08):
+		// where the field hides, the magnifier is what opens it.
+		searchIcon_ = new QToolButton(box);
+		searchIcon_->setObjectName(QStringLiteral("mrSearchKey"));
+		setKeyIcon(searchIcon_, Icon::Search, g_tints, 13);
+		setKeyId(searchIcon_, QStringLiteral("search"));
+		searchIcon_->setToolTip(QStringLiteral("Cerca…"));
+		searchIcon_->setFixedSize(kToolIcoW, kToolIcoH);
 		auto *search = new QLabel(QStringLiteral("Cerca…"), box);
 		search->setObjectName(QStringLiteral("mrMuted"));
 		search->setStyleSheet(
