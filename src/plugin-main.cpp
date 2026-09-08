@@ -172,10 +172,17 @@ bool obs_module_load(void)
 	obs_log(LOG_INFO, "plugin loaded successfully (version %s)",
 		PLUGIN_VERSION);
 
-	// The panel's typefaces, before anything can build a widget with one.
-	// Logged with the count because "the fonts are embedded" and "eight of
-	// eight registered" are different claims, and only the second is a
-	// measurement.
+	// NOT WHAT MAKES THE DOCK'S FONTS WORK — every accessor in dock-fonts.cpp
+	// (labelFamily() included) calls registerEmbedded() itself before
+	// answering, and dockStyle() resolves @ffLabel@ by calling labelFamily()
+	// while it builds the dock's stylesheet in obs_module_post_load(), which
+	// always runs after this. So a family name cannot be produced without
+	// registration already having happened; this call changes nothing about
+	// whether the panel gets its typefaces. What it buys instead: "embedded
+	// typefaces registered: N" lands in the log at a fixed, early point
+	// rather than whenever the first widget happens to ask for a family, and
+	// it is the fallback for some future accessor that forgets to call
+	// registerEmbedded() itself.
 	const int faces = multireplay::fonts::registerEmbedded();
 	obs_log(LOG_INFO, "embedded typefaces registered: %d", faces);
 

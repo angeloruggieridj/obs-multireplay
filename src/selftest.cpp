@@ -4536,10 +4536,15 @@ void runReopenPass(const std::string &outPath)
 	// THE FONTS ARE REGISTERED IN THE REAL PLUGIN, NOT JUST THE MOCKUP. The
 	// mockup already asserts this (tools/dock-mockup), but the mockup and the
 	// plugin are two different build targets with two different resource
-	// files — a .qrc left out of the plugin's CMakeLists.txt would leave the
-	// mockup green and the real dock running in whatever font the machine
-	// happens to have, and nothing short of measuring the real dock's caption
-	// would say so.
+	// files — the ONE way this can fail is `src/multireplay-fonts.qrc`
+	// dropped from the plugin's CMakeLists.txt (not the mockup's), which
+	// would leave the mockup green and the real dock running in whatever
+	// font the machine happens to have. Registration itself cannot be the
+	// fault: every accessor in dock-fonts.cpp registers before it answers,
+	// and the dock's own stylesheet construction — which resolves
+	// @ffLabel@ by calling labelFamily() — already forces it well before
+	// this reopen pass ever runs. Nothing short of measuring the real
+	// dock's caption catches a missing .qrc, so that is what this reads.
 	bool panelFontsAreEmbedded = false;
 	int pluginFontsRegistered = 0;
 	QString pluginCaptionFamily;
@@ -4904,13 +4909,17 @@ void runReopenPass(const std::string &outPath)
 					sheet.contains(QStringLiteral("mr-down-")) &&
 					sheet.contains(QStringLiteral("mr-up-")) &&
 					sheet.contains(QStringLiteral("mr-tick"));
-				// registerEmbedded() is idempotent (Task 1): calling it
-				// again here does not re-load anything already loaded at
-				// obs_module_load — it just answers "how many", which is
-				// the number this check needs. mrZoneTitle is the caption
-				// every KeyBlock actually gets (mrSectionLabel has zero
-				// call sites); findChild returns whichever one exists
-				// first, and every one of them is stamped with the same
+				// registerEmbedded() here is just how this check reads
+				// "how many" — it is idempotent (dock-fonts.cpp's g_ran
+				// guard) and by this point in the reopen pass the eight
+				// faces are already registered or already missing: the
+				// dock built its stylesheet at construction, which
+				// resolved @ffLabel@ through labelFamily(), which
+				// registers before answering. This call changes nothing;
+				// it only asks. mrZoneTitle is the caption every
+				// KeyBlock actually gets (mrSectionLabel has zero call
+				// sites); findChild returns whichever one exists first,
+				// and every one of them is stamped with the same
 				// @ffLabel@ token.
 				pluginFontsRegistered =
 					multireplay::fonts::registerEmbedded();
