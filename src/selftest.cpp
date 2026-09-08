@@ -4579,6 +4579,18 @@ void runReopenPass(const std::string &outPath)
 	int toolbarMonitorsW = -1;
 	bool toolbarMonitorsReadsWhole = false;
 	bool toolbarPlusSelectsNew = false;
+	// MONITOR BLOCK (artifact f9b56e12) — badge offset, reserved ring,
+	// declared grid shape, narrow ghosts, A/B parity.
+	QPoint monitorBadgeDelta = QPoint(-1, -1);
+	bool monitorBadgeSitsAt43 = false;
+	int monitorRingMin = -1;
+	bool monitorRingReserved = false;
+	int monitorGridRows = -1, monitorGridCols = -1;
+	bool monitorGridStacksPairs = false;
+	int monitorGhosts = -1;
+	bool monitorGhostsReserved = false;
+	int monitorBayDelta = -1;
+	bool monitorBaysArePeers = false;
 	int playKeyH = 0, stepKeyH = 0;
 	int keyPadL = 0, keyPadR = 0;
 	QString bandText, noticeText;
@@ -5144,6 +5156,72 @@ void runReopenPass(const std::string &outPath)
 					bankTabs->setCurrentIndex(wasIdx);
 				}
 			}
+			// ── MONITOR BLOCK — artifact «Blocco monitor» (f9b56e12).
+			// Runs in Wide (this window), where the fascia grid stands.
+			{
+				QList<QWidget *> tiles;
+				for (QWidget *t : dock->findChildren<QWidget *>(
+					     QStringLiteral("mrTile")))
+					if (t->isVisible())
+						tiles.append(t);
+				// Badge over the picture's corner (.box .nm{left:4px,
+				// top:3px}): the badge is placed off picRect_, so the
+				// delta against the picture — not the box — is what
+				// the drawing declares.
+				for (QWidget *t : tiles) {
+					QWidget *pic = nullptr, *cap = nullptr;
+					for (QWidget *c : t->findChildren<
+					     QWidget *>(
+						     Qt::FindDirectChildrenOnly)) {
+						if (c->objectName() ==
+						    QStringLiteral("mrTileCap"))
+							cap = c;
+						else
+							pic = c;
+					}
+					if (!pic || !cap || !cap->isVisible())
+						continue;
+					monitorBadgeDelta =
+						cap->pos() - pic->pos();
+					monitorBadgeSitsAt43 =
+						monitorBadgeDelta == QPoint(4, 3);
+					// The reserved ring: the picture stands
+					// off the box on every side by at least
+					// the frame it wears (2 base, 3 on air).
+					const int ix = pic->x(), iy = pic->y();
+					monitorRingMin =
+						monitorRingMin < 0
+							? std::min(ix, iy)
+							: std::min({monitorRingMin,
+								    ix, iy});
+					break;
+				}
+				monitorRingReserved = monitorRingMin >= 2;
+				// Declared grid (GRID table): 2 cameras stand in one
+				// slim column — 2 rows of 1 — not one row of 2.
+				QList<int> rows;
+				for (QWidget *t : tiles)
+					rows.append(t->y() + t->height() / 2);
+				std::sort(rows.begin(), rows.end());
+				QList<int> groups;
+				for (int y : rows) {
+					if (groups.isEmpty() ||
+					    y - groups.last() > 8)
+						groups.append(y);
+					else
+						groups.last() = y;
+				}
+				monitorGridRows = groups.size();
+				monitorGridCols =
+					monitorGridRows > 0
+						? (int)tiles.size() /
+							  monitorGridRows
+						: -1;
+				monitorGridStacksPairs =
+					tiles.size() == 2 &&
+					monitorGridRows == 2 &&
+					monitorGridCols == 1;
+			}
 		});
 			obs_log(panelPaintsItself ? LOG_INFO : LOG_ERROR,
 				"[selftest] reopen: panel styled background: %s",
@@ -5280,6 +5358,30 @@ void runReopenPass(const std::string &outPath)
 			if (auto *live = dock->findChild<QPushButton *>(
 				    QStringLiteral("mrLive")))
 				toolbarTallLiveHasWord = !live->text().isEmpty();
+			// ── NARROW GHOSTS + BAY PARITY (artifact monitor: 4 fixed
+			// slots/row with empties reserved; A/B peers, equal size).
+			// 2 cameras → 1 row → 2 ghosts.
+			{
+				int ghosts = 0;
+				for (QWidget *g : dock->findChildren<QWidget *>(
+					     QStringLiteral("mrTileGhost")))
+					if (g->isVisible())
+						ghosts++;
+				monitorGhosts = ghosts;
+				monitorGhostsReserved = ghosts == 2;
+				QList<int> bays;
+				for (QLabel *l : dock->findChildren<QLabel *>(
+					     QStringLiteral("mrChanTag"))) {
+					if (QWidget *p = l->parentWidget())
+						bays.append(p->width());
+				}
+				if (bays.size() == 2) {
+					monitorBayDelta =
+						std::abs(bays[0] - bays[1]);
+					monitorBaysArePeers =
+						monitorBayDelta <= 4;
+				}
+			}
 		});
 			runOnUi([&]() {
 				QWidget *strip = dock->findChild<QWidget *>(
@@ -5482,7 +5584,10 @@ void runReopenPass(const std::string &outPath)
 		  toolbarSearchIs150Wide && toolbarTallIconsAre23Wide &&
 		  toolbarSearchIsAKey && toolbarTabsHaveMenu &&
 		  toolbarTallLiveHasWord && toolbarStripUsesSlack &&
-		  toolbarMonitorsReadsWhole && toolbarPlusSelectsNew;
+		  toolbarMonitorsReadsWhole && toolbarPlusSelectsNew &&
+		  monitorBadgeSitsAt43 && monitorRingReserved &&
+		  monitorGridStacksPairs && monitorGhostsReserved &&
+		  monitorBaysArePeers;
 
 	// --- Put everything back ----------------------------------------------
 	// The operator's project first (so nothing is pointing into the test one),
@@ -5583,6 +5688,16 @@ void runReopenPass(const std::string &outPath)
 			  toolbarMonitorsReadsWhole);
 	obs_data_set_bool(checks, "toolbar_plus_selects_new",
 			  toolbarPlusSelectsNew);
+	obs_data_set_bool(checks, "monitor_badge_sits_at_4_3",
+			  monitorBadgeSitsAt43);
+	obs_data_set_bool(checks, "monitor_ring_reserved",
+			  monitorRingReserved);
+	obs_data_set_bool(checks, "monitor_grid_stacks_pairs",
+			  monitorGridStacksPairs);
+	obs_data_set_bool(checks, "monitor_ghosts_reserved",
+			  monitorGhostsReserved);
+	obs_data_set_bool(checks, "monitor_bays_are_peers",
+			  monitorBaysArePeers);
 	obs_data_set_obj(root, "checks", checks);
 	obs_data_release(checks);
 	// Numbers, not checks: how much panel there was to centre the keys in.
@@ -5613,6 +5728,13 @@ void runReopenPass(const std::string &outPath)
 	obs_data_set_int(root, "toolbar_tall_ico_h", toolbarTallIcoH);
 	obs_data_set_int(root, "toolbar_strip_w", toolbarStripW);
 	obs_data_set_int(root, "toolbar_monitors_w", toolbarMonitorsW);
+	obs_data_set_int(root, "monitor_badge_dx", monitorBadgeDelta.x());
+	obs_data_set_int(root, "monitor_badge_dy", monitorBadgeDelta.y());
+	obs_data_set_int(root, "monitor_ring_min", monitorRingMin);
+	obs_data_set_int(root, "monitor_grid_rows", monitorGridRows);
+	obs_data_set_int(root, "monitor_grid_cols", monitorGridCols);
+	obs_data_set_int(root, "monitor_ghosts", monitorGhosts);
+	obs_data_set_int(root, "monitor_bay_delta", monitorBayDelta);
 
 	if (!obs_data_save_json_safe(root, outPath.c_str(), "tmp", "bak"))
 		obs_log(LOG_ERROR, "[selftest] could not write report to %s",

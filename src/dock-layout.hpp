@@ -527,6 +527,7 @@ private:
 // out nearest the width the block is meant to have.
 struct TileBlock {
 	int cols = 1;
+	int rows = 1;
 	int tileW = 0;
 	int tileH = 0;
 	int blockW = 0;
@@ -551,14 +552,26 @@ inline constexpr double kTileMaxShare = 0.34;
 // put one row's label hard against the next row's picture.
 inline constexpr int kTileGap = 4;
 
+// ── MONITOR BLOCK — artifact «Blocco monitor» (f9b56e12) ────────────────
+//
+// Same rule as the toolbar constants below: one copy, cited where it is
+// written (dock-build / multireplay-dock) and read back by the gate, so a
+// number that drifts is caught rather than copied.
+inline constexpr int kTileEdgeW = 2;  // .box{border:2px}
+inline constexpr int kTallyWatchW = 2; // .box.watch (green, same width)
+inline constexpr int kTallyAirW = 3;  // .box.air{border-width:3px}
+inline constexpr int kTileRadius = 4; // .box{border-radius:4px}
+inline constexpr int kBadgeX = 4;     // .box .nm{left:4px}
+inline constexpr int kBadgeY = 3;     // .box .nm{top:3px}
+
 // `paneW` is the whole monitoring pane, `bays` how many big pictures share it,
 // `n` the configured cameras. `maxH` is how much HEIGHT the block may actually
 // have, which is a different question from how tall the bays are and the one
 // that matters when the panel is docked under the OBS preview: there the pane
 // is wide and shallow, and an arrangement chosen from the width alone asks for
 // four rows of tiles in a pane with room for two. 0 = no limit.
-// `forcedCols` > 0 overrides the declared one-row-to-three / ceil(n/2)
-// column count — the narrow arrangements pin it to 4 (spec §2).
+// `forcedCols` > 0 overrides the declared column count — the narrow
+// arrangements pin it to 4 (artifact monitor: 4 fixed slots/row).
 TileBlock tileBlockFor(int paneW, int bays, int n, int gap, int maxH = 0,
 		       int forcedCols = 0);
 

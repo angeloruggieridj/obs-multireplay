@@ -781,7 +781,7 @@ QWidget *MultiReplayDock::buildPreview()
 	bays_ = new QWidget(box);
 	auto *bg = new QGridLayout(bays_);
 	bg->setContentsMargins(0, 0, 0, 0);
-	bg->setSpacing(3);
+	bg->setSpacing(6); // artifact monitor: .mrow{gap:6px} between the bays
 
 	// TWO outputs side by side, in every arrangement. They are two bays of one
 	// deck: stacking them would make the pair read as a hierarchy, and it is
@@ -799,6 +799,10 @@ QWidget *MultiReplayDock::buildPreview()
 		labelA_->setProperty("active", true); // A is where the panel starts
 		labelA_->setAlignment(Qt::AlignCenter);
 		aBox_->setContents(displayA_, labelA_);
+		// The drawing's own edge (.box{border:2px}), like every tile: A/B
+		// are boxes too, and borderless ones read as unfinished beside
+		// framed cameras. Recoloured with the theme (see applyTheme).
+		aBox_->setTallyFrame(QColor(sc().tileEdge), kTileEdgeW);
 	}
 	bBox_ = new AspectBox(bays_);
 	{
@@ -810,6 +814,7 @@ QWidget *MultiReplayDock::buildPreview()
 		labelB_->setProperty("active", false);
 		labelB_->setAlignment(Qt::AlignCenter);
 		bBox_->setContents(displayB_, labelB_);
+		bBox_->setTallyFrame(QColor(sc().tileEdge), kTileEdgeW);
 	}
 	bg->addWidget(aBox_, 0, 0);
 	bg->addWidget(bBox_, 0, 1);
@@ -872,7 +877,7 @@ QWidget *MultiReplayDock::buildMultiview()
 	multiviewBox_ = new QWidget(this);
 	multiviewGrid_ = new QGridLayout(multiviewBox_);
 	multiviewGrid_->setContentsMargins(0, 0, 0, 0);
-	multiviewGrid_->setSpacing(2);
+	multiviewGrid_->setSpacing(4); // artifact monitor: .cgrid/.crow{gap:4px}
 
 	// Every tile is built ONCE, here, and afterwards only shown, hidden and
 	// moved between cells of this same grid. A tile is never re-parented: Qt

@@ -1700,11 +1700,14 @@ private:
 	// can actually fill and the splitter hands the rest to the list.
 	static int aspectHeight(int w) { return std::max(1, w * 9 / 16); }
 
-	// How many columns the camera block wears — the SAME rule in every
-	// arrangement now (ceil(n/2) past three), so the grid down a side matches
-	// the grid in the Wide layout. It used to be a one-row filmstrip in Tall.
+	// How many columns the camera block wears — the declared fascia grid in
+	// Wide (tileBlockFor), four fixed slots in Short/Tall (artifact monitor:
+	// 4 slot fissi/riga, empties reserved), mirroring tileColumns() on the
+	// real dock, which this tool cannot call across the OBS boundary.
 	int tileColsFor(int paneW, int bays) const
 	{
+		if (mode_ != PanelMode::Wide)
+			return 4;
 		return std::max(1, tileBlockFor(paneW, bays, g_cams, 3, roomH()).cols);
 	}
 
@@ -3772,6 +3775,37 @@ int runChecks(QPalette pal, QApplication &app, const QString &outDir)
 		      "fonts: no family is ever empty");
 	}
 
+	// ── MONITOR GRID — artifact «Blocco monitor» (f9b56e12):
+	// GRID={1:[1,1],2:[2,1],3:[3,1],4:[2,2],5:[2,3],6:[2,3],7:[2,4],8:[2,4]}
+	// as [rows,cols]: one slim column to three cameras, two rows past it.
+	// tileBlockFor is pure layout (no OBS types), so this calls the real
+	// function instead of re-declaring its answers.
+	{
+		const int wantRows[9] = {0, 1, 2, 3, 2, 2, 2, 2, 2};
+		const int wantCols[9] = {0, 1, 1, 1, 2, 3, 3, 4, 4};
+		for (int n = 1; n <= 8; n++) {
+			const TileBlock tb = tileBlockFor(1180, 2, n, 5, 0);
+			check(tb.rows == wantRows[n] &&
+				      tb.cols == wantCols[n],
+			      QString("monitor: grid for %1 cameras is %2x%3")
+				      .arg(n)
+				      .arg(wantRows[n])
+				      .arg(wantCols[n]),
+			      QString("got %1x%2").arg(tb.rows).arg(tb.cols));
+		}
+		// The widths the tally paint reads, living once in dock-layout.hpp:
+		// base edge 2, watched 2, on-air 3 (.box / .box.watch / .box.air).
+		check(kTileEdgeW == 2 && kTallyWatchW == 2 &&
+			      kTallyAirW == 3,
+		      "monitor: tally widths are 2/2/3",
+		      QString("%1/%2/%3").arg(kTileEdgeW).arg(kTallyWatchW).arg(
+			      kTallyAirW));
+		check(kTileRadius == 4 && kBadgeX == 4 && kBadgeY == 3,
+		      "monitor: radius 4, badge at 4,3",
+		      QString("r%1 %2,%3").arg(kTileRadius).arg(kBadgeX).arg(
+			      kBadgeY));
+	}
+
 	for (const Want &t : targets) {
 		auto *w = new Mock();
 		// THREE PASSES, and the number is measured rather than
@@ -3902,6 +3936,35 @@ int runChecks(QPalette pal, QApplication &app, const QString &outDir)
 			      w->sc_.tabBar + " vs " + w->sc_.tabBarBorder);
 			check(qss.contains(QStringLiteral("QLineEdit#mrSearch")),
 			      label + ": the search field has a rule of its own");
+		}
+		// ── MONITOR BADGES — artifact «Blocco monitor» (f9b56e12):
+		// .box .nm{mono .58rem, ink on rgba(9,14,20,.72), 1px 5px, r2}.
+		// The sheet is token-resolved here: the mono family reads as the
+		// registered IBM Plex Mono string, not "@ffMono@".
+		{
+			const QString mqss = w->styleSheet();
+			const auto mruleHas = [&](const char *sel,
+						  const QString &frag) {
+				const int at = mqss.indexOf(
+					QString::fromLatin1(sel));
+				if (at < 0)
+					return false;
+				return mqss.mid(at, 1200).contains(frag);
+			};
+			check(mruleHas("QLabel#mrTileCap {", "IBM Plex Mono"),
+			      label + ": tile badges wear mono");
+			check(mruleHas("QLabel#mrTileCap {",
+				       "border-radius: 2px"),
+			      label + ": tile badges are 2px-rounded");
+			check(mruleHas("QLabel#mrTileCap {",
+				       "padding: 1px 5px"),
+			      label + ": tile badges keep the drawn padding");
+			check(mruleHas("QLabel#mrTileCap {",
+				       "rgba(9, 14, 20, 184)"),
+			      label + ": tile badges sit on the drawn wash");
+			check(mqss.contains(QStringLiteral(
+				      "QWidget#mrTileGhost")),
+			      label + ": reserved slots have a rule of their own");
 		}
 		w->hide();
 		delete w;

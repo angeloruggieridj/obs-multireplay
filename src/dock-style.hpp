@@ -124,6 +124,11 @@ struct Scheme {
 			      // in one colour fuse the tab into its strip
 			      // (artifact toolbar: .tb-tab.on fill #1d3d74,
 			      // border #3a6bb0).
+	QString tileEdge;   // every monitor tile's resting frame (artifact
+			      // monitor: .box{border:2px #33465f}). A fixed slate on
+			      // dark panels, luminance-adapted on light ones — same
+			      // sanctioned transform as tabBar, which is also
+			      // structural rather than signal.
 	QString seekBar;    // the position bar's played portion
 };
 
@@ -274,6 +279,7 @@ inline Scheme schemeFor(ThemeChoice choice, const QPalette &pal)
 	// hl there already IS #1D3D74.
 	s.tabBar = hex(signalOn(QColor("#1D3D74"), bg, dark, 0));
 	s.tabBarBorder = hex(mix(QColor(s.tabBar), fg, 0.30));
+	s.tileEdge = hex(signalOn(QColor("#33465F"), bg, dark, 0));
 
 	// SIGNAL. Fixed hues; only their lightness is answerable to the theme.
 	const QColor recHue("#C0202A");
@@ -781,13 +787,29 @@ QLabel#mrStatUnit { color: @textMuted@; font-size: 11px; padding-bottom: 3px; }
    so the image stays readable behind it, and the tally colour moved from the
    fill to the letters — a solid fill big enough to read from across the room
    would cover more of the one thing the tile exists to show. */
+/* Artifact monitor: .box .nm{left:4px;top:3px} (the offset lives in
+   AspectBox::relayout as kBadgeX/kBadgeY), mono .58rem, ink on
+   rgba(9,14,20,.72), padding 1px 5px, radius 2px. The ink is fixed light —
+   the chip is always dark, in every theme — like #ffffff on the green band:
+   a theme-derived ink would go paper on Chiaro and vanish behind the chip. */
 QLabel#mrTileCap {
-	background: rgba(0, 0, 0, 140); color: @textMuted@;
-	font-size: 9px; font-weight: 700; padding: 1px 5px; border-radius: 3px;
+	background: rgba(9, 14, 20, 184); color: #dbe2ec;
+	font-family: "@ffMono@";
+	font-size: 9px; font-weight: 700; padding: 1px 5px; border-radius: 2px;
 }
 QLabel#mrTileCap[tally="pvw"] { color: @pvw@; }
 QLabel#mrTileCap[tally="pgm"] { color: @rec@; }
 QLabel#mrTileCap[tally="replay"] { color: @warn@; }
+/* Reserved empty slots (artifact monitor: .box.ghost — dashed, translucent).
+   Only in the narrow 4-slot grid, where adding a camera must not re-flow the
+   ones already there: the ghost holds C5's place before C5 exists. The
+   artifact's hairline gradient is simplified to transparent — the dashed
+   edge is the statement, the shimmer is not. A bare QWidget, so the sheet
+   paints it with no extra attribute. */
+QWidget#mrTileGhost {
+	background: transparent; border: 1px dashed @textDim@;
+	border-radius: 4px;
+}
 
 /* ── channel strip under the preview ─────────────────────── */
 QLabel#mrChanBadge {
@@ -807,8 +829,9 @@ QLabel#mrChanBadge {
    as #mrTileCap just above: semi-transparent so the image reads behind it,
    the tally colour moved from the fill to the letters. */
 QLabel#mrChanTag {
-	background: rgba(0, 0, 0, 140); color: @textMuted@;
-	font-weight: 700; font-size: 9px; padding: 1px 5px; border-radius: 3px;
+	background: rgba(9, 14, 20, 184); color: #dbe2ec;
+	font-family: "@ffMono@";
+	font-weight: 700; font-size: 9px; padding: 1px 5px; border-radius: 2px;
 }
 QLabel#mrChanTag[chan="A"][active="true"] { color: @onAir@; }
 QLabel#mrChanTag[chan="B"][active="true"] { color: @accent@; }

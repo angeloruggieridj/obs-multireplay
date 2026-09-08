@@ -1431,14 +1431,15 @@ int MultiReplayDock::monitorRoomH() const
 int MultiReplayDock::tileColumns(int tileCount) const
 {
 	const int n = std::max(1, tileCount);
-	// SHORT AND TALL: FOUR FIXED COLUMNS (spec §2 — "4 slot fissi per riga,
-	// ⌈n/4⌉ righe, slot vuoti riservati"). A narrow column shows a lot of
-	// small tiles in a stable grid, and a fixed column count means adding a
-	// camera never re-flows the ones already there. Wide keeps the reference
-	// grid (one row to three, ⌈n/2⌉ beyond), read off the same arithmetic
-	// the tile sizes come from.
+	// SHORT AND TALL: FOUR FIXED COLUMNS, ALWAYS (artifact monitor: "4 slot
+	// fissi per riga, ceil(n/4) righe, slot vuoti riservati"). Not min(n,4):
+	// with two cameras that is two columns, and adding the third re-flows
+	// the first two — the fixed count is exactly what keeps every camera in
+	// its place (C1..C8 never move). The empties are real reserved slots
+	// (ghosts, built in rebuildMultiview), not missing cells. Wide keeps the
+	// declared fascia grid, read off the same arithmetic the sizes come from.
 	if (panelMode_ != PanelMode::Wide)
-		return std::clamp(n, 1, 4);
+		return 4;
 
 	// FROM THE SAME ARITHMETIC THE SIZES COME FROM (tileBlockFor): a column
 	// count that disagrees with the measured tile size is a block with a hole
@@ -2221,6 +2222,17 @@ void MultiReplayDock::applyTheme()
 	// mark it is (see dock-icons.hpp) and is redrawn from the new scheme.
 	restyleIcons(this, tintsFor(sc()));
 	restyleSearchIcon();
+	// ...AND THE TALLY FRAMES. Painted from sc(), not from the sheet, so a
+	// theme change leaves every tile edged in the old theme's tint. The
+	// sentinels defeat updateMultiviewTally's early-out; A/B wear the base
+	// edge, having no watch/air of their own.
+	const QColor edge(sc().tileEdge);
+	if (aBox_)
+		aBox_->setTallyFrame(edge, kTileEdgeW);
+	if (bBox_)
+		bBox_->setTallyFrame(edge, kTileEdgeW);
+	tileTallyPvw_ = tileTallyPgm_ = -2;
+	updateMultiviewTally();
 	// ...AND THE HEIGHTS THE SECTIONS PINNED. Applying a style sheet writes
 	// its min-height onto every widget it matches, and this panel has a rule
 	// that stands the pinned keys' min-height down to nothing on purpose — so
@@ -2366,6 +2378,13 @@ void MultiReplayDock::rebuildMultiview()
 	for (int i = 0; i < kMaxPreviewTiles; i++)
 		if (tiles_[i].box)
 			tiles_[i].box->setVisible(false);
+	// Ghosts own nothing, so unlike tiles they are deleted and rebuilt with
+	// every repopulation instead of moved.
+	for (QWidget *g : tileGhosts_) {
+		multiviewGrid_->removeWidget(g);
+		delete g;
+	}
+	tileGhosts_.clear();
 	// PURGE EVERY EXISTING ITEM FIRST. QGridLayout::addWidget on a widget the
 	// layout ALREADY tracks appends a second item for it rather than moving
 	// it, so re-laying on each mode change silently accumulates stale items
@@ -2399,6 +2418,25 @@ void MultiReplayDock::rebuildMultiview()
 		t.box->setMaximumWidth(tileCap_ > 0 ? tileCap_ : QWIDGETSIZE_MAX);
 		multiviewGrid_->addWidget(t.box, (int)k / cols, (int)k % cols);
 		t.box->setVisible(show);
+	}
+	// RESERVED EMPTY SLOTS (artifact monitor: .box.ghost). Narrow modes run
+	// a fixed 4-slot grid, so a half-empty row holds dashed ghosts where C5
+	// will go rather than trailing space — configuring a camera then fills
+	// a place instead of re-flowing the row. Fascia sizes to its content
+	// and takes none.
+	if (show && panelMode_ != PanelMode::Wide && cols == 4 &&
+	    !tileSlots.empty()) {
+		const int rows = ((int)tileSlots.size() + 3) / 4;
+		for (int k = (int)tileSlots.size(); k < rows * 4; k++) {
+			auto *g = new QWidget(multiviewBox_);
+			g->setObjectName(QStringLiteral("mrTileGhost"));
+			// Small on purpose: a floor here becomes the panel's, and
+			// the stretched columns size the ghosts, not the reverse.
+			g->setMinimumSize(20, 12);
+			multiviewGrid_->addWidget(g, k / 4, k % 4);
+			g->setVisible(true);
+			tileGhosts_.push_back(g);
+		}
 	}
 	// THE COLUMNS IN USE SHARE THE ROW, and a box in this grid has no size
 	// of its own to fall back on: AspectBox declares no floor and no hint
@@ -2962,18 +3000,20 @@ void MultiReplayDock::updateMultiviewTally()
 		else if (t.cam0 == pvw)
 			tally = QStringLiteral("pvw");
 		// THE FRAME AROUND THE PICTURE IS THE TALLY, read before the name
-		// in the band: green for the angle being watched, a thicker red
-		// for the one on air, nothing otherwise. The band keeps the name,
-		// still coloured by the same property, so the two reinforce.
+		// in the badge: green for the angle being watched, a thicker red
+		// for the one on air — and the drawing's own 2px edge otherwise
+		// (artifact .box{border:2px}), not transparency. The widths live
+		// once, in dock-layout.hpp, and the gate reads the reserved ring
+		// back off the real tiles.
 		if (t.box) {
-			QColor fc;
-			int fw = 0;
+			QColor fc(sc().tileEdge);
+			int fw = kTileEdgeW;
 			if (tally == QLatin1String("pgm")) {
 				fc = QColor(sc().rec);
-				fw = 3;
+				fw = kTallyAirW;
 			} else if (tally == QLatin1String("pvw")) {
 				fc = QColor(sc().pvw);
-				fw = 2;
+				fw = kTallyWatchW;
 			}
 			t.box->setTallyFrame(fc, fw);
 		}

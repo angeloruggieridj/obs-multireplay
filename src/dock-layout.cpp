@@ -344,13 +344,17 @@ void AspectBox::paintEvent(QPaintEvent *)
 {
 	// The tally is drawn as a frame INSIDE the picture rectangle — in the
 	// letterbox margin when the box is not exactly the canvas ratio, and on
-	// the picture's own edge when it is. No stylesheet border (that would
-	// need the picture child inset by its width) and no background: the box
-	// stays transparent until it has a tally to show.
+	// the picture's own edge when it is. No stylesheet border (a subclass
+	// does not get one painted) and no background (the letterbox must stay
+	// panel, like A/B's — see the tile rule in dock-style.hpp): the edge is
+	// a 2px base frame in the tile-edge tint, promoted to green/red by the
+	// tally, drawn here.
+	// Rounded to the tile radius (artifact .box{border-radius:4px}): a square
+	// frame on a rounded tile would poke its corners past the picture.
 	if (!tallyC_.isValid() || tallyW_ <= 0 || picRect_.isEmpty())
 		return;
 	QPainter p(this);
-	p.setRenderHint(QPainter::Antialiasing, false);
+	p.setRenderHint(QPainter::Antialiasing, true);
 	p.setBrush(Qt::NoBrush);
 	p.setPen(QPen(tallyC_, tallyW_));
 	const qreal h = tallyW_ / 2.0;
@@ -358,7 +362,8 @@ void AspectBox::paintEvent(QPaintEvent *)
 	// drawing inside would put the line under a native child that paints
 	// over its parent (OBSQTDisplay in the real dock) - which is why this
 	// frame was invisible on the panel and fine everywhere else.
-	p.drawRect(QRectF(picRect_).adjusted(-h, -h, h, h));
+	p.drawRoundedRect(QRectF(picRect_).adjusted(-h, -h, h, h), kTileRadius,
+			  kTileRadius);
 }
 
 void AspectBox::relayout()
@@ -418,7 +423,7 @@ void AspectBox::relayout()
 	const QSize ts = tag_->sizeHint();
 	const int tw = std::min(std::max(1, w - 6), std::max(1, ts.width()));
 	const int th = std::max(kTagH, ts.height());
-	tag_->setGeometry(x + 3, y + 3, tw, th);
+	tag_->setGeometry(x + kBadgeX, y + kBadgeY, tw, th);
 	// RAISED, AND NATIVE, because it overlaps a picture that IS a native
 	// window in the real dock (OBSQTDisplay, qt-display.hpp): a plain
 	// Qt-painted sibling composites into its own top-level's backing
@@ -456,21 +461,29 @@ TileBlock tileBlockFor(int paneW, int bays, int n, int gap, int maxH,
 	// height-bound 16:9 A on a maximised panel that share was a narrow stacked
 	// column with hundreds of px of black next to it.
 
-	// ONE ROW UP TO THREE, TWO ROWS BEYOND — DECLARED, NOT SCORED.
+	// ONE SLIM COLUMN TO THREE, TWO ROWS BEYOND — DECLARED, NOT SCORED.
 	//
-	//     1..3 cameras   one row,  n columns    A | C1 | C2 | C3
-	//     4              two rows, 2 columns
-	//     5, 6           two rows, 3 columns
-	//     7, 8           two rows, 4 columns
+	//     1                one tile
+	//     2, 3             one column, n rows (C1 over C2, C1 over C2 over C3)
+	//     4                two rows, 2 columns
+	//     5, 6             two rows, 3 columns
+	//     7, 8             two rows, 4 columns
 	//
-	// which is ceil(n/2) columns past three. NEVER MORE THAN TWO ROWS: the
-	// cameras stand beside the bays, and a third row makes each of them
-	// smaller than the glance they exist for. Declared, because "three
-	// across, then four" is a decision about how a rig is read and a score
-	// agrees with it only by accident.
+	// which is one column to three, ceil(n/2) past it. NEVER MORE THAN TWO
+	// ROWS past three: the cameras stand beside the bays, and the column
+	// stays one tile wide while a third row would narrow every tile for
+	// nothing. Declared, because "a slim column, then widen" is a decision
+	// about how a rig is read and a score agrees with it only by accident.
+	// THE GRID IS DECLARED, NOT SCORED (artifact «Blocco monitor», f9b56e12:
+	// GRID={1:[1,1],2:[2,1],3:[3,1],4:[2,2],5:[2,3],6:[2,3],7:[2,4],8:[2,4]}
+	// as [rows,cols]). Up to three cameras stand in ONE SLIM COLUMN beside
+	// the bays — not one row of three: the column stays one tile wide while
+	// a row of three spends the pane's width on thumbnails. Past three the
+	// column grows to ceil(n/2) with two rows. "Three equal pictures across
+	// the row" was the old intent and is gone with it.
 	const int cols = forcedCols > 0 ? std::clamp(std::min(forcedCols, n), 1,
 						    forcedCols)
-					: (n <= 3) ? n
+					: (n <= 3) ? 1
 						   : (n + 1) / 2;
 	const int rows = (n + cols - 1) / cols;
 
@@ -487,7 +500,7 @@ TileBlock tileBlockFor(int paneW, int bays, int n, int gap, int maxH,
 	//     paneW = bays*aw(h) + block(h),  aw(h) = (h - tag) * 16/9
 	//
 	// One line of algebra rather than a search, and it fills BOTH dimensions:
-	// two cameras beside A become three equal pictures across the row, eight
+	// two cameras beside A stand in one slim column as tall as A, eight
 	// become four-by-two whose two rows together are exactly as tall as A.
 	// Nothing is left over to park, which is why there is no spare row any
 	// more.
@@ -538,6 +551,7 @@ TileBlock tileBlockFor(int paneW, int bays, int n, int gap, int maxH,
 	}
 
 	best = {cols,
+		rows,
 		tw,
 		th,
 		blockW,

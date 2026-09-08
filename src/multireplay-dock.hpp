@@ -1428,6 +1428,10 @@ private:
 
 	std::array<PreviewTile, kMaxPreviewTiles> tiles_{};
 	std::array<TileCtx, kMaxPreviewTiles> tileCtx_{};
+	// Reserved empty slots (artifact monitor: .box.ghost). Plain QWidgets —
+	// unlike tiles they own nothing, so they are deleted and rebuilt with
+	// every grid repopulation instead of moved.
+	std::vector<QWidget *> tileGhosts_;
 	mutable std::mutex tileMutex_; // pointer copy + addref only
 	std::array<obs_source_t *, kMaxPreviewTiles> tileSource_{};
 	QWidget *multiviewBox_ = nullptr;
