@@ -244,9 +244,16 @@ QWidget *MultiReplayDock::buildToolbar()
 	connect(searchIcon_, &QToolButton::clicked, this, [this]() {
 		if (!search_)
 			return;
-		if (!search_->isVisible())
+		// In Short the field is a guest the key summoned: a press shows
+		// it, a second press sends it back. Elsewhere it is always out,
+		// so the key just hands it the focus.
+		if (panelMode_ == PanelMode::Short && search_->isVisible()) {
+			search_->setVisible(false);
+			searchIcon_->setFocus(Qt::MouseFocusReason);
+		} else {
 			search_->setVisible(true);
-		search_->setFocus(Qt::MouseFocusReason);
+			search_->setFocus(Qt::MouseFocusReason);
+		}
 	});
 	search_ = new QLineEdit(box);
 	// ITS OWN NAME (.tb-search): without a rule of its own the field was
@@ -272,6 +279,13 @@ QWidget *MultiReplayDock::buildToolbar()
 			search_->style()->polish(search_);
 			refreshEvents();
 		});
+	// SHORT: DONE MEANS GONE. Enter or focus-out ends the errand the key
+	// summoned the field for, and it goes back to icon-only on its own —
+	// otherwise the row wears a field nobody asked to keep.
+	connect(search_, &QLineEdit::editingFinished, this, [this]() {
+		if (panelMode_ == PanelMode::Short && search_)
+			search_->setVisible(false);
+	});
 
 	// the reference controller's Live button, in the reference controller's place and the reference controller's colour: red means the
 	// marks land where the action is happening, off means they land where the
@@ -544,6 +558,12 @@ QWidget *MultiReplayDock::buildToolbar()
 		if (n >= kEventLists)
 			return;
 		core.setEventListCount(n + 1);
+		// The new tab is the operator's doing: select it, don't strand him
+		// on the old list while the new one sits out of view past the
+		// scrollers (in Tall it always does). setCurrentIndex scrolls it
+		// into view; refreshListNames only repaints names.
+		EventStore::instance().selectList(n + 1);
+		listTabs_->setCurrentIndex(n);
 		refreshListNames();
 		poll();
 	});

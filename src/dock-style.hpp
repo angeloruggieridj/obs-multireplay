@@ -655,6 +655,14 @@ QPushButton#mrToggle:checked {
 	font-weight: 700;
 }
 QPushButton#mrToggle:checked:hover { background: @pvwBg@; color: @pvw@; }
+/* The Monitors word key, by property (sharing an objectName for the look is
+   the fault 735ebec documents — identity stays on mrKey). 10px condensed
+   does not read at a glance in any arrangement: one size up with air around
+   it. Vertical padding untouched: 20 min-height + 2x2 padding + border is
+   already the row's 26px, and taller would push the row. */
+#MultiReplayDock QWidget#mrToolbar QPushButton[mrKey="monitors"] {
+	font-size: 11px; letter-spacing: 0.3px; padding: 2px 10px;
+}
 
 )QSS"
 /* This SECOND break is the same compiler rule as the one further down: the

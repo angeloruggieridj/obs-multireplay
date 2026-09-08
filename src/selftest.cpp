@@ -4573,6 +4573,12 @@ void runReopenPass(const std::string &outPath)
 	bool toolbarTallLiveHasWord = false;
 	int toolbarStripW = -1;
 	bool toolbarStripUsesSlack = false;
+	// Operator round 2026-09-08: Monitors must read whole, and + must
+	// select what it creates (in Tall the new tab sat out of view while
+	// the old list stayed current).
+	int toolbarMonitorsW = -1;
+	bool toolbarMonitorsReadsWhole = false;
+	bool toolbarPlusSelectsNew = false;
 	int playKeyH = 0, stepKeyH = 0;
 	int keyPadL = 0, keyPadR = 0;
 	QString bandText, noticeText;
@@ -5086,6 +5092,58 @@ void runReopenPass(const std::string &outPath)
 						toolbarStripW > 328;
 				}
 			}
+			// ── MONITORS READS WHOLE: Fixed policy means never squeezed
+			// — but a row that overflows its panel clips instead, so
+			// assert the word fits the key. Runs in Wide, where the word
+			// is out (icon-only in Short/Tall by design).
+			for (QPushButton *b :
+			     dock->findChildren<QPushButton *>()) {
+				if (b->property(kKeyProperty).toString() !=
+				    QStringLiteral("monitors"))
+					continue;
+				toolbarMonitorsW = b->width();
+				toolbarMonitorsReadsWhole =
+					!b->text().isEmpty() &&
+					b->fontMetrics().horizontalAdvance(
+						b->text()) <= b->width();
+				break;
+			}
+			// ── + SELECTS WHAT IT CREATES. Drives the real key —
+			// clicked() runs the slot synchronously on this thread.
+			// Shrinks the count first (the gate runs at 20/20, where +
+			// correctly refuses), then puts count, selection and current
+			// tab back; the live poll repaints names.
+			{
+				auto &core = ReplayCore::instance();
+				auto &store = EventStore::instance();
+				const int wasCount = std::clamp(
+					core.getConfig().eventListCount, 1,
+					kEventLists);
+				const int wasSel = store.selectedList();
+				QTabBar *bankTabs = dock->findChild<QTabBar *>(
+					QStringLiteral("mrListTabs"));
+				const int wasIdx =
+					bankTabs ? bankTabs->currentIndex() : 0;
+				QToolButton *add = nullptr;
+				for (QToolButton *b :
+				     dock->findChildren<QToolButton *>())
+					if (b->property(kKeyProperty).toString() ==
+					    QStringLiteral("addBank"))
+						add = b;
+				if (bankTabs && add) {
+					if (wasCount > 5)
+						core.setEventListCount(5);
+					add->click();
+					toolbarPlusSelectsNew =
+						core.getConfig()
+							.eventListCount == 6 &&
+						store.selectedList() == 6 &&
+						bankTabs->currentIndex() == 5;
+					core.setEventListCount(wasCount);
+					store.selectList(wasSel);
+					bankTabs->setCurrentIndex(wasIdx);
+				}
+			}
 		});
 			obs_log(panelPaintsItself ? LOG_INFO : LOG_ERROR,
 				"[selftest] reopen: panel styled background: %s",
@@ -5423,7 +5481,8 @@ void runReopenPass(const std::string &outPath)
 		  toolbarToolIconsAre26x25 && toolbarToolClusterOrder &&
 		  toolbarSearchIs150Wide && toolbarTallIconsAre23Wide &&
 		  toolbarSearchIsAKey && toolbarTabsHaveMenu &&
-		  toolbarTallLiveHasWord && toolbarStripUsesSlack;
+		  toolbarTallLiveHasWord && toolbarStripUsesSlack &&
+		  toolbarMonitorsReadsWhole && toolbarPlusSelectsNew;
 
 	// --- Put everything back ----------------------------------------------
 	// The operator's project first (so nothing is pointing into the test one),
@@ -5520,6 +5579,10 @@ void runReopenPass(const std::string &outPath)
 			  toolbarTallLiveHasWord);
 	obs_data_set_bool(checks, "toolbar_strip_uses_slack",
 			  toolbarStripUsesSlack);
+	obs_data_set_bool(checks, "toolbar_monitors_reads_whole",
+			  toolbarMonitorsReadsWhole);
+	obs_data_set_bool(checks, "toolbar_plus_selects_new",
+			  toolbarPlusSelectsNew);
 	obs_data_set_obj(root, "checks", checks);
 	obs_data_release(checks);
 	// Numbers, not checks: how much panel there was to centre the keys in.
@@ -5549,6 +5612,7 @@ void runReopenPass(const std::string &outPath)
 	obs_data_set_int(root, "toolbar_tall_ico_w", toolbarTallIcoW);
 	obs_data_set_int(root, "toolbar_tall_ico_h", toolbarTallIcoH);
 	obs_data_set_int(root, "toolbar_strip_w", toolbarStripW);
+	obs_data_set_int(root, "toolbar_monitors_w", toolbarMonitorsW);
 
 	if (!obs_data_save_json_safe(root, outPath.c_str(), "tmp", "bak"))
 		obs_log(LOG_ERROR, "[selftest] could not write report to %s",
