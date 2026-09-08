@@ -899,11 +899,11 @@ QPushButton#mrHealth[dense="true"] {
    READABLE. They were drawn at #484848 on #181818 — the faintest things on the
    panel — and behind them are Stop, Play-to-output, Duplicate and Delete. A
    menu nobody can see is a menu nobody opens. */
-QToolButton#mrGear {
+QToolButton#mrGear, QToolButton#mrMore {
 	background: @raise1@; border: 1px solid @border@; border-radius: 4px;
 	padding: 3px 7px; color: @textKey@; font-size: 14px;
 }
-QToolButton#mrGear:hover { background: @raise2@; color: @text@; border-color: @borderHi@; }
+QToolButton#mrGear:hover, QToolButton#mrMore:hover { background: @raise2@; color: @text@; border-color: @borderHi@; }
 
 /* CAM — pick an angle with the mouse when there are no tiles to click. A
    DASHED border (spec §4) says "only here because Monitors is off". */

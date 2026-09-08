@@ -1767,7 +1767,13 @@ KeyBlock *MultiReplayDock::buildMoreBlock()
 {
 	auto *blk = new KeyBlock(QString(), this);
 	auto *btn = new QToolButton(this);
-	btn->setObjectName("mrGear");
+	// ITS OWN NAME. It borrowed "mrGear" for the look, and that made TWO
+	// widgets answer to one name: findChild returns whichever Qt walks into
+	// first, so the gate measuring "the gear" was measuring this button and
+	// reporting 26x26 for a key that had been set to 26x25. A shared
+	// objectName is not an identifier. The look is shared in the sheet
+	// instead, where sharing a look is what a selector list is for.
+	btn->setObjectName("mrMore");
 	setKeyIcon(btn, Icon::More, tintsFor(sc()), 14);
 	btn->setCursor(Qt::PointingHandCursor);
 	btn->setToolTip(obs_module_text("Dock.ZoneMoreHint"));
