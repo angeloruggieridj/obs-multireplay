@@ -25,6 +25,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 
 #include "plugin-support.h"
 #include "branch-output-control.hpp"
+#include "dock-fonts.hpp"
 #include "event-store.hpp"
 #include "export.hpp"
 #include "health.hpp"
@@ -170,6 +171,13 @@ bool obs_module_load(void)
 {
 	obs_log(LOG_INFO, "plugin loaded successfully (version %s)",
 		PLUGIN_VERSION);
+
+	// The panel's typefaces, before anything can build a widget with one.
+	// Logged with the count because "the fonts are embedded" and "eight of
+	// eight registered" are different claims, and only the second is a
+	// measurement.
+	const int faces = multireplay::fonts::registerEmbedded();
+	obs_log(LOG_INFO, "embedded typefaces registered: %d", faces);
 
 	auto &core = multireplay::ReplayCore::instance();
 	core.load();

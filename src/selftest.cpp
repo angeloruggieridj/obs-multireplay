@@ -25,6 +25,7 @@ extern "C" {
 #include "multireplay-dock.hpp"
 #include "dock-internal.hpp" // kSeekTrackH/kSeekRulerH, for the zoom badge test
 #include "dock-icons.hpp"
+#include "dock-fonts.hpp" // panel_fonts_are_embedded — the real dock, not the mockup
 #include "packet-tap.hpp"
 // pathToUtf8: a path handed to FFmpeg is UTF-8, never path::string() (which is
 // the ANSI code page on MSVC).
@@ -52,6 +53,7 @@ extern "C" {
 #include <QLabel>
 #include <QPushButton>
 #include <QString>
+#include <QFontInfo>
 #include <QFontMetrics>
 #include <QTabBar>
 #include <QTableWidget>
@@ -4531,6 +4533,16 @@ void runReopenPass(const std::string &outPath)
 	// pass has never changed the theme, so what it reads is the start-up
 	// sheet.
 	bool panelMarksAreDrawn = false;
+	// THE FONTS ARE REGISTERED IN THE REAL PLUGIN, NOT JUST THE MOCKUP. The
+	// mockup already asserts this (tools/dock-mockup), but the mockup and the
+	// plugin are two different build targets with two different resource
+	// files — a .qrc left out of the plugin's CMakeLists.txt would leave the
+	// mockup green and the real dock running in whatever font the machine
+	// happens to have, and nothing short of measuring the real dock's caption
+	// would say so.
+	bool panelFontsAreEmbedded = false;
+	int pluginFontsRegistered = 0;
+	QString pluginCaptionFamily;
 	int playKeyH = 0, stepKeyH = 0;
 	int keyPadL = 0, keyPadR = 0;
 	QString bandText, noticeText;
@@ -4892,6 +4904,26 @@ void runReopenPass(const std::string &outPath)
 					sheet.contains(QStringLiteral("mr-down-")) &&
 					sheet.contains(QStringLiteral("mr-up-")) &&
 					sheet.contains(QStringLiteral("mr-tick"));
+				// registerEmbedded() is idempotent (Task 1): calling it
+				// again here does not re-load anything already loaded at
+				// obs_module_load — it just answers "how many", which is
+				// the number this check needs. mrZoneTitle is the caption
+				// every KeyBlock actually gets (mrSectionLabel has zero
+				// call sites); findChild returns whichever one exists
+				// first, and every one of them is stamped with the same
+				// @ffLabel@ token.
+				pluginFontsRegistered =
+					multireplay::fonts::registerEmbedded();
+				const bool allFonts = multireplay::fonts::allEmbedded();
+				auto *cap = dock->findChild<QLabel *>(
+					QStringLiteral("mrZoneTitle"));
+				pluginCaptionFamily =
+					cap ? QFontInfo(cap->font()).family()
+					    : QString();
+				panelFontsAreEmbedded =
+					allFonts &&
+					pluginCaptionFamily ==
+						multireplay::fonts::labelFamily();
 			});
 			obs_log(panelPaintsItself ? LOG_INFO : LOG_ERROR,
 				"[selftest] reopen: panel styled background: %s",
@@ -4904,6 +4936,14 @@ void runReopenPass(const std::string &outPath)
 					? "drawn"
 					: "MISSING (no arrows, no tick until "
 					  "the theme is changed)");
+			obs_log(panelFontsAreEmbedded ? LOG_INFO : LOG_ERROR,
+				"[selftest] reopen: embedded typefaces in the real "
+				"dock: %d/8 registered, caption family '%s' "
+				"(want '%s'): %s",
+				pluginFontsRegistered,
+				qUtf8Printable(pluginCaptionFamily),
+				qUtf8Printable(multireplay::fonts::labelFamily()),
+				panelFontsAreEmbedded ? "yes" : "NO");
 			obs_log(playKeyIsTall ? LOG_INFO : LOG_ERROR,
 				"[selftest] reopen: green play key %d px against a "
 				"%d px frame step: %s",
@@ -5181,6 +5221,7 @@ void runReopenPass(const std::string &outPath)
 			  tallCollapsesToMore && playKeyIsTall &&
 			  bandInReviewFooter && healthInMarcaFooter &&
 			  panelPaintsItself && panelMarksAreDrawn &&
+			  panelFontsAreEmbedded &&
 			  monitorsGiveRoom && eventsBackupCreated;
 
 	// --- Put everything back ----------------------------------------------
@@ -5252,6 +5293,8 @@ void runReopenPass(const std::string &outPath)
 	obs_data_set_bool(checks, "panel_paints_its_own_background",
 			  panelPaintsItself);
 	obs_data_set_bool(checks, "panel_marks_are_drawn", panelMarksAreDrawn);
+	obs_data_set_bool(checks, "panel_fonts_are_embedded",
+			  panelFontsAreEmbedded);
 	obs_data_set_obj(root, "checks", checks);
 	obs_data_release(checks);
 	// Numbers, not checks: how much panel there was to centre the keys in.
@@ -5267,6 +5310,9 @@ void runReopenPass(const std::string &outPath)
 	obs_data_set_int(root, "reopen_rebooted_footage_span_ms",
 			 rebooted.footageMs);
 	obs_data_set_int(root, "reopen_rebooted_bar_span_ms", rebooted.barMs);
+	obs_data_set_int(root, "plugin_fonts_registered", pluginFontsRegistered);
+	obs_data_set_string(root, "plugin_caption_family",
+			    pluginCaptionFamily.toUtf8().constData());
 
 	if (!obs_data_save_json_safe(root, outPath.c_str(), "tmp", "bak"))
 		obs_log(LOG_ERROR, "[selftest] could not write report to %s",
