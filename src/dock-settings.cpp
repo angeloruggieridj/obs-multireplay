@@ -1082,14 +1082,15 @@ void MultiReplayDock::openSettings()
 
 	// HOW MUCH LIST FITS ON THE SCREEN. On a panel docked down one side the
 	// event list is the thing the operator reads, and at the comfortable row
-	// height it showed about eight events. Three steps rather than a pixel box:
-	// the row is sized from the cells it holds, so each step is a set of
-	// metrics that agree with each other rather than a number that can be set
-	// shorter than the text in it.
+	// height it showed about eight events. Two steps (artifact tabella:
+	// Normale + Compatta), not three: the row is sized from the cells it
+	// holds, so each step is a set of metrics that agree with each other
+	// rather than a number that can be set shorter than the text in it.
+	// A stale 2 (three-level era) falls back to Compatta, the nearer one —
+	// see densityFor; the clamp in setConfig keeps new writes in range.
 	auto *density = new QComboBox(&dlg);
-	density->addItem(obs_module_text("Dock.RowsComfortable"), 0);
+	density->addItem(obs_module_text("Dock.RowsNormal"), 0);
 	density->addItem(obs_module_text("Dock.RowsCompact"), 1);
-	density->addItem(obs_module_text("Dock.RowsDense"), 2);
 	{
 		const int idx = density->findData(cfg.tableDensity);
 		density->setCurrentIndex(idx >= 0 ? idx : 0);

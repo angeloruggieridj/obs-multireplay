@@ -1152,17 +1152,15 @@ R"QSS(
    saying it sixty times at once. */
 /* AND THEY ARE THE ROW'S OWN TYPE SIZE. These two cells are widgets and the
    four columns beside them are plain table items, so they are drawn by two
-   different things — and the widgets were carrying a size of their own while
-   the items were drawn in the table's font. On this rig the table's font is
-   OBS's base size, which is stated in POINTS and follows the operator's font
-   scale, so no number written here could ever have matched it: the comment and
-   the speed read as a footnote beside their own row's id and in-point.
-   @rowFont@ is not a constant — it is the size the table is ACTUALLY drawing
-   its items in, measured and substituted (see dockStyle). */
+    different things — and the widgets were carrying a size of their own while
+    the items were drawn in the table's font. The table now states its own
+    mono 11px (artifact tabella), so widget cells and items match by
+    construction instead of by measurement — which is what retired @rowFont@
+    (spec §3) and the re-polish round in applyTheme with it. */
 QTableWidget#mrEvents QComboBox, QTableWidget#mrEvents QLineEdit {
 	background: transparent; border: 1px solid transparent;
 	min-height: @cellInput@px; padding: 0px 2px;
-	font-size: @rowFont@px;
+	font-family: "@ffMono@"; font-size: 11px;
 }
 QTableWidget#mrEvents QComboBox::drop-down { width: 0px; border: 0; }
 QTableWidget#mrEvents QComboBox:hover, QTableWidget#mrEvents QLineEdit:hover {
@@ -1189,7 +1187,7 @@ QTableWidget#mrEvents QWidget#mrNoteCell:hover {
 QTableWidget#mrEvents QLineEdit#mrAngleNote {
 	background: transparent; border: 0; padding: 0px 2px;
 	min-height: @cellInput@px; color: @text@;
-	font-size: @rowFont@px;
+	font-family: "@ffMono@"; font-size: 11px;
 }
 QTableWidget#mrEvents QWidget#mrNoteCell[sel="true"] QLineEdit#mrAngleNote,
 QTableWidget#mrEvents QPushButton#mrAngleSpeed[sel="true"] {
@@ -1223,7 +1221,7 @@ QTableWidget#mrEvents QPushButton#mrAngleSpeed {
 	background: transparent; border: 1px solid transparent;
 	color: @text@; padding: 0px 2px;
 	min-height: @cellInput@px;
-	font-size: @rowFont@px;
+	font-family: "@ffMono@"; font-size: 11px;
 	text-align: center;
 }
 QTableWidget#mrEvents QPushButton#mrAngleSpeed:hover {
@@ -1291,9 +1289,13 @@ QTableWidget#mrEvents {
 }
 /* Joined to the tools bar above (which wears the top rounding): one frame
    around bar+table, not two stacked boxes. The layout gap between them is 0
-   for the same reason. */
+   for the same reason. Rows read in the table's own mono (artifact tabella:
+   .etbl mono .7rem, .68/.66 per density — a 0.5px split the eye cannot see,
+   so one 11px for both); padding follows the density (4px/8px Normale,
+   2px/8px Compatta). */
 QTableWidget#mrEvents::item {
-	padding: 2px 5px; border: 0;
+	padding: @cellPad@px 8px; border: 0;
+	font-family: "@ffMono@"; font-size: 11px;
 	border-bottom: 1px solid @border@; /* artifact tabella: hairline righe */
 }
 /* Selection is navy, never the whole row in orange (artifact tabella: the
@@ -1600,14 +1602,13 @@ struct Density {
 
 inline Density densityFor(int level)
 {
-	switch (level) {
-	case 1: // compact — about a fifth off, still comfortably clickable
-		return {14, 2, 18, 9, 22};
-	case 2: // dense — for an operator working from the list on a big screen
-		return {10, 1, 15, 9, 18};
-	default: // comfortable, and the historic 30 px row
-		return {20, 3, 22, 10, 28};
-	}
+	// TWO densities (artifact tabella: Normale + Compatta; Comoda is gone).
+	// level <= 0 is Normale (~24px rows, ~9 per 220px); anything else is
+	// Compatta (~19px rows, ~11 per 220px) — including a stale 2 from the
+	// three-level era, which lands on the nearer of the two.
+	if (level <= 0)
+		return {16, 4, 22, 10, 24};
+	return {14, 2, 18, 9, 19};
 }
 
 // The three marks a sub-control can only be handed as a file. Declared here
@@ -1627,15 +1628,8 @@ struct SheetAssetPaths {
 // A MISSING MARK IS `none`, NOT AN EMPTY url(). `image: url("")` is a rule Qt
 // accepts and then draws nothing for — which is the same result by accident,
 // and one line of log away from the same result on purpose. `none` says it.
-// `rowFontPx` is the size the EVENT TABLE is actually drawing its items in,
-// measured off the widget by the caller (QFontInfo resolves whatever OBS's
-// point size and font scale come to). The two cells that are widgets rather
-// than items are given the same number, which is the only way they can be the
-// same size as the id and the in-point on their own row. Zero means "nothing
-// measurable yet" — the first pass, before the table exists — and falls back to
-// a sane 12 px rather than writing `font-size: 0px` into the sheet.
 inline QString dockStyle(const Scheme &s, int densityLevel = 0,
-			 const SheetAssetPaths &assets = {}, int rowFontPx = 0)
+			 const SheetAssetPaths &assets = {})
 {
 	const Density d = densityFor(densityLevel);
 	QString out = QString::fromUtf8(kDockStyleTemplate);
@@ -1653,8 +1647,6 @@ inline QString dockStyle(const Scheme &s, int densityLevel = 0,
 	out.replace(QLatin1String("@cellInput@"), QString::number(d.cellInput));
 	out.replace(QLatin1String("@cellPad@"), QString::number(d.cellPad));
 	out.replace(QLatin1String("@headerFont@"), QString::number(d.headerFont));
-	out.replace(QLatin1String("@rowFont@"),
-		    QString::number(rowFontPx > 0 ? rowFontPx : 12));
 	// ── LE QUATTRO FAMIGLIE ──────────────────────────────────────────────
 	// Il foglio è l'unico posto che decide che tipo ha il pannello. Sono
 	// token e non letterali perché un font che non registra deve ripiegare,

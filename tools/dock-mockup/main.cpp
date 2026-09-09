@@ -311,7 +311,7 @@ public:
 		// CHILD panel paints nothing and shows whatever OBS painted.
 		setAttribute(Qt::WA_StyledBackground, true);
 		sc_ = g_sc;
-		setStyleSheet(dockStyle(sc_, 0, g_assets, rowFontPx()));
+		setStyleSheet(dockStyle(sc_, 0, g_assets));
 		setMinimumWidth(300);
 
 		auto *v = new QVBoxLayout(this);
@@ -346,6 +346,13 @@ public:
 		// fixed sibling here any more.
 		table_ = new QTableWidget(6, 6, listPane_);
 		table_->setObjectName(QStringLiteral("mrEvents"));
+		// The table's own mono 11px, mirroring dock-build.cpp: items
+		// inherit it at paint, and the one-size check reads it back.
+		{
+			QFont tf(multireplay::fonts::monoFamily());
+			tf.setPixelSize(11);
+			table_->setFont(tf);
+		}
 		table_->verticalHeader()->setVisible(false);
 		table_->setMinimumHeight(50);
 		table_->setSizePolicy(QSizePolicy::Expanding,
@@ -484,7 +491,7 @@ public:
 		g_tints = tintsFor(g_sc);
 		refreshSheetAssets();
 		sc_ = g_sc;
-		setStyleSheet(dockStyle(sc_, 0, g_assets, rowFontPx()));
+		setStyleSheet(dockStyle(sc_, 0, g_assets));
 		restyleIcons(this, g_tints);
 		// The heights the sections pinned, which applying a sheet drops:
 		// see kPinnedHeightProperty. Measured here first — the green play
@@ -785,15 +792,6 @@ public:
 	// The pane the whole monitoring row lives in, so a check can ask how much
 	// of it the pictures actually cover.
 	const QWidget *monitorPane() const { return monitorSplit_; }
-
-	// The size the event table really draws its items in — the same question
-	// the panel asks, and the same answer, so the two cells that are widgets
-	// can be given it. QFontInfo because a point size resolves to -1 pixels.
-	int rowFontPx() const
-	{
-		const QFont f = table_ ? table_->font() : qApp->font();
-		return std::max(8, QFontInfo(f).pixelSize());
-	}
 
 	// THE OPERATOR DRAGS THE DIVIDERS, and until now nothing in this tool ever
 	// did — every measurement it has ever taken was of a panel whose dividers
@@ -3805,6 +3803,23 @@ int runChecks(QPalette pal, QApplication &app, const QString &outDir)
 		      QString("r%1 %2,%3").arg(kTileRadius).arg(kBadgeX).arg(
 			      kBadgeY));
 	}
+	// ── TABLE DENSITY — artifact «Tabella eventi» (d65aea66): Normale +
+	// Compatta, Comoda gone. densityFor is pure (no Qt/OBS types), so units
+	// here; pixels on the real dock (gate, take pass).
+	{
+		const Density dn = densityFor(0);
+		check(dn.rowFloor == 24 && dn.cellPad == 4,
+		      "table: Normale is 24px rows",
+		      QString("floor %1 pad %2").arg(dn.rowFloor).arg(dn.cellPad));
+		const Density dc = densityFor(1);
+		check(dc.rowFloor == 19 && dc.cellPad == 2,
+		      "table: Compatta is 19px rows",
+		      QString("floor %1 pad %2").arg(dc.rowFloor).arg(dc.cellPad));
+		const Density stale = densityFor(2);
+		check(stale.rowFloor == 19,
+		      "table: a stale level-2 falls back to Compatta",
+		      QString("floor %1").arg(stale.rowFloor));
+	}
 
 	for (const Want &t : targets) {
 		auto *w = new Mock();
@@ -4007,6 +4022,15 @@ int runChecks(QPalette pal, QApplication &app, const QString &outDir)
 			      label + ": the table wears the bottom rounding");
 			check(truleHas("mrEvents::indicator {", "width: 12px"),
 			      label + ": angle boxes are 12px");
+			check(truleHas("QTableWidget#mrEvents::item {",
+				       "IBM Plex Mono"),
+			      label + ": table rows wear mono");
+			check(truleHas("QTableWidget#mrEvents::item {",
+				       "font-size: 11px"),
+			      label + ": table rows are 11px");
+			check(truleHas("QTableWidget#mrEvents::item {",
+				       "padding: 4px 8px"),
+			      label + ": Normale rows keep the drawn padding");
 		}
 		w->hide();
 		delete w;

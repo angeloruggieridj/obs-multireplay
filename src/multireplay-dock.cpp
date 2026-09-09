@@ -2153,20 +2153,6 @@ void MultiReplayDock::resizeEvent(QResizeEvent *event)
 // is already written to — so this adds no new place for the plugin to own and
 // nothing outside it can be reached. A null path (no module context, which is
 // the case in a unit test) is an empty directory and the sheet falls back.
-// The size the event table is really drawing its items in.
-//
-// QFontInfo, not QFont: OBS states its base size in POINTS and scales it by the
-// operator's font-scale setting, so QFont::pixelSize() on that font is -1 and
-// the only way to get the number the painter will use is to ask what it
-// resolved to. Before the table exists (the first pass, from the constructor)
-// the application font is the same answer, because that is what the table will
-// inherit.
-int MultiReplayDock::rowFontPx() const
-{
-	const QFont f = events_ ? events_->font() : qApp->font();
-	return std::max(8, QFontInfo(f).pixelSize());
-}
-
 SheetAssetPaths MultiReplayDock::sheetAssets() const
 {
 	char *dir = obs_module_config_path("");
@@ -2201,18 +2187,7 @@ void MultiReplayDock::applyTheme()
 	// key marks do. If the write fails the sheet says `image: none` and the
 	// panel is plainer, not broken.
 	const SheetAssetPaths marks = sheetAssets();
-	setStyleSheet(dockStyle(sc(), cfg.tableDensity, marks, rowFontPx()));
-	// ...AND THE ROW FONT IS ONLY KNOWN ONCE THE SHEET HAS BEEN APPLIED.
-	// Qt writes a style sheet's font-size onto the widget during polish, and
-	// the size the table draws its items in comes from OBS's own
-	// `QWidget { font-size: … }` — so the number handed to the sheet a line
-	// above was measured BEFORE that landed and can be a pass behind. Asked
-	// again and re-applied once if it moved; it converges, because nothing in
-	// our sheet sets a font on the table itself.
-	if (const int settled = rowFontPx(); settled != rowFont_) {
-		rowFont_ = settled;
-		setStyleSheet(dockStyle(sc(), cfg.tableDensity, marks, settled));
-	}
+	setStyleSheet(dockStyle(sc(), cfg.tableDensity, marks));
 	applyTableDensity(cfg.tableDensity);
 
 	// THE MARKS ARE PIXMAPS, so unlike every label on this panel they do not

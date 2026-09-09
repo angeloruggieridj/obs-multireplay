@@ -2253,6 +2253,16 @@ QWidget *MultiReplayDock::buildEvents()
 
 	events_ = new QTableWidget(this);
 	events_->setObjectName("mrEvents");
+	// The table's own mono 11px (artifact tabella .etbl/.68rem), stated on
+	// the WIDGET rather than only in the sheet: items inherit it at paint,
+	// and a font on the widget is a question the gate can answer from
+	// outside (the mockup's one-size check reads it). Same number as the
+	// ::item rule below — the two say one thing, twice, on purpose.
+	{
+		QFont tf(monoFamily());
+		tf.setPixelSize(11);
+		events_->setFont(tf);
+	}
 	events_->setSelectionBehavior(QAbstractItemView::SelectRows);
 	events_->setSelectionMode(QAbstractItemView::ExtendedSelection);
 	// The speed cell and the per-camera comments are edited in place; the
@@ -2260,14 +2270,11 @@ QWidget *MultiReplayDock::buildEvents()
 	events_->setEditTriggers(QAbstractItemView::DoubleClicked |
 				 QAbstractItemView::EditKeyPressed);
 	events_->verticalHeader()->setVisible(false);
-	// 30, and the number is arithmetic rather than taste: an angle cell holds
-	// combo boxes, and the dock's style sheet gives every QComboBox a
-	// min-height of 20 with 3px of padding above and below and a 1px border —
-	// 28 px before anything is drawn in it. At the 22 it used to be, every row
-	// clipped its own contents, which is what "the text looks cut" was.
-	// Whoever changes the input rule in the dock style sheet has to change this
-	// with it (see kDockStyleTemplate in dock-style.hpp).
-	events_->verticalHeader()->setDefaultSectionSize(30);
+	// 24, the Normale floor: applyTableDensity() re-asserts the floor for
+	// the configured density right after construction, so this is only the
+	// starting value — but it has to be a floor, not the old historic 30,
+	// or the first paint shows 30px rows until the first theme pass.
+	events_->verticalHeader()->setDefaultSectionSize(24);
 	events_->setAlternatingRowColors(true);
 	events_->setShowGrid(false);
 	events_->setWordWrap(false);

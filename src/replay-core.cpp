@@ -879,6 +879,7 @@ void ReplayCore::setConfig(const Config &cfg)
 		config_.eventIdDigits = std::clamp(config_.eventIdDigits, 1, 8);
 		config_.eventListCount =
 			std::clamp(config_.eventListCount, 1, kEventLists);
+		config_.tableDensity = std::clamp(config_.tableDensity, 0, 1);
 		config_.preRollMs = std::max(0, config_.preRollMs);
 		config_.postRollMs = std::max(0, config_.postRollMs);
 	}
@@ -1443,8 +1444,8 @@ void ReplayCore::loadConfigFile(const char *path, bool projectScoped)
 		config_.layoutPreset =
 			std::clamp((int)obs_data_get_int(data, "layoutPreset"), 0, 3);
 	if (!projectScoped && obs_data_has_user_value(data, "tableDensity"))
-		config_.tableDensity =
-			(int)obs_data_get_int(data, "tableDensity");
+		config_.tableDensity = std::clamp(
+			(int)obs_data_get_int(data, "tableDensity"), 0, 1);
 	if (obs_data_has_user_value(data, "eventListCount"))
 		config_.eventListCount =
 			(int)obs_data_get_int(data, "eventListCount");

@@ -395,6 +395,10 @@ struct DockChecks {
 	// The second bay is optional, and OFF is the default: with it off the B box
 	// and the A|B/A/B selector are absent, with it on they are there.
 	bool channelBIsOptional = false;
+	// Table rows wear the drawing's density (Normale 24px, Compatta 19px):
+	// the measured row height, with rows on screen to measure.
+	bool tableRowsAreDensity = false;
+	int tableRowH = -1;
 	// Nothing still referenced when OBS clears scene data: a held reference there
 	// becomes a dialog telling the operator a plugin leaked.
 	bool releasesSourcesOnCleanup = false;
@@ -2510,6 +2514,38 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 				want ? "on" : "off", boxShown ? "shown" : "hidden",
 				selectorShown ? "shown" : "hidden",
 				captionShown ? "shown" : "hidden");
+		}
+
+		// --- the rows wear the drawing's density ---------------------------
+		// Normale ~24px, Compatta ~19px (artifact tabella — approximate by
+		// declaration: "~9 righe / 220px"). A range, not an exact match:
+		// the floor holds the rows up while cell widgets can push single
+		// pixels past it, so 24 varies by a pixel or two in practice and
+		// the drawing's own "~" says that is fine. Needs rows on screen;
+		// the take has marked by now, and if it has not, the red line says
+		// so instead of passing quiet.
+		{
+			const int density =
+				ReplayCore::instance().getConfig().tableDensity;
+			const int lo = (density == 1) ? 17 : 22;
+			const int hi = (density == 1) ? 21 : 26;
+			int h = -1, rows = 0;
+			runOnUi([&]() {
+				auto *t = dock->findChild<QTableWidget *>(
+					QStringLiteral("mrEvents"));
+				if (!t)
+					return;
+				rows = t->rowCount();
+				if (rows > 0)
+					h = t->verticalHeader()->sectionSize(0);
+			});
+			c.tableRowH = h;
+			c.tableRowsAreDensity =
+				rows > 0 && h >= lo && h <= hi;
+			obs_log(c.tableRowsAreDensity ? LOG_INFO : LOG_ERROR,
+				"[selftest] dock: event rows %d px over %d row(s) "
+				"(want %d..%d, density %d)",
+				h, rows, lo, hi, density);
 		}
 
 		// --- nothing is still held when OBS clears scene data ---------
@@ -7213,6 +7249,7 @@ void runSelfTest()
 			  dockChecks.angleKeysFollowCameras &&
 			  dockChecks.clipBarSpansSequence &&
 			  dockChecks.channelBIsOptional &&
+			  dockChecks.tableRowsAreDensity &&
 			  dockChecks.releasesSourcesOnCleanup &&
 			  dockChecks.found &&
 			  dockChecks.pollRuns && dockChecks.pollResponsive &&
@@ -7436,6 +7473,9 @@ void runSelfTest()
 	// The second bay is optional and off by default: absent, not greyed out.
 	obs_data_set_bool(checks, "dock_channel_b_is_optional",
 			  dockChecks.channelBIsOptional);
+	obs_data_set_bool(checks, "dock_table_rows_are_density",
+			  dockChecks.tableRowsAreDensity);
+	obs_data_set_int(checks, "dock_table_row_h", dockChecks.tableRowH);
 	// ...and absent from the dock's very first paint, not just once
 	// something later re-applies the flag — see the note where this is
 	// measured, right before the run turns B on for the checks that need it.

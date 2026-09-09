@@ -1110,18 +1110,12 @@ public:
 	// The marks the style sheet can only be handed as files: written into the
 	// plugin config directory and re-drawn on every theme change.
 	SheetAssetPaths sheetAssets() const;
-	// The size the event table is really drawing its items in, so the two cells
-	// that are widgets can be given the same one.
-	int rowFontPx() const;
 	// The two geometries the monitoring row was last computed from. poll() re-runs
 	// applyPreviewAspect when they no longer match what the panel actually has:
 	// a pass that read them mid-resize leaves the tile ceiling too small, and a
 	// ceiling is a maximum that sticks.
 	int aspectPaneW_ = 0;
 	int aspectRoomH_ = 0;
-	// The size the sheet was last built with, so applyTheme can tell whether
-	// polishing moved it.
-	int rowFont_ = 0;
 	// Which of the three arrangements the panel is wearing. Public for the
 	// gate: "the cameras have no width in a column" is a fault only a check
 	// that knows the arrangement can name, and naming it is the difference
