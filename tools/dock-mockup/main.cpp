@@ -33,6 +33,8 @@
 #include "../../src/dock-icons.hpp"
 #include "../../src/dock-layout.hpp"
 #include "../../src/dock-style.hpp"
+// kEventLists only (OBS-free header): the bank strip wears the real count.
+#include "../../src/event-store.hpp"
 
 #include <QAbstractButton>
 #include <QAbstractItemModel>
@@ -935,7 +937,7 @@ private:
 	};
 	QVector<Worded> worded_;
 	QWidget *statusDetail_ = nullptr;
-	QLabel *search_ = nullptr;
+	QLineEdit *search_ = nullptr;
 	QToolButton *projectLbl_ = nullptr;
 	bool compactChrome_ = false;
 
@@ -1104,19 +1106,17 @@ private:
 		setKeyId(searchIcon_, QStringLiteral("search"));
 		searchIcon_->setToolTip(QStringLiteral("Cerca…"));
 		searchIcon_->setFixedSize(kToolIcoW, kToolIcoH);
-		auto *search = new QLabel(QStringLiteral("Cerca…"), box);
-		search->setObjectName(QStringLiteral("mrMuted"));
-		search->setStyleSheet(
-			QString("background:%1;border:1px solid %2;border-radius:3px;"
-				"padding:2px 7px;color:%3;")
-				.arg(sc_.raise1, sc_.border, sc_.textDim));
-		// A fixed stand-in on purpose, NOT the real search_'s min/max-em
-		// formula (multireplay-dock.cpp): this is a QLabel with no layout
-		// stretch of its own, so pinning it to that formula's upper bound
-		// renders it wider than the real QLineEdit ever settles at inside
-		// its actual layout — measured to overflow Short's toolbar row on
-		// the offscreen (minimal) platform's font metrics, a false alarm
-		// this stand-in has no business raising.
+		auto *search = new QLineEdit(box);
+		// ITS OWN NAME (.tb-search), like dock-build.cpp: a QLabel
+		// stand-in never picked up the QLineEdit#mrSearch rule, so the
+		// field was measured wearing an inline approximation instead of
+		// the real border, padding and face.
+		search->setObjectName(QStringLiteral("mrSearch"));
+		search->setPlaceholderText(QStringLiteral("Cerca…"));
+		search->setClearButtonEnabled(true);
+		// FIXED 150, like the real one's kSearchMinW: the drawing states
+		// pixels and the gate asserts them (dock-build.cpp).
+		search->setMinimumWidth(kSearchMinW);
 		search->setFixedWidth(150);
 		search_ = search;
 
@@ -1165,14 +1165,32 @@ private:
 		auto *br = new QHBoxLayout(bankRow_);
 		br->setContentsMargins(0, 0, 0, 0);
 		br->setSpacing(3);
-		auto *tabs = new QLabel(
-			QStringLiteral(" 1 │ 2 │ 3 │ 4 │ 5 │ 6 │ 7 │ 8 │ 9 │ 10 "),
-			bankRow_);
-		tabs->setObjectName(QStringLiteral("mrMuted"));
-		tabs->setFixedHeight(20);
+		// THE BANK STRIP IS A REAL QTabBar, like dock-build.cpp's listTabs_:
+		// a QLabel string never picked up the QTabBar#mrListTabs rules, so
+		// the strip was measured wearing no tab geometry at all. Same
+		// properties as the real one (no base, no stretch, scroll, no
+		// elide, no focus, 0.9 face); the tab MENU stays out — it needs
+		// EventStore, which needs a rig.
+		auto *tabs = new QTabBar(bankRow_);
+		tabs->setObjectName(QStringLiteral("mrListTabs"));
+		tabs->setDrawBase(false);
+		tabs->setExpanding(false);
+		tabs->setUsesScrollButtons(true);
+		tabs->setElideMode(Qt::ElideNone);
+		tabs->setFocusPolicy(Qt::NoFocus);
+		{
+			QFont tf = tabs->font();
+			if (tf.pointSizeF() > 0)
+				tf.setPointSizeF(std::max(7.0, tf.pointSizeF() * 0.9));
+			else if (tf.pixelSize() > 0)
+				tf.setPixelSize(std::max(9, (int)(tf.pixelSize() * 0.9)));
+			tabs->setFont(tf);
+		}
+		for (int i = 1; i <= multireplay::kEventLists; i++)
+			tabs->addTab(QString::number(i));
 		// IGNORED, still — bankRow_'s own MINIMUM must stay small (Tall
-		// collapses to a ~260 px column, and this fake ten-tab string is
-		// not what should stop it). What Preferred broke was the RUNTIME
+		// collapses to a ~260 px column, and ten real tabs are not what
+		// should stop it). What Preferred broke was the RUNTIME
 		// width, not the floor; bankRow_'s own setMaximumWidth below is
 		// what fixes that half without undoing this one.
 		tabs->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
@@ -2026,6 +2044,17 @@ bool inTabBar(const QWidget *c)
 	return false;
 }
 
+// Qt builds buttons of its own inside its widgets — a table view's corner
+// button, a tab bar's scrollers (inTabBar), a line edit's clear button.
+// None is one of this panel's keys.
+bool inField(const QWidget *c)
+{
+	for (const QWidget *p = c; p; p = p->parentWidget())
+		if (qobject_cast<const QLineEdit *>(p))
+			return true;
+	return false;
+}
+
 void checkNothingClipped(Mock *w, const QString &label)
 {
 	const QRect panel(QPoint(0, 0), w->size());
@@ -2130,7 +2159,7 @@ void checkTooltips(Mock *w, const QString &label)
 	QString worst;
 	for (QAbstractButton *b : w->findChildren<QAbstractButton *>()) {
 		if (b->objectName().startsWith(QStringLiteral("qt_")) ||
-		    inEventList(b) || inTabBar(b))
+		    inEventList(b) || inTabBar(b) || inField(b))
 			continue;
 		// A key with a word on it says what it is by saying it.
 		if (!b->text().isEmpty() || !b->toolTip().isEmpty())
@@ -2329,7 +2358,7 @@ void checkKeyIds(Mock *w)
 		// view's corner button), and the event list's cells are cells
 		// rather than keys. Neither is one of this panel's keys.
 		if (b->objectName().startsWith(QStringLiteral("qt_")) ||
-		    inEventList(b) || inTabBar(b))
+		    inEventList(b) || inTabBar(b) || inField(b))
 			continue;
 		const QString id = b->property(kKeyProperty).toString();
 		if (id.isEmpty()) {
