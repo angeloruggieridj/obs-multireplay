@@ -879,6 +879,9 @@ QWidget *MultiReplayDock::buildMultiview()
 		      "one tile per camera plus the replay tile");
 
 	multiviewBox_ = new QWidget(this);
+	// Named: the sheet keeps it transparent so no theme paints bands
+	// behind the tiles.
+	multiviewBox_->setObjectName(QStringLiteral("mrTiles"));
 	multiviewGrid_ = new QGridLayout(multiviewBox_);
 	multiviewGrid_->setContentsMargins(0, 0, 0, 0);
 	multiviewGrid_->setSpacing(4); // artifact monitor: .cgrid/.crow{gap:4px}

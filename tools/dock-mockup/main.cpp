@@ -4053,7 +4053,7 @@ int runChecks(QPalette pal, QApplication &app, const QString &outDir)
 			check(ruleHas("QPushButton#mrLive {",
 				      "background: " + w->sc_.recBg),
 			      label + ": LIVE rests red", w->sc_.recBg);
-			check(ruleHas("QPushButton#mrToggle {",
+			check(ruleHas("QPushButton#mrToggle,",
 				      "border-radius: 5px"),
 			      label + ": toggles are 5px-rounded");
 			check(ruleHas("QToolButton#mrGear {",
@@ -4166,6 +4166,79 @@ int runChecks(QPalette pal, QApplication &app, const QString &outDir)
 			check(truleHas("QTableWidget QPushButton",
 				       "margin: 0px"),
 			      label + ": cell buttons ignore the -1px Yami shift");
+			// ── SCUDO YAMI round 2 (audit: 22 voci, 20 chiuse qui).
+			check(truleHas("#MultiReplayDock QToolButton {", "margin: 0px"),
+			      label + ": tool buttons carry no Yami margins");
+			check(truleHas("QToolButton#mrToggle", "border-radius: 5px"),
+			      label + ": the layout key wears the toggle look");
+			check(truleHas("QWidget#mrToolbar", "background: transparent"),
+			      label + ": toolbar rows wear no Yami bands");
+			check(truleHas("QWidget#mrTiles", "background: transparent"),
+			      label + ": no Yami frame behind the tiles");
+			check(truleHas("QWidget#mrTile", "background: transparent"),
+			      label + ": tiles wear no Yami frame");
+			check(truleHas("QWidget#mrModesBox {", "background: transparent"),
+			      label + ": the Modi stack wears no Yami patch");
+			check(truleHas("QTabBar#mrPanelTabs::tab {",
+				       multireplay::fonts::labelFamily()),
+			      label + ": panel tabs wear the label face",
+			      multireplay::fonts::labelFamily());
+			check(truleHas("QTabBar#mrPanelTabs::tab:hover",
+				       "border-color: " + w->sc_.borderHi),
+			      label + ": panel tabs answer the hover",
+			      w->sc_.borderHi);
+			check(truleHas("QTabBar#mrPanelTabs::tab:disabled",
+				       "color: " + w->sc_.textDim),
+			      label + ": panel tabs dim when disabled",
+			      w->sc_.textDim);
+			check(truleHas("QLabel#mrReviewEvent",
+				       multireplay::fonts::monoFamily()),
+			      label + ": the REVIEW event id wears mono",
+			      multireplay::fonts::monoFamily());
+			check(truleHas("QLabel#mrReviewEvent", "margin: 0px"),
+			      label + ": the REVIEW event id wears no Yami margins");
+			check(truleHas("QLabel#mrEventCount",
+				       multireplay::fonts::monoFamily()),
+			      label + ": the table counter wears mono",
+			      multireplay::fonts::monoFamily());
+			check(truleHas("QLabel#mrAngleTick", "margin: 0px"),
+			      label + ": the K1 tick keeps its 40px budget");
+			check(truleHas("QMenu::indicator", "width: 12px"),
+			      label + ": menu checks sit in a 12px box");
+			check(truleHas("QMenu::item:checked", "background:"),
+			      label + ": a checked menu row reads checked");
+			check(truleHas("QSlider#mrSpeed::add-page:horizontal",
+				       "background:"),
+			      label + ": the unplayed side has paint");
+			check(truleHas("QSlider#mrSpeed::handle:horizontal:disabled",
+				       "background:"),
+			      label + ": a disabled thumb reads disabled");
+			check(truleHas("QScrollBar::add-page:vertical",
+				       "background: transparent"),
+			      label + ": scrollbar tracks wear no Yami fill");
+			check(truleHas("QSplitter::handle:vertical:pressed",
+				       "background:"),
+			      label + ": a held divider reads held");
+			check(truleHas("QHeaderView::up-arrow", "image:"),
+			      label + ": sort arrows are drawn, not styled");
+			check(truleHas("QComboBox QAbstractItemView::item:selected",
+				       "background:"),
+			      label + ": a picked popup row reads picked");
+			check(truleHas("QComboBox QAbstractItemView::item:disabled",
+				       "color:"),
+			      label + ": a dead popup row reads dead");
+			check(truleHas("QCheckBox::indicator:disabled",
+				       "background:"),
+			      label + ": a disabled box reads disabled");
+			check(truleHas("QCheckBox::indicator:indeterminate",
+				       "background:"),
+			      label + ": a half box reads half");
+			check(truleHas("QDialogButtonBox", "background: transparent"),
+			      label + ": settings buttons sit on no Yami band");
+			check(truleHas("QTabBar#mrListTabs::tab:disabled", "color:"),
+			      label + ": a disabled list tab reads disabled");
+			check(truleHas("QTabBar#mrListTabs::scroller", "width: 18px"),
+			      label + ": list tab scrollers keep their width");
 			check(truleHas("QTableWidget#mrEvents::item {",
 				       "IBM Plex Mono"),
 			      label + ": table rows wear mono");

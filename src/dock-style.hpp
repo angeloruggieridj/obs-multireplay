@@ -398,7 +398,12 @@ R"QSS(
 #MultiReplayDock QWidget#mrListPane, #MultiReplayDock QWidget#mrPreviewPane,
 #MultiReplayDock QWidget#mrReviewGrid, #MultiReplayDock QWidget#mrPanelHeader,
 #MultiReplayDock QWidget#mrReviewFoot,
-#MultiReplayDock QWidget#mrRowFill {
+#MultiReplayDock QWidget#mrRowFill,
+/* Shield round 2: the toolbar rows, the tile box and the tiles wore the
+   application background (Yami QWidget) — three black bands across the bar
+   and a frame behind every tile on a light panel. */
+#MultiReplayDock QWidget#mrToolbar,
+#MultiReplayDock QWidget#mrTiles, #MultiReplayDock QWidget#mrTile {
 	background: transparent;
 }
 /* MARCA | REVIEW — the two command panels as drawn boxes (artifact .sub):
@@ -425,6 +430,10 @@ R"QSS(
    border the parent draws. The frame is inset by half a caption and the legend
    is laid over it (KeyBlock::placeCaption). */
 #MultiReplayDock QWidget#mrBlock { background: transparent; border: 0; }
+/* Shield round 2: the Modi stack renamed its root to mrModesBox, dropping
+   the mrBlock rule above — Yami's QWidget background showed as a patch
+   behind Loop/Mute/Music. Same box, same transparency. */
+#MultiReplayDock QWidget#mrModesBox { background: transparent; border: 0; }
 #MultiReplayDock QWidget#mrBlockFrame {
 	background: transparent;
 	border: 1px solid @border@;
@@ -458,9 +467,14 @@ R"QSS(
 	/* min-width esplicita: Yami ne mette 50px su ogni tab e nel reale
 	   REVIEW/MARCA uscivano larghe il doppio che nel mockup. */
 	min-width: 16px;
+	font-family: "@ffLabel@";
 	font-weight: 700;
 	letter-spacing: 1px;
 }
+#MultiReplayDock QTabBar#mrPanelTabs::tab:hover {
+	border-color: @borderHi@; color: @text@;
+}
+#MultiReplayDock QTabBar#mrPanelTabs::tab:disabled { color: @textDim@; }
 #MultiReplayDock QTabBar#mrPanelTabs::tab:selected {
 	background: @tabBar@;
 	color: #ffffff;
@@ -473,9 +487,13 @@ R"QSS(
 #MultiReplayDock QScrollArea, #MultiReplayDock QAbstractScrollArea {
 	background: @panel@; color: @text@;
 }
+/* Shield round 2: the settings button box wore Yami's QWidget background
+   and margins — a band behind OK/Annulla. */
+#MultiReplayDock QDialogButtonBox { background: transparent; margin: 0px; }
 #MultiReplayDock QMenu {
 	background: @raise1@; color: @text@;
 	border: 1px solid @border@;
+	font-family: "@ffBody@";
 }
 /* THE ITEM, NOT THE MENU, and that distinction is the whole bug. OBS colours
    `QMenu::item` (Yami: `QMenu::item, QMenu > QWidget, QListView::item,
@@ -491,6 +509,14 @@ R"QSS(
 #MultiReplayDock QMenu::item:selected {
 	background: @rowSel@; color: @rowSelText@;
 }
+/* Shield round 2: the check column and the checked row. Checkable rows
+   (layout shapes, recent projects) wore Yami's indicator box, and a
+   checked row read exactly like an unchecked one. The mark itself stays
+   the style's — only the box and the row answer to us. */
+#MultiReplayDock QMenu::indicator {
+	width: 12px; height: 12px; background: transparent;
+}
+#MultiReplayDock QMenu::item:checked { background: @raise2@; }
 /* A DISABLED MENU ROW IS DIMMER, NOT ABSENT — and it is dimmed to @textMuted@
    rather than to the @textDim@ a disabled KEY uses, which is a distinction
    worth stating: a key has a frame around it saying a control is there, and a
@@ -516,6 +542,12 @@ R"QSS(
 
 /* labels */
 QLabel#mrMuted      { color: @textMuted@; font-size: 10px; }
+/* Shield round 2: three labels Yami re-set under us. The REVIEW event id
+   (mono, centred) lost its size; the table counter lost its face; the K1
+   tick pixmap sits in a 40px cell budget where any margin breaks the math. */
+QLabel#mrReviewEvent { font-family: "@ffMono@"; font-size: 12px; margin: 0px; }
+QLabel#mrEventCount { font-family: "@ffMono@"; font-size: 10px; margin: 0px; }
+QLabel#mrAngleTick { margin: 0px; padding: 0px; }
 /* The project-name label wants the theme's ACCENT, not the muted grey every
    other #mrMuted label gets: a property-qualified rule instead of a
    per-widget setStyleSheet(), so applyTheme() re-colours it for free along
@@ -599,6 +631,10 @@ QLabel#mrClock[rec="true"] { color: @rec@; font-weight: 700; }
 	   righe più alte nel reale che nel mockup, senza regola nostra. */
 	margin: 0px;
 }
+/* Shield round 2: the same vertical margins Yami puts on pushes sit on
+   tool buttons too (project selector, search key, + bank, CAM, gear,
+   layout key) — same landing, same fix. */
+#MultiReplayDock QToolButton { margin: 0px; }
 #MultiReplayDock QPushButton:hover  { background: @raise2@; border-color: @borderHi@; color: @text@; }
 #MultiReplayDock QPushButton:pressed { background: @sink1@; }
 #MultiReplayDock QPushButton:disabled { color: @textDim@; border-color: @raise1@; }
@@ -677,8 +713,10 @@ QPushButton#mrLive:checked {
    A LIT TOGGLE IS A STATE, NOT AN INVITATION. It used to be the same filled
    green as the play key, so "Loop is on" and "press this to play" carried the
    same weight — and on a panel read at a glance under pressure, two meanings in
-   one colour is one meaning too many. */
-QPushButton#mrToggle {
+   one colour is one meaning too many.
+   Shield round 2: the layout key (⛶▾) is a QToolButton wearing the mrToggle
+   name, and `QPushButton#mrToggle` never matched it — it wore Yami grey. */
+QPushButton#mrToggle, QToolButton#mrToggle {
 	background: @raise1@; color: @textKey@;
 	border: 1px solid @border@; border-radius: 5px; /* toolbar: .tb-el */
 	font-size: 10px; min-height: 20px; padding: 2px 9px;
@@ -757,6 +795,11 @@ QTabBar#mrListTabs::tab:hover { background: @raise2@; color: @text@; }
 QTabBar#mrListTabs::tab:selected {
 	background: @tabBar@; color: @accentText@; border-color: @tabBarBorder@;
 }
+/* Shield round 2: a disabled list tab wore Yami's grey, and the scroll
+   arrows (20 lists fit; more scroll) wore the style default. */
+QTabBar#mrListTabs::tab:disabled { color: @textDim@; }
+QTabBar#mrListTabs::scroller { width: 18px; }
+QTabBar#mrListTabs QToolButton { background: @raise1@; border: 1px solid @border@; }
 
 )QSS"
 /* MSVC caps a single string literal at 16380 bytes and truncates SILENTLY past
@@ -1135,6 +1178,11 @@ QPushButton#mrWarn:hover { background: @warn@; color: #ffffff; border-color: @wa
 	border: 1px solid @border@; background: @raise1@;
 }
 #MultiReplayDock QCheckBox::indicator:checked { background: @pvw@; border-color: @pvw@; }
+/* Shield round 2: a disabled or half-checked box wore the style default. */
+#MultiReplayDock QCheckBox::indicator:disabled {
+	background: @sink1@; border-color: @border@;
+}
+#MultiReplayDock QCheckBox::indicator:indeterminate { background: @textMuted@; }
 
 )QSS"
 R"QSS(
@@ -1192,6 +1240,12 @@ R"QSS(
 #MultiReplayDock QComboBox QAbstractItemView::item {
 	min-height: 18px; padding: 0px; border: 0;
 }
+/* Shield round 2: a selected or disabled popup row wore Yami's item colours
+   (the view-level selection-* pair loses per-property). */
+#MultiReplayDock QComboBox QAbstractItemView::item:selected {
+	background: @rowSel@; color: @rowSelText@;
+}
+#MultiReplayDock QComboBox QAbstractItemView::item:disabled { color: @textDim@; }
 
 /* ── HOW TALL A ROW OF THE EVENT LIST IS ───────────────────────────
    The row is sized from the CELL the table actually built (see refreshEvents),
@@ -1341,11 +1395,16 @@ QSlider#mrSpeed::groove:horizontal {
 	height: 3px; background: @raise2@; border-radius: 2px;
 }
 QSlider#mrSpeed::sub-page:horizontal { background: @seekBar@; border-radius: 2px; }
+/* Shield round 2: the unplayed side wore Yami's groove fill, and a disabled
+   or held thumb wore the style default. */
+QSlider#mrSpeed::add-page:horizontal { background: @raise2@; border-radius: 2px; }
 QSlider#mrSpeed::handle:horizontal {
 	width: 11px; height: 11px; margin: -4px 0;
 	background: @text@; border-radius: 5px; border: 1px solid @border@;
 }
 QSlider#mrSpeed::handle:horizontal:hover { background: @accentText@; }
+QSlider#mrSpeed::handle:horizontal:pressed { background: @accentText@; }
+QSlider#mrSpeed::handle:horizontal:disabled { background: @textDim@; }
 /* The 100 tick (artifact .track.vel .tick{left:75%}): a 2x13px mark where
    the default sits. Positioned in code (positionSpeedTick), painted here. */
 QLabel#mrSpeedTick { background: @textKey@; border: 0; }
@@ -1408,6 +1467,14 @@ QTableWidget#mrEvents::indicator:checked {
 	text-align: left;
 }
 #MultiReplayDock QHeaderView { background: @panel@; }
+/* Shield round 2: the sort arrows wore the platform style's marks — a white
+   triangle on a light heading. Ours, like the combo arrow (dock-assets.hpp). */
+#MultiReplayDock QHeaderView::up-arrow {
+	image: url("@arrowUp@"); width: 9px; height: 6px;
+}
+#MultiReplayDock QHeaderView::down-arrow {
+	image: url("@arrowDown@"); width: 9px; height: 6px;
+}
 #MultiReplayDock QTableCornerButton::section {
 	background: @raise1@; border: 0;
 }
@@ -1477,6 +1544,16 @@ R"QSS(
 	background: @border@; border-radius: 3px; min-width: 20px;
 }
 #MultiReplayDock QScrollBar::handle:horizontal:hover { background: @borderHi@; }
+/* Shield round 2: the track pages wore Yami's fill on both axes, and a
+   disabled or held thumb wore the style default. */
+#MultiReplayDock QScrollBar::add-page:vertical, #MultiReplayDock QScrollBar::sub-page:vertical,
+#MultiReplayDock QScrollBar::add-page:horizontal, #MultiReplayDock QScrollBar::sub-page:horizontal {
+	background: transparent;
+}
+#MultiReplayDock QScrollBar::handle:vertical:pressed,
+#MultiReplayDock QScrollBar::handle:horizontal:pressed { background: @borderHi@; }
+#MultiReplayDock QScrollBar::handle:vertical:disabled,
+#MultiReplayDock QScrollBar::handle:horizontal:disabled { background: @raise1@; }
 
 #MultiReplayDock QSplitter { background: @panel@; }
 #MultiReplayDock QSplitter::handle:vertical {
@@ -1485,6 +1562,9 @@ R"QSS(
 #MultiReplayDock QSplitter::handle:vertical:hover { background: @raise2@; }
 #MultiReplayDock QSplitter::handle:horizontal { background: @raise1@; width: 5px; }
 #MultiReplayDock QSplitter::handle:horizontal:hover { background: @raise2@; }
+/* Shield round 2: a held divider kept Yami's colour. Held reads hovered. */
+#MultiReplayDock QSplitter::handle:vertical:pressed,
+#MultiReplayDock QSplitter::handle:horizontal:pressed { background: @raise2@; }
 
 )QSS"
 			   R"QSS(
