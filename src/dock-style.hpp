@@ -441,6 +441,9 @@ R"QSS(
 	border-bottom: 0;
 	padding: 2px 12px;
 	margin-right: 2px;
+	/* min-width esplicita: Yami ne mette 50px su ogni tab e nel reale
+	   REVIEW/MARCA uscivano larghe il doppio che nel mockup. */
+	min-width: 16px;
 	font-weight: 700;
 	letter-spacing: 1px;
 }
@@ -577,6 +580,10 @@ QLabel#mrClock[rec="true"] { color: @rec@; font-weight: 700; }
 	background: @raise1@; color: @textKey@;
 	border: 1px solid @border@; border-radius: 4px;
 	padding: 3px 9px; font-size: 11px; min-height: 18px;
+	/* margin azzerato: Yami ne mette di verticali su ogni push
+	   (margin-top/bottom) e atterrano FUORI dal tasto, nei layout —
+	   righe più alte nel reale che nel mockup, senza regola nostra. */
+	margin: 0px;
 }
 #MultiReplayDock QPushButton:hover  { background: @raise2@; border-color: @borderHi@; color: @text@; }
 #MultiReplayDock QPushButton:pressed { background: @sink1@; }
@@ -1384,6 +1391,13 @@ R"QSS(
 }
 #MultiReplayDock QWidget#mrTableTools QPushButton#mrDanger:hover {
 	background: @warn@; color: #ffffff; border-color: @warn@;
+}
+/* margin azzerato sui bottoni in tabella: Yami mette margin:-1px su
+   QTableView QPushButton/QToolButton e sposta i tasti-cella di 1px
+   rispetto al mockup. */
+#MultiReplayDock QTableWidget QPushButton,
+#MultiReplayDock QTableWidget QToolButton {
+	margin: 0px;
 }
 
 /* ── scrollbars ──────────────────────────────────────────── */

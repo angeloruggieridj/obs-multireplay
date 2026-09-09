@@ -4068,6 +4068,16 @@ int runChecks(QPalette pal, QApplication &app, const QString &outDir)
 			      label + ": angle boxes are 12px");
 			check(truleHas("QHeaderView::section", "text-align: left"),
 			      label + ": headings read left, never clipped both sides");
+			// ── SCUDO YAMI: proprietà che il foglio OBS detta incontrastato
+			// nel reale (stesso selettore-tipo, noi zitti). Ognuna qui ha la
+			// regola con #id che la batte.
+			check(truleHas("#MultiReplayDock QPushButton {", "margin: 0px"),
+			      label + ": push buttons carry no Yami margins");
+			check(truleHas("QTabBar#mrPanelTabs::tab", "min-width: 16px"),
+			      label + ": panel tabs ignore the 50px Yami floor");
+			check(truleHas("QTableWidget QPushButton",
+				       "margin: 0px"),
+			      label + ": cell buttons ignore the -1px Yami shift");
 			check(truleHas("QTableWidget#mrEvents::item {",
 				       "IBM Plex Mono"),
 			      label + ": table rows wear mono");
