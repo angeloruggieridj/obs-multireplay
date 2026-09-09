@@ -4759,10 +4759,12 @@ QWidget *MultiReplayDock::buildAngleCell(int eventId, int cam0, bool on,
 	//
 	// FIXED WIDTH so the column does not dance as "--" becomes "125": eight
 	// rows of angles are scanned down, and a value that moves sideways between
-	// rows is read twice. 22px: "125" in 11px Plex Mono (0.6em advance) is 20,
-	// plus the sheet's 1px side padding — and 12 tick + 2 gap + 22 + 2 margins
-	// is 38 of the K1 cell's 40. The old 44px no longer fits anywhere: it was
-	// sized for "100%" with a percent sign the cell no longer prints.
+	// rows is read twice. 22px: "125" in 11px Plex Mono (0.6em advance) is
+	// 19.8 plus the sheet's 1px side padding — and 12 tick + 2 gap + 22 + 2
+	// margins is 38 of the K1 cell's 40, with the tick itself pinned to 12
+	// by the sheet (an unpinned textless box measures ~24 of chrome). The
+	// old 44px no longer fits anywhere: it was sized for "100%" with a
+	// percent sign the cell no longer prints.
 	auto *sp = new QPushButton(w);
 	sp->setObjectName("mrAngleSpeed");
 	sp->setToolTip(obs_module_text("Dock.AngleSpeedHint"));

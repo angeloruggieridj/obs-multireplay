@@ -414,7 +414,11 @@ public:
 			{
 				auto *cell = new QWidget;
 				auto *ch = new QHBoxLayout(cell);
-				ch->setContentsMargins(2, 0, 2, 0);
+				// Mirrors buildAngleCell (multireplay-dock.cpp): the pair
+				// budgets the K1 cell's 40px (12 tick + spacing + 22
+				// badge + margins), so this stand-in must measure the
+				// same fit rather than the old 44px badge.
+				ch->setContentsMargins(1, 0, 1, 0);
 				ch->setSpacing(2);
 				ch->addStretch(1);
 				auto *box = new QCheckBox(cell);
@@ -423,9 +427,9 @@ public:
 				auto *sp = new QPushButton(cell);
 				sp->setObjectName(QStringLiteral("mrAngleSpeed"));
 				sp->setText(r % 3 ? QStringLiteral("--")
-						  : QStringLiteral("50%"));
+						  : QStringLiteral("50"));
 				sp->setProperty("mrNoOverride", r % 3 != 0);
-				sp->setFixedWidth(44);
+				sp->setFixedWidth(22);
 				ch->addWidget(sp);
 				ch->addStretch(1);
 				table_->setCellWidget(r, 5, cell);
@@ -3215,6 +3219,41 @@ void checkRowTypeIsOneSize(Mock *w, const QString &label)
 	      detail.isEmpty() ? QString("both %1 px").arg(itemPx) : detail);
 }
 
+// K1 DECIDED CELL FITS ITS 40px COLUMN (artifact tabella: 12px tick +
+// badge in repeat(8,40px)). Measured off the widgets, not off the rules:
+// the pair's layout minimum (margins + spacing + tick + badge) against 40,
+// and every badge's text against its box — QPushButton clips instead of
+// eliding, so a wider text is silent truncation. The 30px column crushed
+// the tick out of the real table entirely, which is what this guards.
+void checkAngleCellsFitColumn(Mock *w, const QString &label)
+{
+	QTableWidget *t = w->eventTable();
+	if (!check(t && t->rowCount() > 0, label + ": there are cells to read"))
+		return;
+	int worstNeed = 0, worstClip = 0;
+	for (int r = 0; r < t->rowCount(); r++) {
+		QWidget *cell = t->cellWidget(r, 5);
+		if (!cell)
+			continue;
+		worstNeed = std::max(worstNeed,
+				     cell->minimumSizeHint().width());
+		if (auto *sp = cell->findChild<QPushButton *>(
+			    QStringLiteral("mrAngleSpeed"))) {
+			const int adv =
+				QFontMetrics(sp->font()).horizontalAdvance(
+					sp->text());
+			const int room = std::max(sp->width(),
+						  sp->minimumWidth()) -
+					 2;
+			worstClip = std::max(worstClip, adv - room);
+		}
+	}
+	check(worstNeed <= 40, label + ": the tick+badge pair fits 40px",
+	      QString("needs %1").arg(worstNeed));
+	check(worstClip <= 0, label + ": no badge text is clipped",
+	      QString("over by %1").arg(worstClip));
+}
+
 // 4. THE SETTINGS DIALOG IS THE SAME PANEL.
 //
 // It is a separate top-level window and every widget kind in it is a kind the
@@ -3619,6 +3658,7 @@ void runHostChecks(QApplication &app, const QString &outDir)
 			 outDir);
 
 	checkRowTypeIsOneSize(w, QStringLiteral("list"));
+	checkAngleCellsFitColumn(w, QStringLiteral("list"));
 	checkSettingsDialog(w, outDir);
 
 	// ── AND NOW THE SAME PANEL AFTER A THEME CHANGE ──────────────────────
