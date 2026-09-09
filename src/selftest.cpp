@@ -396,6 +396,10 @@ struct DockChecks {
 	// The second bay is optional, and OFF is the default: with it off the B box
 	// and the A|B/A/B selector are absent, with it on they are there.
 	bool channelBIsOptional = false;
+	// No fixed-column text is clipped: content advance + side padding fits
+	// the declared section (Commento elides by design, camera cells are
+	// widgets covered by the pair checks — only #/In/Out/Durata here).
+	bool tableTextsFit = false;
 	// Table rows wear the drawing's density (Normale 24px, Compatta 19px):
 	// the measured row height, with rows on screen to measure.
 	bool tableRowsAreDensity = false;
@@ -2564,6 +2568,47 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 				"[selftest] dock: event rows %d px over %d row(s) "
 				"(want %d..%d, density %d)",
 				h, rows, lo, hi, density);
+		}
+
+		// --- no fixed-column text is clipped -------------------------------
+		// CF0 + padding has to hold the longest real content ("1:04:12.70"
+		// in In/Out, "00:10.00" in Durata): the old Stretch masked tight
+		// math by growing, fixed exposes it. Commento elides by design
+		// (free text) and camera cells are widgets covered by the pair
+		// checks — only #/In/Out/Durata here, measured with the table's
+		// own mono.
+		{
+			bool fit = false;
+			bool anyRow = false;
+			runOnUi([&]() {
+				auto *t = dock->findChild<QTableWidget *>(
+					QStringLiteral("mrEvents"));
+				if (!t || t->rowCount() == 0)
+					return;
+				anyRow = true;
+				fit = true;
+				QHeaderView *hh = t->horizontalHeader();
+				const QFontMetrics fm(t->font());
+				for (int r = 0; r < t->rowCount() && fit; r++) {
+					for (int col = 0; col <= 3; col++) {
+						QTableWidgetItem *it =
+							t->item(r, col);
+						if (!it)
+							continue;
+						const int need =
+							fm.horizontalAdvance(
+								it->text()) +
+							8; // 2x4px item padding
+						if (need > hh->sectionSize(col))
+							fit = false;
+					}
+				}
+			});
+			c.tableTextsFit = anyRow && fit;
+			obs_log(c.tableTextsFit ? LOG_INFO : LOG_ERROR,
+				"[selftest] dock: fixed-column texts fit their "
+				"sections: %s",
+				c.tableTextsFit ? "yes" : "NO");
 		}
 
 		// --- nothing is still held when OBS clears scene data ---------
@@ -5394,7 +5439,7 @@ void runReopenPass(const std::string &outPath)
 				if (t && t->columnCount() >= 6) {
 					QHeaderView *hh = t->horizontalHeader();
 					static const int want[5] = {44, 92, 92,
-								    58, 130};
+								    64, 130};
 					bool ok = true;
 					for (int c = 0; c < 5; c++)
 						ok = ok &&
@@ -7268,6 +7313,7 @@ void runSelfTest()
 			  dockChecks.clipBarSpansSequence &&
 			  dockChecks.channelBIsOptional &&
 			  dockChecks.tableRowsAreDensity &&
+			  dockChecks.tableTextsFit &&
 			  dockChecks.tableAnglesCheckable &&
 			  dockChecks.releasesSourcesOnCleanup &&
 			  dockChecks.found &&
@@ -7497,6 +7543,8 @@ void runSelfTest()
 	obs_data_set_int(checks, "dock_table_row_h", dockChecks.tableRowH);
 	obs_data_set_bool(checks, "dock_table_angles_checkable",
 			  dockChecks.tableAnglesCheckable);
+	obs_data_set_bool(checks, "dock_table_texts_fit",
+			  dockChecks.tableTextsFit);
 	// ...and absent from the dock's very first paint, not just once
 	// something later re-applies the flag — see the note where this is
 	// measured, right before the run turns B on for the checks that need it.

@@ -3129,11 +3129,15 @@ void MultiReplayDock::rebuildEventColumns()
 	{
 		QHeaderView *hh = events_->horizontalHeader();
 		hh->setHighlightSections(false);
-		// FIXED WIDTHS (artifact tabella, decided CF0): # In Out Durata
-		// Commento + one camera column each. Fixed, not contents/stretch:
-		// the drawing declares the measure and the gate reads it back.
-		// Long comments elide (the cells already nowrap+ellipsis).
-		static const int kFixedW[kColFirstCam] = {44, 92, 92, 58, 130};
+		// FIXED WIDTHS (artifact tabella, decided CF0 — with two measured
+		// corrections): # In Out Commento keep 44/92/92/130; Durata is 64,
+		// not 58, because "00:10.00" in 11px mono is 53px of ink and the
+		// item's 4px side padding leaves 58-8=50 — truncated, as the
+		// operator reported. The old Stretch masked it by growing; fixed
+		// exposes it, so the measure has to be right. Item padding is 4px
+		// horizontal, not the drawing's 8: same arithmetic (92px In/Out
+		// holds "1:04:12.70" in 84).
+		static const int kFixedW[kColFirstCam] = {44, 92, 92, 64, 130};
 		for (int c = 0; c < kColFirstCam && c < events_->columnCount(); c++) {
 			hh->setSectionResizeMode(c, QHeaderView::Fixed);
 			hh->resizeSection(c, kFixedW[c]);

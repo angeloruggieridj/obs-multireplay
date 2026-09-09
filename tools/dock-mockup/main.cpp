@@ -4069,7 +4069,7 @@ int runChecks(QPalette pal, QApplication &app, const QString &outDir)
 				       "font-size: 11px"),
 			      label + ": table rows are 11px");
 			check(truleHas("QTableWidget#mrEvents::item {",
-				       "padding: 4px 8px"),
+				       "padding: 4px 4px"),
 			      label + ": Normale rows keep the drawn padding");
 		}
 		w->hide();

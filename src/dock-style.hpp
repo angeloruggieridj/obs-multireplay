@@ -1294,7 +1294,7 @@ QTableWidget#mrEvents {
    so one 11px for both); padding follows the density (4px/8px Normale,
    2px/8px Compatta). */
 QTableWidget#mrEvents::item {
-	padding: @cellPad@px 8px; border: 0;
+	padding: @cellPad@px 4px; border: 0;
 	font-family: "@ffMono@"; font-size: 11px;
 	border-bottom: 1px solid @border@; /* artifact tabella: hairline righe */
 }
