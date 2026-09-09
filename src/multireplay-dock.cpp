@@ -3123,8 +3123,12 @@ void MultiReplayDock::rebuildEventColumns()
 	for (size_t i = 0; i < cams.size(); i++) {
 		QTableWidgetItem *h = events_->horizontalHeaderItem(
 			kColFirstCam + (int)i * kColsPerCam);
-		if (h)
+		if (h) {
 			h->setData(Qt::UserRole, camLabels[(int)i]);
+			// The 44px column elides long names ("1 Media" is 46px):
+			// the tooltip keeps the whole "N Name" one hover away.
+			h->setToolTip(camLabels[(int)i]);
+		}
 	}
 	{
 		QHeaderView *hh = events_->horizontalHeader();
