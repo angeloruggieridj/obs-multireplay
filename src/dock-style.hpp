@@ -1334,6 +1334,12 @@ QTableWidget#mrEvents::indicator:checked {
 	background: @raise1@; color: @text@; padding: 3px 5px; margin: 0px;
 	border: 0; border-bottom: 1px solid @border@;
 	font-size: @headerFont@px; font-weight: 700; letter-spacing: 0.6px;
+	/* Left, like the drawing's header cells (flex default): a centered
+	   heading clips BOTH sides when it overflows, so "1 Media" lost its
+	   number on the left and its tail on the right. Left-aligned it loses
+	   only the tail, with an ellipsis, and the tooltip keeps the whole
+	   "N Name" (set where the columns are built). */
+	text-align: left;
 }
 #MultiReplayDock QHeaderView { background: @panel@; }
 #MultiReplayDock QTableCornerButton::section {

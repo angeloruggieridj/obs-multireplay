@@ -4066,6 +4066,8 @@ int runChecks(QPalette pal, QApplication &app, const QString &outDir)
 			      label + ": the table wears the bottom rounding");
 			check(truleHas("mrEvents::indicator {", "width: 12px"),
 			      label + ": angle boxes are 12px");
+			check(truleHas("QHeaderView::section", "text-align: left"),
+			      label + ": headings read left, never clipped both sides");
 			check(truleHas("QTableWidget#mrEvents::item {",
 				       "IBM Plex Mono"),
 			      label + ": table rows wear mono");
