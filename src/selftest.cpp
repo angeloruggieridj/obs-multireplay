@@ -57,6 +57,7 @@ extern "C" {
 #include <QFontMetrics>
 #include <QTabBar>
 #include <QTableWidget>
+#include <QHeaderView>
 #include <QAction>
 #include <QApplication>
 #include <QCoreApplication>
@@ -4591,6 +4592,17 @@ void runReopenPass(const std::string &outPath)
 	bool monitorGhostsReserved = false;
 	int monitorBayDelta = -1;
 	bool monitorBaysArePeers = false;
+	// TABLE (artifact d65aea66) — tools order, separators, event counter,
+	// fixed columns, compact sort key.
+	QString tableToolsOrder;
+	bool tableToolsOrdered = false;
+	int tableToolsSeps = -1;
+	bool tableToolsSeparated = false;
+	QString tableEventCount;
+	bool tableEventCountSane = false;
+	int tableCamW = -1;
+	bool tableColumnsFixed = false;
+	bool tableSortIsCompact = false;
 	int playKeyH = 0, stepKeyH = 0;
 	int keyPadL = 0, keyPadR = 0;
 	QString bandText, noticeText;
@@ -5222,6 +5234,123 @@ void runReopenPass(const std::string &outPath)
 					monitorGridRows == 2 &&
 					monitorGridCols == 1;
 			}
+			// ── TABLE TOOLS — artifact «Tabella eventi» (d65aea66), D1:
+			// counter ‖ sort ▲▼ ‖ clear export. The list tabs live in
+			// the toolbar by decision (spec 9, superseding 3's "con i
+			// tab lista"); everything else rides this bar, in this order.
+			{
+				auto *bar = dock->findChild<QWidget *>(
+					QStringLiteral("mrTableTools"));
+				const QStringList want{
+					QStringLiteral("eventCount"),
+					QStringLiteral("sortTime"),
+					QStringLiteral("moveUp"),
+					QStringLiteral("moveDown"),
+					QStringLiteral("deleteAll"),
+					QStringLiteral("export")};
+				struct Hit {
+					QString id;
+					int x;
+				};
+				QList<Hit> hits;
+				int seps = 0;
+				if (bar) {
+					for (QWidget *v : bar->findChildren<
+					     QWidget *>(
+						     Qt::FindDirectChildrenOnly)) {
+						if (v->objectName() ==
+						    QStringLiteral("mrSepLine")) {
+							seps++;
+							continue;
+						}
+						const QString id =
+							v->property(kKeyProperty)
+								.toString();
+						if (!want.contains(id) ||
+						    !v->isVisible())
+							continue;
+						hits.append(
+							{id, v->mapTo(dock, QPoint(0,
+										  0))
+								      .x()});
+					}
+				}
+				std::sort(hits.begin(), hits.end(),
+					  [](const Hit &a, const Hit &b) {
+						  return a.x < b.x;
+					  });
+				QStringList names;
+				for (const Hit &h : hits)
+					names.append(h.id);
+				tableToolsOrder = names.join(',');
+				tableToolsOrdered = (names == want);
+				tableToolsSeps = seps;
+				tableToolsSeparated = seps == 2;
+				// Compact sort key (D1 "⇅ Tempo", tooltip keeps the
+				// sentence): locale-proof, both locales share the
+				// glyph prefix.
+				for (QWidget *v : bar ? bar->findChildren<QWidget *>(
+								Qt::FindDirectChildrenOnly)
+						      : QList<QWidget *>()) {
+					if (v->property(kKeyProperty)
+						    .toString() !=
+					    QStringLiteral("sortTime"))
+						continue;
+					if (auto *b = qobject_cast<
+						    QAbstractButton *>(v))
+						tableSortIsCompact =
+							b->text().startsWith(
+								QStringLiteral(
+									"⇅"));
+					break;
+				}
+			}
+			// ── EVENT COUNTER — D1 "7 / 24": this list / everywhere.
+			{
+				auto *t = dock->findChild<QTableWidget *>(
+					QStringLiteral("mrEvents"));
+				auto *c = dock->findChild<QLabel *>(
+					QStringLiteral("mrEventCount"));
+				if (t && c) {
+					tableEventCount = c->text();
+					const QStringList parts =
+						tableEventCount.split(
+							QStringLiteral("/"));
+					if (parts.size() == 2) {
+						const int n = parts[0]
+								      .trimmed()
+								      .toInt();
+						const int m = parts[1]
+								      .trimmed()
+								      .toInt();
+						tableEventCountSane =
+							n == t->rowCount() &&
+							m >= n;
+					}
+				}
+			}
+			// ── FIXED COLUMNS — CF0 (44/92/92/58/130) + one camera
+			// column each (30, 28 Dense). The drawing declares the
+			// measure; this reads it back off the real header.
+			{
+				auto *t = dock->findChild<QTableWidget *>(
+					QStringLiteral("mrEvents"));
+				if (t && t->columnCount() >= 6) {
+					QHeaderView *hh = t->horizontalHeader();
+					static const int want[5] = {44, 92, 92,
+								    58, 130};
+					bool ok = true;
+					for (int c = 0; c < 5; c++)
+						ok = ok &&
+						     hh->sectionSize(c) ==
+							     want[c];
+					tableCamW = hh->sectionSize(5);
+					ok = ok &&
+					     (tableCamW == 30 ||
+					      tableCamW == 28);
+					tableColumnsFixed = ok;
+				}
+			}
 		});
 			obs_log(panelPaintsItself ? LOG_INFO : LOG_ERROR,
 				"[selftest] reopen: panel styled background: %s",
@@ -5587,7 +5716,9 @@ void runReopenPass(const std::string &outPath)
 		  toolbarMonitorsReadsWhole && toolbarPlusSelectsNew &&
 		  monitorBadgeSitsAt43 && monitorRingReserved &&
 		  monitorGridStacksPairs && monitorGhostsReserved &&
-		  monitorBaysArePeers;
+		  monitorBaysArePeers && tableToolsOrdered &&
+		  tableToolsSeparated && tableEventCountSane &&
+		  tableColumnsFixed && tableSortIsCompact;
 
 	// --- Put everything back ----------------------------------------------
 	// The operator's project first (so nothing is pointing into the test one),
@@ -5698,6 +5829,16 @@ void runReopenPass(const std::string &outPath)
 			  monitorGhostsReserved);
 	obs_data_set_bool(checks, "monitor_bays_are_peers",
 			  monitorBaysArePeers);
+	obs_data_set_bool(checks, "table_tools_ordered",
+			  tableToolsOrdered);
+	obs_data_set_bool(checks, "table_tools_separated",
+			  tableToolsSeparated);
+	obs_data_set_bool(checks, "table_event_count_sane",
+			  tableEventCountSane);
+	obs_data_set_bool(checks, "table_columns_fixed",
+			  tableColumnsFixed);
+	obs_data_set_bool(checks, "table_sort_is_compact",
+			  tableSortIsCompact);
 	obs_data_set_obj(root, "checks", checks);
 	obs_data_release(checks);
 	// Numbers, not checks: how much panel there was to centre the keys in.
@@ -5735,6 +5876,12 @@ void runReopenPass(const std::string &outPath)
 	obs_data_set_int(root, "monitor_grid_cols", monitorGridCols);
 	obs_data_set_int(root, "monitor_ghosts", monitorGhosts);
 	obs_data_set_int(root, "monitor_bay_delta", monitorBayDelta);
+	obs_data_set_string(root, "table_tools_order",
+			    tableToolsOrder.toUtf8().constData());
+	obs_data_set_int(root, "table_tools_seps", tableToolsSeps);
+	obs_data_set_string(root, "table_event_count",
+			    tableEventCount.toUtf8().constData());
+	obs_data_set_int(root, "table_cam_w", tableCamW);
 
 	if (!obs_data_save_json_safe(root, outPath.c_str(), "tmp", "bak"))
 		obs_log(LOG_ERROR, "[selftest] could not write report to %s",
@@ -5865,20 +6012,36 @@ void runSelfTest()
 	// notices): nothing measures yet, so the settle stall lands nowhere
 	// sensitive. ONE resize, not two: 1200 clears the ~600px floor on the
 	// first go, and every relayout at this size renders live previews the
-	// lag budget counts.
+	// lag budget counts. And none at all when the dock already stands Wide:
+	// a fresh collection usually docks it there, and floating a wide panel
+	// just to re-measure it spends lagged frames for nothing.
+	bool takeWide = false;
 	runOnUi([&]() {
 		auto *main = static_cast<QMainWindow *>(
 			obs_frontend_get_main_window());
 		MultiReplayDock *dock =
 			main ? main->findChild<MultiReplayDock *>() : nullptr;
-		if (QDockWidget *host = dock ? qobject_cast<QDockWidget *>(
-						       dock->parentWidget())
-					     : nullptr) {
-			host->setFloating(true);
-			host->resize(1200, 760);
-		}
+		takeWide = dock &&
+			   dock->panelMode() == PanelMode::Wide;
 	});
-	std::this_thread::sleep_for(std::chrono::milliseconds(700));
+	if (!takeWide) {
+		runOnUi([&]() {
+			auto *main = static_cast<QMainWindow *>(
+				obs_frontend_get_main_window());
+			MultiReplayDock *dock = main
+				? main->findChild<MultiReplayDock *>()
+				: nullptr;
+			if (QDockWidget *host =
+				    dock ? qobject_cast<QDockWidget *>(
+						   dock->parentWidget())
+					 : nullptr) {
+				host->setFloating(true);
+				host->resize(1200, 760);
+			}
+		});
+		std::this_thread::sleep_for(
+			std::chrono::milliseconds(700));
+	}
 
 	// --- CHANNEL B IS ABSENT FROM THE DOCK'S VERY FIRST PAINT ---------------
 	// Not "eventually hidden once something re-applies the flag" — absent from

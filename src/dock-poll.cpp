@@ -1721,7 +1721,7 @@ void MultiReplayDock::refreshEvents()
 	const bool haveOrigin = originNs != kNoInstant;
 	auto relTc = [originNs, haveOrigin](int64_t ns) {
 		if (!haveOrigin)
-			return QStringLiteral("--:--.---");
+			return QStringLiteral("--:--.--");
 		return formatTc(ns > originNs ? ns - originNs : 0);
 	};
 
@@ -2050,6 +2050,23 @@ void MultiReplayDock::refreshEvents()
 		}
 		reselecting_ = false;
 	}
+	updateEventCount();
+}
+
+void MultiReplayDock::updateEventCount()
+{
+	// Artifact tabella D1: "7 / 24" — events in this list / events
+	// everywhere. Store counts, not table rows: a search filter changes
+	// what is shown, not what the list holds.
+	if (!eventCount_)
+		return;
+	auto &store = EventStore::instance();
+	const int list = store.selectedList();
+	int total = 0;
+	for (int l = 1; l <= kEventLists; l++)
+		total += store.eventCount(l);
+	eventCount_->setText(
+		QString(QStringLiteral("%1 / %2")).arg(store.eventCount(list)).arg(total));
 }
 
 } // namespace multireplay

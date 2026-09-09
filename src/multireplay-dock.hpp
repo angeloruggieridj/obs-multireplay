@@ -664,6 +664,7 @@ private:
 	// --- engine interaction ---
 	void poll();             // periodic transport/status refresh
 	void refreshEvents();    // reload the selected list into the table
+	void updateEventCount(); // "N / M" label in the table tools bar
 	void refreshAngles();    // update angle button labels from camera displayName
 	// the reference controller: the 20 lists can be named ("Gol", "Falli"). Re-labels the tabs
 	// from the store; the selection is preserved.
@@ -1553,6 +1554,7 @@ private:
 	int toolbarArrangement_ = -1;
 	void arrangeToolbar(PanelMode m);
 	QTableWidget *events_ = nullptr;
+	QLabel *eventCount_ = nullptr; // "N / M" in the table tools bar
 	// (No inspector panel: the per-angle enable box, speed and comment are all
 	// in the table now, on the row and in the column they belong to.)
 	// TWO FLAGS, AND KEEPING THEM APART IS A BUG FIX, NOT TIDINESS.

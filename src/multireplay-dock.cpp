@@ -3154,15 +3154,26 @@ void MultiReplayDock::rebuildEventColumns()
 	{
 		QHeaderView *hh = events_->horizontalHeader();
 		hh->setHighlightSections(false);
-		for (int c = 0; c < events_->columnCount(); c++)
-			hh->setSectionResizeMode(c, QHeaderView::ResizeToContents);
-		// The camera columns take the slack and share it equally: each
-		// holds free text (the comment) and so has no natural width, and
-		// four angles that are the same width are four angles the eye can
-		// scan down without re-measuring.
-		for (int c = kColFirstCam; c < events_->columnCount(); c++)
-			hh->setSectionResizeMode(c, QHeaderView::Stretch);
-		hh->setMinimumSectionSize(34);
+		// FIXED WIDTHS (artifact tabella, decided CF0): # In Out Durata
+		// Commento + one camera column each. Fixed, not contents/stretch:
+		// the drawing declares the measure and the gate reads it back.
+		// Long comments elide (the cells already nowrap+ellipsis).
+		static const int kFixedW[kColFirstCam] = {44, 92, 92, 58, 130};
+		for (int c = 0; c < kColFirstCam && c < events_->columnCount(); c++) {
+			hh->setSectionResizeMode(c, QHeaderView::Fixed);
+			hh->resizeSection(c, kFixedW[c]);
+		}
+		// Camera columns share one width so the eye scans down without
+		// re-measuring (the old reason for Stretch); 28 only at the Dense
+		// level, 30 otherwise — the drawing's 30/28 for Normale/Compatta.
+		const int camW =
+			ReplayCore::instance().getConfig().tableDensity == 2 ? 28
+									     : 30;
+		for (int c = kColFirstCam; c < events_->columnCount(); c++) {
+			hh->setSectionResizeMode(c, QHeaderView::Fixed);
+			hh->resizeSection(c, camW);
+		}
+		hh->setMinimumSectionSize(20);
 	}
 	// AND THE ARRANGEMENT AGAIN. setColumnCount() re-initialises the header's
 	// sections, which takes the hidden state of OUT with it — so on a narrow
@@ -4783,8 +4794,10 @@ QWidget *MultiReplayDock::buildAngleCell(int eventId, int cam0, bool on,
 	// "no override; the slider decides", and printing it as a number lies
 	// whenever the slider is not at 100: with the slider on 25 the cell read
 	// 100% while the clip played at a quarter speed. A number the operator can
-	// read is worth having, but not a number that can be wrong.
-	sp->setText(pct > 0 ? QString("%1%").arg(pct) : QStringLiteral("--"));
+	// read is worth having, but not a number that can be wrong. No % sign in
+	// the cell (artifact tabella K1): the percent lives in the panel's speed
+	// readout, where the slider it belongs to is.
+	sp->setText(pct > 0 ? QString::number(pct) : QStringLiteral("--"));
 	sp->setProperty("mrPct", pct);
 	// Grey for "the slider decides", the panel's ordinary text for an override.
 	// A PROPERTY, not a per-widget style sheet: setStyleSheet on a single widget

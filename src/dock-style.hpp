@@ -399,7 +399,7 @@ R"QSS(
 #MultiReplayDock QWidget#mrMarca, #MultiReplayDock QWidget#mrReview,
 #MultiReplayDock QWidget#mrReviewGrid, #MultiReplayDock QWidget#mrPanelHeader,
 #MultiReplayDock QWidget#mrMarcaFoot, #MultiReplayDock QWidget#mrReviewFoot,
-#MultiReplayDock QWidget#mrRowFill, #MultiReplayDock QWidget#mrTableTools {
+#MultiReplayDock QWidget#mrRowFill {
 	background: transparent;
 }
 /* ── BOXED SUB-SECTIONS (spec §4) ────────────────────────────────
@@ -1286,13 +1286,25 @@ QSlider#mrSpeed::handle:horizontal:hover { background: @accentText@; }
 QTableWidget#mrEvents {
 	background: @sink2@; alternate-background-color: @sinkAlt@;
 	gridline-color: transparent; border: 1px solid @border@;
-	border-radius: 0; color: @text@; outline: 0;
+	border-bottom-left-radius: 6px; border-bottom-right-radius: 6px;
+	color: @text@; outline: 0;
 }
-QTableWidget#mrEvents::item { padding: 2px 5px; border: 0; }
-QTableWidget#mrEvents::item:selected { background: @rowSel@; color: @rowSelText@; }
+/* Joined to the tools bar above (which wears the top rounding): one frame
+   around bar+table, not two stacked boxes. The layout gap between them is 0
+   for the same reason. */
+QTableWidget#mrEvents::item {
+	padding: 2px 5px; border: 0;
+	border-bottom: 1px solid @border@; /* artifact tabella: hairline righe */
+}
+/* Selection is navy, never the whole row in orange (artifact tabella: the
+   orange is reserved for nothing here — PGM has its own stripe+cell). It
+   shares the tab fill: both say "the current thing", in every theme. */
+QTableWidget#mrEvents::item:selected {
+	background: @tabBar@; color: @accentText@;
+}
 /* The per-angle enable box, which in the reference controller IS the cell */
 QTableWidget#mrEvents::indicator {
-	width: 11px; height: 11px;
+	width: 12px; height: 12px; /* artifact tabella: .cb 12x12 */
 	border: 1px solid @textMuted@; background: @sink2@;
 }
 QTableWidget#mrEvents::indicator:checked {
@@ -1316,6 +1328,46 @@ QTableWidget#mrEvents::indicator:checked {
 #MultiReplayDock QHeaderView { background: @panel@; }
 #MultiReplayDock QTableCornerButton::section {
 	background: @raise1@; border: 0;
+}
+
+)QSS"
+/* MSVC caps a single string literal at 16380 bytes and truncates SILENTLY
+   past it (C2026): the table-tools block below pushed this chunk over, so
+   the sheet is cut here. Same rule as the breaks above — the compiler's,
+   not a section boundary. */
+R"QSS(
+/* ── table tools bar — artifact tabella .tbar2 ─────────────────────────
+   One frame with the table below (top rounding here, bottom rounding
+   there, no gap between). Keys wear .tk, not their taxonomy roles: this
+   bar is a toolbar, and a 14px transport glyph beside an 11px toggle is
+   the mixed row the taxonomy was written to prevent. */
+#MultiReplayDock QWidget#mrTableTools {
+	background: @sink1@;
+	border: 1px solid @border@;
+	border-radius: 5px 5px 0px 0px; border-bottom: 0;
+	padding: 5px 8px;
+	font-family: "@ffMono@"; font-size: 10px; color: @textMuted@;
+}
+#MultiReplayDock QWidget#mrTableTools QPushButton,
+#MultiReplayDock QWidget#mrTableTools QToolButton {
+	background: transparent; color: @text@;
+	border: 1px solid @borderHi@; border-radius: 3px;
+	padding: 1px 7px; font-family: "@ffMono@"; font-size: 10px;
+}
+#MultiReplayDock QWidget#mrTableTools QPushButton:hover,
+#MultiReplayDock QWidget#mrTableTools QToolButton:hover {
+	border-color: @text@; color: @text@;
+}
+#MultiReplayDock QWidget#mrTableTools QPushButton:checked {
+	background: @tabBar@; color: @accentText@; border-color: @tabBar@;
+}
+/* Elimina tutto is amber (artifact .tk.dz), not signal red: clearing a list
+   is destructive but takes nothing on air, and red has one meaning here. */
+#MultiReplayDock QWidget#mrTableTools QPushButton#mrDanger {
+	color: @warn@; border-color: @warn@;
+}
+#MultiReplayDock QWidget#mrTableTools QPushButton#mrDanger:hover {
+	background: @warn@; color: #ffffff; border-color: @warn@;
 }
 
 /* ── scrollbars ──────────────────────────────────────────── */

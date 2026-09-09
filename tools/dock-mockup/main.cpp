@@ -3966,6 +3966,48 @@ int runChecks(QPalette pal, QApplication &app, const QString &outDir)
 				      "QWidget#mrTileGhost")),
 			      label + ": reserved slots have a rule of their own");
 		}
+		// ── TABLE TOOLS + TABLE — artifact «Tabella eventi» (d65aea66):
+		// .tbar2 container, .tk keys, amber dz, navy selection, hairlines,
+		// joined bottom rounding. Same resolved-sheet reading as above.
+		{
+			const QString tqss = w->styleSheet();
+			const auto truleHas = [&](const char *sel,
+						  const QString &frag) {
+				const int at = tqss.indexOf(
+					QString::fromLatin1(sel));
+				if (at < 0)
+					return false;
+				return tqss.mid(at, 1200).contains(frag);
+			};
+			check(truleHas("QWidget#mrTableTools {",
+				       "border-radius: 5px 5px 0px 0px"),
+			      label + ": the tools bar wears the top rounding");
+			check(truleHas("QWidget#mrTableTools {",
+				       "padding: 5px 8px"),
+			      label + ": the tools bar keeps the drawn padding");
+			check(truleHas("mrTableTools QPushButton",
+				       "border-radius: 3px"),
+			      label + ": table keys are 3px-rounded");
+			check(truleHas("mrTableTools QPushButton",
+				       "padding: 1px 7px"),
+			      label + ": table keys keep the drawn padding");
+			check(truleHas("mrTableTools QPushButton#mrDanger",
+				       "border-color: " + w->sc_.warn),
+			      label + ": clearing a list is amber, not red",
+			      w->sc_.warn);
+			check(truleHas("mrEvents::item:selected",
+				       "background: " + w->sc_.tabBar),
+			      label + ": selection is navy, never orange",
+			      w->sc_.tabBar);
+			check(truleHas("QTableWidget#mrEvents::item {",
+				       "border-bottom: 1px"),
+			      label + ": rows keep their hairline");
+			check(truleHas("QTableWidget#mrEvents {",
+				       "border-bottom-left-radius: 6px"),
+			      label + ": the table wears the bottom rounding");
+			check(truleHas("mrEvents::indicator {", "width: 12px"),
+			      label + ": angle boxes are 12px");
+		}
 		w->hide();
 		delete w;
 	}

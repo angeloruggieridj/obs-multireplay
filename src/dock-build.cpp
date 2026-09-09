@@ -1860,13 +1860,29 @@ QWidget *MultiReplayDock::buildTableTools()
 	box->setObjectName(QStringLiteral("mrTableTools"));
 	auto *h = new QHBoxLayout(box);
 	h->setContentsMargins(0, 0, 0, 0);
-	h->setSpacing(4);
+	h->setSpacing(8); // artifact tabella: .tbar2{gap:8px}
+	// Event counter (artifact tabella D1: "7 / 24" — events in this list /
+	// events everywhere). The list tabs live in the toolbar (decided,
+	// gated); the count rides the tools bar's left end, where D1 parks it.
+	// Refreshed with the rows (updateEventCount, on every refreshEvents).
+	eventCount_ = new QLabel(box);
+	eventCount_->setObjectName(QStringLiteral("mrEventCount"));
+	setKeyId(eventCount_, QStringLiteral("eventCount"));
+	eventCount_->setToolTip(obs_module_text("Dock.EventCountHint"));
+	h->addWidget(eventCount_);
+	const auto mkSep = [box]() -> QWidget * {
+		auto *s = new QWidget(box);
+		s->setObjectName(QStringLiteral("mrSepLine"));
+		s->setFixedWidth(1);
+		s->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Expanding);
+		return s;
+	};
+	h->addWidget(mkSep());
 
-	// ⇅ Tempo — chronological auto-sort. It was a Settings-only checkbox;
-	// the spec wants it here where the reordering is. Toggling it writes the
-	// config the same way moveSelectedEvent() already does when it turns
-	// this OFF.
-	auto *sortBtn = new QPushButton(obs_module_text("Dock.SortByTime"), box);
+	// ⇅ Tempo — chronological auto-sort. Compact label (artifact D1), full
+	// sentence stays in the tooltip: a 22-character word in a .tk key is a
+	// key twice the width of its neighbours.
+	auto *sortBtn = new QPushButton(obs_module_text("Dock.SortTimeShort"), box);
 	sortBtn->setObjectName(QStringLiteral("mrToggle"));
 	sortBtn->setCheckable(true);
 	sortBtn->setCursor(Qt::PointingHandCursor);
@@ -1875,6 +1891,7 @@ QWidget *MultiReplayDock::buildTableTools()
 	sortBtn->setChecked(
 		ReplayCore::instance().getConfig().sortEventsByTime);
 	sortBtn->setFixedHeight(kKeyH);
+	useTextGlyph(sortBtn, QStringLiteral("⇅"));
 	connect(sortBtn, &QPushButton::toggled, this, [this](bool on) {
 		auto &core = ReplayCore::instance();
 		Config cfg = core.getConfig();
@@ -1901,6 +1918,7 @@ QWidget *MultiReplayDock::buildTableTools()
 		b->setFixedHeight(kKeyH);
 		h->addWidget(b);
 	}
+	h->addWidget(mkSep());
 
 	h->addStretch(1);
 
@@ -2231,7 +2249,7 @@ QWidget *MultiReplayDock::buildEvents()
 	box->setMinimumHeight(84);
 	auto *v = new QVBoxLayout(box);
 	v->setContentsMargins(0, 0, 0, 0);
-	v->setSpacing(2);
+	v->setSpacing(0); // barretta + tabella joined: one frame, no gap
 
 	events_ = new QTableWidget(this);
 	events_->setObjectName("mrEvents");

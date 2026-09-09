@@ -389,14 +389,22 @@ inline QString monoFamily()
 
 inline QString formatTc(int64_t ns)
 {
+	// Artifact tabella: hours when there are hours (1:04:12.70), MM:SS
+	// otherwise — and centiseconds everywhere (.cc), the millisecond third
+	// digit the old format printed never appears in either drawing.
 	if (ns < 0)
 		ns = 0;
-	int64_t totalMs = ns / 1000000;
-	int ms = (int)(totalMs % 1000);
-	int64_t totalS = totalMs / 1000;
-	int s = (int)(totalS % 60);
-	int m = (int)(totalS / 60);
-	return QString::asprintf("%02d:%02d.%03d", m, s, ms);
+	const int64_t totalCs = ns / 10000000;
+	const int cs = (int)(totalCs % 100);
+	const int64_t totalS = totalCs / 100;
+	const int s = (int)(totalS % 60);
+	const int64_t totalM = totalS / 60;
+	const int m = (int)(totalM % 60);
+	const int64_t h = totalM / 60;
+	if (h > 0)
+		return QString::asprintf("%lld:%02d:%02d.%02d", (long long)h, m,
+					 s, cs);
+	return QString::asprintf("%02d:%02d.%02d", m, s, cs);
 }
 
 // obs_data RAII helper
