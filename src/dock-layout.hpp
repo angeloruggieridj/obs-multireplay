@@ -563,6 +563,11 @@ inline constexpr int kTallyAirW = 3;  // .box.air{border-width:3px}
 inline constexpr int kTileRadius = 4; // .box{border-radius:4px}
 inline constexpr int kBadgeX = 4;     // .box .nm{left:4px}
 inline constexpr int kBadgeY = 3;     // .box .nm{top:3px}
+// Camera column width (artifact tabella K1: 40px tracks) plus the air the
+// operator asked for (2026-09-09): the K1 pair measures 36-38 and 40px
+// left it wall to wall. Lives here so the builder, the gate and the
+// mockup read one number.
+inline constexpr int kCamColW = 44;
 
 // `paneW` is the whole monitoring pane, `bays` how many big pictures share it,
 // `n` the configured cameras. `maxH` is how much HEIGHT the block may actually

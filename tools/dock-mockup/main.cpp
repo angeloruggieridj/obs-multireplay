@@ -3180,7 +3180,7 @@ QVector<QPair<QRect, bool>> menuRows(QMenu *m)
 	return rows;
 }
 
-// 3c. THE ROW IS ONE SIZE OF TYPE.
+// 3c. THE ROW READS ONE SIZE, THE BADGE ONE STEP SMALLER.
 //
 // Four of the columns are plain table items and two of them are widgets — the
 // comment and the per-angle speed — so they are drawn by two different things
@@ -3189,9 +3189,13 @@ QVector<QPair<QRect, bool>> menuRows(QMenu *m)
 // POINTS. The comment and the speed came out smaller than the id and the
 // in-point on their own row.
 //
-// Measured off the widgets, not off the rules: what a rule asks for and what
-// the painter uses are the same thing only when nothing else is talking, and
-// something else was.
+// That unity now stops at the badge BY DESIGN (artifact tabella: rows .68rem,
+// badge .64rem — metadata beside the tick, not a third word). So this asserts
+// two things: the comment IS the row's size, and the speed is exactly the
+// artifact's step smaller. Measured off the widgets, not off the rules.
+//
+// Updates 2026-09-09: badge 11px failed its own fit (see
+// checkAngleCellsFitColumn) — same box, smaller reading text.
 void checkRowTypeIsOneSize(Mock *w, const QString &label)
 {
 	QTableWidget *t = w->eventTable();
@@ -3199,32 +3203,24 @@ void checkRowTypeIsOneSize(Mock *w, const QString &label)
 		   label + ": there is a row to read"))
 		return;
 	const int itemPx = QFontInfo(t->font()).pixelSize();
-	int worst = 0;
-	QString detail;
-	const auto compare = [&](QWidget *cell, const char *what) {
-		if (!cell)
-			return;
-		const int px = QFontInfo(cell->font()).pixelSize();
-		if (std::abs(px - itemPx) > worst) {
-			worst = std::abs(px - itemPx);
-			detail = QString("%1 %2 px against the row's %3")
-					 .arg(QString::fromLatin1(what))
-					 .arg(px)
-					 .arg(itemPx);
-		}
-	};
-	compare(t->findChild<QWidget *>(QStringLiteral("mrAngleNote")), "comment");
-	compare(t->findChild<QWidget *>(QStringLiteral("mrAngleSpeed")), "speed");
-	check(worst == 0, label + ": the comment and the speed are the row's size",
-	      detail.isEmpty() ? QString("both %1 px").arg(itemPx) : detail);
+	auto *comment = t->findChild<QWidget *>(QStringLiteral("mrAngleNote"));
+	auto *speed = t->findChild<QWidget *>(QStringLiteral("mrAngleSpeed"));
+	const int commentPx = comment ? QFontInfo(comment->font()).pixelSize() : -1;
+	const int speedPx = speed ? QFontInfo(speed->font()).pixelSize() : -1;
+	check(comment && commentPx == itemPx,
+	      label + ": the comment is the row's size",
+	      QString("comment %1 against the row's %2").arg(commentPx).arg(itemPx));
+	check(speed && speedPx == itemPx - 1,
+	      label + ": the speed reads one step smaller",
+	      QString("speed %1 against the row's %2").arg(speedPx).arg(itemPx));
 }
 
-// K1 DECIDED CELL FITS ITS 40px COLUMN (artifact tabella: 12px tick +
-// badge in repeat(8,40px)). Measured off the widgets, not off the rules:
-// the pair's layout minimum (margins + spacing + tick + badge) against 40,
-// and every badge's text against its box — QPushButton clips instead of
-// eliding, so a wider text is silent truncation. The 30px column crushed
-// the tick out of the real table entirely, which is what this guards.
+// K1 DECIDED CELL FITS ITS COLUMN (artifact tabella: 12px tick + badge).
+// Measured off the widgets, not off the rules: the pair's layout minimum
+// (margins + spacing + tick + badge) against kCamColW, and every badge's
+// text against its box — QPushButton clips instead of eliding, so a wider
+// text is silent truncation. The 30px column crushed the tick out of the
+// real table entirely, which is what this guards.
 void checkAngleCellsFitColumn(Mock *w, const QString &label)
 {
 	QTableWidget *t = w->eventTable();
@@ -3248,8 +3244,8 @@ void checkAngleCellsFitColumn(Mock *w, const QString &label)
 			worstClip = std::max(worstClip, adv - room);
 		}
 	}
-	check(worstNeed <= 40, label + ": the tick+badge pair fits 40px",
-	      QString("needs %1").arg(worstNeed));
+	check(worstNeed <= kCamColW, label + ": the tick+badge pair fits its column",
+	      QString("needs %1 of %2").arg(worstNeed).arg(kCamColW));
 	check(worstClip <= 0, label + ": no badge text is clipped",
 	      QString("over by %1").arg(worstClip));
 }

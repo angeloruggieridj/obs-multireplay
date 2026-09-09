@@ -3143,11 +3143,9 @@ void MultiReplayDock::rebuildEventColumns()
 			hh->resizeSection(c, kFixedW[c]);
 		}
 		// Camera columns share one width so the eye scans down without
-		// re-measuring (the old reason for Stretch): 40px, the K1 decided
-		// cell (12px tick + badge) — not the density figures' 30/28, which
-		// pair with the rejected dot variant. The 30px column crushed the
-		// tick out of the cell entirely.
-		const int camW = 40;
+		// re-measuring (the old reason for Stretch): kCamColW (K1 tracks
+		// plus operator air — 40px left the pair wall to wall, 2026-09-09).
+		const int camW = kCamColW;
 		for (int c = kColFirstCam; c < events_->columnCount(); c++) {
 			hh->setSectionResizeMode(c, QHeaderView::Fixed);
 			hh->resizeSection(c, camW);

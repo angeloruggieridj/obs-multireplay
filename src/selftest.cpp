@@ -5446,7 +5446,7 @@ void runReopenPass(const std::string &outPath)
 						     hh->sectionSize(c) ==
 							     want[c];
 					tableCamW = hh->sectionSize(5);
-					ok = ok && tableCamW == 40;
+					ok = ok && tableCamW == multireplay::kCamColW;
 					tableColumnsFixed = ok;
 				}
 			}

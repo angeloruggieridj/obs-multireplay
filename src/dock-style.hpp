@@ -1221,7 +1221,11 @@ QTableWidget#mrEvents QPushButton#mrAngleSpeed {
 	background: transparent; border: 1px solid transparent;
 	color: @text@; padding: 0px 1px;
 	min-height: @cellInput@px;
-	font-family: "@ffMono@"; font-size: 11px;
+	/* A step smaller than the row (artifact tabella: .sp .64rem against
+	   .68rem rows): the badge is metadata beside the tick, not a third
+	   word in the row — and at row size its widest value crowds the K1
+	   cell wall to wall. */
+	font-family: "@ffMono@"; font-size: 10px;
 	text-align: center;
 }
 QTableWidget#mrEvents QPushButton#mrAngleSpeed:hover {
