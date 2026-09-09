@@ -1884,11 +1884,26 @@ void MultiReplayDock::refreshEvents()
 		// the whole match and can be called out loud.
 		const QString idText =
 			QString("%1").arg(r.id, idDigits, 10, QLatin1Char('0'));
-		QTableWidgetItem *idItem = setRoCell(
-			row, kColId,
-			playable ? idText : QStringLiteral("⚠ ") + idText,
-			Qt::AlignCenter);
+		// No footage behind the mark: an amber cell, never a "⚠ 0001"
+		// prefix — the glyph plus id is 41px of ink in the 44px id column
+		// and truncated, which is exactly how it shipped. Same language as
+		// the red PGM cell (background + tooltip, not color alone), and it
+		// costs zero width. The PGM loop below only rewrites rows whose
+		// active flag flipped, and an unplayable row can never be active,
+		// so this survives the ticks; a reused row is repainted here every
+		// rebuild, so nothing stale survives that way either.
+		QTableWidgetItem *idItem = setRoCell(row, kColId, idText, Qt::AlignCenter);
 		idItem->setData(Qt::UserRole, r.id);
+		// Hands off PGM-active rows: those wear rec from the poll loop,
+		// which only repaints on flips — clearing here would stick until
+		// the next one.
+		if (idItem->background() != QBrush(QColor(sc().rec))) {
+			const QBrush want = !playable
+						    ? QBrush(QColor(sc().warnBg))
+						    : QBrush();
+			if (idItem->background() != want)
+				idItem->setBackground(want);
+		}
 		// Reused rows carry the previous occupant's tooltip, so the
 		// "no footage" mark has to be cleared as well as set.
 		idItem->setToolTip(playable
