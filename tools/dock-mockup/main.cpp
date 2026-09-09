@@ -3880,6 +3880,35 @@ int runChecks(QPalette pal, QApplication &app, const QString &outDir)
 		check(kSpeedSliderMinW == 120, "panel: speed slider needs 120px",
 		      QString("w %1").arg(kSpeedSliderMinW));
 	}
+	// ── SHAPES — artifact «quattro layout» (2c8ded2c): Tall under 760px
+	// wide, Short under 540px tall, 40px of hysteresis either way.
+	// panelModeFor is pure (no Qt types past QSize), so units here.
+	{
+		using multireplay::panelModeFor;
+		check(panelModeFor(QSize(340, 900), PanelMode::Wide, 400) ==
+			      PanelMode::Tall,
+		      "shapes: a 340px column is Tall");
+		check(panelModeFor(QSize(1400, 340), PanelMode::Wide, 400) ==
+			      PanelMode::Short,
+		      "shapes: a 340px strip is Short");
+		check(panelModeFor(QSize(1500, 900), PanelMode::Wide, 400) ==
+			      PanelMode::Wide,
+		      "shapes: a 1500x900 panel is Wide");
+		check(panelModeFor(QSize(790, 900), PanelMode::Tall, 400) ==
+			      PanelMode::Tall,
+		      "shapes: Tall keeps its column to 800",
+		      QString("limit %1").arg(kTallMaxWidth + kModeHysteresis));
+		check(panelModeFor(QSize(790, 900), PanelMode::Wide, 400) ==
+			      PanelMode::Wide,
+		      "shapes: Wide does not fall into Tall early");
+		check(panelModeFor(QSize(1000, 570), PanelMode::Short, 400) ==
+			      PanelMode::Short,
+		      "shapes: Short keeps its strip to 580",
+		      QString("limit %1").arg(kShortMaxHeight + kModeHysteresis));
+		check(panelModeFor(QSize(1000, 570), PanelMode::Wide, 400) ==
+			      PanelMode::Wide,
+		      "shapes: Wide does not fall into Short early");
+	}
 
 	for (const Want &t : targets) {
 		auto *w = new Mock();
@@ -3904,6 +3933,49 @@ int runChecks(QPalette pal, QApplication &app, const QString &outDir)
 		const QString label = QString(t.name);
 		check(w->mode_ == t.mode, label + ": arrangement chosen",
 		      QString("got %1").arg(panelModeName(w->mode_)));
+		// ── STRIP SHAPES — the real TwoPanelStrip, driven by the real
+		// resizes above. What checkShortStripPacks / checkTallCollapsesToMore
+		// do NOT say: Wide has no tabs and stands the panels side by side;
+		// Short rides the left column over a horizontal body split.
+		{
+			auto *marca = w->findChild<QWidget *>(
+				QStringLiteral("mrMarca"));
+			auto *review = w->findChild<QWidget *>(
+				QStringLiteral("mrReview"));
+			auto *tabs = w->findChild<QTabBar *>(
+				QStringLiteral("mrPanelTabs"));
+			if (check(marca && review && tabs,
+				  label + ": both panels and their tabs exist")) {
+				if (t.mode == PanelMode::Wide) {
+					check(!tabs->isVisible(),
+					      label + ": no tabs in Wide");
+					const int marcaR =
+						marca->mapTo(w, QPoint(marca->width(), 0))
+							.x();
+					const int reviewL =
+						review->mapTo(w, QPoint(0, 0)).x();
+					check(marcaR <= reviewL + 2,
+					      label + ": MARCA stands left of REVIEW",
+					      QString("marca right %1 review left %2")
+						      .arg(marcaR)
+						      .arg(reviewL));
+				} else if (t.mode == PanelMode::Short) {
+					check(!tabs->isVisible(),
+					      label + ": no tabs in Short");
+					// The strip rides controls_, which Short
+					// reparents into the left column: two hops
+					// up from the strip is the column.
+					QWidget *up = w->strip_->parentWidget();
+					check(up &&
+						      up->parentWidget() ==
+							      w->leftCol_,
+					      label + ": the strip rides the left column");
+					check(w->bodySplit_->orientation() ==
+						      Qt::Horizontal,
+					      label + ": the body splits width in Short");
+				}
+			}
+		}
 		check(w->height() <= t.h, label + ": fits the height it was given",
 		      QString("asked %1, got %2").arg(t.h).arg(w->height()));
 		// THE PANEL HAS TO FIT A REAL OBS DOCK, and the claim is made

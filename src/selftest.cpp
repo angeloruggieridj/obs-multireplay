@@ -59,6 +59,7 @@ extern "C" {
 #include <QFontMetrics>
 #include <QTabBar>
 #include <QTableWidget>
+#include <QSplitter>
 #include <QHeaderView>
 #include <QAction>
 #include <QApplication>
@@ -4790,6 +4791,17 @@ void runReopenPass(const std::string &outPath)
 	// way the transport keys are driven through their buttons.
 	bool layoutMenuForcesShape = false;
 	QString layoutForcedModeName;
+	// C5 SHAPES — artifact «quattro layout» (2c8ded2c): Short stacks the
+	// strip in the left column over a horizontal body split; Tall shows
+	// the panel tabs and hides OUT; presets resize a floating window;
+	// fullscreen stays disabled while docked.
+	bool layoutShortStacksLeft = false;
+	bool layoutShortSplitsWidth = false;
+	bool layoutTallTabs = false;
+	bool layoutTallHidesOut = false;
+	bool layoutPresetSizes = false;
+	bool layoutFullscreenNeedsFloat = false;
+	QString layoutShapesNote;
 	// §6.5 — GALLERY SCALES A SECTION KEY WHEN FULLSCREEN. Every other
 	// fullscreen check here is about the WINDOW; this is the one that
 	// asks whether the panel actually noticed and grew its own keys for
@@ -5039,6 +5051,150 @@ void runReopenPass(const std::string &outPath)
 				"1200x760 window -> mode '%s': %s",
 				layoutForcedModeName.toUtf8().constData(),
 				layoutMenuForcesShape ? "forced" : "DID NOT FORCE");
+		}
+
+		// ── C5 SHAPES — artifact «quattro layout» (2c8ded2c). Driven
+		// through the real window: float, resize twice (a mode change
+		// rewrites the floor; only the second resize lands it), read.
+		if (host && dock) {
+			const auto floatResize = [&](int w, int h) {
+				runOnUi([&]() {
+					host->setFloating(true);
+					host->resize(w, h);
+				});
+				std::this_thread::sleep_for(
+					std::chrono::milliseconds(700));
+				runOnUi([&]() { host->resize(w, h); });
+				std::this_thread::sleep_for(
+					std::chrono::milliseconds(700));
+			};
+			// SHORT: the strip down the left column, body split by width.
+			floatResize(1000, 360);
+			runOnUi([&]() {
+				auto *bar = dock->findChild<QWidget *>(
+					QStringLiteral("mrBottomBar"));
+				auto *left = dock->findChild<QWidget *>(
+					QStringLiteral("mrLeftCol"));
+				auto *body = dock->findChild<QSplitter *>(
+					QStringLiteral("mrBodySplit"));
+				layoutShortStacksLeft =
+					dock->panelMode() == PanelMode::Short &&
+					bar && left &&
+					bar->parentWidget() == left;
+				layoutShortSplitsWidth =
+					body &&
+					body->orientation() == Qt::Horizontal;
+				layoutShapesNote += QString(
+					"short mode=%1 barInLeft=%2 bodyHoriz=%3; ")
+						.arg(QString::fromLatin1(
+							panelModeName(
+								dock->panelMode())))
+						.arg(bar && left &&
+						     bar->parentWidget() == left)
+						.arg(body &&
+						     body->orientation() ==
+							     Qt::Horizontal);
+			});
+			// TALL: tabs, and OUT folds away (IN + Durata already say
+			// where the clip is).
+			floatResize(340, 900);
+			runOnUi([&]() {
+				auto *tabs = dock->findChild<QTabBar *>(
+					QStringLiteral("mrPanelTabs"));
+				auto *events = dock->findChild<QTableWidget *>(
+					QStringLiteral("mrEvents"));
+				layoutTallTabs =
+					dock->panelMode() == PanelMode::Tall &&
+					tabs && tabs->isVisible();
+				layoutTallHidesOut =
+					dock->panelMode() == PanelMode::Tall &&
+					events &&
+					events->isColumnHidden(
+						MultiReplayDock::kColOut);
+				layoutShapesNote += QString(
+					" tall mode=%1 tabs=%2 outHidden=%3; ")
+						.arg(QString::fromLatin1(
+							panelModeName(
+								dock->panelMode())))
+						.arg(tabs && tabs->isVisible())
+						.arg(events &&
+						     events->isColumnHidden(
+							     MultiReplayDock::
+								     kColOut));
+			});
+			// PRESETS resize a floating window to their drawn size
+			// (within window-manager slack); the mode follows.
+			{
+				QAction *aShort = dock->findChild<QAction *>(
+					QStringLiteral("mrActLayoutShort"));
+				QAction *aTall = dock->findChild<QAction *>(
+					QStringLiteral("mrActLayoutTall"));
+				QAction *aAuto = dock->findChild<QAction *>(
+					QStringLiteral("mrActLayoutAuto"));
+				bool shortOk = false, tallOk = false;
+				if (aShort && aTall && aAuto) {
+					runOnUi([&]() { aShort->trigger(); });
+					std::this_thread::sleep_for(
+						std::chrono::milliseconds(700));
+					runOnUi([&]() {
+						const QSize s = host->size();
+						shortOk =
+							std::abs(s.width() -
+								 1000) <= 8 &&
+							std::abs(s.height() -
+								 360) <= 8 &&
+							dock->panelMode() ==
+								PanelMode::Short;
+						layoutShapesNote +=
+							QString("presetShort %1x%2; ")
+								.arg(s.width())
+								.arg(s.height());
+					});
+					runOnUi([&]() { aTall->trigger(); });
+					std::this_thread::sleep_for(
+						std::chrono::milliseconds(700));
+					runOnUi([&]() {
+						const QSize s = host->size();
+						tallOk =
+							std::abs(s.width() -
+								 340) <= 8 &&
+							std::abs(s.height() -
+								 900) <= 8 &&
+							dock->panelMode() ==
+								PanelMode::Tall;
+						layoutShapesNote +=
+							QString("presetTall %1x%2; ")
+								.arg(s.width())
+								.arg(s.height());
+						aAuto->trigger();
+					});
+					std::this_thread::sleep_for(
+						std::chrono::milliseconds(700));
+				}
+				layoutPresetSizes = shortOk && tallOk;
+			}
+			// FULLSCREEN stays disabled while docked: a docked panel
+			// has no window of its own to grow.
+			{
+				QAction *fs = dock->findChild<QAction *>(
+					QStringLiteral("mrActFullScreen"));
+				if (fs) {
+					runOnUi([&]() {
+						host->setFloating(false);
+					});
+					std::this_thread::sleep_for(
+						std::chrono::milliseconds(700));
+					runOnUi([&]() {
+						layoutFullscreenNeedsFloat =
+							!fs->isEnabled();
+						host->setFloating(true);
+					});
+					std::this_thread::sleep_for(
+						std::chrono::milliseconds(700));
+				}
+			}
+			obs_log(LOG_INFO, "[selftest] reopen: C5 shapes - %s",
+				layoutShapesNote.toUtf8().constData());
 		}
 
 		// ── THE CAMERAS ARE ON SCREEN IN BOTH ARRANGEMENTS ────────────────────
@@ -5995,7 +6151,10 @@ void runReopenPass(const std::string &outPath)
 		  panelShares4060 && panelHeaders34 && panelTransport40 &&
 		  panelTrim6060 && panelClip42 && panelBayLabel && panelModi152 &&
 		  panelSlider120 && panelTickAt75 && panelReadoutPct &&
-		  panelPlayNow64;
+		  panelPlayNow64 &&
+		  layoutShortStacksLeft && layoutShortSplitsWidth &&
+		  layoutTallTabs && layoutTallHidesOut && layoutPresetSizes &&
+		  layoutFullscreenNeedsFloat;
 
 	// --- Put everything back ----------------------------------------------
 	// The operator's project first (so nothing is pointing into the test one),
@@ -6049,6 +6208,15 @@ void runReopenPass(const std::string &outPath)
 			  fsDoubleClickIsInert);
 	obs_data_set_bool(checks, "layout_menu_forces_the_shape",
 			  layoutMenuForcesShape);
+	obs_data_set_bool(checks, "layout_short_stacks_left",
+			  layoutShortStacksLeft);
+	obs_data_set_bool(checks, "layout_short_splits_width",
+			  layoutShortSplitsWidth);
+	obs_data_set_bool(checks, "layout_tall_tabs", layoutTallTabs);
+	obs_data_set_bool(checks, "layout_tall_hides_out", layoutTallHidesOut);
+	obs_data_set_bool(checks, "layout_preset_sizes", layoutPresetSizes);
+	obs_data_set_bool(checks, "layout_fullscreen_needs_float",
+			  layoutFullscreenNeedsFloat);
 	obs_data_set_bool(checks, "camera_tiles_have_width_when_wide", tilesWideOk);
 	obs_data_set_bool(checks, "camera_tiles_have_width_in_a_column", tilesTallOk);
 	obs_data_set_bool(checks, "short_arrangement_is_reachable", shortReachable);
@@ -6181,6 +6349,8 @@ void runReopenPass(const std::string &outPath)
 	obs_data_set_int(root, "panel_tick_dx", panelTickDX);
 	obs_data_set_int(root, "panel_play_w", panelPlayW);
 	obs_data_set_int(root, "panel_now_w", panelNowW);
+	obs_data_set_string(root, "layout_shapes_note",
+			    layoutShapesNote.toUtf8().constData());
 
 	if (!obs_data_save_json_safe(root, outPath.c_str(), "tmp", "bak"))
 		obs_log(LOG_ERROR, "[selftest] could not write report to %s",

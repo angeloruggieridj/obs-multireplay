@@ -1151,6 +1151,9 @@ MultiReplayDock::MultiReplayDock(QWidget *parent) : QWidget(parent)
 		// side-by-side split had no equivalent there. Draggable, because an
 		// OBS dock can be a wide strip or a tall column.
 		splitter_ = new QSplitter(Qt::Vertical, this);
+		// Named, like its monitor sibling: the gate reads which way each
+		// one divides in each arrangement.
+		splitter_->setObjectName(QStringLiteral("mrBodySplit"));
 		splitter_->setChildrenCollapsible(false);
 		splitter_->setHandleWidth(5);
 		// THE LEFT COLUMN. In the wide and column arrangements it holds

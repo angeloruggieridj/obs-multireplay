@@ -824,6 +824,10 @@ QWidget *MultiReplayDock::buildPreview()
 	buildMultiview();
 
 	monitorSplit_ = new QSplitter(Qt::Horizontal, box);
+	// Named: the gate tells the two splitters apart by name (the body one
+	// divides height in Wide and width in Short; this one divides the
+	// bays from the camera tiles).
+	monitorSplit_->setObjectName(QStringLiteral("mrMonitorSplit"));
 	monitorSplit_->setChildrenCollapsible(false);
 	monitorSplit_->setHandleWidth(5);
 	monitorSplit_->addWidget(bays_);
