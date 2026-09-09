@@ -114,6 +114,16 @@ enum class Icon {
 // otherwise re-render its mark on every call, and poll() touches these.
 QIcon iconFor(Icon id, const QColor &tint, int px, qreal dpr = 1.0);
 
+// A 12px enable tick that owns its own geometry (artifact tabella K1: .cb).
+// A textless QCheckBox minimum is style pixel metrics (measured 31px under
+// OBS against ~12 in the mockup: PM_Indicator + label spacing + focus
+// frame), and no sheet rule reaches PM_* — pinning the widget clipped the
+// painting instead. A pixmap on a QLabel is exactly 12px on every style and
+// DPI: no indicator metrics, no focus frame, no label spacing. Shared (not
+// per-file) so the mockup draws the same mark the panel wears.
+QPixmap tickBoxPixmap(bool on, const QColor &edge, const QColor &fill,
+		      const QColor &mark, qreal dpr = 1.0);
+
 // ---------------------------------------------------------------------------
 // The four colours an icon is drawn in, and why a key needs all four
 // ---------------------------------------------------------------------------

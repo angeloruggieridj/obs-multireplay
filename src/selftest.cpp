@@ -66,6 +66,7 @@ extern "C" {
 #include <QTimer>
 #include <QToolButton>
 #include <QWheelEvent>
+#include <QMouseEvent>
 
 #include <algorithm>
 #include <array>
@@ -407,6 +408,8 @@ struct DockChecks {
 	// The tick the 30px column crushed (K1 cell): a visible angle box at
 	// least its own indicator wide. Measured in take, where rows live.
 	bool tableAnglesCheckable = false;
+	// Two presses through the real handler flip the tick there and back.
+	bool tableTickToggles = false;
 	// Nothing still referenced when OBS clears scene data: a held reference there
 	// becomes a dialog telling the operator a plugin leaked.
 	bool releasesSourcesOnCleanup = false;
@@ -2546,18 +2549,65 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 				rows = t->rowCount();
 				if (rows > 0) {
 					h = t->verticalHeader()->sectionSize(0);
-					// The tick the 30px column crushed: a
-					// visible angle box at least its own
-					// indicator wide. Lives here, not in
+					// THE ANGLE TICK IS A DRAWN 12px MARK
+					// (artifact K1: .cb): a QLabel wears
+					// exactly its pixmap on every style, so
+					// presence and width coincide — unlike
+					// the native box, whose minimum measured
+					// 31px under OBS. Lives here, not in
 					// reopen: it needs rows on screen, and
 					// reopen loads an empty list.
-					for (QCheckBox *b : t->findChildren<QCheckBox *>()) {
-						if (b->isVisible() &&
-						    b->width() >= 10) {
-							c.tableAnglesCheckable =
-								true;
+					QLabel *tick = nullptr;
+					for (QLabel *l :
+					     t->findChildren<QLabel *>()) {
+						if (l->objectName() ==
+							    QStringLiteral(
+								    "mrAngleTick") &&
+						    l->isVisible()) {
+							tick = l;
 							break;
 						}
+					}
+					c.tableAnglesCheckable =
+						tick && tick->width() == 12;
+					// Through the real handler: two presses
+					// flip the property there and back. No
+					// event loop runs inside this block, so
+					// no poll rebuild can swap the label
+					// mid-flight — and the two flips leave
+					// the store exactly as found.
+					if (tick) {
+						const auto press = [&]() {
+							const QPointF at(
+								tick->width() /
+									2.0,
+								tick->height() /
+									2.0);
+							QMouseEvent ev(
+								QEvent::MouseButtonPress,
+								at, at,
+								tick->mapToGlobal(
+									at.toPoint()),
+								Qt::LeftButton,
+								Qt::LeftButton,
+								Qt::NoModifier);
+							QCoreApplication::sendEvent(
+								tick, &ev);
+						};
+						const bool wasOn =
+							tick->property("ticked")
+								.toBool();
+						press();
+						const bool nowOn =
+							tick->property("ticked")
+								.toBool();
+						press();
+						const bool backOn =
+							tick->property("ticked")
+								.toBool();
+						c.tableTickToggles =
+							nowOn != wasOn &&
+							backOn == wasOn;
 					}
 				}
 			});
@@ -7315,6 +7365,7 @@ void runSelfTest()
 			  dockChecks.tableRowsAreDensity &&
 			  dockChecks.tableTextsFit &&
 			  dockChecks.tableAnglesCheckable &&
+			  dockChecks.tableTickToggles &&
 			  dockChecks.releasesSourcesOnCleanup &&
 			  dockChecks.found &&
 			  dockChecks.pollRuns && dockChecks.pollResponsive &&
@@ -7543,6 +7594,8 @@ void runSelfTest()
 	obs_data_set_int(checks, "dock_table_row_h", dockChecks.tableRowH);
 	obs_data_set_bool(checks, "dock_table_angles_checkable",
 			  dockChecks.tableAnglesCheckable);
+	obs_data_set_bool(checks, "dock_table_tick_toggles",
+			  dockChecks.tableTickToggles);
 	obs_data_set_bool(checks, "dock_table_texts_fit",
 			  dockChecks.tableTextsFit);
 	// ...and absent from the dock's very first paint, not just once

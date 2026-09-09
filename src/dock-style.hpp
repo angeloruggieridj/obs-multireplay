@@ -1313,15 +1313,10 @@ QTableWidget#mrEvents::indicator {
 	width: 12px; height: 12px; /* artifact tabella: .cb 12x12 */
 	border: 1px solid @textMuted@; background: @sink2@;
 }
-/* No chrome around the 12px: the K1 cell budgets 40px for tick+badge and a
-   textless box otherwise measures ~24 (focus frame, margins, the 5px label
-   spacing with no label in it) — the pair asked for 50 and the column
-   clipped the tick. Fixed 12 wide: the indicator is the whole widget here,
-   and 12px is still a target under pressure. */
-#MultiReplayDock QTableWidget QCheckBox {
-	spacing: 0px; margin: 0px; padding: 0px; outline: 0;
-	min-width: 12px; max-width: 12px;
-}
+/* (No table-scoped QCheckBox rule: the tick is a drawn pixmap on a label —
+   see tickBoxPixmap — precisely because no sheet rule reaches the style
+   pixel metrics a native box minimums from. The global checkbox rule above
+   serves the settings dialog, which keeps real boxes.) */
 QTableWidget#mrEvents::indicator:checked {
 	background: @pvw@; border-color: @text@;
 }

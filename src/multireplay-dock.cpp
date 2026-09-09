@@ -4747,10 +4747,24 @@ QWidget *MultiReplayDock::buildAngleCell(int eventId, int cam0, bool on,
 	h->setSpacing(2);
 	h->addStretch(1);
 
-	auto *box = new QCheckBox(w);
-	box->setChecked(on);
-	box->setToolTip(obs_module_text("Dock.AngleOnHint"));
-	h->addWidget(box);
+	auto *tick = new QLabel(w);
+	tick->setObjectName(QStringLiteral("mrAngleTick"));
+	// A DRAWN MARK, not a QCheckBox (artifact K1: .cb 12px). A textless box
+	// minimum is style pixel metrics — measured 31px under OBS against ~12
+	// in the mockup (PM_Indicator + label spacing + focus frame) — and no
+	// sheet rule reaches PM_*, so pinning the widget clipped the painting
+	// instead. A pixmap on a label is exactly 12px on every style and DPI.
+	tick->setPixmap(tickBoxPixmap(on, QColor(sc().textMuted),
+				      QColor(sc().pvw), QColor(Qt::white),
+				      tick->devicePixelRatioF()));
+	tick->setProperty("mrEventId", eventId);
+	tick->setProperty("mrCam1", cam0 + 1);
+	tick->setProperty("ticked", on);
+	tick->setToolTip(obs_module_text("Dock.AngleOnHint"));
+	tick->setAccessibleName(obs_module_text("Dock.AngleOnHint"));
+	tick->setCursor(Qt::PointingHandCursor);
+	tick->installEventFilter(this);
+	h->addWidget(tick);
 
 	// THE SPEED IS A LABEL - text, like the id and the duration beside it -
 	// and a click on it opens the list. It has been a drop-down and then a
@@ -4850,13 +4864,6 @@ QWidget *MultiReplayDock::buildAngleCell(int eventId, int cam0, bool on,
 	w->setProperty("mrEventId", eventId);
 	w->setProperty("mrCam", cam0);
 
-	const int a1 = cam0 + 1; // EventStore is 1-based
-
-	connect(box, &QCheckBox::toggled, this, [this, eventId, a1](bool v) {
-		if (refreshing_)
-			return;
-		EventStore::instance().setAngle(eventId, a1, v);
-	});
 	return w;
 }
 
@@ -4973,6 +4980,26 @@ bool MultiReplayDock::eventFilter(QObject *watched, QEvent *event)
 			}
 		}
 	}
+	// THE ANGLE TICK IS A DRAWN MARK ON A LABEL, so it cannot toggle
+	// itself: a press flips the store and repaints at once, and the poll
+	// rebuild converges on the same truth a moment later (self-healing if
+	// the two ever disagree).
+	if (watched && watched->objectName() == QStringLiteral("mrAngleTick") &&
+	    event->type() == QEvent::MouseButtonPress) {
+		auto *tick = qobject_cast<QLabel *>(watched);
+		const int id = tick ? tick->property("mrEventId").toInt() : 0;
+		const int a1 = tick ? tick->property("mrCam1").toInt() : 0;
+		if (tick && id > 0 && a1 > 0 && !refreshing_ &&
+		    EventStore::instance().toggleAngle(id, a1)) {
+			const bool nowOn = !tick->property("ticked").toBool();
+			tick->setProperty("ticked", nowOn);
+			tick->setPixmap(tickBoxPixmap(
+				nowOn, QColor(sc().textMuted), QColor(sc().pvw),
+				QColor(Qt::white), tick->devicePixelRatioF()));
+		}
+		return true;
+	}
+
 	// THE TABLE EATS THE KEYS THAT MATTER. A QTableWidget with focus takes
 	// Enter to open an editor and ←/→ to walk across columns, and the table is
 	// where the operator's focus is for most of a match — so without this the

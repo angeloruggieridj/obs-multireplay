@@ -490,6 +490,36 @@ QIcon iconFor(Icon id, const QColor &tint, int px, qreal dpr)
 	return ic;
 }
 
+QPixmap tickBoxPixmap(bool on, const QColor &edge, const QColor &fill,
+		      const QColor &mark, qreal dpr)
+{
+	const qreal r = (dpr > 0) ? dpr : 1.0;
+	QPixmap pm(QSize((int)(12 * r), (int)(12 * r)));
+	pm.setDevicePixelRatio(r);
+	pm.fill(Qt::transparent);
+	QPainter p(&pm);
+	p.setRenderHint(QPainter::Antialiasing, true);
+	if (on) {
+		p.setPen(Qt::NoPen);
+		p.setBrush(fill);
+		p.drawRoundedRect(QRectF(0.5, 0.5, 11, 11), 2, 2);
+		QPen pen(mark);
+		pen.setWidthF(1.6);
+		pen.setCapStyle(Qt::RoundCap);
+		pen.setJoinStyle(Qt::RoundJoin);
+		p.setPen(pen);
+		p.drawLine(QPointF(3.2, 6.2), QPointF(5.4, 8.4));
+		p.drawLine(QPointF(5.4, 8.4), QPointF(8.8, 3.6));
+	} else {
+		QPen pen(edge);
+		pen.setWidthF(1.0);
+		p.setPen(pen);
+		p.setBrush(Qt::NoBrush);
+		p.drawRoundedRect(QRectF(0.5, 0.5, 11, 11), 2, 2);
+	}
+	return pm;
+}
+
 void setKeyIcon(QAbstractButton *b, Icon id, const IconTints &tints, int px)
 {
 	if (!b)

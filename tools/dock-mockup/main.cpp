@@ -421,9 +421,17 @@ public:
 				ch->setContentsMargins(1, 0, 1, 0);
 				ch->setSpacing(2);
 				ch->addStretch(1);
-				auto *box = new QCheckBox(cell);
-				box->setChecked(r % 2 == 0);
-				ch->addWidget(box);
+				// Drawn tick, mirroring buildAngleCell: a native box
+				// minimums from style metrics the sheet cannot reach
+				// (31px measured under OBS), so the stand-in draws the
+				// same 12px mark the panel wears.
+				auto *tick = new QLabel(cell);
+				tick->setObjectName(QStringLiteral("mrAngleTick"));
+				tick->setPixmap(tickBoxPixmap(
+					r % 2 == 0, QColor(g_sc.textMuted),
+					QColor(g_sc.pvw), QColor(Qt::white),
+					tick->devicePixelRatioF()));
+				ch->addWidget(tick);
 				auto *sp = new QPushButton(cell);
 				sp->setObjectName(QStringLiteral("mrAngleSpeed"));
 				sp->setText(r % 3 ? QStringLiteral("--")
