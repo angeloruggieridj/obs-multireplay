@@ -3139,11 +3139,11 @@ void MultiReplayDock::rebuildEventColumns()
 			hh->resizeSection(c, kFixedW[c]);
 		}
 		// Camera columns share one width so the eye scans down without
-		// re-measuring (the old reason for Stretch); 28 only at the Dense
-		// level, 30 otherwise — the drawing's 30/28 for Normale/Compatta.
-		const int camW =
-			ReplayCore::instance().getConfig().tableDensity == 2 ? 28
-									     : 30;
+		// re-measuring (the old reason for Stretch): 40px, the K1 decided
+		// cell (12px tick + badge) — not the density figures' 30/28, which
+		// pair with the rejected dot variant. The 30px column crushed the
+		// tick out of the cell entirely.
+		const int camW = 40;
 		for (int c = kColFirstCam; c < events_->columnCount(); c++) {
 			hh->setSectionResizeMode(c, QHeaderView::Fixed);
 			hh->resizeSection(c, camW);
@@ -4739,7 +4739,9 @@ QWidget *MultiReplayDock::buildAngleCell(int eventId, int cam0, bool on,
 	// small controls in a column the table stretches, and packed to the left
 	// at the old spacing they read as a tick marooned a long way from the
 	// number it belongs to - two things, not one answer about one angle.
-	h->setContentsMargins(2, 0, 2, 0);
+	// 1px margins: the K1 cell is 40px and the pair budgets every one of
+	// them (12 tick + spacing + 22 badge, below).
+	h->setContentsMargins(1, 0, 1, 0);
 	h->setSpacing(2);
 	h->addStretch(1);
 
@@ -4755,15 +4757,18 @@ QWidget *MultiReplayDock::buildAngleCell(int eventId, int cam0, bool on,
 	// this table and so worth saying on none of them, and what it costs is
 	// the row height for the whole list.
 	//
-	// FIXED WIDTH so the column does not dance as "--" becomes "100%": eight
+	// FIXED WIDTH so the column does not dance as "--" becomes "125": eight
 	// rows of angles are scanned down, and a value that moves sideways between
-	// rows is read twice.
+	// rows is read twice. 22px: "125" in 11px Plex Mono (0.6em advance) is 20,
+	// plus the sheet's 1px side padding — and 12 tick + 2 gap + 22 + 2 margins
+	// is 38 of the K1 cell's 40. The old 44px no longer fits anywhere: it was
+	// sized for "100%" with a percent sign the cell no longer prints.
 	auto *sp = new QPushButton(w);
 	sp->setObjectName("mrAngleSpeed");
 	sp->setToolTip(obs_module_text("Dock.AngleSpeedHint"));
 	sp->setCursor(Qt::PointingHandCursor);
 	sp->setFocusPolicy(Qt::NoFocus);
-	sp->setFixedWidth(44);
+	sp->setFixedWidth(22);
 	const int pct = speed >= 0 ? (int)std::lround(speed * 100.0) : -1;
 	// "--", NOT "100%", for the default (Angelo, 2026-08-17). The value means
 	// "no override; the slider decides", and printing it as a number lies

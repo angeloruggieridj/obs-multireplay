@@ -1219,7 +1219,7 @@ QTableWidget#mrEvents QPushButton#mrNotePick:hover {
    it. The row's own size, like the comment beside it. */
 QTableWidget#mrEvents QPushButton#mrAngleSpeed {
 	background: transparent; border: 1px solid transparent;
-	color: @text@; padding: 0px 2px;
+	color: @text@; padding: 0px 1px;
 	min-height: @cellInput@px;
 	font-family: "@ffMono@"; font-size: 11px;
 	text-align: center;

@@ -48,6 +48,7 @@ extern "C" {
 #include <QScreen>
 #include <QObject>
 #include <QItemSelectionModel>
+#include <QCheckBox>
 #include <QComboBox>
 #include <QLineEdit>
 #include <QLabel>
@@ -399,6 +400,9 @@ struct DockChecks {
 	// the measured row height, with rows on screen to measure.
 	bool tableRowsAreDensity = false;
 	int tableRowH = -1;
+	// The tick the 30px column crushed (K1 cell): a visible angle box at
+	// least its own indicator wide. Measured in take, where rows live.
+	bool tableAnglesCheckable = false;
 	// Nothing still referenced when OBS clears scene data: a held reference there
 	// becomes a dialog telling the operator a plugin leaked.
 	bool releasesSourcesOnCleanup = false;
@@ -2536,8 +2540,22 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 				if (!t)
 					return;
 				rows = t->rowCount();
-				if (rows > 0)
+				if (rows > 0) {
 					h = t->verticalHeader()->sectionSize(0);
+					// The tick the 30px column crushed: a
+					// visible angle box at least its own
+					// indicator wide. Lives here, not in
+					// reopen: it needs rows on screen, and
+					// reopen loads an empty list.
+					for (QCheckBox *b : t->findChildren<QCheckBox *>()) {
+						if (b->isVisible() &&
+						    b->width() >= 10) {
+							c.tableAnglesCheckable =
+								true;
+							break;
+						}
+					}
+				}
 			});
 			c.tableRowH = h;
 			c.tableRowsAreDensity =
@@ -5366,8 +5384,10 @@ void runReopenPass(const std::string &outPath)
 				}
 			}
 			// ── FIXED COLUMNS — CF0 (44/92/92/58/130) + one camera
-			// column each (30, 28 Dense). The drawing declares the
-			// measure; this reads it back off the real header.
+			// column each at 40px (K1 decided cell: 12px tick + badge —
+			// not the density figures' 30/28, which pair with the
+			// rejected dot variant and crushed the tick out). The drawing
+			// declares the measure; this reads it back off the real header.
 			{
 				auto *t = dock->findChild<QTableWidget *>(
 					QStringLiteral("mrEvents"));
@@ -5381,9 +5401,7 @@ void runReopenPass(const std::string &outPath)
 						     hh->sectionSize(c) ==
 							     want[c];
 					tableCamW = hh->sectionSize(5);
-					ok = ok &&
-					     (tableCamW == 30 ||
-					      tableCamW == 28);
+					ok = ok && tableCamW == 40;
 					tableColumnsFixed = ok;
 				}
 			}
@@ -7250,6 +7268,7 @@ void runSelfTest()
 			  dockChecks.clipBarSpansSequence &&
 			  dockChecks.channelBIsOptional &&
 			  dockChecks.tableRowsAreDensity &&
+			  dockChecks.tableAnglesCheckable &&
 			  dockChecks.releasesSourcesOnCleanup &&
 			  dockChecks.found &&
 			  dockChecks.pollRuns && dockChecks.pollResponsive &&
@@ -7476,6 +7495,8 @@ void runSelfTest()
 	obs_data_set_bool(checks, "dock_table_rows_are_density",
 			  dockChecks.tableRowsAreDensity);
 	obs_data_set_int(checks, "dock_table_row_h", dockChecks.tableRowH);
+	obs_data_set_bool(checks, "dock_table_angles_checkable",
+			  dockChecks.tableAnglesCheckable);
 	// ...and absent from the dock's very first paint, not just once
 	// something later re-applies the flag — see the note where this is
 	// measured, right before the run turns B on for the checks that need it.
