@@ -3864,6 +3864,22 @@ int runChecks(QPalette pal, QApplication &app, const QString &outDir)
 		      "table: a stale level-2 falls back to Compatta",
 		      QString("floor %1").arg(stale.rowFloor));
 	}
+	// ── COMMAND PANEL — artifact «Pannello comandi» (bc1e332f): the numbers
+	// the tall keys, headers, Modi stack and slider wear, living once in
+	// dock-layout.hpp.
+	{
+		check(kHeaderH == 34, "panel: headers stand 34px",
+		      QString("h %1").arg(kHeaderH));
+		check(kModStackW == 152, "panel: Modi stack is 152px",
+		      QString("w %1").arg(kModStackW));
+		check(kTrimKeyW == 60, "panel: trim keys are 60px wide",
+		      QString("w %1").arg(kTrimKeyW));
+		check(kTransportKeyH == 40 && kClipKeyH == 42,
+		      "panel: tall keys are 40/42px",
+		      QString("%1/%2").arg(kTransportKeyH).arg(kClipKeyH));
+		check(kSpeedSliderMinW == 120, "panel: speed slider needs 120px",
+		      QString("w %1").arg(kSpeedSliderMinW));
+	}
 
 	for (const Want &t : targets) {
 		auto *w = new Mock();
@@ -4087,6 +4103,56 @@ int runChecks(QPalette pal, QApplication &app, const QString &outDir)
 			check(truleHas("QTableWidget#mrEvents::item {",
 				       "padding: 4px 4px"),
 			      label + ": Normale rows keep the drawn padding");
+			// ── COMMAND PANEL SHEET — artifact «Pannello comandi».
+			check(truleHas("QWidget#mrMarcaFoot {", "border-top: 1px"),
+			      label + ": the health footer keeps its top edge");
+			check(truleHas("QWidget#mrMarcaFoot {", "padding-top: 6px"),
+			      label + ": the health footer keeps its breathing room");
+			check(truleHas("QWidget#mrBlockFrame {", "border-radius: 7px"),
+			      label + ": section boxes are 7px-rounded");
+			check(truleHas("QWidget#mrMarca {",
+				       "border-color: " + w->sc_.recBg),
+			      label + ": MARCA wears the record wash",
+			      w->sc_.recBg);
+			check(truleHas("QWidget#mrChanSeg {", "border-radius: 4px"),
+			      label + ": the bay selector is one control");
+			check(truleHas("mrChanSel[segPos=\"last\"]", "border-right: 0"),
+			      label + ": segments divide once, not twice");
+			check(truleHas("QPushButton#mrWarn {",
+				       "border-color: " + w->sc_.warn),
+			      label + ": clearing a mark is amber, not red",
+			      w->sc_.warn);
+			check(truleHas("QPushButton#mrSpeedChip {", "min-width: 34px"),
+			      label + ": speed chips keep the drawn width");
+			check(truleHas("mrSpeed::handle:horizontal", "width: 11px"),
+			      label + ": the thumb is 11px");
+			check(truleHas("QLabel#mrSpeedTick", "background:"),
+			      label + ": the 100 tick has paint");
+		}
+		// ── SOLO-B CENTERING — artifact .livebody.center. Drives the real
+		// TwoPanelStrip (which this tool builds for real): spacers in,
+		// spacers out, and the count proves the index math both ways.
+		{
+			QWidget *marca = w->findChild<QWidget *>(
+				QStringLiteral("mrMarca"));
+			if (check(marca != nullptr, label + ": MARCA exists")) {
+				auto *col = qobject_cast<QVBoxLayout *>(
+					marca->layout());
+				if (check(col != nullptr,
+					  label + ": MARCA column exists")) {
+					const int before = col->count();
+					w->strip_->setMarcaCentered(true);
+					check(col->count() == before + 2,
+					      label + ": centering reserves two spacers",
+					      QString("%1 -> %2")
+						      .arg(before)
+						      .arg(col->count()));
+					w->strip_->setMarcaCentered(false);
+					check(col->count() == before,
+					      label + ": uncentering restores the column",
+					      QString("%1").arg(col->count()));
+				}
+			}
 		}
 		w->hide();
 		delete w;

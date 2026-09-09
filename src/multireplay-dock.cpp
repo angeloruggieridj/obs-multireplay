@@ -3035,6 +3035,10 @@ void MultiReplayDock::applyChannelBVisibility()
 	// KeyBlock::setSectionVisible().
 	if (angleBlock_)
 		angleBlock_->setSectionVisible(on);
+	// One bay: the two remaining sections stand at natural height, centred
+	// (artifact .livebody.center) — there is nothing left to align to.
+	if (strip_)
+		strip_->setMarcaCentered(!on);
 	// The section is a row shorter or a row longer, which the strip only
 	// learns when the block is re-measured.
 	if (strip_ && angleBlock_)
@@ -5003,6 +5007,11 @@ bool MultiReplayDock::eventFilter(QObject *watched, QEvent *event)
 		}
 		return true;
 	}
+
+	// THE SPEED TICK TRACKS ITS DIAL (artifact .track.vel .tick).
+	if (watched == speed_ && speed_ &&
+	    event->type() == QEvent::Resize)
+		positionSpeedTick();
 
 	// THE TABLE EATS THE KEYS THAT MATTER. A QTableWidget with focus takes
 	// Enter to open an editor and ←/→ to walk across columns, and the table is

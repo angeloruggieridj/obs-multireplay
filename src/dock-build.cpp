@@ -982,19 +982,25 @@ KeyBlock *MultiReplayDock::buildAngleMatrix()
 QWidget *MultiReplayDock::buildChannelRow()
 {
 	auto *sel = new QWidget(this);
+	// ONE segmented control (artifact .seg: shared border, dividers between
+	// keys), not three loose keys: the question — which bay do these keys
+	// drive — is one question. segPos tells the sheet which corners stay
+	// square; ⇄ sits apart, as drawn.
+	sel->setObjectName(QStringLiteral("mrChanSeg"));
 	auto *h = new QHBoxLayout(sel);
 	h->setContentsMargins(0, 0, 0, 0);
-	h->setSpacing(3);
-
+	h->setSpacing(0);
 	chanSel_ = new QButtonGroup(this);
 	chanSel_->setExclusive(true);
-	// A↔B, not A|B: it says what the mode DOES — a command goes to both bays
-	// — rather than naming two things with a bar between them.
+	// A|B, as drawn — the spec's label wins over the old comment's reading.
 	const std::pair<const char *, int> chanChoices[] = {
-		{"A↔B", 2}, {"A", 0}, {"B", 1}};
+		{"A|B", 2}, {"A", 0}, {"B", 1}};
+	const char *segPos[] = {"first", "mid", "last"};
+	int si = 0;
 	for (const auto &[label, code] : chanChoices) {
 		auto *b = new QPushButton(QString::fromUtf8(label), sel);
 		b->setObjectName("mrChanSel");
+		b->setProperty("segPos", segPos[si++]);
 		b->setCheckable(true);
 		b->setChecked(code == 0); // A, as it has always been
 		b->setFixedSize(kChanKeyWidth, kKeyH);
@@ -1038,27 +1044,60 @@ void MultiReplayDock::buildSpeedDial()
 	// be handed any of that from a Stream Deck.
 	speed_->setRange(25, 125);
 	speed_->setValue(100);
-	speed_->setMinimumWidth(220);
+	speed_->setMinimumWidth(kSpeedSliderMinW); // artifact: 120px
 	speed_->setMinimumHeight(26);
 	speed_->setTickPosition(QSlider::TicksBelow);
 	speed_->setTickInterval(25);
 	speed_->setToolTip(obs_module_text("Dock.SpeedSliderHint"));
 	speed_->setCursor(Qt::PointingHandCursor);
 
-	speedLbl_ = new QLabel(QStringLiteral("1.00\xc3\x97"), this);
+	// THE 100 TICK (artifact .track.vel .tick{left:75%}): a single 2x13px
+	// mark where the default sits — Qt's native ticks draw every interval
+	// instead (and are off). Transparent to the mouse: the dial drags under
+	// it. Repositioned on every resize (eventFilter).
+	speedTick_ = new QLabel(speed_);
+	speedTick_->setObjectName(QStringLiteral("mrSpeedTick"));
+	speedTick_->setFixedSize(2, 13);
+	speedTick_->setAttribute(Qt::WA_TransparentForMouseEvents, true);
+	// The tick tracks the dial's size, so the filter watches the dial.
+	speed_->installEventFilter(this);
+	positionSpeedTick();
+
+	speedLbl_ = new QLabel(QStringLiteral("100%"), this);
 	speedLbl_->setObjectName("mrTimecode");
 	speedLbl_->setFont(QFont(monoFamily()));
 	speedLbl_->setMinimumWidth(42);
 	speedLbl_->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+	setKeyId(speedLbl_, QStringLiteral("speedReadout"));
 
 	// LIVE, while the thumb moves. The speed of a replay is judged by
 	// watching the picture, so applying it only on release meant aiming —
 	// and applyReplaySpeed() now re-speeds the clip on air instead of
 	// restarting it, which is what makes a dragged dial usable at all.
 	connect(speed_, &QSlider::valueChanged, this, [this](int val) {
-		speedLbl_->setText(QString::asprintf("%.2f\xc3\x97", val / 100.0));
+		speedLbl_->setText(QString::number(val) + QStringLiteral("%"));
 		applyReplaySpeed(val);
 	});
+}
+
+void MultiReplayDock::positionSpeedTick()
+{
+	// 100 on a 25..125 dial. Asked of the style itself
+	// (sliderPositionFromValue), not of a fraction: the tick must sit where
+	// THIS style puts the thumb centre at 100, Yami or not, and only the
+	// style knows its own groove insets. Centred: the 2px tick straddles
+	// the 11px thumb's middle.
+	if (!speed_ || !speedTick_)
+		return;
+	const int w = speed_->width();
+	const int h = speed_->height();
+	const int span = std::max(1, w - 11);
+	int pos = (3 * span) / 4;
+	if (QStyle *st = speed_->style())
+		pos = st->sliderPositionFromValue(speed_->minimum(),
+						  speed_->maximum(), 100, span);
+	speedTick_->move(std::max(0, pos + 11 / 2 - 1),
+			 std::max(0, (h - 13) / 2));
 }
 
 // ---------------------------------------------------------------------------
@@ -1099,10 +1138,13 @@ KeyBlock *MultiReplayDock::buildReviewHeader()
 		ReplayCore::instance().getConfig().toOutputOnPlay);
 	toOutputBtn_->setFixedHeight(kKeyH);
 
-	// name (2) · event id centred, growing (3) · IN OUTPUT (2), far right.
-	blk->setShapes({{Cell(name, 2, false), Cell(reviewEventLbl_, 3),
+	// event id centred and growing, IN OUTPUT far right. The title rides
+	// the event's own width (artifact .sub.review .hd packs right with the
+	// title centred over the row): event takes the slack, name and key hug
+	// the right edge.
+	blk->setShapes({{Cell(reviewEventLbl_, 4), Cell(name, 1, false),
 			 Cell(toOutputBtn_, 2, false)}},
-		       {{Cell(name, 2, false), Cell(reviewEventLbl_, 3),
+		       {{Cell(reviewEventLbl_, 4), Cell(name, 1, false),
 			 Cell(toOutputBtn_, 2, false)}});
 	return blk;
 }
@@ -1126,7 +1168,7 @@ KeyBlock *MultiReplayDock::buildPlayback()
 	connect(playSel, &QPushButton::clicked, this,
 		&MultiReplayDock::playSelected);
 
-	// NOW — a destination, not a modifier: drop the replay, go back to the
+	// NOW — a destination, not a modifier: drop the replay and go back to the
 	// live edge. Keeps the WORD, drawn big and red even at rest, the same
 	// size as PLAY (spec §4).
 	nowBtn_ = new QPushButton(QStringLiteral("NOW"), this);
@@ -1135,7 +1177,7 @@ KeyBlock *MultiReplayDock::buildPlayback()
 	nowBtn_->setCursor(Qt::PointingHandCursor);
 	nowBtn_->setToolTip(obs_module_text("Dock.JumpToNow"));
 	setKeyId(nowBtn_, QStringLiteral("now"));
-	nowBtn_->setMinimumWidth(56);
+	nowBtn_->setMinimumWidth(64); // same taglia as PLAY (artifact: same class)
 	nowBtn_->setMaximumHeight(QWIDGETSIZE_MAX);
 	connect(nowBtn_, &QPushButton::clicked, this, [this]() {
 		// the reference controller NOW: drop the replay and watch the
@@ -1163,6 +1205,10 @@ KeyBlock *MultiReplayDock::buildPlayback()
 KeyBlock *MultiReplayDock::buildModes()
 {
 	auto *blk = new KeyBlock(obs_module_text("Dock.ZoneModes"), this);
+	// Fixed-width stack (artifact .modstack{width:152px}): both rows keep
+	// their length with or without CAM.
+	blk->setObjectName(QStringLiteral("mrModesBox"));
+	blk->setFixedWidth(kModStackW);
 
 	// ↺ "instantly play last event" — a distinct mark from LOOP (Icon::
 	// PlayLast, not Icon::Loop) so the two do not read as the same thing.
@@ -1301,12 +1347,13 @@ KeyBlock *MultiReplayDock::buildReviewTransport()
 	stopBtn_ = iconBtn(Icon::Stop, "stop", obs_module_text("Dock.Stop"),
 			   this);
 
-	// ENLARGED (~40 px, spec §4: "tasti ingranditi, come quelli di
-	// Rifinitura"): these are icon-only and pressed under time pressure.
+	// ENLARGED (artifact .key.tlg 40px tall, 42 wide): icon-only keys pressed
+	// under time pressure. The height rides mrKeyH (KeyBlock::apply pins it),
+	// not setFixedHeight — a fixed height here would fight the pin.
 	for (QPushButton *b : {stepBackBtn, stepBtn, revBtn, playPauseBtn_,
 			       stopBtn_}) {
-		b->setFixedHeight(kKeyH);
-		b->setMinimumWidth(40);
+		b->setProperty(kKeyHeightProperty, kTransportKeyH);
+		b->setMinimumWidth(42);
 	}
 
 	connect(playPauseBtn_, &QPushButton::clicked, this, [this]() {
@@ -1362,8 +1409,9 @@ KeyBlock *MultiReplayDock::buildTrim()
 	connect(trimOut, &QPushButton::clicked, this,
 		[this]() { setSelectedPoint(false); });
 	for (QPushButton *b : {trimIn, trimOut}) {
-		b->setFixedHeight(kKeyH);
-		b->setMinimumWidth(40);
+		// 60px wide fixed and equal, 40 tall like transport (.key.tlg).
+		b->setProperty(kKeyHeightProperty, kTransportKeyH);
+		b->setMinimumWidth(kTrimKeyW);
 	}
 
 	// Same fixed width, side by side (spec §4).
@@ -1549,10 +1597,16 @@ QWidget *MultiReplayDock::buildBottomBar()
 	// way round).
 	auto *marcaFoot = new QWidget(box);
 	marcaFoot->setObjectName(QStringLiteral("mrMarcaFoot"));
-	marcaFoot->setFixedHeight(kKeyH);
+	// 26px of badge + the sheet's 6px padding-top above the edge: 32 total
+	// (artifact .subfoot{min-height:26px;padding-top:6px}). A fixed 26 with
+	// padding would clip the 26px badge it carries.
+	marcaFoot->setFixedHeight(kKeyH + 6);
 	auto *mfl = new QHBoxLayout(marcaFoot);
 	mfl->setContentsMargins(0, 0, 0, 0);
-	mfl->addWidget(healthBtn_, 0, Qt::AlignLeft | Qt::AlignVCenter);
+	// Centred (artifact .subfoot{justify-content:center}): a lone badge
+	// hugging the left edge reads as a layout that gave up halfway.
+	mfl->addStretch(1);
+	mfl->addWidget(healthBtn_, 0, Qt::AlignVCenter);
 	mfl->addStretch(1);
 	strip_->setFooters(marcaFoot, reviewFoot);
 
@@ -1802,20 +1856,22 @@ KeyBlock *MultiReplayDock::buildSpeedBlock()
 		connect(b, &QPushButton::clicked, this, [this, p]() {
 			QSignalBlocker block(speed_);
 			speed_->setValue(p);
-			speedLbl_->setText(
-				QString::asprintf("%.2f\xc3\x97", p / 100.0));
+			speedLbl_->setText(QString::number(p) +
+					   QStringLiteral("%"));
 			applyReplaySpeed(p);
 		});
 		b->setFixedHeight(kKeyH);
 		chips << b;
 	}
-	// ONE WIDTH for the six of them: "2x" is two characters and "100%" is
-	// four, so left to their labels they came out a ragged row of six
-	// different keys - six sizes for six values of one setting, with the
-	// widest reading as the most important.
+	// ONE WIDTH for the five of them: "25%" is three characters and "100%"
+	// is four, so left to their labels they came out a ragged row — five
+	// sizes for five values of one setting, with the widest reading as the
+	// most important. 34px floor (artifact .seg .key).
+	for (QPushButton *b : chips)
+		b->setMinimumWidth(34);
 	equaliseKeyWidths(chips);
 
-	speed_->setMinimumWidth(110);
+	speed_->setMinimumWidth(kSpeedSliderMinW);
 	// sectionKeyH(): the dial is a QSlider, not a button, so it never goes
 	// through KeyBlock::apply()'s per-button pin — this is its only source
 	// of height, gallery scale included.
@@ -2176,6 +2232,10 @@ KeyBlock *MultiReplayDock::buildQuickClip()
 		auto *b = compactBtn(QString("\xE2\x88\x92%1s").arg(sec), this,
 				     "mrFn");
 		setKeyId(b, QString("mark%1").arg(sec));
+		// Big keys (artifact .key.big 42x78): height rides mrKeyH, width
+		// is a minimum (labels differ per locale).
+		b->setProperty(kKeyHeightProperty, kClipKeyH);
+		b->setMinimumWidth(78);
 		connect(b, &QPushButton::clicked, this, [this, sec]() {
 			const int64_t t = markTimeNs();
 			if (!markable(t))
@@ -2184,7 +2244,6 @@ KeyBlock *MultiReplayDock::buildQuickClip()
 							 currentAngle1() - 1);
 			refreshEvents();
 		});
-		b->setFixedHeight(kKeyH);
 		presets << b;
 	}
 	blk->setShapes({{Cell(presets[0]), Cell(presets[1]), Cell(presets[2])}},
@@ -2203,8 +2262,12 @@ KeyBlock *MultiReplayDock::buildManualClip()
 	// "play the events".
 	auto *in = compactBtn(obs_module_text("Dock.MarkIn"), this);
 	setKeyId(in, QStringLiteral("markIn"));
+	in->setProperty(kKeyHeightProperty, kClipKeyH);
+	in->setMinimumWidth(78);
 	auto *out = compactBtn(obs_module_text("Dock.MarkOut"), this);
 	setKeyId(out, QStringLiteral("markOut"));
+	out->setProperty(kKeyHeightProperty, kClipKeyH);
+	out->setMinimumWidth(78);
 	connect(in, &QPushButton::clicked, this, [this]() {
 		const int64_t t = markTimeNs();
 		if (!markable(t))
@@ -2221,19 +2284,20 @@ KeyBlock *MultiReplayDock::buildManualClip()
 		refreshEvents();
 	});
 
-	// ✕ Annulla — the one destructive key of the group, in the danger
-	// colour. #mrDanger colours a label and this key has none, so it also
-	// gets the icon role.
+	// ✕ Annulla — the one destructive key of the group, AMBER (artifact
+	// .key.xcancel / spec §4): clearing a mark destroys work but takes
+	// nothing on air, and red has one meaning here. Small (.key.sm 24x32).
 	auto *cancel = iconBtn(Icon::Cancel, "markCancel",
-			       obs_module_text("Dock.Cancel"), this, "mrDanger");
-	setKeyIconRole(cancel, Icon::Cancel, IconRole::Danger, tintsFor(sc()));
+			       obs_module_text("Dock.Cancel"), this, "mrWarn");
+	setKeyIconRole(cancel, Icon::Cancel, IconRole::Warn, tintsFor(sc()));
+	cancel->setProperty(kKeyHeightProperty, 24);
+	cancel->setMinimumWidth(32);
 	connect(cancel, &QPushButton::clicked, this, [this]() {
 		EventStore::instance().markCancel();
 		refreshEvents();
 	});
 
-	for (QPushButton *b : {in, out, cancel})
-		b->setFixedHeight(kKeyH);
+	// Heights ride mrKeyH (set above), pinned by KeyBlock::apply().
 	blk->setShapes({{Cell(in), Cell(out), Cell(cancel)}},
 		       {{Cell(in), Cell(out), Cell(cancel)}});
 	return blk;

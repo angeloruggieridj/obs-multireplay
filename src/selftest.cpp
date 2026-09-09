@@ -52,6 +52,7 @@ extern "C" {
 #include <QComboBox>
 #include <QLineEdit>
 #include <QLabel>
+#include <QSlider>
 #include <QPushButton>
 #include <QString>
 #include <QFontInfo>
@@ -72,6 +73,7 @@ extern "C" {
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -4752,6 +4754,28 @@ void runReopenPass(const std::string &outPath)
 	int tableCamW = -1;
 	bool tableColumnsFixed = false;
 	bool tableSortIsCompact = false;
+	// COMMAND PANEL (artifact bc1e332f) — proportions, tall keys, Modi
+	// stack, slider tick, readout, bay label.
+	double panelMarcaShare = -1;
+	bool panelShares4060 = false;
+	int panelHeaderH = -1;
+	bool panelHeaders34 = false;
+	int panelTransportH = -1;
+	bool panelTransport40 = false;
+	int panelTrimW = -1, panelTrimH = -1;
+	bool panelTrim6060 = false;
+	int panelClipH = -1;
+	bool panelClip42 = false;
+	bool panelBayLabel = false;
+	int panelModiW = -1;
+	bool panelModi152 = false;
+	int panelSliderMinW = -1;
+	bool panelSlider120 = false;
+	int panelTickDX = -999;
+	bool panelTickAt75 = false;
+	bool panelReadoutPct = false;
+	int panelPlayW = -1, panelNowW = -1;
+	bool panelPlayNow64 = false;
 	int playKeyH = 0, stepKeyH = 0;
 	int keyPadL = 0, keyPadR = 0;
 	QString bandText, noticeText;
@@ -5383,6 +5407,106 @@ void runReopenPass(const std::string &outPath)
 					monitorGridRows == 2 &&
 					monitorGridCols == 1;
 			}
+			// ── COMMAND PANEL — artifact «Pannello comandi» (bc1e332f).
+			// Runs in Wide (this window), where MARCA|REVIEW stand side
+			// by side and the tall keys wear their drawn heights.
+			{
+				auto *marca = dock->findChild<QWidget *>(
+					QStringLiteral("mrMarca"));
+				auto *review = dock->findChild<QWidget *>(
+					QStringLiteral("mrReview"));
+				if (marca && review && review->width() > 0) {
+					panelMarcaShare =
+						(double)marca->width() /
+						(double)(marca->width() +
+							 review->width());
+					panelShares4060 =
+						std::abs(panelMarcaShare - 0.4) <
+						0.04;
+				}
+				auto byKey = [&](const char *id) -> QWidget * {
+					for (QWidget *v :
+					     dock->findChildren<QWidget *>())
+						if (v->property(kKeyProperty)
+							    .toString() ==
+						    QString::fromLatin1(id))
+							return v;
+					return nullptr;
+				};
+				int headers34 = 0, headersSeen = 0;
+				for (QWidget *h : dock->findChildren<QWidget *>(
+					     QStringLiteral("mrPanelHeader"))) {
+					headersSeen++;
+					if (h->minimumHeight() == 34)
+						headers34++;
+					if (headersSeen == 1)
+						panelHeaderH = h->minimumHeight();
+				}
+				panelHeaders34 =
+					headersSeen == 2 && headers34 == 2;
+				if (QWidget *t = byKey("stepBack")) {
+					panelTransportH = t->height();
+					panelTransport40 = panelTransportH == 40;
+				}
+				if (QWidget *t = byKey("trimIn")) {
+					panelTrimW = t->width();
+					panelTrimH = t->height();
+					panelTrim6060 = panelTrimW == 60 &&
+							panelTrimH == 40;
+				}
+				if (QWidget *c = byKey("mark5")) {
+					panelClipH = c->height();
+					panelClip42 = panelClipH == 42;
+				}
+				for (QPushButton *b :
+				     dock->findChildren<QPushButton *>()) {
+					if (b->property(kKeyProperty)
+						    .toString() ==
+					    QStringLiteral("bay2")) {
+						panelBayLabel =
+							b->text() ==
+							QStringLiteral("A|B");
+						break;
+					}
+				}
+				if (QWidget *m = dock->findChild<QWidget *>(
+					    QStringLiteral("mrModesBox"))) {
+					panelModiW = m->width();
+					panelModi152 = panelModiW == 152;
+				}
+				if (auto *sl = dock->findChild<QSlider *>(
+					    QStringLiteral("mrSpeed"))) {
+					panelSliderMinW = sl->minimumWidth();
+					panelSlider120 = panelSliderMinW == 120;
+					if (auto *tick = sl->findChild<QWidget *>(
+						    QStringLiteral(
+							    "mrSpeedTick"))) {
+						const double want =
+							0.75 * (sl->width() - 11) +
+							4.5;
+						panelTickDX =
+							(int)(tick->x() - want);
+						panelTickAt75 =
+							std::abs(panelTickDX) <= 3;
+					}
+				}
+				if (QWidget *r = byKey("speedReadout")) {
+					if (auto *l = qobject_cast<QLabel *>(r))
+						panelReadoutPct =
+							l->text().endsWith(
+								QStringLiteral(
+									"%"));
+				}
+				QWidget *play = byKey("playEvents");
+				QWidget *now = byKey("now");
+				if (play && now) {
+					panelPlayW = play->width();
+					panelNowW = now->width();
+					panelPlayNow64 = panelPlayW >= 64 &&
+							 panelNowW >= 64 &&
+							 panelPlayW == panelNowW;
+				}
+			}
 			// ── TABLE TOOLS — artifact «Tabella eventi» (d65aea66), D1:
 			// counter ‖ sort ▲▼ ‖ clear export. The list tabs live in
 			// the toolbar by decision (spec 9, superseding 3's "con i
@@ -5867,7 +5991,11 @@ void runReopenPass(const std::string &outPath)
 		  monitorGridStacksPairs && monitorGhostsReserved &&
 		  monitorBaysArePeers && tableToolsOrdered &&
 		  tableToolsSeparated && tableEventCountSane &&
-		  tableColumnsFixed && tableSortIsCompact;
+		  tableColumnsFixed && tableSortIsCompact &&
+		  panelShares4060 && panelHeaders34 && panelTransport40 &&
+		  panelTrim6060 && panelClip42 && panelBayLabel && panelModi152 &&
+		  panelSlider120 && panelTickAt75 && panelReadoutPct &&
+		  panelPlayNow64;
 
 	// --- Put everything back ----------------------------------------------
 	// The operator's project first (so nothing is pointing into the test one),
@@ -5988,6 +6116,17 @@ void runReopenPass(const std::string &outPath)
 			  tableColumnsFixed);
 	obs_data_set_bool(checks, "table_sort_is_compact",
 			  tableSortIsCompact);
+	obs_data_set_bool(checks, "panel_shares_40_60", panelShares4060);
+	obs_data_set_bool(checks, "panel_headers_34", panelHeaders34);
+	obs_data_set_bool(checks, "panel_transport_40", panelTransport40);
+	obs_data_set_bool(checks, "panel_trim_60_40", panelTrim6060);
+	obs_data_set_bool(checks, "panel_clip_42", panelClip42);
+	obs_data_set_bool(checks, "panel_bay_label", panelBayLabel);
+	obs_data_set_bool(checks, "panel_modi_152", panelModi152);
+	obs_data_set_bool(checks, "panel_slider_120", panelSlider120);
+	obs_data_set_bool(checks, "panel_tick_at_75", panelTickAt75);
+	obs_data_set_bool(checks, "panel_readout_pct", panelReadoutPct);
+	obs_data_set_bool(checks, "panel_play_now_64", panelPlayNow64);
 	obs_data_set_obj(root, "checks", checks);
 	obs_data_release(checks);
 	// Numbers, not checks: how much panel there was to centre the keys in.
@@ -6031,6 +6170,17 @@ void runReopenPass(const std::string &outPath)
 	obs_data_set_string(root, "table_event_count",
 			    tableEventCount.toUtf8().constData());
 	obs_data_set_int(root, "table_cam_w", tableCamW);
+	obs_data_set_double(root, "panel_marca_share", panelMarcaShare);
+	obs_data_set_int(root, "panel_header_h", panelHeaderH);
+	obs_data_set_int(root, "panel_transport_h", panelTransportH);
+	obs_data_set_int(root, "panel_trim_w", panelTrimW);
+	obs_data_set_int(root, "panel_trim_h", panelTrimH);
+	obs_data_set_int(root, "panel_clip_h", panelClipH);
+	obs_data_set_int(root, "panel_modi_w", panelModiW);
+	obs_data_set_int(root, "panel_slider_min_w", panelSliderMinW);
+	obs_data_set_int(root, "panel_tick_dx", panelTickDX);
+	obs_data_set_int(root, "panel_play_w", panelPlayW);
+	obs_data_set_int(root, "panel_now_w", panelNowW);
 
 	if (!obs_data_save_json_safe(root, outPath.c_str(), "tmp", "bak"))
 		obs_log(LOG_ERROR, "[selftest] could not write report to %s",

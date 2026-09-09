@@ -707,13 +707,33 @@ int KeyBlock::rows() const
 int KeyBlock::shapeHeight(bool flat) const
 {
 	const BlockShape &s = (flat && !flat_.isEmpty()) ? flat_ : tall_;
-	const int rows = std::max(1, (int)s.size());
 	// The caption height is a CONSTANT, not the label's own sizeHint: this
 	// function is what the strip measures with, and apply() is what draws it.
 	// Two ways of asking the same question is two answers waiting to differ.
 	const int capH = (cap_ && !flat) ? kCaptionH + 2 : 0;
 	const int keyH = flat ? sectionKeyFoldedH() : sectionKeyH();
-	return capH + rows * keyH + (rows - 1) * kBandVGap;
+	// Rows with tall keys (mrKeyH) stand taller: measure them, not the pin.
+	int total = capH;
+	bool first = true;
+	for (const QVector<Cell> &row : s) {
+		int rh = keyH;
+		if (!flat) {
+			for (const Cell &cell : row) {
+				if (const auto *btn =
+					    qobject_cast<const QAbstractButton *>(
+						    cell.w))
+					rh = std::max(
+						rh,
+						btn->property(kKeyHeightProperty)
+							.toInt());
+			}
+		}
+		if (!first)
+			total += kBandVGap;
+		first = false;
+		total += rh;
+	}
+	return total;
 }
 
 void KeyBlock::setStretchColumns(int firstCol, int lastCol)
@@ -850,7 +870,15 @@ void KeyBlock::apply()
 			if (auto *btn = qobject_cast<QAbstractButton *>(cell.w)) {
 				const int h = flatActive_ ? sectionKeyFoldedH()
 							  : sectionKeyH();
-				const int pinned = cell.rowSpan * h +
+				// A TALL KEY STANDS TALLER THAN THE PIN (transport 40,
+				// clip 42 — artifact .tlg/.big): its height rides the
+				// mrKeyH property instead. Folded shapes ignore it.
+				const int ownH = flatActive_ ? 0
+							     : btn->property(
+								       kKeyHeightProperty)
+								       .toInt();
+				const int hh = (ownH > 0) ? ownH : h;
+				const int pinned = cell.rowSpan * hh +
 						   (cell.rowSpan - 1) * kBandVGap;
 				// STAMPED AS WELL AS SET: a style sheet's
 				// min-height is written onto the widget by Qt,
@@ -1618,14 +1646,14 @@ TwoPanelStrip::TwoPanelStrip(QWidget *parent) : QWidget(parent)
 	marca_ = new QWidget(this);
 	marca_->setObjectName(QStringLiteral("mrMarca"));
 	marcaCol_ = new QVBoxLayout(marca_);
-	marcaCol_->setContentsMargins(0, 0, 0, 0);
-	marcaCol_->setSpacing(4);
+	marcaCol_->setContentsMargins(8, 8, 8, 8); // .sub{padding:8px}
+	marcaCol_->setSpacing(14); // bodies rows gap (.livebody gap:14px)
 
 	review_ = new QWidget(this);
 	review_->setObjectName(QStringLiteral("mrReview"));
 	reviewCol_ = new QVBoxLayout(review_);
-	reviewCol_->setContentsMargins(0, 0, 0, 0);
-	reviewCol_->setSpacing(4);
+	reviewCol_->setContentsMargins(8, 8, 8, 8);
+	reviewCol_->setSpacing(14);
 
 	// REVIEW's body is a 2-column grid in Wide (Riproduzione | Modi over
 	// Trasporto | Rifinitura, Velocità spanning) and one column otherwise.
@@ -1633,13 +1661,13 @@ TwoPanelStrip::TwoPanelStrip(QWidget *parent) : QWidget(parent)
 	reviewGrid_->setObjectName(QStringLiteral("mrReviewGrid"));
 	grid_ = new QGridLayout(reviewGrid_);
 	grid_->setContentsMargins(0, 0, 0, 0);
-	grid_->setHorizontalSpacing(6);
-	grid_->setVerticalSpacing(4);
+	grid_->setHorizontalSpacing(14); // .reviewbody gap:14px
+	grid_->setVerticalSpacing(14);
 
 	auto *body = new QWidget(this);
 	row_ = new QHBoxLayout(body);
 	row_->setContentsMargins(0, 0, 0, 0);
-	row_->setSpacing(8);
+	row_->setSpacing(10); // .subs{gap:10px} between MARCA and REVIEW
 	row_->addWidget(marca_, 2);
 	row_->addWidget(review_, 3);
 	outer->addWidget(body, 1);
@@ -1656,7 +1684,6 @@ void TwoPanelStrip::setHeaders(KeyBlock *marcaHeader, KeyBlock *reviewHeader)
 	// same y on MARCA and REVIEW even though only MARCA carries a key (REC)
 	// up there (spec §4). Not fixed: the full-screen gallery view grows
 	// every key, and a fixed header would clip REC there.
-	const int kHeaderH = 30;
 	for (KeyBlock *h : {marcaHeader, reviewHeader}) {
 		if (!h)
 			continue;
@@ -1675,9 +1702,10 @@ void TwoPanelStrip::addToMarca(KeyBlock *b)
 	if (!b)
 		return;
 	// After the header, in order; the footer (setFooters) comes last.
-	marcaCol_->insertWidget(1 + marcaBlocks_.size(), b);
-	marcaCol_->setStretch(1 + marcaBlocks_.size(),
-			      marcaBlocks_.size() < 2 ? 2 : 1);
+	// 12:12:7 — the bodies' 1.2fr/1.2fr/0.7fr, in Qt integers.
+	const int i = (int)marcaBlocks_.size();
+	marcaCol_->insertWidget(1 + i, b);
+	marcaCol_->setStretch(1 + i, i < 2 ? 12 : 7);
 	marcaBlocks_ << b;
 }
 
@@ -1722,11 +1750,13 @@ void TwoPanelStrip::applyGrid()
 			grid_->addWidget(rf, 1, 1);
 		if (sp)
 			grid_->addWidget(sp, 2, 0, 1, 2);
+		// Playback column takes the slack, Modi keeps its drawn 152px:
+		// .reviewbody{grid-template-columns:1fr auto}.
 		grid_->setColumnStretch(0, 1);
-		grid_->setColumnStretch(1, 1);
-		grid_->setRowStretch(0, 2);
-		grid_->setRowStretch(1, 2);
-		grid_->setRowStretch(2, 1);
+		grid_->setColumnStretch(1, 0);
+		grid_->setRowStretch(0, 12);
+		grid_->setRowStretch(1, 12);
+		grid_->setRowStretch(2, 7);
 	} else {
 		int r = 0;
 		for (KeyBlock *b : {pb, md, tr, rf, sp})
@@ -1748,6 +1778,31 @@ void TwoPanelStrip::setFooters(QWidget *marcaFoot, QWidget *reviewFoot)
 		reviewFoot_->setParent(review_);
 		reviewCol_->addWidget(reviewFoot_);
 	}
+}
+
+void TwoPanelStrip::setMarcaCentered(bool centred)
+{
+	// Column order is fixed — header, the three blocks in addToMarca order,
+	// footer — so the spacers live at known indices and come back out
+	// symmetrically. Stretches are ours too (12:12:7 from addToMarca):
+	// centred they go quiet and the blocks stand at natural height.
+	if (centred == marcaCentred_)
+		return;
+	marcaCentred_ = centred;
+	if (centred) {
+		marcaCol_->insertStretch(4, 1);
+		marcaCol_->insertStretch(1, 1);
+		marcaCol_->setStretch(2, 0);
+		marcaCol_->setStretch(3, 0);
+		marcaCol_->setStretch(4, 0);
+	} else {
+		delete marcaCol_->takeAt(5);
+		delete marcaCol_->takeAt(1);
+		marcaCol_->setStretch(1, 12);
+		marcaCol_->setStretch(2, 12);
+		marcaCol_->setStretch(3, 7);
+	}
+	marca_->updateGeometry();
 }
 
 void TwoPanelStrip::setMode(PanelMode m)

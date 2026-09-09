@@ -74,6 +74,22 @@ inline constexpr int kKeyFoldedH = 22;
 // Between two rows of one section.
 inline constexpr int kBandVGap = 4;
 
+// ── COMMAND PANEL — artifact «Pannello comandi» (bc1e332f) ──────────────
+//
+// Same rule as the toolbar/monitor constants: one copy, cited where it is
+// written and read back by the gate.
+inline constexpr int kHeaderH = 34;      // .sub .hd{min-height:34px}
+inline constexpr int kModStackW = 152;   // .modstack{width:152px}
+inline constexpr int kTrimKeyW = 60;     // Rifinitura keys, fixed equal
+inline constexpr int kTransportKeyH = 40; // .key.tlg{height:40px}
+inline constexpr int kClipKeyH = 42;     // .key.big{height:42px}
+inline constexpr int kSpeedSliderMinW = 120; // slider min-width
+// A button cell that stands taller than the section pin (transport 40,
+// clip 42, trim 40): KeyBlock::apply() pins every button to the section
+// height, so a tall key carries its own height in this property instead.
+// Folded shapes ignore it (compact by design) — see apply().
+inline const char *kKeyHeightProperty = "mrKeyH";
+
 // ── TOOLBAR — la geometria che l'artifact «La toolbar» DICHIARA ──────────
 //
 // Sono costanti e non numeri scritti al call site perché esistono in due posti
@@ -922,6 +938,10 @@ public:
 			   KeyBlock *transport, KeyBlock *trim, KeyBlock *speed);
 	// The strip under each panel: health badge (MARCA), on-air band (REVIEW).
 	void setFooters(QWidget *marcaFoot, QWidget *reviewFoot);
+	// Without channel B the column holds two blocks at natural height,
+	// centred (artifact .livebody.center) instead of stretched edge to
+	// edge: with the angle section gone there is nothing to align to.
+	void setMarcaCentered(bool centred);
 
 	void setMode(PanelMode m);
 	PanelMode mode() const { return mode_; }
@@ -953,6 +973,7 @@ private:
 	QVector<KeyBlock *> marcaBlocks_;
 	QVector<KeyBlock *> reviewBlocks_;
 	QVector<KeyBlock *> reviewBoxes_; // playback, modes, transport, trim, speed
+	bool marcaCentred_ = false;
 
 	// Tall only: a tab bar swaps the two panels.
 	QTabBar *tabs_ = nullptr;

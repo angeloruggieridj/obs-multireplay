@@ -396,11 +396,25 @@ R"QSS(
 #MultiReplayDock QWidget#mrBottomBar, #MultiReplayDock QWidget#mrStrip,
 #MultiReplayDock QWidget#mrLeftCol,
 #MultiReplayDock QWidget#mrListPane, #MultiReplayDock QWidget#mrPreviewPane,
-#MultiReplayDock QWidget#mrMarca, #MultiReplayDock QWidget#mrReview,
 #MultiReplayDock QWidget#mrReviewGrid, #MultiReplayDock QWidget#mrPanelHeader,
-#MultiReplayDock QWidget#mrMarcaFoot, #MultiReplayDock QWidget#mrReviewFoot,
+#MultiReplayDock QWidget#mrReviewFoot,
 #MultiReplayDock QWidget#mrRowFill {
 	background: transparent;
+}
+/* MARCA | REVIEW — the two command panels as drawn boxes (artifact .sub):
+   1px edge, 5px corners, panel ground. MARCA's edge is the record wash, not
+   the neutral one: it is the arming side of the strip. */
+#MultiReplayDock QWidget#mrMarca, #MultiReplayDock QWidget#mrReview {
+	background: @panel@;
+	border: 1px solid @border@;
+	border-radius: 5px;
+}
+#MultiReplayDock QWidget#mrMarca { border-color: @recBg@; }
+/* Health footer (artifact .subfoot): reserved 26px row with its own top
+   edge and breathing room above the badge. */
+#MultiReplayDock QWidget#mrMarcaFoot {
+	border-top: 1px solid @border@;
+	padding-top: 6px;
 }
 /* ── BOXED SUB-SECTIONS (spec §4) ────────────────────────────────
    Each group in MARCA and REVIEW is a rounded box whose legend interrupts
@@ -414,7 +428,7 @@ R"QSS(
 #MultiReplayDock QWidget#mrBlockFrame {
 	background: transparent;
 	border: 1px solid @border@;
-	border-radius: 5px;
+	border-radius: 7px; /* artifact pannello: .fbox radius */
 }
 /* FOLDED (Short / Tall): flat and tight — the box is a Wide feature, and
    eight borders down a narrow column is the fragmentation the redesign
@@ -619,6 +633,13 @@ QPushButton#mrPlay:hover { background: @raise2@; border-color: @borderHi@; }
 QPushButton#mrPlay[playing="true"] { background: @pvwBg@; border-color: @pvw@; color: @pvw@; }
 QPushButton#mrPlay[playing="true"]:hover { background: @pvwBg@; border-color: @pvw@; }
 
+)QSS"
+/* This break is the same compiler rule as the ones around it: the opening
+   chunk had grown past 16380 bytes again - this time by the command panel's
+   tall keys, bay selector and speed deck - and MSVC truncates a literal that
+   big (C2026), so the sheet would lose its tail. Still one string; only the
+   literal is cut. */
+R"QSS(
 /* NOW / live-edge. RED AT REST TOO: NOW is where the operator goes to get out
    of a replay and back on the live edge, and drawn in the panel's ordinary grey
    it was the least visible key in the row that matters most. */
@@ -933,6 +954,37 @@ QPushButton#mrRec[recording="true"]:hover { background: @rec@; }
 /* Channel selector A|B / A / B and the swap. Small, square and always visible:
    it is the answer to "where is this key going", and an operator who has to
    look for it has already pressed something on the wrong channel. */
+/* ONE segmented control (artifact .seg: shared border, dividers between
+   keys), not three loose keys. segPos tells which corners stay square; the
+   container draws the shared edge so there is exactly one line everywhere. */
+#MultiReplayDock QWidget#mrChanSeg {
+	background: transparent;
+	border: 1px solid @borderHi@;
+	border-radius: 4px;
+}
+#MultiReplayDock QWidget#mrChanSeg QPushButton#mrChanSel {
+	background: transparent; color: @textKey@; border: 0;
+	border-right: 1px solid @borderHi@; border-radius: 0;
+	padding: 2px 6px; font-weight: 700; font-size: 11px;
+	min-height: 20px; /* + 2px padding + 2px border = 26 */
+}
+#MultiReplayDock QWidget#mrChanSeg QPushButton#mrChanSel[segPos="last"] {
+	border-right: 0;
+}
+#MultiReplayDock QWidget#mrChanSeg QPushButton#mrChanSel:hover {
+	background: @raise2@; color: @text@;
+}
+#MultiReplayDock QWidget#mrChanSeg QPushButton#mrChanSel:checked {
+	background: @accent@; color: @accentText@;
+}
+/* A filled checked key is square: round its outer corners to sit inside
+   the container's own rounding instead of poking past it. */
+#MultiReplayDock QWidget#mrChanSeg QPushButton#mrChanSel[segPos="first"]:checked {
+	border-top-left-radius: 3px; border-bottom-left-radius: 3px;
+}
+#MultiReplayDock QWidget#mrChanSeg QPushButton#mrChanSel[segPos="last"]:checked {
+	border-top-right-radius: 3px; border-bottom-right-radius: 3px;
+}
 QPushButton#mrChanSel {
 	background: @raise1@; color: @textKey@; border: 1px solid @border@;
 	border-radius: 3px; padding: 2px 6px; font-weight: 700; font-size: 11px;
@@ -1025,7 +1077,7 @@ QPushButton#mrAngle[state="program"]:hover { background: @recBg@; border-color: 
 QPushButton#mrSpeedChip {
 	background: @raise1@; border: 1px solid @border@; border-radius: 3px;
 	color: @textKey@; font-size: 9px; font-weight: 700;
-	min-width: 28px; min-height: 22px; padding: 1px 4px;
+	min-width: 34px; min-height: 22px; padding: 1px 4px;
 }
 QPushButton#mrSpeedChip:hover { background: @raise2@; color: @text@; border-color: @borderHi@; }
 QPushButton#mrSpeedChip:pressed { background: @sink1@; }
@@ -1071,6 +1123,10 @@ QPushButton#mrAccent:disabled {
    hyperlink. */
 QPushButton#mrDanger { color: @danger@; border-color: @recBg@; }
 QPushButton#mrDanger:hover { background: @recBg@; border-color: @danger@; color: @danger@; }
+/* ✕ Annulla — amber, not red (artifact .key.xcancel / spec §4): clearing a
+   mark destroys work but takes nothing on air, and red has one meaning. */
+QPushButton#mrWarn { color: @warn@; border-color: @warn@; }
+QPushButton#mrWarn:hover { background: @warn@; color: #ffffff; border-color: @warn@; }
 
 /* ── checkboxes ──────────────────────────────────────────── */
 #MultiReplayDock QCheckBox { color: @textMuted@; spacing: 5px; font-size: 11px; }
@@ -1286,10 +1342,13 @@ QSlider#mrSpeed::groove:horizontal {
 }
 QSlider#mrSpeed::sub-page:horizontal { background: @seekBar@; border-radius: 2px; }
 QSlider#mrSpeed::handle:horizontal {
-	width: 10px; height: 10px; margin: -4px 0;
+	width: 11px; height: 11px; margin: -4px 0;
 	background: @text@; border-radius: 5px; border: 1px solid @border@;
 }
 QSlider#mrSpeed::handle:horizontal:hover { background: @accentText@; }
+/* The 100 tick (artifact .track.vel .tick{left:75%}): a 2x13px mark where
+   the default sits. Positioned in code (positionSpeedTick), painted here. */
+QLabel#mrSpeedTick { background: @textKey@; border: 0; }
 
 /* ── event table ───────────────────────────────────────────── */
 QTableWidget#mrEvents {
