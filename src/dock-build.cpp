@@ -640,6 +640,11 @@ void MultiReplayDock::arrangeToolbar(PanelMode m)
 					  .toUpper());
 		monitorsBtn_->setText(
 			QString::fromUtf8(obs_module_text("Dock.Monitors")));
+		// A word key again (see Tall below): the export key gets its label
+		// back outside the column.
+		if (exportBtn_)
+			exportBtn_->setText(QString::fromUtf8(
+				obs_module_text("Dock.ExportClips")));
 		// A word key again: release the icon size Short/Tall pinned.
 		monitorsBtn_->setMinimumSize(QSize(0, 0));
 		monitorsBtn_->setMaximumSize(
@@ -683,6 +688,10 @@ void MultiReplayDock::arrangeToolbar(PanelMode m)
 					  .toUpper());
 		monitorsBtn_->setText(QString());
 		monitorsBtn_->setFixedSize(kToolIcoW, kToolIcoH);
+		// Word back on (see Tall below): Short is wide, the bar fits.
+		if (exportBtn_)
+			exportBtn_->setText(QString::fromUtf8(
+				obs_module_text("Dock.ExportClips")));
 		gearBtn_->setFixedSize(kToolIcoW, kToolIcoH);
 		fullScreenBtn_->setFixedSize(kToolIcoW, kToolIcoH);
 		searchIcon_->setFixedSize(kToolIcoW, kToolIcoH);
@@ -719,6 +728,11 @@ void MultiReplayDock::arrangeToolbar(PanelMode m)
 		liveBtn_->setText(QString::fromUtf8(obs_module_text("Dock.LiveMode"))
 					  .toUpper());
 		monitorsBtn_->setText(QString());
+		// THE EXPORT KEY LOSES ITS WORD TOO. The tools bar overflows a
+		// ~320 px column with it on ("Esporta clip" clipped to "aporta",
+		// measured); icon + tooltip carry it, the way Monitors' do above.
+		if (exportBtn_)
+			exportBtn_->setText(QString());
 		// .tbar.tall .tb-ico{width:23px} — height stays 25.
 		monitorsBtn_->setFixedSize(kToolIcoWTall, kToolIcoH);
 		gearBtn_->setFixedSize(kToolIcoWTall, kToolIcoH);
@@ -2010,7 +2024,8 @@ QWidget *MultiReplayDock::buildTableTools()
 
 	// ⤓ Esporta — asks on the press whether it is one clip or the whole
 	// selection as one file.
-	h->addWidget(buildExportKey());
+	exportBtn_ = buildExportKey();
+	h->addWidget(exportBtn_);
 	return box;
 }
 

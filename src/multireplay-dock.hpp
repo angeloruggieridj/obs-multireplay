@@ -1515,6 +1515,10 @@ private:
 	// ■ — Stop. EXACTLY ONE button in this dock may carry this glyph: the gate
 	// finds Stop by it.
 	QPushButton *stopBtn_ = nullptr;
+	// Table tools export key: icon-only in Tall (the bar overflows a side
+	// dock with the word on), word elsewhere. Text swapped by
+	// arrangeToolbar, never rebuilt.
+	QPushButton *exportBtn_ = nullptr;
 	QPushButton *nowBtn_ = nullptr;
 	// REVIEW header: which event ▶ is about, padded to eventIdDigits.
 	QLabel *reviewEventLbl_ = nullptr;

@@ -1057,19 +1057,25 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 				wasGeom = hd->geometry();
 			});
 			for (auto wh : {QSize(1180, 760), QSize(900, 360),
-					QSize(320, 900)}) {
+				      QSize(320, 900)}) {
 				runOnUi([&]() {
 					hd->setFloating(true);
 					hd->resize(wh);
 				});
 				std::this_thread::sleep_for(
 					std::chrono::milliseconds(800));
+				// Named by what was DRAWN, not what was asked: a
+				// refused resize keeps the old geometry (measured:
+				// 900x360 came out 900x996, still Wide), and a
+				// filename claiming 360 would be a lie the loop
+				// compares against.
 				runOnUi([&]() {
+					const QSize got = dock->size();
 					dock->grab().save(
 						QString("%1/panel-%2x%3.png")
 							.arg(sd)
-							.arg(wh.width())
-							.arg(wh.height()));
+							.arg(got.width())
+							.arg(got.height()));
 				});
 			}
 			runOnUi([&]() {
@@ -4802,6 +4808,7 @@ void runReopenPass(const std::string &outPath)
 	bool layoutPresetSizes = false;
 	bool layoutFullscreenNeedsFloat = false;
 	QString layoutShapesNote;
+	int layoutShortMinW = -1, layoutShortMinH = -1;
 	// §6.5 — GALLERY SCALES A SECTION KEY WHEN FULLSCREEN. Every other
 	// fullscreen check here is about the WINDOW; this is the one that
 	// asks whether the panel actually noticed and grew its own keys for
@@ -5056,6 +5063,14 @@ void runReopenPass(const std::string &outPath)
 		// ── C5 SHAPES — artifact «quattro layout» (2c8ded2c). Driven
 		// through the real window: float, resize twice (a mode change
 		// rewrites the floor; only the second resize lands it), read.
+		//
+		// SHORT IS A MODE, NOT A SIZE HERE. Measured on the take pass: a
+		// floating 900x360 with pictures up comes out 900x996, still
+		// Short-bound — the Short floor with monitors up is above 360, so
+		// the 340 of the drawing is unreachable that way (spec §9i). What
+		// this asserts is the ARRANGEMENT once Short is entered (strip in
+		// the left column, body split by width), plus the actual size on
+		// the record. Tall asserts size too: 340x900 is reachable.
 		if (host && dock) {
 			const auto floatResize = [&](int w, int h) {
 				runOnUi([&]() {
@@ -5084,6 +5099,11 @@ void runReopenPass(const std::string &outPath)
 				layoutShortSplitsWidth =
 					body &&
 					body->orientation() == Qt::Horizontal;
+				// The floor this shape stands on, monitors down.
+				layoutShortMinW =
+					dock->minimumSizeHint().width();
+				layoutShortMinH =
+					dock->minimumSizeHint().height();
 				layoutShapesNote += QString(
 					"short mode=%1 barInLeft=%2 bodyHoriz=%3; ")
 						.arg(QString::fromLatin1(
@@ -5123,7 +5143,9 @@ void runReopenPass(const std::string &outPath)
 								     kColOut));
 			});
 			// PRESETS resize a floating window to their drawn size
-			// (within window-manager slack); the mode follows.
+			// (within window-manager slack) — where reachable. Short's
+			// 360 is not with pictures up (see above), so Short asserts
+			// the forced mode and records the size; Tall asserts both.
 			{
 				QAction *aShort = dock->findChild<QAction *>(
 					QStringLiteral("mrActLayoutShort"));
@@ -5138,13 +5160,8 @@ void runReopenPass(const std::string &outPath)
 						std::chrono::milliseconds(700));
 					runOnUi([&]() {
 						const QSize s = host->size();
-						shortOk =
-							std::abs(s.width() -
-								 1000) <= 8 &&
-							std::abs(s.height() -
-								 360) <= 8 &&
-							dock->panelMode() ==
-								PanelMode::Short;
+						shortOk = dock->panelMode() ==
+							PanelMode::Short;
 						layoutShapesNote +=
 							QString("presetShort %1x%2; ")
 								.arg(s.width())
@@ -5238,11 +5255,15 @@ void runReopenPass(const std::string &outPath)
 				if (const char *shotDir =
 					    getenv("MR_GATE_SHOT")) {
 					runOnUi([&]() {
+						// Actual size, not asked (see the
+						// take pass): a refused resize
+						// must not mislabel its shot.
+						const QSize got = dock->size();
 						const QString p =
 							QString("%1/dock-%2x%3.png")
 								.arg(shotDir)
-								.arg(w)
-								.arg(h);
+								.arg(got.width())
+								.arg(got.height());
 						dock->grab().save(p);
 						obs_log(LOG_INFO,
 							"[selftest] shot %s",
@@ -6351,6 +6372,8 @@ void runReopenPass(const std::string &outPath)
 	obs_data_set_int(root, "panel_now_w", panelNowW);
 	obs_data_set_string(root, "layout_shapes_note",
 			    layoutShapesNote.toUtf8().constData());
+	obs_data_set_int(root, "layout_short_min_w", layoutShortMinW);
+	obs_data_set_int(root, "layout_short_min_h", layoutShortMinH);
 
 	if (!obs_data_save_json_safe(root, outPath.c_str(), "tmp", "bak"))
 		obs_log(LOG_ERROR, "[selftest] could not write report to %s",

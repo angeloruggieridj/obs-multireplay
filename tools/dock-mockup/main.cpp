@@ -346,6 +346,7 @@ public:
 		// buildToolbar()/arrangeToolbar() now — folded into the single
 		// row in Wide/Short, its own row in Tall (spec §1/§5) — not a
 		// fixed sibling here any more.
+		lv->addWidget(buildTableTools(listPane_));
 		table_ = new QTableWidget(6, 6, listPane_);
 		table_->setObjectName(QStringLiteral("mrEvents"));
 		// The table's own mono 11px, mirroring dock-build.cpp: items
@@ -565,6 +566,10 @@ public:
 						      : Qt::Vertical);
 
 		strip_->setMode(m);
+		// OUT folds away in Tall (IN + Durata already say where the clip
+		// is), like the real panel's applyPanelMode.
+		if (table_)
+			table_->setColumnHidden(2, m == PanelMode::Tall);
 		applyCompactChrome(m == PanelMode::Tall);
 		applyTallCollapse(m == PanelMode::Tall);
 		arrangeToolbar(m);
@@ -673,6 +678,9 @@ public:
 			monitorsBtn_->setText(QStringLiteral("Monitors"));
 			search_->setFixedWidth(150);
 			search_->show();
+			// A word key again (see Tall below).
+			if (exp_)
+				exp_->setText(QStringLiteral("⤓ Esporta"));
 			h1->addWidget(projectBtn_);
 			h1->addWidget(toolSepA_);
 			// bankRow_ gets a CAPPED stretch, not an open one: an
@@ -710,6 +718,9 @@ public:
 			liveBtn_->setText(QStringLiteral("LIVE"));
 			monitorsBtn_->setText(QString());
 			search_->hide();
+			// Short is wide: the bar fits, the word stays (like the dock).
+			if (exp_)
+				exp_->setText(QStringLiteral("⤓ Esporta"));
 			h1->addWidget(projectBtn_);
 			h1->addWidget(toolSepA_);
 			bankRow_->setMaximumWidth(kBankRowMaxWidth);
@@ -734,6 +745,10 @@ public:
 			// 3) banks + "+". Only Monitors loses its word here.
 			liveBtn_->setText(QStringLiteral("LIVE"));
 			monitorsBtn_->setText(QString());
+			// ...AND EXPORT LOSES ITS WORD TOO, like the real panel: the
+			// tools bar overflows a side dock with it on.
+			if (exp_)
+				exp_->setText(QStringLiteral("⤓"));
 			// EXTENDED, not the single-row width: spec §5's own words
 			// for this row are "campo ricerca esteso".
 			search_->setFixedWidth(220);
@@ -938,6 +953,10 @@ private:
 	QVector<Worded> worded_;
 	QWidget *statusDetail_ = nullptr;
 	QLineEdit *search_ = nullptr;
+	// Table tools export key: icon-only in Tall like the real panel's.
+	QPushButton *exp_ = nullptr;
+	// MODI angle picker: hidden while the tiles are on screen.
+	QToolButton *cam_ = nullptr;
 	QToolButton *projectLbl_ = nullptr;
 	bool compactChrome_ = false;
 
@@ -1045,6 +1064,58 @@ private:
 	}
 
 	void tileTally(int i, const char *what) { tile_[i]->setTally(what); }
+
+	// ── the table tools bar: counter ‖ sort ⇅ ▲▼ ‖ clear export ──────
+	// Mirrors dock-build.cpp's buildTableTools (artifact tabella D1): the
+	// sheet checks for mrTableTools used to pass against a bar this tool
+	// never built. Static (the menu and the confirm stay the panel's).
+	QWidget *buildTableTools(QWidget *parent)
+	{
+		auto *box = new QWidget(parent);
+		box->setObjectName(QStringLiteral("mrTableTools"));
+		auto *h = new QHBoxLayout(box);
+		h->setContentsMargins(0, 0, 0, 0);
+		h->setSpacing(8);
+		auto *count = new QLabel(QStringLiteral("6 / 6"), box);
+		count->setObjectName(QStringLiteral("mrEventCount"));
+		setKeyId(count, QStringLiteral("eventCount"));
+		count->setToolTip(QStringLiteral("Eventi in lista / totali"));
+		h->addWidget(count);
+		const auto mkSep = [box]() {
+			auto *s = new QWidget(box);
+			s->setObjectName(QStringLiteral("mrSepLine"));
+			s->setFixedWidth(1);
+			s->setSizePolicy(QSizePolicy::Fixed,
+					 QSizePolicy::Expanding);
+			return s;
+		};
+		h->addWidget(mkSep());
+		auto *sort = key(QStringLiteral("⇅ Tempo"), "mrToggle");
+		setKeyId(sort, QStringLiteral("sortTime"));
+		sort->setCheckable(true);
+		sort->setChecked(true);
+		sort->setToolTip(QStringLiteral("Ordina per tempo"));
+		h->addWidget(sort);
+		auto *up = key(QStringLiteral("▲"), "mrToggle");
+		setKeyId(up, QStringLiteral("moveUp"));
+		up->setToolTip(QStringLiteral("Sposta sopra"));
+		h->addWidget(up);
+		auto *dn = key(QStringLiteral("▼"), "mrToggle");
+		setKeyId(dn, QStringLiteral("moveDown"));
+		dn->setToolTip(QStringLiteral("Sposta sotto"));
+		h->addWidget(dn);
+		h->addWidget(mkSep());
+		h->addStretch(1);
+		auto *del = key(QStringLiteral("Elimina tutto"), "mrDanger");
+		setKeyId(del, QStringLiteral("deleteAll"));
+		h->addWidget(del);
+		auto *exp = key(QStringLiteral("⤓ Esporta"), "mrToggle");
+		setKeyId(exp, QStringLiteral("export"));
+		exp->setToolTip(QStringLiteral("Esporta la selezione"));
+		h->addWidget(exp);
+		exp_ = exp;
+		return box;
+	}
 
 	// ── the toolbar: what is GLOBAL to the panel ─────────────────────────
 	//
@@ -1523,6 +1594,10 @@ private:
 		setKeyId(cam, QStringLiteral("cam"));
 		cam->setMinimumHeight(kKeyH);
 		cam->setMaximumHeight(kKeyH);
+		// Hidden while the tiles are on screen, like the real panel's:
+		// with pictures to click, a picker key is clutter.
+		cam_ = cam;
+		cam->setVisible(!monitorsOn_);
 		{
 			auto *m = new QMenu(cam);
 			for (int i = 0; i < g_cams; i++)
@@ -1811,6 +1886,10 @@ private:
 		monitorsOn_ = on;
 		if (monitorSplit_)
 			monitorSplit_->setVisible(on);
+		// CAM picks an angle with the mouse when there are no tiles to
+		// click (real panel: poll()/applyMonitorsRoom hides it).
+		if (cam_)
+			cam_->setVisible(!on);
 		applyMonitorsRoom();
 		if (on) {
 			if (bodyChosen() && !savedBody_[modeIdx()].isEmpty())
@@ -4002,7 +4081,45 @@ int runChecks(QPalette pal, QApplication &app, const QString &outDir)
 					check(w->bodySplit_->orientation() ==
 						      Qt::Horizontal,
 					      label + ": the body splits width in Short");
+				} else {
+					auto *ev = w->findChild<QTableWidget *>(
+						QStringLiteral("mrEvents"));
+					if (check(ev != nullptr,
+						  label + ": the event table exists"))
+						check(ev->isColumnHidden(2),
+						      label + ": OUT folds away in Tall");
+					QWidget *cam = nullptr;
+					for (QWidget *v :
+					     w->findChildren<QWidget *>())
+						if (v->property(kKeyProperty)
+							    .toString() ==
+						    QStringLiteral("cam"))
+							cam = v;
+					if (check(cam != nullptr,
+						  label + ": the CAM key exists"))
+						check(!cam->isVisible(),
+						      label + ": tiles on screen, no picker key");
 				}
+			}
+		}
+		// ── TALL EXPORT — the tools bar overflows a side dock with the
+		// word on ("Esporta clip" clipped to "aporta", measured on the
+		// real panel). Icon + tooltip carry it in Tall, like Monitors'.
+		{
+			QPushButton *exp = nullptr;
+			for (QPushButton *b : w->findChildren<QPushButton *>())
+				if (b->property(kKeyProperty).toString() ==
+				    QStringLiteral("export"))
+					exp = b;
+			if (check(exp != nullptr,
+				  label + ": the export key exists")) {
+				if (t.mode == PanelMode::Tall)
+					check(exp->text() ==
+						      QStringLiteral("⤓"),
+					      label + ": export drops its word in Tall");
+				else
+					check(!exp->text().isEmpty(),
+					      label + ": export keeps its word");
 			}
 		}
 		check(w->height() <= t.h, label + ": fits the height it was given",
