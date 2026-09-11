@@ -4770,6 +4770,7 @@ void runReopenPass(const std::string &outPath)
 	int panelTransportH = -1;
 	bool panelTransport40 = false;
 	int panelTrimW = -1, panelTrimH = -1;
+	int panelTrimMinW = -1;
 	bool panelTrim6060 = false;
 	int panelClipH = -1;
 	bool panelClip42 = false;
@@ -4782,6 +4783,7 @@ void runReopenPass(const std::string &outPath)
 	bool panelTickAt75 = false;
 	bool panelReadoutPct = false;
 	int panelPlayW = -1, panelNowW = -1;
+	int panelNowMinW = -1;
 	bool panelPlayNow64 = false;
 	int playKeyH = 0, stepKeyH = 0;
 	int keyPadL = 0, keyPadR = 0;
@@ -5072,7 +5074,8 @@ void runReopenPass(const std::string &outPath)
 		// the left column, body split by width), plus the actual size on
 		// the record. Tall asserts size too: 340x900 is reachable.
 		if (host && dock) {
-			const auto floatResize = [&](int w, int h) {
+			const auto floatResize = [&](int w, int h,
+						     const char *why) {
 				runOnUi([&]() {
 					host->setFloating(true);
 					host->resize(w, h);
@@ -5082,42 +5085,139 @@ void runReopenPass(const std::string &outPath)
 				runOnUi([&]() { host->resize(w, h); });
 				std::this_thread::sleep_for(
 					std::chrono::milliseconds(700));
+				// The trace this lives or dies by: asked size,
+				// actual window, dock floor, resulting mode. A
+				// clamped resize that still lands the mode is a
+				// floor telling the truth; a mode that does not
+				// follow the size is the fault.
+				runOnUi([&]() {
+					const QSize hs = host->size();
+					const QSize fl =
+						dock->minimumSizeHint();
+					layoutShapesNote +=
+						QString("%1 asked %2x%3 got "
+						      "%4x%5 floor %6x%7 -> %8; ")
+							.arg(why)
+							.arg(w)
+							.arg(h)
+							.arg(hs.width())
+							.arg(hs.height())
+							.arg(fl.width())
+							.arg(fl.height())
+							.arg(QString::fromLatin1(
+								panelModeName(
+									dock->panelMode())));
+				});
 			};
-			// SHORT: the strip down the left column, body split by width.
-			floatResize(1000, 360);
-			runOnUi([&]() {
-				auto *bar = dock->findChild<QWidget *>(
-					QStringLiteral("mrBottomBar"));
-				auto *left = dock->findChild<QWidget *>(
-					QStringLiteral("mrLeftCol"));
-				auto *body = dock->findChild<QSplitter *>(
-					QStringLiteral("mrBodySplit"));
-				layoutShortStacksLeft =
-					dock->panelMode() == PanelMode::Short &&
-					bar && left &&
-					bar->parentWidget() == left;
-				layoutShortSplitsWidth =
-					body &&
-					body->orientation() == Qt::Horizontal;
-				// The floor this shape stands on, monitors down.
-				layoutShortMinW =
-					dock->minimumSizeHint().width();
-				layoutShortMinH =
-					dock->minimumSizeHint().height();
-				layoutShapesNote += QString(
-					"short mode=%1 barInLeft=%2 bodyHoriz=%3; ")
-						.arg(QString::fromLatin1(
-							panelModeName(
-								dock->panelMode())))
-						.arg(bar && left &&
-						     bar->parentWidget() == left)
-						.arg(body &&
-						     body->orientation() ==
-							     Qt::Horizontal);
-			});
+			// SHORT ARRANGEMENT, driven through the menu preset — NOT by
+			// dragging shallow. Size-entry is a separate, known-broken
+			// thing (spec §9i: the Short floor with pictures up sits
+			// above Short's own entry height, so a drag can never land
+			// it). What this asserts is the ARRANGEMENT once Short is
+			// worn: strip down the left column, body split by width.
+			bool shortOk = false, tallOk = false;
+			{
+				QAction *aShort = dock->findChild<QAction *>(
+					QStringLiteral("mrActLayoutShort"));
+				QAction *aTall = dock->findChild<QAction *>(
+					QStringLiteral("mrActLayoutTall"));
+				QAction *aAuto = dock->findChild<QAction *>(
+					QStringLiteral("mrActLayoutAuto"));
+				if (!aShort || !aTall || !aAuto)
+					obs_log(LOG_ERROR,
+						"[selftest] reopen: layout "
+						"preset actions missing");
+				else {
+					runOnUi([&]() { aShort->trigger(); });
+					std::this_thread::sleep_for(
+						std::chrono::milliseconds(700));
+					runOnUi([&]() {
+						auto *bar = dock->findChild<
+							QWidget *>(
+							QStringLiteral(
+								"mrBottomBar"));
+						auto *left = dock->findChild<
+							QWidget *>(
+							QStringLiteral(
+								"mrLeftCol"));
+						auto *body = dock->findChild<
+							QSplitter *>(
+							QStringLiteral(
+								"mrBodySplit"));
+						shortOk = dock->panelMode() ==
+							PanelMode::Short;
+						layoutShortStacksLeft =
+							shortOk && bar && left &&
+							bar->parentWidget() ==
+								left;
+						layoutShortSplitsWidth =
+							body &&
+							body->orientation() ==
+								Qt::Horizontal;
+						// The floor this shape stands on.
+						layoutShortMinW =
+							dock->minimumSizeHint()
+								.width();
+						layoutShortMinH =
+							dock->minimumSizeHint()
+								.height();
+						const QSize s = host->size();
+						layoutShapesNote +=
+							QString("short forced "
+							      "%1x%2 mode=%3 "
+							      "barInLeft=%4 "
+							      "bodyHoriz=%5; ")
+								.arg(s.width())
+								.arg(s.height())
+								.arg(QString::fromLatin1(
+									panelModeName(
+										dock->panelMode())))
+								.arg(bar && left &&
+								     bar->parentWidget() ==
+									     left)
+								.arg(body &&
+								     body->orientation() ==
+									     Qt::Horizontal);
+						aAuto->trigger();
+					});
+					std::this_thread::sleep_for(
+						std::chrono::milliseconds(700));
+					// TALL PRESET, then asked again: the first
+					// resize lands while the old floor is still
+					// in force (coming from forced-Short its
+					// minimum holds 900+), only the second lands
+					// it — same two-pass rule as floatResize.
+					runOnUi([&]() { aTall->trigger(); });
+					std::this_thread::sleep_for(
+						std::chrono::milliseconds(700));
+					runOnUi([&]() {
+						host->resize(340, 900);
+					});
+					std::this_thread::sleep_for(
+						std::chrono::milliseconds(700));
+					runOnUi([&]() {
+						const QSize s = host->size();
+						tallOk =
+							std::abs(s.width() -
+								 340) <= 8 &&
+							std::abs(s.height() -
+								 900) <= 8 &&
+							dock->panelMode() ==
+								PanelMode::Tall;
+						layoutShapesNote +=
+							QString("presetTall %1x%2; ")
+								.arg(s.width())
+								.arg(s.height());
+						aAuto->trigger();
+					});
+					std::this_thread::sleep_for(
+						std::chrono::milliseconds(700));
+				}
+				layoutPresetSizes = shortOk && tallOk;
+			}
 			// TALL: tabs, and OUT folds away (IN + Durata already say
 			// where the clip is).
-			floatResize(340, 900);
+			floatResize(340, 900, "tall");
 			runOnUi([&]() {
 				auto *tabs = dock->findChild<QTabBar *>(
 					QStringLiteral("mrPanelTabs"));
@@ -5142,54 +5242,8 @@ void runReopenPass(const std::string &outPath)
 							     MultiReplayDock::
 								     kColOut));
 			});
-			// PRESETS resize a floating window to their drawn size
-			// (within window-manager slack) — where reachable. Short's
-			// 360 is not with pictures up (see above), so Short asserts
-			// the forced mode and records the size; Tall asserts both.
-			{
-				QAction *aShort = dock->findChild<QAction *>(
-					QStringLiteral("mrActLayoutShort"));
-				QAction *aTall = dock->findChild<QAction *>(
-					QStringLiteral("mrActLayoutTall"));
-				QAction *aAuto = dock->findChild<QAction *>(
-					QStringLiteral("mrActLayoutAuto"));
-				bool shortOk = false, tallOk = false;
-				if (aShort && aTall && aAuto) {
-					runOnUi([&]() { aShort->trigger(); });
-					std::this_thread::sleep_for(
-						std::chrono::milliseconds(700));
-					runOnUi([&]() {
-						const QSize s = host->size();
-						shortOk = dock->panelMode() ==
-							PanelMode::Short;
-						layoutShapesNote +=
-							QString("presetShort %1x%2; ")
-								.arg(s.width())
-								.arg(s.height());
-					});
-					runOnUi([&]() { aTall->trigger(); });
-					std::this_thread::sleep_for(
-						std::chrono::milliseconds(700));
-					runOnUi([&]() {
-						const QSize s = host->size();
-						tallOk =
-							std::abs(s.width() -
-								 340) <= 8 &&
-							std::abs(s.height() -
-								 900) <= 8 &&
-							dock->panelMode() ==
-								PanelMode::Tall;
-						layoutShapesNote +=
-							QString("presetTall %1x%2; ")
-								.arg(s.width())
-								.arg(s.height());
-						aAuto->trigger();
-					});
-					std::this_thread::sleep_for(
-						std::chrono::milliseconds(700));
-				}
-				layoutPresetSizes = shortOk && tallOk;
-			}
+			// (Preset sizes are asserted inside the Short/Tall blocks
+			// above, next to the arrangement each preset forces.)
 			// FULLSCREEN stays disabled while docked: a docked panel
 			// has no window of its own to grow.
 			{
@@ -5628,6 +5682,7 @@ void runReopenPass(const std::string &outPath)
 				if (QWidget *t = byKey("trimIn")) {
 					panelTrimW = t->width();
 					panelTrimH = t->height();
+					panelTrimMinW = t->minimumWidth();
 					panelTrim6060 = panelTrimW == 60 &&
 							panelTrimH == 40;
 				}
@@ -5679,10 +5734,20 @@ void runReopenPass(const std::string &outPath)
 				if (play && now) {
 					panelPlayW = play->width();
 					panelNowW = now->width();
+					panelNowMinW = now->minimumWidth();
 					panelPlayNow64 = panelPlayW >= 64 &&
 							 panelNowW >= 64 &&
 							 panelPlayW == panelNowW;
 				}
+				// The trace for widths that come out under their own
+				// minimum: mode + dock size at the read. A hidden
+				// panel's children report stale geometry, which is a
+				// different fault from a laid-out key too narrow.
+				obs_log(LOG_INFO,
+					"[selftest] reopen: panel read in mode "
+					"%s dock %dx%d",
+					panelModeName(dock->panelMode()),
+					dock->width(), dock->height());
 			}
 			// ── TABLE TOOLS — artifact «Tabella eventi» (d65aea66), D1:
 			// counter ‖ sort ▲▼ ‖ clear export. The list tabs live in
@@ -6051,15 +6116,30 @@ void runReopenPass(const std::string &outPath)
 									 "centred",
 				qUtf8Printable(bandText), qUtf8Printable(noticeText));
 			{
-				bool ignored = false;
-				int iw = 0, it = 0;
-				const char *shortMode = "?";
-				measure(1400, 340, ignored, iw, it, shortMode);
-				int gotH = 0, floorH = 0;
+				// SHORT, driven through the menu preset — NOT by asking
+				// for 1400x340. Size-entry is broken by the floors (spec
+				// §9i: the Short floor with pictures up sits above
+				// Short's own entry height), so a resize can never land
+				// it; the preset forces the shape and this asserts the
+				// arrangement once worn. "Reachable" means reachable as
+				// a shape the operator picks, the way the menu offers it.
+				QAction *aShort = dock->findChild<QAction *>(
+					QStringLiteral("mrActLayoutShort"));
+				QAction *aAuto = dock->findChild<QAction *>(
+					QStringLiteral("mrActLayoutAuto"));
+				int gotH = 0, gotW = 0, floorH = 0;
 				int stripSections = 0, stripLines = 0;
 				int stripH = 0, naiveH = 0;
+				QString gotMode;
+				if (aShort && aAuto)
+					runOnUi([&]() { aShort->trigger(); });
+				std::this_thread::sleep_for(
+					std::chrono::milliseconds(700));
 				runOnUi([&]() {
 					gotH = host->height();
+					gotW = host->width();
+					gotMode = QString::fromLatin1(
+						panelModeName(dock->panelMode()));
 					floorH = dock->minimumSizeHint().height();
 					shortReachable = dock->panelMode() ==
 							 PanelMode::Short;
@@ -6101,10 +6181,11 @@ void runReopenPass(const std::string &outPath)
 						mBot <= rTop + 8;
 				});
 				obs_log(shortReachable ? LOG_INFO : LOG_ERROR,
-					"[selftest] reopen: asked for a 1400x340 "
-					"panel, got %d px of height in '%s' (the "
-					"panel's own floor is %d): %s",
-					gotH, shortMode, floorH,
+					"[selftest] reopen: forced Short, window "
+					"%dx%d in '%s' (the panel's own floor is "
+					"%d): %s",
+					gotW, gotH, qUtf8Printable(gotMode),
+					floorH,
 					shortReachable ? "short" : "NOT SHORT");
 				obs_log(shortPacksLines ? LOG_INFO : LOG_ERROR,
 					"[selftest] reopen: short stacks MARCA over "
@@ -6112,6 +6193,12 @@ void runReopenPass(const std::string &outPath)
 					stripSections, stripH,
 					shortPacksLines ? "stacked"
 							: "NOT STACKED");
+				// Back to automatic: the shape was forced for the
+				// measurement, not chosen.
+				if (aAuto)
+					runOnUi([&]() { aAuto->trigger(); });
+				std::this_thread::sleep_for(
+					std::chrono::milliseconds(700));
 			}
 			runOnUi([&]() {
 				host->setFloating(wasFloating);
@@ -6364,12 +6451,14 @@ void runReopenPass(const std::string &outPath)
 	obs_data_set_int(root, "panel_transport_h", panelTransportH);
 	obs_data_set_int(root, "panel_trim_w", panelTrimW);
 	obs_data_set_int(root, "panel_trim_h", panelTrimH);
+	obs_data_set_int(root, "panel_trim_min_w", panelTrimMinW);
 	obs_data_set_int(root, "panel_clip_h", panelClipH);
 	obs_data_set_int(root, "panel_modi_w", panelModiW);
 	obs_data_set_int(root, "panel_slider_min_w", panelSliderMinW);
 	obs_data_set_int(root, "panel_tick_dx", panelTickDX);
 	obs_data_set_int(root, "panel_play_w", panelPlayW);
 	obs_data_set_int(root, "panel_now_w", panelNowW);
+	obs_data_set_int(root, "panel_now_min_w", panelNowMinW);
 	obs_data_set_string(root, "layout_shapes_note",
 			    layoutShapesNote.toUtf8().constData());
 	obs_data_set_int(root, "layout_short_min_w", layoutShortMinW);

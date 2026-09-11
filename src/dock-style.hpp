@@ -639,11 +639,16 @@ QLabel#mrClock[rec="true"] { color: @rec@; font-weight: 700; }
 #MultiReplayDock QPushButton:pressed { background: @sink1@; }
 #MultiReplayDock QPushButton:disabled { color: @textDim@; border-color: @raise1@; }
 
-/* ── transport step / icon buttons ────────────────────── */
+/* ── transport step / icon buttons ──────────────────────
+   NO min-width here on purpose: the widths live once in dock-layout.hpp
+   (transport 42, trim 60) and the code writes them onto the keys. A
+   stylesheet min-width is re-applied at every polish and beats the
+   widget's own minimum — measured: 30px here clipped the 60px trim keys
+   to 32 and the gate caught it. */
 QPushButton#mrTransport {
 	background: @raise1@; border: 1px solid @border@; border-radius: 5px;
 	color: @text@; font-size: 14px;
-	min-width: 30px; min-height: 24px; padding: 0;
+	min-height: 24px; padding: 0;
 }
 QPushButton#mrTransport:hover { background: @raise2@; border-color: @borderHi@; }
 
@@ -659,11 +664,13 @@ QPushButton#mrSkip {
 }
 QPushButton#mrSkip:hover { background: @onAir@; color: #ffffff; }
 
-/* play/pause — a COMMAND at rest, a STATE while it runs */
+/* play/pause — a COMMAND at rest, a STATE while it runs.
+   NO min-width, same reason as mrTransport above: PLAY wears 64 and the
+   transport play/pause 42, both from code. */
 QPushButton#mrPlay {
 	background: @raise1@; border: 1px solid @border@; border-radius: 5px;
 	color: @text@; font-size: 16px;
-	min-width: 38px; min-height: 24px; padding: 0;
+	min-height: 24px; padding: 0;
 }
 QPushButton#mrPlay:hover { background: @raise2@; border-color: @borderHi@; }
 QPushButton#mrPlay[playing="true"] { background: @pvwBg@; border-color: @pvw@; color: @pvw@; }
@@ -682,9 +689,9 @@ R"QSS(
 QPushButton#mrNow {
 	background: @raise1@; border: 1px solid @border@; border-radius: 5px;
 	font-weight: 700; font-size: 10px; letter-spacing: 0.8px;
-	/* min-width holds the whole word plus the letter-spacing: below this the
-	   key clipped its own "NOW". Spec §4 wants it read as a big key anyway. */
-	min-height: 24px; min-width: 46px; padding: 0;
+	/* NO min-width (was 46px): NOW wears 64 like PLAY (spec §4, same
+	   class), written by the code — the sheet beat it to 48, gated. */
+	min-height: 24px; padding: 0;
 	color: @rec@; border-color: @recBg@;
 }
 QPushButton#mrNow:hover { color: @rec@; border-color: @rec@; background: @recBg@; }

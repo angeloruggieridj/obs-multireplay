@@ -1180,12 +1180,17 @@ KeyBlock *MultiReplayDock::buildPlayback()
 	// mark. Plain QPushButton, no menu (setMenu swallows click(), and a
 	// hotkey and the gate reach it that way).
 	auto *playSel = iconBtn(Icon::Play, "playEvents",
-				obs_module_text("Dock.PlaySelected"), this,
-				"mrAccent");
+			       obs_module_text("Dock.PlaySelected"), this,
+			       "mrAccent");
 	setKeyIconRole(playSel, Icon::Play, IconRole::OnSignal, tintsFor(sc()),
 		       22);
 	playSel->setMinimumWidth(64);
 	playSel->setMaximumHeight(QWIDGETSIZE_MAX);
+	// Two transport rows tall BY CONSTRUCTION, not by slack: the pin is
+	// rowSpan * mrKeyH, so without its own mrKeyH PLAY stands one pin row
+	// (56px) and the "spans two rows" check only passed when the REVIEW
+	// grid happened to have slack to lend. Gated: play_key_spans_two_rows.
+	playSel->setProperty(kKeyHeightProperty, kTransportKeyH);
 	connect(playSel, &QPushButton::clicked, this,
 		&MultiReplayDock::playSelected);
 
@@ -1200,6 +1205,8 @@ KeyBlock *MultiReplayDock::buildPlayback()
 	setKeyId(nowBtn_, QStringLiteral("now"));
 	nowBtn_->setMinimumWidth(64); // same taglia as PLAY (artifact: same class)
 	nowBtn_->setMaximumHeight(QWIDGETSIZE_MAX);
+	// Same two-row pin as PLAY (see above): same taglia, same check.
+	nowBtn_->setProperty(kKeyHeightProperty, kTransportKeyH);
 	connect(nowBtn_, &QPushButton::clicked, this, [this]() {
 		// the reference controller NOW: drop the replay and watch the
 		// live edge again. The stretch armed on the bar stops being what
