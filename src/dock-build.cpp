@@ -107,7 +107,8 @@ namespace multireplay {
 //
 // TWO rows, in this order, because that is the order the reference panel has:
 // the search box and the Live key on one line, the twenty list tabs on the line
-// under it, and the table under those. The tabs are the widest thing here and
+// under it; the monitor block comes next, and the table under that. The tabs
+// are the widest thing here and
 // they scroll; sharing a line with them is what squeezed the search box down to
 // a slot too narrow to read what had been typed into it.
 //

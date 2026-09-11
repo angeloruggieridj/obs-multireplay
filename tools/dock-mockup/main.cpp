@@ -13,17 +13,20 @@
 // PNG of each. Portrait, landscape, docked-narrow, floating-wide: one second,
 // seven pictures.
 //
-// THE ARRANGEMENT IT IS CHECKING, top to bottom:
+// THE ARRANGEMENT IT IS CHECKING, top to bottom (SPEC §0, LAY «Le cinque
+// zone»: toolbar · monitor block · event table · MARCA|REVIEW · SeekBar):
 //
+//   project · 1 2 3 … + · search · Monitors · ⚙ · ⛶ · Live
+//                                    the toolbar, FULL WIDTH (three rows in Tall)
 //   A | B ‖ the camera tiles         the monitoring block, a DRAGGABLE split
-//   project · search · Live · Monitors · ⚙ · ⛶
-//   1 2 3 4 …                        the list tabs
-//   the event table                  the elastic zone
-//   −5 −10 −20 / IN OUT ✕ / trims │ A↔B │ speeds / dial / export
-//   ● REC clock                    │ transport + NOW + the green PLAY
-//   LOOP ♫ IN OUTPUT                 the status line
-//   the on-air band
-//   the position bar
+//   the event table                  the elastic zone, its own bar on top
+//   MARCA | REVIEW                   marks, REC, bays │ transport, PLAY, speeds
+//   the on-air band                  REVIEW's footer
+//   the position bar                 full width, always at the bottom
+//
+// In Short the toolbar still spans the whole panel; below it the body splits
+// WIDTH — pictures and MARCA over REVIEW on the left, the table on the right —
+// and the position bar crosses both columns at the foot.
 //
 // A MOCKUP THAT ARRANGES ITS KEYS DIFFERENTLY IS MEASURING A PANEL THAT DOES
 // NOT EXIST. Whenever this file and multireplay-dock.cpp disagree about where
