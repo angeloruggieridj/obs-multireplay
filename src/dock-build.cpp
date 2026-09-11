@@ -179,10 +179,22 @@ QWidget *MultiReplayDock::buildToolbar()
 	{
 		auto *menu = new QMenu(projectBtn_);
 		auto *actNew = menu->addAction(obs_module_text("Dock.NewProject"));
+		actNew->setObjectName(QStringLiteral("mrActProjectNew"));
 		auto *actOpen =
 			menu->addAction(obs_module_text("Dock.OpenProject"));
+		actOpen->setObjectName(QStringLiteral("mrActProjectOpen"));
 		menu->addSeparator();
 		auto *recent = menu->addMenu(obs_module_text("Dock.RecentProjects"));
+		recent->setObjectName(QStringLiteral("mrActProjectRecent"));
+		// The gate finds actions, and a submenu is a menu: name its
+		// action too, so the four voices are found the same way.
+		recent->menuAction()->setObjectName(
+			QStringLiteral("mrActProjectRecent"));
+		auto *actRename =
+			menu->addAction(obs_module_text("Dock.RenameProject"));
+		actRename->setObjectName(QStringLiteral("mrActProjectRename"));
+		connect(actRename, &QAction::triggered, this,
+			&MultiReplayDock::renameProjectDialog);
 		connect(actNew, &QAction::triggered, this,
 			&MultiReplayDock::newProjectDialog);
 		connect(actOpen, &QAction::triggered, this,

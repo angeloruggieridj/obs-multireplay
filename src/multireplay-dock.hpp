@@ -967,6 +967,7 @@ private:
 	void exportTags();
 	void newProjectDialog();    // New Project... menu action
 	void openProjectDialog();   // Open Project... menu action
+	void renameProjectDialog(); // Rename project menu action
 	void copyYouTubeChapters(); // copy chapter timestamps to clipboard
 	int64_t markTimeNs() const; // Live=live edge, Recorded=replay playhead
 	// True when `tNs` is a real instant to mark; tells the operator why not

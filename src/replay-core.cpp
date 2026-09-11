@@ -1274,6 +1274,62 @@ bool ReplayCore::openProject(const std::string &folderName,
 	return true;
 }
 
+bool ReplayCore::renameProject(const std::string &title,
+			       std::string &errorOut)
+{
+	std::string base, oldName, newName;
+	{
+		std::lock_guard<std::mutex> lock(mutex_);
+		if (recording_) {
+			errorOut = "stop recording first";
+			return false;
+		}
+		if (config_.sessionFolder.empty()) {
+			errorOut = "configure session folder first";
+			return false;
+		}
+		oldName = config_.currentProjectName;
+		if (oldName.empty() ||
+		    !project_name::isSafeFolderName(oldName)) {
+			errorOut = "no project open to rename";
+			return false;
+		}
+		// Same sanitising as newProject (M9): locale-independent,
+		// UTF-8 kept.
+		newName = project_name::sanitize(title);
+		if (newName.empty()) {
+			errorOut = "project name contains no valid characters";
+			return false;
+		}
+		if (newName == oldName)
+			return true;
+		base = config_.sessionFolder;
+		if (std::filesystem::exists(
+			    utf8ToPath(joinUtf8(base, newName)))) {
+			errorOut = "a project with that name already exists";
+			return false;
+		}
+		std::error_code ec;
+		std::filesystem::rename(utf8ToPath(joinUtf8(base, oldName)),
+					utf8ToPath(joinUtf8(base, newName)),
+					ec);
+		if (ec) {
+			errorOut = "cannot rename project folder: " + ec.message();
+			return false;
+		}
+		config_.currentProjectName = newName;
+	}
+	saveConfig();
+	// The settings travel inside the folder; only the pointers move.
+	const std::string path = joinUtf8(base, newName);
+	EventStore::instance().setSessionFolder(path);
+	restartSegmentIndex(path);
+	reapplyFilterSettings(); // redirect Branch Output path to project folder
+	obs_log(LOG_INFO, "Project renamed: %s -> %s", oldName.c_str(),
+		path.c_str());
+	return true;
+}
+
 std::vector<std::string> ReplayCore::listProjects() const
 {
 	std::string base;

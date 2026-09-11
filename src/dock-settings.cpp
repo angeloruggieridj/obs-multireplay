@@ -1498,6 +1498,46 @@ void MultiReplayDock::clearBothBays()
 	ReplayCore::instance().setFollowLive(true);
 }
 
+void MultiReplayDock::renameProjectDialog()
+{
+	if (ReplayCore::instance().isRecording()) {
+		QMessageBox::warning(this, "obs-multireplay",
+				     obs_module_text("Dock.StopRecFirst"));
+		return;
+	}
+	const std::string cur =
+		ReplayCore::instance().getConfig().currentProjectName;
+	if (cur.empty()) {
+		QMessageBox::information(
+			this, "obs-multireplay",
+			obs_module_text("Dock.NoProjectsFound"));
+		return;
+	}
+	// Pre-filled with the current name, selected: the common case is a
+	// small fix (a typo, the wrong date), and retyping the whole thing
+	// for that is how "Finale2" folders are born.
+	bool ok;
+	QString title = QInputDialog::getText(
+		this, obs_module_text("Dock.RenameProject"),
+		obs_module_text("Dock.ProjectNameLabel"), QLineEdit::Normal,
+		QString::fromStdString(cur), &ok);
+	if (!ok)
+		return;
+	const QString trimmed = title.trimmed();
+	if (trimmed.isEmpty() ||
+	    trimmed.toStdString() == cur)
+		return;
+	std::string err;
+	if (!ReplayCore::instance().renameProject(trimmed.toStdString(),
+						 err)) {
+		QMessageBox::warning(this, "obs-multireplay",
+				     QString::fromStdString(err));
+		return;
+	}
+	refreshEvents();
+	poll();
+}
+
 void MultiReplayDock::openProjectDialog()
 {
 	if (ReplayCore::instance().isRecording()) {

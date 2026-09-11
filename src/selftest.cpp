@@ -383,6 +383,10 @@ struct DockChecks {
 	// of the handler — the table eating ↑/↓ and Enter for its own navigation, and
 	// a focused button in a QButtonGroup taking the arrows for focus travel.
 	bool keyboardLayerWorks = false;
+	// K1 speed shortcuts (artifact tabella): 5/0/Space through real keys.
+	bool speedPresetKey = false;
+	bool speedClearKey = false;
+	bool speedToggleKey = false;
 	// Config.continuePastOutMs: the LAST clip of a queue runs past the event's
 	// OUT. Read off queuedWallNs, which is what the green band counts down.
 	bool continuePastOutExtends = false;
@@ -612,6 +616,9 @@ struct HealthChecks {
 	bool monitorSamplesTheTake = false;
 	bool deadAngleReported = false;
 	bool deadAngleIsNotFatal = false;
+	// Footer badge carries words, not just a count (artifact pannello:
+	// "⚠ N + testo"). Read while the killed camera is still finding.
+	bool healthBadgeHasWords = false;
 	bool findingsClearedAtStop = false;
 	// B has an output scene of its own (the bug where play on B put A on air).
 	bool bTakesItsOwnScene = false;
@@ -851,6 +858,50 @@ HealthChecks runHealthChecks(const std::vector<obs_source_t *> &cams, int camCou
 			core.isRecording() ? "yes" : "NO",
 			survivorAfter > survivorBefore ? "yes" : "NO",
 			c.sceneBefore.c_str(), c.sceneAfter.c_str());
+		// The footer badge reads while the finding is live: mark + count
+		// + words ("⚠ 1 angle_no_packets (CAM2)"), the tooltip keeps the
+		// full block.
+		if (c.deadAngleReported) {
+			for (int i = 0; i < 20 && !c.healthBadgeHasWords; i++) {
+				std::this_thread::sleep_for(
+					std::chrono::milliseconds(100));
+				runOnUi([&]() {
+					auto *main = static_cast<QMainWindow *>(
+						obs_frontend_get_main_window());
+					if (!main)
+						return;
+					auto *dock =
+						main->findChild<MultiReplayDock *>();
+					if (!dock)
+						return;
+					for (QAbstractButton *b : dock->findChildren<
+					     QAbstractButton *>()) {
+						if (b->property(kKeyProperty)
+							    .toString() !=
+						    QStringLiteral("health"))
+							continue;
+						if (!b->isVisible())
+							break;
+						const QString t = b->text();
+						c.healthBadgeHasWords =
+							(t.startsWith(
+								 QStringLiteral(
+									 "⚠")) ||
+							 t.startsWith(
+								 QStringLiteral(
+									 "⛔"))) &&
+							t.contains(
+								QLatin1Char(' '),
+								Qt::CaseInsensitive) &&
+							t.trimmed().size() > 4;
+						break;
+					}
+				});
+			}
+			obs_log(c.healthBadgeHasWords ? LOG_INFO : LOG_ERROR,
+				"[selftest] health footer badge carries words: %s",
+				c.healthBadgeHasWords ? "yes" : "NO");
+		}
 	} else {
 		// Every armed slot shares ONE source (camera-dedup.hpp) — killing
 		// a duplicate's filter would do nothing (it has none of its own),
@@ -862,6 +913,8 @@ HealthChecks runHealthChecks(const std::vector<obs_source_t *> &cams, int camCou
 		// failed on.
 		c.deadAngleReported = true;
 		c.deadAngleIsNotFatal = true;
+		// No finding, no badge: vacuously true like the two above.
+		c.healthBadgeHasWords = true;
 		obs_log(LOG_INFO,
 			"[selftest] dead-angle kill test skipped — every armed "
 			"slot shares one source, so there is no second angle to "
@@ -3779,6 +3832,81 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 			"[selftest] dock: → stepped to %lld ms, ↑/↓ moved row %d → %d "
 			"of %d",
 			(long long)(keyFrameNs / 1000000), rowBefore, rowAfter, rows);
+		// K1 SPEED SHORTCUTS (artifact tabella): 5 = 125% override on the
+		// selected row + panel angle, 0 clears back to --, Space toggles
+		// the angle. Driven through real keys, read back from the store.
+		// The row id comes off the table the way the dock's own
+		// double-click does (kColId is public for exactly this).
+		if (c.keyboardLayerWorks && rows >= 1) {
+			int rowId = 0;
+			runOnUi([&]() {
+				QTableWidget *t = dock->findChild<QTableWidget *>();
+				if (!t)
+					return;
+				const auto sel =
+					t->selectionModel()->selectedRows();
+				if (sel.empty())
+					return;
+				QTableWidgetItem *it = t->item(
+					sel.first().row(),
+					MultiReplayDock::kColId);
+				if (it)
+					rowId = it->data(Qt::UserRole).toInt();
+			});
+			const int a1 = dock->angleOnChannel(Which::A);
+			auto angleSpeed = [&](int id) {
+				ReplayEvent ev;
+				if (!EventStore::instance().get(id, ev))
+					return -2.0;
+				if (a1 < 1 || a1 > (int)ev.angles.size())
+					return -2.0;
+				return ev.angles[(size_t)a1 - 1].speed;
+			};
+			auto angleOn = [&](int id) {
+				ReplayEvent ev;
+				if (!EventStore::instance().get(id, ev))
+					return false;
+				if (a1 < 1 || a1 > (int)ev.angles.size())
+					return false;
+				return ev.angles[(size_t)a1 - 1].enabled;
+			};
+			if (rowId > 0 && a1 >= 1) {
+				const int id = rowId;
+				const bool wasOn = angleOn(id);
+				sendKey(Qt::Key_5);
+				for (int i = 0; i < 40 &&
+				     angleSpeed(id) != 1.25;
+				     i++)
+					std::this_thread::sleep_for(
+						std::chrono::milliseconds(50));
+				c.speedPresetKey = angleSpeed(id) == 1.25;
+				sendKey(Qt::Key_0);
+				for (int i = 0; i < 40 &&
+				     angleSpeed(id) != -1.0;
+				     i++)
+					std::this_thread::sleep_for(
+						std::chrono::milliseconds(50));
+				c.speedClearKey = angleSpeed(id) == -1.0;
+				sendKey(Qt::Key_Space);
+				for (int i = 0; i < 40 &&
+				     angleOn(id) == wasOn;
+				     i++)
+					std::this_thread::sleep_for(
+						std::chrono::milliseconds(50));
+				c.speedToggleKey = angleOn(id) != wasOn;
+				// Put it back: the toggle was a measurement, not an
+				// operator choice.
+				if (c.speedToggleKey)
+					EventStore::instance().toggleAngle(id,
+									   a1);
+				obs_log(LOG_INFO,
+					"[selftest] dock: speed keys 5/0/space "
+					"-> %s/%s/%s",
+					c.speedPresetKey ? "125" : "NO",
+					c.speedClearKey ? "--" : "NO",
+					c.speedToggleKey ? "toggled" : "NO");
+			}
+		}
 		pc.stopEvents();
 		chan.stop();
 	}
@@ -4738,6 +4866,8 @@ void runReopenPass(const std::string &outPath)
 	int toolbarMonitorsW = -1;
 	bool toolbarMonitorsReadsWhole = false;
 	bool toolbarPlusSelectsNew = false;
+	bool toolbarPlusHidesAt20 = false;
+	bool toolbarProjectMenuComplete = false;
 	// MONITOR BLOCK (artifact f9b56e12) — badge offset, reserved ring,
 	// declared grid shape, narrow ghosts, A/B parity.
 	QPoint monitorBadgeDelta = QPoint(-1, -1);
@@ -5421,14 +5551,18 @@ void runReopenPass(const std::string &outPath)
 					sel && sel->minimumWidth() ==
 						       multireplay::kProjectSelMinW;
 
-				auto *add = dock->findChild<QWidget *>(
-					QStringLiteral("mrAddBank"));
-				toolbarAddBankW = add ? add->width() : -1;
-				toolbarAddBankH = add ? add->height() : -1;
-				toolbarAddBankKeyIsSquare25 =
-					add &&
-					add->width() == multireplay::kAddBankSide &&
-					add->height() == multireplay::kAddBankSide;
+			auto *add = dock->findChild<QWidget *>(
+				QStringLiteral("mrAddBank"));
+			toolbarAddBankW = add ? add->width() : -1;
+			toolbarAddBankH = add ? add->height() : -1;
+			// Declared size, not laid-out size: at 20 lists the key
+			// hides itself (artifact toolbar) and a hidden widget
+			// reports 0x0 for width()/height().
+			toolbarAddBankKeyIsSquare25 =
+				add &&
+				add->minimumWidth() == multireplay::kAddBankSide &&
+				add->minimumHeight() ==
+					multireplay::kAddBankSide;
 
 			auto *gear = dock->findChild<QWidget *>(
 				QStringLiteral("mrGear"));
@@ -5500,6 +5634,19 @@ void runReopenPass(const std::string &outPath)
 					nullptr;
 				break;
 			}
+			// ── THE PROJECT MENU (artifact toolbar, decided): Nuovo ·
+			// Apri… · Recenti · Rinomina. By objectName, never text:
+			// the words change with the locale, the identities do not.
+			for (const char *nm :
+			     {"mrActProjectNew", "mrActProjectOpen",
+			      "mrActProjectRecent", "mrActProjectRename"}) {
+				if (!dock->findChild<QAction *>(
+					    QString::fromLatin1(nm)))
+					break;
+				if (QString::fromLatin1(nm) ==
+				    QStringLiteral("mrActProjectRename"))
+					toolbarProjectMenuComplete = true;
+			}
 			// ── THE BANK TABS' OWN MENU: right-click a label offers
 			// Rinomina · Elimina tutto · Elimina scheda. Wired is
 			// what this asserts (the policy); the actions are an
@@ -5567,6 +5714,12 @@ void runReopenPass(const std::string &outPath)
 							.eventListCount == 6 &&
 						store.selectedList() == 6 &&
 						bankTabs->currentIndex() == 5;
+					// At 20 there is nothing to create: the +
+					// goes away (artifact toolbar, decided).
+					core.setEventListCount(kEventLists);
+					std::this_thread::sleep_for(
+						std::chrono::milliseconds(300));
+					toolbarPlusHidesAt20 = !add->isVisible();
 					core.setEventListCount(wasCount);
 					store.selectList(wasSel);
 					bankTabs->setCurrentIndex(wasIdx);
@@ -6251,6 +6404,7 @@ void runReopenPass(const std::string &outPath)
 		  toolbarSearchIsAKey && toolbarTabsHaveMenu &&
 		  toolbarTallLiveHasWord && toolbarStripUsesSlack &&
 		  toolbarMonitorsReadsWhole && toolbarPlusSelectsNew &&
+		  toolbarPlusHidesAt20 && toolbarProjectMenuComplete &&
 		  monitorBadgeSitsAt43 && monitorRingReserved &&
 		  monitorGridStacksPairs && monitorGhostsReserved &&
 		  monitorBaysArePeers && tableToolsOrdered &&
@@ -6372,6 +6526,10 @@ void runReopenPass(const std::string &outPath)
 			  toolbarMonitorsReadsWhole);
 	obs_data_set_bool(checks, "toolbar_plus_selects_new",
 			  toolbarPlusSelectsNew);
+	obs_data_set_bool(checks, "toolbar_plus_hides_at_20",
+			  toolbarPlusHidesAt20);
+	obs_data_set_bool(checks, "toolbar_project_menu_complete",
+			  toolbarProjectMenuComplete);
 	obs_data_set_bool(checks, "monitor_badge_sits_at_4_3",
 			  monitorBadgeSitsAt43);
 	obs_data_set_bool(checks, "monitor_ring_reserved",
@@ -7787,6 +7945,9 @@ void runSelfTest()
 			  dockChecks.stepBackMovesPlayhead &&
 			  dockChecks.reverseButtonPlaysBackwards &&
 			  dockChecks.keyboardLayerWorks &&
+			  dockChecks.speedPresetKey &&
+			  dockChecks.speedClearKey &&
+			  dockChecks.speedToggleKey &&
 			  dockChecks.continuePastOutExtends &&
 			  dockChecks.pauseHoldsAndResumes &&
 			  dockChecks.speedChangeKeepsPosition &&
@@ -7852,6 +8013,7 @@ void runSelfTest()
 			  healthChecks.monitorSamplesTheTake &&
 			  healthChecks.deadAngleReported &&
 			  healthChecks.deadAngleIsNotFatal &&
+			  healthChecks.healthBadgeHasWords &&
 			  healthChecks.findingsClearedAtStop &&
 			  channelBHiddenAtStartup;
 
@@ -7996,6 +8158,14 @@ void runSelfTest()
 	// are what a direct call to the handler cannot see.
 	obs_data_set_bool(checks, "dock_keyboard_layer_works",
 			  dockChecks.keyboardLayerWorks);
+	// K1 speed shortcuts (artifact tabella 2A.2): 5/0/Space through real
+	// keys onto the selected row + panel angle.
+	obs_data_set_bool(checks, "dock_speed_preset_key",
+			  dockChecks.speedPresetKey);
+	obs_data_set_bool(checks, "dock_speed_clear_key",
+			  dockChecks.speedClearKey);
+	obs_data_set_bool(checks, "dock_speed_toggle_key",
+			  dockChecks.speedToggleKey);
 	// Continuing past the OUT lengthens the LAST clip of the queue, by what the
 	// green band is counting down.
 	obs_data_set_bool(checks, "continue_past_out_extends",
@@ -8159,6 +8329,9 @@ void runSelfTest()
 	// The M4 rule itself: degradation is visible and NEVER touches Program.
 	obs_data_set_bool(checks, "dead_angle_never_touches_program",
 			  healthChecks.deadAngleIsNotFatal);
+	// Footer badge carries words, not just a count (artifact pannello).
+	obs_data_set_bool(checks, "health_badge_has_words",
+			  healthChecks.healthBadgeHasWords);
 	obs_data_set_bool(checks, "health_findings_cleared_at_stop",
 			  healthChecks.findingsClearedAtStop);
 	obs_data_set_obj(root, "checks", checks);

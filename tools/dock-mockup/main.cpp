@@ -1269,6 +1269,9 @@ private:
 		auto *addBank = key(QStringLiteral("+"), "mrToggle");
 		setKeyId(addBank, QStringLiteral("addBank"));
 		br->addWidget(addBank, 0);
+		// At 20 there is nothing to create: hidden, like the real
+		// panel's (this tool always builds all twenty).
+		addBank->setVisible(tabs->count() < multireplay::kEventLists);
 
 		v->addWidget(toolRow1_);
 		v->addWidget(toolRow2_);

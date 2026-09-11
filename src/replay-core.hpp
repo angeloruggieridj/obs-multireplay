@@ -331,6 +331,8 @@ public:
 	bool newProject(const std::string &title, std::string &errorOut);
 	// Switch to an existing project subfolder; reloads events + session.
 	bool openProject(const std::string &folderName, std::string &errorOut);
+	// Rename the current project subfolder; re-points events + session.
+	bool renameProject(const std::string &title, std::string &errorOut);
 	// List non-hidden subdirectories of sessionFolder (potential projects).
 	std::vector<std::string> listProjects() const;
 

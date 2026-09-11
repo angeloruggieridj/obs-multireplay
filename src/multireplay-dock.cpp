@@ -5032,6 +5032,31 @@ bool MultiReplayDock::eventFilter(QObject *watched, QEvent *event)
 		const bool tableUp = watched == events_ &&
 				     (ke->key() == Qt::Key_Up ||
 				      ke->key() == Qt::Key_Down);
+		// K1 SPEED SHORTCUTS (artifact tabella: 1..5 preset, 0 = --,
+		// Spazio = on/off) — selected row, panel angle. Table focus only,
+		// never while typing, never with modifiers: a digit typed into a
+		// comment editor or beside Ctrl is not a speed.
+		if (watched == events_ && !focusIsTextEntry() &&
+		    ke->modifiers() == Qt::NoModifier) {
+			const int k = ke->key();
+			int pct = -2; // -2 none, -1 --, else preset
+			if (k >= Qt::Key_1 && k <= Qt::Key_5)
+				pct = (k - Qt::Key_0) * 25;
+			else if (k == Qt::Key_0)
+				pct = -1;
+			const auto ids = selectedEventIds();
+			if (pct != -2 && !ids.empty()) {
+				EventStore::instance().setAngleSpeed(
+					ids.front(), currentAngle1(),
+					pct > 0 ? pct / 100.0 : -1.0);
+				return true;
+			}
+			if (k == Qt::Key_Space && !ids.empty()) {
+				EventStore::instance().toggleAngle(ids.front(),
+								   currentAngle1());
+				return true;
+			}
+		}
 		if (ke->key() != Qt::Key_Space && !tableUp &&
 		    handleTransportKey(ke))
 			return true;

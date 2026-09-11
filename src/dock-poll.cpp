@@ -1130,11 +1130,19 @@ void MultiReplayDock::poll()
 				healthBtn_->hide();
 			} else {
 				const bool bad = worst >= health::Level::Blocker;
+				// Badge AND words (artifact pannello: footer "⚠ N +
+				// testo", e.g. "⚠1 disco lento"): the count says how
+				// many, the first finding says what — the rest lives
+				// in the tooltip.
 				healthBtn_->setText(
-					QString("%1 %2")
+					QString("%1 %2 %3")
 						.arg(bad ? QStringLiteral("⛔")
 							 : QStringLiteral("⚠"))
-						.arg(findings.size()));
+						.arg(findings.size())
+						.arg(QString::fromStdString(
+							findingText(
+								findings
+									.front()))));
 				healthBtn_->setToolTip(QString::fromStdString(
 					findingsBlock(findings,
 						      health::Level::Info)));
@@ -1568,6 +1576,10 @@ void MultiReplayDock::refreshListNames()
 		listTabs_->setCurrentIndex(shown - 1);
 		store.selectList(shown);
 	}
+	// At 20 there is nothing to create: the + key goes away instead of
+	// sitting there inert (artifact toolbar, decided).
+	if (addBankBtn_)
+		addBankBtn_->setVisible(shown < kEventLists);
 
 	for (int i = 1; i <= kEventLists && i <= listTabs_->count(); i++) {
 		const std::string nm = store.listName(i);
