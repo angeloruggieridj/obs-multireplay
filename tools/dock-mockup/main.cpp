@@ -1745,46 +1745,61 @@ private:
 			b->setFixedHeight(kKeyH);
 			b->setMinimumWidth(40);
 		}
-		blk->setShapes({{Cell(sb), Cell(sf), Cell(nullptr), Cell(rev),
+		// TAS «Trasporto» (R4): 16 px of declared air past ⏭ — like the
+		// dock (dock-build.cpp), a spacer, not a hole.
+		blk->setShapes({{Cell(sb), Cell(sf), Cell::spacer(16), Cell(rev),
 				 Cell(pp), Cell(stop)}},
-			       {{Cell(sb), Cell(sf), Cell(nullptr), Cell(rev),
+			       {{Cell(sb), Cell(sf), Cell::spacer(16), Cell(rev),
 				 Cell(pp), Cell(stop)}});
 		return blk;
 	}
 
 	// ── REVIEW grid row 1, right — Rifinitura: ⇤IN  OUT⇥ ────────────────
+	// TAS (R5): words with marks, 60 px fixed — like the dock.
 	KeyBlock *buildTrimBox()
 	{
 		auto *blk = new KeyBlock(QStringLiteral("Rifinitura"), this);
-		auto *tin = iconKey(Icon::TrimIn, QStringLiteral("trimIn"),
-				    QStringLiteral("Porta l'IN qui"));
-		auto *tout = iconKey(Icon::TrimOut, QStringLiteral("trimOut"),
-				     QStringLiteral("Porta l'OUT qui"));
+		auto *tin = iconTextKey(Icon::TrimIn, QStringLiteral("IN"),
+					QStringLiteral("trimIn"), "mrTransport");
+		tin->setToolTip(QStringLiteral("Porta l'IN qui"));
+		auto *tout = iconTextKey(Icon::TrimOut, QStringLiteral("OUT"),
+					 QStringLiteral("trimOut"),
+					 "mrTransport");
+		tout->setToolTip(QStringLiteral("Porta l'OUT qui"));
+		tout->setLayoutDirection(Qt::RightToLeft);
 		for (QPushButton *b : {tin, tout}) {
 			b->setFixedHeight(kKeyH);
-			b->setMinimumWidth(40);
+			b->setFixedWidth(kTrimKeyW);
 		}
 		blk->setShapes({{Cell(tin), Cell(tout)}},
 			       {{Cell(tin), Cell(tout)}});
 		return blk;
 	}
 
-	// ── REVIEW grid row 2 — Velocità: five presets over the dial ────────
+	// ── REVIEW grid row 2 — Velocità: segment + dial + readout, one row ─
+	// TAS (R6): .seg (bare numbers) + spacer + .track.vel (ends 25/125) +
+	// readout — like the dock (dock-build.cpp).
 	KeyBlock *buildSpeedBox()
 	{
 		auto *blk = new KeyBlock(QStringLiteral("Velocità"), this);
-		QVector<Cell> row;
+		auto *seg = new QWidget(this);
+		seg->setObjectName(QStringLiteral("mrSpeedSeg"));
+		auto *segRow = new QHBoxLayout(seg);
+		segRow->setContentsMargins(0, 0, 0, 0);
+		segRow->setSpacing(0);
+		const char *segPos[] = {"first", "mid", "mid", "mid", "last"};
+		int si = 0;
 		QList<QPushButton *> chips;
-		// 25 / 50 / 75 / 100 / 125 (spec §4): slow motion and a touch
-		// over; the 2x fast-forward is a hotkey now, not a chip.
+		// 25 / 50 / 75 / 100 / 125: slow motion and a touch over.
 		for (int pct : {25, 50, 75, 100, 125}) {
-			auto *b = key(QString("%1%").arg(pct), "mrSpeedChip");
+			auto *b = key(QString::number(pct), "mrSpeedChip");
 			b->setCheckable(true);
 			b->setChecked(pct == 100);
+			b->setProperty("segPos", segPos[si++]);
 			setKeyId(b, QStringLiteral("speed%1").arg(pct));
 			b->setFixedHeight(kKeyH);
 			chips << b;
-			row << Cell(b);
+			segRow->addWidget(b);
 		}
 		equaliseKeyWidths(chips);
 		auto *dial = new QSlider(Qt::Horizontal, this);
@@ -1793,13 +1808,35 @@ private:
 		dial->setValue(100);
 		dial->setMinimumWidth(110);
 		dial->setFixedHeight(kKeyH);
-		auto *lbl = new QLabel(QStringLiteral("1.00\xC3\x97"), this);
+		// TAS .track.vel (R6): the ends read 25/125 under the track. A
+		// layout, not fixed positions, so they ride the dial's size —
+		// like the dock's positionSpeedTick().
+		auto *lo = new QLabel(QStringLiteral("25"));
+		lo->setObjectName(QStringLiteral("mrSpeedLo"));
+		auto *hi = new QLabel(QStringLiteral("125"));
+		hi->setObjectName(QStringLiteral("mrSpeedHi"));
+		for (QLabel *e : {lo, hi}) {
+			e->setFont(QFont(multireplay::fonts::monoFamily(), 9));
+			e->setAttribute(Qt::WA_TransparentForMouseEvents, true);
+		}
+		auto *dl = new QHBoxLayout(dial);
+		dl->setContentsMargins(2, 0, 2, 0);
+		dl->addWidget(lo, 0, Qt::AlignLeft | Qt::AlignBottom);
+		dl->addStretch(1);
+		dl->addWidget(hi, 0, Qt::AlignRight | Qt::AlignBottom);
+		auto *lbl = new QLabel(QStringLiteral("100%"), this);
 		lbl->setObjectName(QStringLiteral("mrTimecode"));
 		lbl->setMinimumWidth(42);
 		lbl->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+		setKeyId(lbl, QStringLiteral("speedReadout"));
 
-		const BlockShape shape{row, {Cell(dial, 4), Cell(lbl, 1, false)}};
-		blk->setShapes(shape, shape);
+		const BlockShape shape{{Cell(seg, 5, false), Cell::spacer(16),
+					Cell(dial, 4), Cell(lbl, 1, false)}};
+		// Folded: the segment over the dial — like the dock, one 360 px
+		// row does not fit a side dock.
+		const BlockShape flat{{Cell(seg, 6, false)},
+				      {Cell(dial, 4), Cell(lbl, 1, false)}};
+		blk->setShapes(shape, flat);
 		return blk;
 	}
 
@@ -4404,6 +4441,126 @@ void checkReviewPlayback(QApplication &app)
 	refreshSheetAssets();
 }
 
+void checkReviewSpeed(QApplication &app)
+{
+	using namespace multireplay::probe;
+	const ThemeChoice themeWas = g_theme;
+	const Scheme scWas = g_sc;
+	const auto tintsWas = g_tints;
+	auto *host = new QWidget();
+	host->setAutoFillBackground(true);
+	auto *hl = new QVBoxLayout(host);
+	hl->setContentsMargins(0, 0, 0, 0);
+	auto *w = new Mock();
+	hl->addWidget(w);
+	for (const ArtifactForm &f : kArtifactForms) {
+		const QString form = QString::fromLatin1(f.name);
+		if (form != QStringLiteral("normale") &&
+		    form != QStringLiteral("fullscreen"))
+			continue;
+		bool all = true;
+		QString detail;
+		for (int theme = 0; theme < 4; theme++) {
+			w->retheme((ThemeChoice)theme, app.palette());
+			w->setLayoutPreset(f.preset);
+			for (int pass = 0; pass < 2; pass++) {
+				host->resize(f.w, f.h);
+				host->show();
+				for (int i = 0; i < 3; i++) {
+					QApplication::processEvents();
+					QApplication::sendPostedEvents();
+				}
+			}
+			const QImage shot = w->grab().toImage();
+			QString d;
+			// TAS «Trasporto»: 16 px of declared air past ⏭.
+			QWidget *stepFwd = nullptr, *rev = nullptr;
+			for (QWidget *v : w->findChildren<QWidget *>()) {
+				const QString id = v->property("mrKey").toString();
+				if (id == QStringLiteral("stepFwd"))
+					stepFwd = v;
+				else if (id == QStringLiteral("playReverse"))
+					rev = v;
+			}
+			const int gap = (stepFwd && rev)
+						? gapBetween(stepFwd, rev, w)
+						: -1;
+			// TAS «Rifinitura»: ⇤IN … OUT⇥, words with marks, 60 px.
+			QWidget *tin = nullptr, *tout = nullptr;
+			for (QWidget *v : w->findChildren<QWidget *>()) {
+				const QString id = v->property("mrKey").toString();
+				if (id == QStringLiteral("trimIn"))
+					tin = v;
+				else if (id == QStringLiteral("trimOut"))
+					tout = v;
+			}
+			const auto *tinB =
+				qobject_cast<const QAbstractButton *>(tin);
+			const auto *toutB =
+				qobject_cast<const QAbstractButton *>(tout);
+			const bool trim =
+				tinB && toutB &&
+				tinB->text().contains(QStringLiteral("IN")) &&
+				toutB->text().contains(QStringLiteral("OUT")) &&
+				tin->width() == 60 && tout->width() == 60;
+			// TAS «Velocità»: one row, no %, ends 25/125, lit navy.
+			QWidget *slider = w->findChild<QWidget *>(
+				QStringLiteral("mrSpeed"));
+			QWidget *lo = w->findChild<QWidget *>(
+				QStringLiteral("mrSpeedLo"));
+			QWidget *hi = w->findChild<QWidget *>(
+				QStringLiteral("mrSpeedHi"));
+			const bool spd = speedConform(
+				w, shot,
+				keysById(w, {"speed25", "speed50", "speed75",
+					     "speed100", "speed125"}),
+				slider, lo, hi, &d);
+			QWidget *lit = nullptr;
+			for (QWidget *v : w->findChildren<QWidget *>()) {
+				const auto *b =
+					qobject_cast<const QAbstractButton *>(v);
+				if (b && b->isChecked() &&
+				    b->property("mrKey")
+					    .toString()
+					    .startsWith(QStringLiteral("speed"))) {
+					lit = v;
+					break;
+				}
+			}
+			const bool navy =
+				lit && sameColour(chipColour(lit, shot, w),
+						  QColor(g_sc.segOn));
+			const bool ok = gap >= 20 && trim && spd && navy;
+			if (detail.isEmpty() || (!ok && all))
+				detail = QStringLiteral(
+						 "theme %1: gap %2, trim %3, "
+						 "speed [%4] navy %5")
+						 .arg(theme)
+						 .arg(gap)
+						 .arg(trim ? QStringLiteral("IN/OUT 60")
+							  : QStringLiteral("OFF"))
+						 .arg(d)
+						 .arg(navy ? QStringLiteral("yes")
+							   : QStringLiteral("NO"));
+			all = all && ok;
+		}
+		// TAS «Trasporto…Velocità» (R4–R6): the margin, IN/OUT in the
+		// trim, one segmented speed row with a navy chip.
+		check(all,
+		      QStringLiteral("%1: transport breathes, trim carries IN/OUT")
+			      .arg(form),
+		      detail);
+		check(all,
+		      QStringLiteral("%1: speed is one segmented navy row").arg(form),
+		      detail);
+	}
+	delete host;
+	g_theme = themeWas;
+	g_sc = scWas;
+	g_tints = tintsWas;
+	refreshSheetAssets();
+}
+
 int runChecks(QPalette pal, QApplication &app, const QString &outDir)
 {
 	struct Want {
@@ -5113,6 +5270,8 @@ int runChecks(QPalette pal, QApplication &app, const QString &outDir)
 	checkMarcaBoxes(app);
 	// REVIEW playback + modes: big PLAY/NOW, dashed 24px toggles (R2, R3).
 	checkReviewPlayback(app);
+	// REVIEW transport + trim + speed: margin, IN/OUT, one navy row (R4–R6).
+	checkReviewSpeed(app);
 
 	// LAST, because it replaces the application palette and style sheet for
 	// the rest of the process: from here on the panel is a LIGHT one sitting

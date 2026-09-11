@@ -6590,11 +6590,18 @@ void runReopenPass(const std::string &outPath)
 		bool boxesMeasured = false;
 		bool boxesOk = false;
 		QString boxesDetail;
+		// TAS «Velocità» (R6): chips without %, slider and readout on
+		// one row, ends labelled 25/125 — same shots
+		// (dock-probe.hpp speedConform).
+		bool speedMeasured = false;
+		bool speedOk = false;
+		QString speedDetail;
 	};
 	std::vector<ArtifactShot> artifactShots;
 	bool artifactSetCaptured = false;
 	bool panelHeadersCentred = false;
 	bool panelMarcaBoxesFramed = false;
+	bool panelSpeedOneRow = false;
 	bool layoutToolbarOnTop = false;
 	bool layoutNoStatusRow = false;
 	bool noticeInMarcaFooter = false;
@@ -6804,6 +6811,43 @@ void runReopenPass(const std::string &outPath)
 								marcaBoxesConform(
 									dock, shot,
 									&s.boxesDetail);
+							// THE SPEED ROW, same shot (R6).
+							s.speedMeasured = true;
+							{
+								QList<QWidget *> chips;
+								for (const char *id :
+								     {"speed25",
+								      "speed50",
+								      "speed75",
+								      "speed100",
+								      "speed125"}) {
+									if (QWidget *k =
+										findKeyButton(
+											dock,
+											QString::
+												fromLatin1(
+													id)))
+										chips
+											<< k;
+								}
+								s.speedOk = multireplay::probe::
+									speedConform(
+										dock, shot,
+										chips,
+										dock->findChild<
+											QWidget *>(
+											QStringLiteral(
+												"mrSpeed")),
+										dock->findChild<
+											QWidget *>(
+											QStringLiteral(
+												"mrSpeedLo")),
+										dock->findChild<
+											QWidget *>(
+											QStringLiteral(
+												"mrSpeedHi")),
+										&s.speedDetail);
+							}
 						}
 						if (ClipBar *bar =
 							    dock->findChild<ClipBar *>())
@@ -6907,6 +6951,15 @@ void runReopenPass(const std::string &outPath)
 							s.boxesOk ? "framed, keys centred"
 								 : "OFF",
 							qUtf8Printable(s.boxesDetail));
+					if (s.speedMeasured)
+						obs_log(s.speedOk ? LOG_INFO
+								  : LOG_ERROR,
+							"[selftest] reopen: speed row %s: "
+							"%s (%s)",
+							qUtf8Printable(s.file),
+							s.speedOk ? "one row, ends labelled"
+								 : "OFF",
+							qUtf8Printable(s.speedDetail));
 					artifactShots.push_back(s);
 				}
 			}
@@ -7007,6 +7060,19 @@ void runReopenPass(const std::string &outPath)
 			"Normale/Fullscreen shots with the MARCA boxes framed, "
 			"keys centred",
 			shotsBoxesOk, shotsBoxesMeasured);
+		// R6: same 8 shots, every one with the speed chips, dial and
+		// readout on one row and the dial ends labelled.
+		const int shotsSpeedMeasured = (int)std::count_if(
+			artifactShots.begin(), artifactShots.end(),
+			[](const ArtifactShot &s) { return s.speedMeasured; });
+		const int shotsSpeedOk = (int)std::count_if(
+			artifactShots.begin(), artifactShots.end(),
+			[](const ArtifactShot &s) { return s.speedOk; });
+		panelSpeedOneRow = shotsSpeedMeasured == 8 && shotsSpeedOk == 8;
+		obs_log(panelSpeedOneRow ? LOG_INFO : LOG_ERROR,
+			"[selftest] reopen: panel_speed_one_row — %d of %d "
+			"Normale/Fullscreen shots with one speed row, ends 25/125",
+			shotsSpeedOk, shotsSpeedMeasured);
 		obs_log(artifactSetCaptured ? LOG_INFO : LOG_ERROR,
 			"[selftest] reopen: artifact set — %d of 16 shots written "
 			"with data (band on air, 6 rows) to %s (project re-opened "
@@ -7204,6 +7270,9 @@ void runReopenPass(const std::string &outPath)
 	// (±3 px) — same shots.
 	obs_data_set_bool(checks, "panel_marca_boxes_framed",
 			  panelMarcaBoxesFramed);
+	// TAS «Velocità» (R6): chips, dial and readout on one row, ends
+	// labelled 25/125 — same shots.
+	obs_data_set_bool(checks, "panel_speed_one_row", panelSpeedOneRow);
 	obs_data_set_bool(checks, "panel_transport_40", panelTransport40);
 	obs_data_set_bool(checks, "panel_trim_60_40", panelTrim6060);
 	obs_data_set_bool(checks, "panel_clip_42", panelClip42);

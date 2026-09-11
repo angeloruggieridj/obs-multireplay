@@ -637,4 +637,70 @@ inline bool reviewConform(const QWidget *panel, const QImage &shot,
 	return big && sameSize && outline && modes;
 }
 
+// ── TRANSPORT, TRIM, SPEED (R4, R5, R6) ─────────────────────────────────
+// TAS «Trasporto»: ⏮ ⏭ · <span class="spacer">16px</span> · ◀ ▶ ■ — the
+// margin between the frame steps and reverse is declared air, not a hole
+// (a hole collapses; a 16 px spacer does not).
+inline int gapBetween(const QWidget *a, const QWidget *b, const QWidget *panel)
+{
+	// Air pixels between them: rightEdge is the EXCLUSIVE edge
+	// (left + width), so no minus one — that off-by-one cost a run that
+	// read 19 px of a 20 px margin.
+	const QRect ra = rectIn(a, panel), rb = rectIn(b, panel);
+	return rb.left() - rightEdge(ra); // b right of a
+}
+
+// TAS «Rifinitura»/«Velocità»: a key's fill, read off a grab — off-text
+// (the centred word would be the sample, the Task 6 NOW trap).
+inline QColor chipColour(const QWidget *key, const QImage &shot,
+			 const QWidget *panel)
+{
+	if (!key)
+		return QColor();
+	const QRect r = rectIn(key, panel);
+	return shotPixel(shot, panel, r.left() + 4, (int)centreY(r));
+}
+
+// TAS «Velocità» (R6): .seg (chips without %) + spacer + .track.vel with
+// the ends labelled 25/125 + readout — on ONE row.
+inline bool speedConform(const QWidget *panel, const QImage &shot,
+			 const QList<QWidget *> &chips, const QWidget *slider,
+			 const QWidget *lo, const QWidget *hi, QString *detail)
+{
+	if (chips.isEmpty() || !slider || !lo || !hi) {
+		if (detail)
+			*detail = QStringLiteral("chips %1, slider %2, ends %3/%4")
+					  .arg(chips.size())
+					  .arg(slider ? "found" : "MISSING")
+					  .arg(lo ? "found" : "MISSING")
+					  .arg(hi ? "found" : "MISSING");
+		return false;
+	}
+	const auto *b0 = qobject_cast<const QAbstractButton *>(chips.first());
+	const bool noPct = b0 && b0->text() == QStringLiteral("25");
+	const QLabel *loL = qobject_cast<const QLabel *>(lo);
+	const QLabel *hiL = qobject_cast<const QLabel *>(hi);
+	const bool ends = loL && hiL && loL->text() == QStringLiteral("25") &&
+			  hiL->text() == QStringLiteral("125");
+	bool row = true;
+	for (QWidget *c : chips)
+		row = row && sameRow(c, slider, panel);
+	if (detail) {
+		QString cw;
+		for (QWidget *c : chips) {
+			const auto *b =
+				qobject_cast<const QAbstractButton *>(c);
+			cw += QStringLiteral("'%1' ")
+				      .arg(b ? b->text() : QStringLiteral("?"));
+		}
+		*detail = QStringLiteral("chips [%1] sliderow %2 ends %3/%4")
+				  .arg(cw.trimmed())
+				  .arg(row ? QStringLiteral("one")
+					   : QStringLiteral("SPLIT"))
+				  .arg(loL ? loL->text() : QStringLiteral("?"))
+				  .arg(hiL ? hiL->text() : QStringLiteral("?"));
+	}
+	return row && noPct && ends;
+}
+
 } // namespace multireplay::probe

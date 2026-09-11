@@ -1493,6 +1493,9 @@ private:
 	// The 100 tick (artifact .track.vel .tick{left:75%}): repositioned on
 	// every resize of the dial, see positionSpeedTick().
 	QLabel *speedTick_ = nullptr;
+	// TAS .track.vel (R6): the dial's ends, «25» and «125» under the track.
+	QLabel *speedLo_ = nullptr;
+	QLabel *speedHi_ = nullptr;
 	void positionSpeedTick();
 	// The 25/33/50/75/100/2× chips, keyed by percentage so poll() can light
 	// the one that matches the current speed (the reference controller fills it green).

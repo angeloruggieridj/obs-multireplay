@@ -895,8 +895,11 @@ void MultiReplayDock::poll()
 			speedPct_ = coordPct;
 			QSignalBlocker block(speed_);
 			speed_->setValue(coordPct);
-			speedLbl_->setText(QString::asprintf(
-				"%.2f\xc3\x97", coordPct / 100.0));
+			// Percent, like every other writer of this readout (R6):
+			// the «1.00×» format used to sit beside «100%» on the same
+			// label depending on which path wrote last.
+			speedLbl_->setText(QString::number(coordPct) +
+					   QStringLiteral("%"));
 		}
 		// the reference controller fills the preset that matches the speed in force. The
 		// property drives the QSS, so it is only repolished when it moves.

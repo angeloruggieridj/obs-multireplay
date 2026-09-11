@@ -1099,6 +1099,17 @@ void MultiReplayDock::buildSpeedDial()
 	speedTick_->setObjectName(QStringLiteral("mrSpeedTick"));
 	speedTick_->setFixedSize(2, 13);
 	speedTick_->setAttribute(Qt::WA_TransparentForMouseEvents, true);
+	// TAS .track.vel (R6): the dial's ends read 25 and 125 under the track.
+	// Children of the slider, transparent to the mouse, repositioned with
+	// the tick above.
+	speedLo_ = new QLabel(QStringLiteral("25"), speed_);
+	speedLo_->setObjectName(QStringLiteral("mrSpeedLo"));
+	speedLo_->setFont(QFont(monoFamily(), 9));
+	speedLo_->setAttribute(Qt::WA_TransparentForMouseEvents, true);
+	speedHi_ = new QLabel(QStringLiteral("125"), speed_);
+	speedHi_->setObjectName(QStringLiteral("mrSpeedHi"));
+	speedHi_->setFont(QFont(monoFamily(), 9));
+	speedHi_->setAttribute(Qt::WA_TransparentForMouseEvents, true);
 	// The tick tracks the dial's size, so the filter watches the dial.
 	speed_->installEventFilter(this);
 	positionSpeedTick();
@@ -1133,11 +1144,24 @@ void MultiReplayDock::positionSpeedTick()
 	const int h = speed_->height();
 	const int span = std::max(1, w - 11);
 	int pos = (3 * span) / 4;
-	if (QStyle *st = speed_->style())
+	QStyle *st = speed_->style();
+	if (st)
 		pos = st->sliderPositionFromValue(speed_->minimum(),
 						  speed_->maximum(), 100, span);
 	speedTick_->move(std::max(0, pos + 11 / 2 - 1),
 			 std::max(0, (h - 13) / 2));
+	// TAS .track.vel (R6): «25» and «125» under the track's ends, asked of
+	// the style like the tick — the extremes the thumb actually reaches.
+	if (speedLo_ && speedHi_ && st) {
+		const int p25 = st->sliderPositionFromValue(
+			speed_->minimum(), speed_->maximum(), 25, span);
+		const int p125 = st->sliderPositionFromValue(
+			speed_->minimum(), speed_->maximum(), 125, span);
+		const int y = std::max(0, h - speedLo_->sizeHint().height());
+		speedLo_->move(std::max(0, p25), y);
+		speedHi_->move(std::max(0, p125 + 11 - speedHi_->sizeHint().width()),
+			       y);
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -1488,10 +1512,12 @@ KeyBlock *MultiReplayDock::buildReviewTransport()
 	connect(stopBtn_, &QPushButton::clicked, this,
 		[this]() { stopPlayback(); });
 
-	// Six columns: the two frame steps, a margin, then ◀ ▶ ■ (spec §4).
-	blk->setShapes({{Cell(stepBackBtn), Cell(stepBtn), Cell(nullptr),
+	// Six columns: the two frame steps, a 16 px margin, then ◀ ▶ ■ (TAS
+	// «Trasporto»: the spacer is declared air — Cell(nullptr) is a hole
+	// and an empty grid column collapses to nothing).
+	blk->setShapes({{Cell(stepBackBtn), Cell(stepBtn), Cell::spacer(16),
 			 Cell(revBtn), Cell(playPauseBtn_), Cell(stopBtn_)}},
-		       {{Cell(stepBackBtn), Cell(stepBtn), Cell(nullptr),
+		       {{Cell(stepBackBtn), Cell(stepBtn), Cell::spacer(16),
 			 Cell(revBtn), Cell(playPauseBtn_), Cell(stopBtn_)}});
 	return blk;
 }
@@ -1504,18 +1530,25 @@ KeyBlock *MultiReplayDock::buildTrim()
 	// stands. A mark taken live is late by definition; until this the only
 	// fix was delete-and-remark from a scrub, which loses the angles and
 	// the comments. Frame nudges are hotkeys (registerDockHotkeys).
-	auto *trimIn = iconBtn(Icon::TrimIn, "trimIn",
-			       obs_module_text("Dock.TrimInHint"), this);
+	//
+	// TAS «Rifinitura» (R5): <span class="key tlg">⇤IN</span> … OUT⇥ —
+	// words WITH their marks (an icon alone made two identical brackets),
+	// the OUT mark riding right (RightToLeft).
+	auto *trimIn = iconTextBtn(Icon::TrimIn, obs_module_text("Dock.MarkIn"),
+				  "trimIn", this, "mrTransport");
+	trimIn->setToolTip(obs_module_text("Dock.TrimInHint"));
+	auto *trimOut = iconTextBtn(Icon::TrimOut, obs_module_text("Dock.MarkOut"),
+				   "trimOut", this, "mrTransport");
+	trimOut->setToolTip(obs_module_text("Dock.TrimOutHint"));
+	trimOut->setLayoutDirection(Qt::RightToLeft);
 	connect(trimIn, &QPushButton::clicked, this,
 		[this]() { setSelectedPoint(true); });
-	auto *trimOut = iconBtn(Icon::TrimOut, "trimOut",
-				obs_module_text("Dock.TrimOutHint"), this);
 	connect(trimOut, &QPushButton::clicked, this,
 		[this]() { setSelectedPoint(false); });
 	for (QPushButton *b : {trimIn, trimOut}) {
 		// 60px wide fixed and equal, 40 tall like transport (.key.tlg).
 		b->setProperty(kKeyHeightProperty, kTransportKeyH);
-		b->setMinimumWidth(kTrimKeyW);
+		b->setFixedWidth(kTrimKeyW);
 	}
 
 	// Same fixed width, side by side (spec §4).
@@ -1913,14 +1946,23 @@ KeyBlock *MultiReplayDock::buildSpeedBlock()
 	QList<QPushButton *> chips;
 	speedChips_ = new QButtonGroup(this);
 	speedChips_->setExclusive(false);
-	// 25 / 50 / 75 / 100 / 125 (spec §4). Slow motion and a touch over;
-	// the 2× is a hotkey now, not a chip.
+	// 25 / 50 / 75 / 100 / 125 (TAS .seg, R6): bare numbers, no % — one
+	// segmented control (same treatment as mrChanSeg: segPos first/mid/
+	// last, spacing 0, the container drawing the shared edge).
+	auto *seg = new QWidget(this);
+	seg->setObjectName(QStringLiteral("mrSpeedSeg"));
+	auto *segRow = new QHBoxLayout(seg);
+	segRow->setContentsMargins(0, 0, 0, 0);
+	segRow->setSpacing(0);
 	const std::pair<int, const char *> speedPresets[] = {
-		{25, "25%"}, {50, "50%"}, {75, "75%"}, {100, "100%"}, {125, "125%"}};
+		{25, "25"}, {50, "50"}, {75, "75"}, {100, "100"}, {125, "125"}};
+	const char *segPos[] = {"first", "mid", "mid", "mid", "last"};
+	int si = 0;
 	for (const auto &[pct, lbl] : speedPresets) {
 		int p = pct; // copy: capturing a structured binding is
 			     // non-portable
 		auto *b = compactBtn(QString::fromUtf8(lbl), this, "mrSpeedChip");
+		b->setProperty("segPos", segPos[si++]);
 		setKeyId(b, QString("speed%1").arg(p));
 		// §7.3.12 — the slider next to these already has its own hint
 		// (Dock.SpeedSliderHint); the six chips never did.
@@ -1935,9 +1977,10 @@ KeyBlock *MultiReplayDock::buildSpeedBlock()
 		});
 		b->setFixedHeight(kKeyH);
 		chips << b;
+		segRow->addWidget(b);
 	}
-	// ONE WIDTH for the five of them: "25%" is three characters and "100%"
-	// is four, so left to their labels they came out a ragged row — five
+	// ONE WIDTH for the five of them: "25" is two characters and "125" is
+	// three, so left to their labels they came out a ragged row — five
 	// sizes for five values of one setting, with the widest reading as the
 	// most important. 34px floor (artifact .seg .key).
 	for (QPushButton *b : chips)
@@ -1949,23 +1992,15 @@ KeyBlock *MultiReplayDock::buildSpeedBlock()
 	// through KeyBlock::apply()'s per-button pin — this is its only source
 	// of height, gallery scale included.
 	speed_->setFixedHeight(sectionKeyH());
-	// THE DIAL SITS UNDER THE PRESETS, in both arrangements: they are one
-	// control at two resolutions, and side by side the dial is a strip of
-	// nothing between two groups of keys.
-	//
-	// EXPORT MOVED TO THE CLIPS SECTION (§6.2): "what do I do with a clip
-	// once it is marked" used to have two answers in two corners of the
-	// panel — reorder it here under the speed dial, export it one section
-	// over. One section answers it now (buildExportBlock).
-	blk->setShapes({{Cell(chips[0]), Cell(chips[1]), Cell(chips[2]),
-			 Cell(chips[3]), Cell(chips[4])},
-			{Cell(speed_, 4), Cell(speedLbl_, 1, false)}},
-		       // The five presets stay on ONE row folded as well. They are
-		       // the narrowest keys on the panel and splitting them across
-		       // two rows bought nothing but a line — and it broke the run
-		       // of values an operator reads left to right.
-		       {{Cell(chips[0]), Cell(chips[1]), Cell(chips[2]),
-			 Cell(chips[3]), Cell(chips[4])},
+	// TAS «Velocità» (R6): .seg + spacer + .track.vel + readout on ONE row
+	// (the dial sat under the presets: one control at two resolutions, and
+	// side by side the dial was a strip of nothing between two groups).
+	// Folded (Tall, and Short until Task 14 draws its compact): the segment
+	// over the dial — one 360 px row does not fit a side dock (the Tall
+	// floor check guards 340), and the brief's single shape would break it.
+	blk->setShapes({{Cell(seg, 5, false), Cell::spacer(16),
+			 Cell(speed_, 4), Cell(speedLbl_, 1, false)}},
+		       {{Cell(seg, 6, false)},
 			{Cell(speed_, 4), Cell(speedLbl_, 1, false)}});
 	return blk;
 }

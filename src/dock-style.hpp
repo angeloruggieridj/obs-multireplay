@@ -1176,6 +1176,47 @@ QPushButton#mrSpeedChip:pressed { background: @sink1@; }
 QPushButton#mrSpeedChip[active="true"] {
 	background: @pvwBg@; border-color: @pvw@; color: @pvw@;
 }
+/* ── speed preset segment (R6): TAS .seg — ONE segmented control (the five
+   chips side by side read as one dial, not five keys), same treatment as
+   #mrChanSeg: the container draws the shared edge, segPos squares the
+   inner corners, the lit chip is navy (@segOn@, like the bay selector). */
+#MultiReplayDock QWidget#mrSpeedSeg {
+	background: transparent;
+	border: 1px solid @borderHi@;
+	border-radius: 4px;
+}
+#MultiReplayDock QWidget#mrSpeedSeg QPushButton#mrSpeedChip {
+	background: transparent; color: @textKey@; border: 0;
+	border-right: 1px solid @borderHi@; border-radius: 0;
+	padding: 2px 6px; font-weight: 700; font-size: 9px;
+	min-height: 20px; /* + 2px padding + 2px container border = 26 */
+}
+#MultiReplayDock QWidget#mrSpeedSeg QPushButton#mrSpeedChip[segPos="last"] {
+	border-right: 0;
+}
+#MultiReplayDock QWidget#mrSpeedSeg QPushButton#mrSpeedChip:hover {
+	background: @raise2@; color: @text@;
+}
+#MultiReplayDock QWidget#mrSpeedSeg QPushButton#mrSpeedChip[segPos="first"]:checked,
+#MultiReplayDock QWidget#mrSpeedSeg QPushButton#mrSpeedChip[segPos="first"][active="true"] {
+	border-top-left-radius: 3px; border-bottom-left-radius: 3px;
+}
+#MultiReplayDock QWidget#mrSpeedSeg QPushButton#mrSpeedChip[segPos="last"]:checked,
+#MultiReplayDock QWidget#mrSpeedSeg QPushButton#mrSpeedChip[segPos="last"][active="true"] {
+	border-top-right-radius: 3px; border-bottom-right-radius: 3px;
+}
+#MultiReplayDock QWidget#mrSpeedSeg QPushButton#mrSpeedChip[active="true"] {
+	background: @segOn@; color: @accentText@;
+}
+/* ...and :checked, which is how the stand-ins carry it (the dock drives
+   [active] through its poll; both selectors, one ink). */
+#MultiReplayDock QWidget#mrSpeedSeg QPushButton#mrSpeedChip:checked {
+	background: @segOn@; color: @accentText@;
+}
+/* TAS .track.vel (R6): the dial's range ends, mono 9px under the track. */
+QLabel#mrSpeedLo, QLabel#mrSpeedHi {
+	color: @textMuted@; font-size: 9px; background: transparent; border: 0;
+}
 
 /* ── section separator line ─────────────────────────────── */
 QWidget#mrSepLine { background: @border@; margin: 0 1px; } /* toolbar: .tb-sep */
