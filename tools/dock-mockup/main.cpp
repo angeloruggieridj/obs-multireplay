@@ -4648,16 +4648,8 @@ int runChecks(QPalette pal, QApplication &app, const QString &outDir)
 // means in OBS.
 int runArtifactSet(QApplication &app, const QString &outDir)
 {
-	struct Form {
-		const char *name;
-		int w, h, preset;
-	};
-	// quattro-layout: fullscreen (worn as Wide until a Fullscreen form
-	// exists), Normale, Short, Tall — by preset and by the artifact geometry.
-	const Form forms[4] = {{"fullscreen", 1920, 1080, 1},
-			       {"normale", 1180, 770, 1},
-			       {"short", 900, 340, 2},
-			       {"tall", 320, 900, 3}};
+	// The four forms: kArtifactForms (dock-layout.hpp), the same table the
+	// gate photographs the real dock with.
 	QDir().mkpath(outDir);
 	// INSIDE A WINDOW painted OBS's colour, as in runHostChecks: the dock is
 	// a child of OBS's QDockWidget, and a top-level would paint its own
@@ -4676,7 +4668,7 @@ int runArtifactSet(QApplication &app, const QString &outDir)
 	int written = 0;
 	for (int theme = 0; theme < 4; theme++) {
 		w->retheme((ThemeChoice)theme, app.palette());
-		for (const Form &f : forms) {
+		for (const ArtifactForm &f : kArtifactForms) {
 			w->setLayoutPreset(f.preset);
 			// TWICE: a mode change rewrites the minimums the next
 			// pass is measured against.

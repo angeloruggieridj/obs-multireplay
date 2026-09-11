@@ -353,6 +353,20 @@ PanelMode panelModeFor(const QSize &size, PanelMode current,
 		       int wideFloorH = 0);
 const char *panelModeName(PanelMode m);
 
+// THE FOUR FORMS THE DESIGN ARTIFACTS DRAW (quattro-layout), as the gate
+// (real-*.png) and the mockup (mock-*.png) photograph them: the file-name part,
+// the artifact's own panel size, and the Layout preset that forces the form
+// (Config.layoutPreset: 1 Wide, 2 Short, 3 Tall). Fullscreen is worn as Wide
+// until a Fullscreen form exists. ONE table, so the two sets cannot drift.
+struct ArtifactForm {
+	const char *name;
+	int w, h, preset;
+};
+inline constexpr ArtifactForm kArtifactForms[4] = {{"fullscreen", 1920, 1080, 1},
+						   {"normale", 1180, 770, 1},
+						   {"short", 900, 340, 2},
+						   {"tall", 320, 900, 3}};
+
 // ---------------------------------------------------------------------------
 // Lane — WHERE A SECTION LIVES ON ITS LINE
 // ---------------------------------------------------------------------------

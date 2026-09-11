@@ -6481,6 +6481,7 @@ void runReopenPass(const std::string &outPath)
 	};
 	std::vector<ArtifactShot> artifactShots;
 	bool artifactSetCaptured = false;
+	bool artifactOpened = false;
 	int artifactEvents = 0;
 	int artifactQueued = 0;
 	const std::string artifactDir = envStr(
@@ -6496,10 +6497,16 @@ void runReopenPass(const std::string &outPath)
 		// menu makes, it is back on this session's clock and on the product's
 		// camera mapping (a slot that duplicates another's source reads that
 		// one's files) — which is what a clip has to be played from.
+		std::string openErr;
 		runOnUi([&]() {
-			std::string perr;
-			ReplayCore::instance().openProject(kSelfTestProject, perr);
+			artifactOpened = ReplayCore::instance().openProject(
+				kSelfTestProject, openErr);
 		});
+		if (!artifactOpened)
+			obs_log(LOG_ERROR,
+				"[selftest] reopen: artifact set — cannot re-open "
+				"'%s': %s",
+				kSelfTestProject, openErr.c_str());
 		int64_t originNs = kNoInstant, endNs = kNoInstant;
 		for (int i = 0; i < 120; i++) {
 			originNs = SegmentIndex::instance().projectOriginNs();
@@ -6529,9 +6536,10 @@ void runReopenPass(const std::string &outPath)
 			for (int i = 0; i < 6; i++) {
 				const int64_t in = spanIn + margin + i * step;
 				const int id = store.markIn(in, 0);
-				store.markOut(in + len);
-				if (id > 0)
+				if (id > 0) {
+					store.markOut(in + len);
 					ids.push_back(id);
+				}
 			}
 		}
 		if (ids.size() == 6) {
@@ -6599,16 +6607,8 @@ void runReopenPass(const std::string &outPath)
 			host->show();
 			host->setFloating(true);
 		});
-		struct Form {
-			const char *name;
-			int w, h, preset;
-		};
-		// quattro-layout: the four forms, by preset (1 Wide, 2 Short, 3
-		// Tall) and by the artifact's own geometry.
-		static const Form kForms[4] = {{"fullscreen", 1920, 1080, 1},
-					       {"normale", 1180, 770, 1},
-					       {"short", 900, 340, 2},
-					       {"tall", 320, 900, 3}};
+		// The four forms, by preset and by the artifact's own geometry:
+		// kArtifactForms (dock-layout.hpp), shared with the mockup.
 		if (host && presetAct[0] && presetAct[1] && presetAct[2] &&
 		    presetAct[3]) {
 			std::this_thread::sleep_for(std::chrono::milliseconds(700));
@@ -6619,7 +6619,7 @@ void runReopenPass(const std::string &outPath)
 				});
 				std::this_thread::sleep_for(
 					std::chrono::milliseconds(300));
-				for (const Form &f : kForms) {
+				for (const ArtifactForm &f : kArtifactForms) {
 					QAction *act = presetAct[f.preset];
 					runOnUi([&]() { act->trigger(); });
 					std::this_thread::sleep_for(
@@ -6700,18 +6700,28 @@ void runReopenPass(const std::string &outPath)
 			}
 		});
 		std::this_thread::sleep_for(std::chrono::milliseconds(400));
-		artifactSetCaptured =
-			artifactShots.size() == 16 &&
-			std::all_of(artifactShots.begin(), artifactShots.end(),
-				    [](const ArtifactShot &s) { return s.saved; });
+		// THE DATA, NOT JUST THE FILES. Sixteen PNGs of an empty table and a
+		// dark band would be sixteen pictures of nothing to judge against: the
+		// project has to have re-opened, all six events have to be on the
+		// list, a second clip has to be queued (the join on the band), and
+		// every shot has to have been taken with the band on air and the six
+		// rows in the table.
+		const auto shotHasData = [](const ArtifactShot &s) {
+			return s.saved && s.bandLit && s.rows >= 6;
+		};
+		const int shotsWithData = (int)std::count_if(
+			artifactShots.begin(), artifactShots.end(), shotHasData);
+		artifactSetCaptured = artifactOpened && artifactEvents == 6 &&
+				      artifactQueued >= 2 &&
+				      artifactShots.size() == 16 &&
+				      shotsWithData == 16;
 		obs_log(artifactSetCaptured ? LOG_INFO : LOG_ERROR,
 			"[selftest] reopen: artifact set — %d of 16 shots written "
-			"to %s (events %d, clips queued %d)",
-			(int)std::count_if(artifactShots.begin(), artifactShots.end(),
-					   [](const ArtifactShot &s) {
-						   return s.saved;
-					   }),
-			artifactDir.c_str(), artifactEvents, artifactQueued);
+			"with data (band on air, 6 rows) to %s (project re-opened "
+			"%s, events %d of 6, clips queued %d)",
+			shotsWithData, artifactDir.c_str(),
+			artifactOpened ? "yes" : "NO", artifactEvents,
+			artifactQueued);
 	}
 
 	const bool pass = sameBoot.ok && rebooted.ok && fsKeyHiddenWhenDocked &&

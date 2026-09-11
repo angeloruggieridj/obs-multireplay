@@ -680,7 +680,7 @@ if ($realShots.Count -gt 0) {
     Fail "Artifact set: no real-*.png in $artifactDir"
 }
 
-$log2 =Get-ChildItem "$env:APPDATA\obs-studio\logs\*.txt" |
+$log2 = Get-ChildItem "$env:APPDATA\obs-studio\logs\*.txt" |
     Sort-Object LastWriteTime -Descending | Select-Object -First 1
 Write-Host ''
 Write-Host "OBS log (reopen): $($log2.FullName)" -ForegroundColor DarkGray
