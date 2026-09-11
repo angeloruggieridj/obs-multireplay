@@ -98,6 +98,9 @@ struct Scheme {
 	QString textDim;    // disabled, and an empty slot
 	QString accent;     // the theme's highlight: selection, current tab
 	QString accentText;
+	QString accentHi;     // a latched hollow toggle's edge (TAS .key.tog.on
+			      // border #5b8fe0)
+	QString accentInk;    // its label (TAS .key.tog.on color #bcd4f2)
 	QString rowSel;     // the selected event row
 	QString rowSelText;
 
@@ -275,6 +278,11 @@ inline Scheme schemeFor(ThemeChoice choice, const QPalette &pal)
 	s.textDim = hex(mix(bg, fg, dark ? 0.26 : 0.36));
 	s.accent = hex(hl);
 	s.accentText = hex(hlText);
+	// R3 — TAS .key.tog.on{border-color:#5b8fe0;color:#bcd4f2}: constant hue
+	// like tabBar (never the OBS highlight), luminance-adapted; the ink a
+	// step toward the text so it reads on the hollow key.
+	s.accentHi = hex(signalOn(QColor("#5B8FE0"), bg, dark, 0));
+	s.accentInk = hex(mix(QColor(s.accentHi), fg, 0.45));
 	// THE ACTIVE LIST TAB IS A CONSTANT, not the theme's accent. The redesign
 	// settled this: the tab an operator is on is wayfinding — it has to read as
 	// the same thing from across a gallery, whatever OBS is themed with — so it
@@ -724,14 +732,16 @@ QPushButton#mrPlay[playing="true"]:hover { background: @pvwBg@; border-color: @p
 R"QSS(
 /* NOW / live-edge. RED AT REST TOO: NOW is where the operator goes to get out
    of a replay and back on the live edge, and drawn in the panel's ordinary grey
-   it was the least visible key in the row that matters most. */
+   it was the least visible key in the row that matters most.
+   TAS «Riproduzione» (R2): .key.now{background:transparent;
+   border-color:var(--sig-rec)} — an OUTLINE at rest, filled only while live. */
 QPushButton#mrNow {
-	background: @raise1@; border: 1px solid @border@; border-radius: 5px;
+	background: transparent; border: 1px solid @rec@; border-radius: 5px;
 	font-weight: 700; font-size: 10px; letter-spacing: 0.8px;
-	/* NO min-width (was 46px): NOW wears 64 like PLAY (spec §4, same
+	/* NO min-width (was 46px): NOW wears 78 like PLAY (TAS .key.big, same
 	   class), written by the code — the sheet beat it to 48, gated. */
 	min-height: 24px; padding: 0;
-	color: @rec@; border-color: @recBg@;
+	color: @rec@;
 }
 QPushButton#mrNow:hover { color: @rec@; border-color: @rec@; background: @recBg@; }
 QPushButton#mrNow[live="true"] { background: @recBg@; border-color: @rec@; color: @rec@; }
@@ -773,6 +783,21 @@ QPushButton#mrToggle:checked {
 	font-weight: 700;
 }
 QPushButton#mrToggle:checked:hover { background: @pvwBg@; color: @pvw@; }
+/* ── REVIEW Modi (R3): TAS .key.tog{border-style:dashed;border-color:#45566f;
+   color:#97a4b8;background:transparent;font-size:.66rem;height:24px} +
+   .key.tog.on{border-style:solid;border-color:#5b8fe0;color:#bcd4f2} — a
+   dashed hollow toggle, solid blue-ish when latched. NO min-width here: the
+   rows divide the 152 px stack in equal spans (brief R3), and a sheet
+   minimum would beat the layout to it. */
+QPushButton#mrModeTog {
+	border: 1px dashed @borderHi@; background: transparent; border-radius: 5px;
+	color: @textKey@; font-size: 10px; min-height: 18px; padding: 2px 6px;
+}
+QPushButton#mrModeTog:hover { border-color: @borderHi@; color: @text@; }
+QPushButton#mrModeTog:checked {
+	border-style: solid; border-color: @accentHi@; color: @accentInk@;
+	font-weight: 700;
+}
 /* The Monitors word key, by property (sharing an objectName for the look is
    the fault 735ebec documents — identity stays on mrKey). 10px condensed
    does not read at a glance in any arrangement: one size up with air around
@@ -1864,6 +1889,7 @@ inline QString dockStyle(const Scheme &s, int densityLevel = 0,
 		{"@tabBar@", &s.tabBar},       {"@seekBar@", &s.seekBar},
 		{"@tabBarBorder@", &s.tabBarBorder},
 		{"@segOn@", &s.segOn},
+		{"@accentHi@", &s.accentHi}, {"@accentInk@", &s.accentInk},
 	};
 	// LONGEST PREFIX FIRST, which is why @borderHi@ is listed above @border@
 	// and @text@ below @textMuted@: these are delimited by @ at both ends, so

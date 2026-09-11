@@ -1594,52 +1594,61 @@ private:
 	// ── REVIEW grid row 0, left — Riproduzione: PLAY (big) + NOW (big) ──
 	//
 	// PLAY IS THE BIGGEST KEY ON THE PANEL because it is the one that takes
-	// Program; NOW is the same size because it is the way back. A 1 px
-	// spacer holds the second grid row open for the row-span-2 cells.
+	// Program; NOW is the same size because it is the way back. TAS (R2):
+	// .key.big{height:42px;min-width:78px} — mark AND word, one row, NOW an
+	// outline at rest. Same measures as the dock (dock-build.cpp).
 	KeyBlock *buildPlaybackBox()
 	{
 		auto *blk = new KeyBlock(QStringLiteral("Riproduzione"), this);
-		auto *play = iconKey(Icon::Play, QStringLiteral("playEvents"),
-				     QStringLiteral("Riproduci gli eventi selezionati"),
-				     "mrAccent");
+		auto *play = iconTextKey(Icon::Play, QStringLiteral("PLAY"),
+					 QStringLiteral("playEvents"), "mrAccent",
+					 16);
+		play->setToolTip(
+			QStringLiteral("Riproduci gli eventi selezionati"));
 		// The one filled key on the panel: white mark on solid green.
 		setKeyIconRole(play, Icon::Play, IconRole::OnSignal, g_tints, 22);
-		play->setMaximumHeight(QWIDGETSIZE_MAX);
-		play->setMinimumWidth(64);
+		play->setProperty(kKeyHeightProperty, kClipKeyH);
+		play->setMinimumWidth(78);
 
 		auto *now = key(QStringLiteral("NOW"), "mrNow");
 		setKeyId(now, QStringLiteral("now"));
 		now->setProperty("live", false);
 		now->setToolTip(QStringLiteral("Torna al fronte live"));
-		now->setMaximumHeight(QWIDGETSIZE_MAX);
-		now->setMinimumWidth(56);
-
-		auto *rowFill = new QWidget(this);
-		rowFill->setObjectName(QStringLiteral("mrRowFill"));
-		rowFill->setFixedHeight(1);
+		now->setProperty(kKeyHeightProperty, kClipKeyH);
+		now->setMinimumWidth(78);
 
 		const BlockShape shape{
-			{Cell(play, 3, true, 2), Cell(now, 3, true, 2)},
-			{Cell(rowFill, 6, false)}};
+			{Cell(play, 3), Cell(now, 3)}};
 		blk->setShapes(shape, shape);
 		return blk;
 	}
 
 	// ── REVIEW grid row 0, right — Modi: last/loop, then mute/music/CAM ─
+	// TAS Modi (R3): words without marks (LOOP, MUTE), the ♫ glyph alone,
+	// .key.sm{height:24px} dashed toggles (.key.tog). Same as the dock.
 	KeyBlock *buildModesBox()
 	{
 		auto *blk = new KeyBlock(QStringLiteral("Modi"), this);
 		blk->setObjectName(QStringLiteral("mrModesBox"));
+		// TAS .modstack{width:152px} — fixed like the dock, not
+		// content-driven: word-only keys would shrink the stack until
+		// a third of it stops being hittable.
+		blk->setFixedWidth(kModStackW);
 		auto *last = iconKey(Icon::PlayLast, QStringLiteral("playLast"),
-				     QStringLiteral("Riproduci l'ultimo evento"));
-		auto *loop = key(QStringLiteral("LOOP"), "mrToggle");
+				     QStringLiteral("Riproduci l'ultimo evento"),
+				     "mrModeTog");
+		last->setProperty(kKeyHeightProperty, 24);
+		auto *loop = key(QStringLiteral("LOOP"), "mrModeTog");
 		loop->setCheckable(true);
+		loop->setProperty(kKeyHeightProperty, 24);
 		setKeyId(loop, QStringLiteral("loop"));
-		auto *mute = key(QStringLiteral("MUTO"), "mrToggle");
+		auto *mute = key(QStringLiteral("MUTE"), "mrModeTog");
 		mute->setCheckable(true);
+		mute->setProperty(kKeyHeightProperty, 24);
 		setKeyId(mute, QStringLiteral("muteAudio"));
-		auto *music = key(QStringLiteral("\xE2\x99\xAA"), "mrToggle");
+		auto *music = key(QString::fromUtf8("\xE2\x99\xAA"), "mrModeTog");
 		music->setCheckable(true);
+		music->setProperty(kKeyHeightProperty, 24);
 		setKeyId(music, QStringLiteral("music"));
 		music->setToolTip(QStringLiteral("Musica sotto il replay"));
 
@@ -1665,13 +1674,46 @@ private:
 			});
 		}
 
-		for (QPushButton *b : {last, loop, mute, music})
-			b->setFixedHeight(kKeyH);
+		// Heights ride mrKeyH (set above), pinned by KeyBlock::apply() —
+		// never a setFixedHeight here, which the next apply overwrites.
 
 		blk->setShapes({{Cell(last, 3), Cell(loop, 3)},
 				{Cell(mute, 2), Cell(music, 2), Cell(cam, 2)}},
 			       {{Cell(last, 3), Cell(loop, 3)},
 				{Cell(mute, 2), Cell(music, 2), Cell(cam, 2)}});
+		// TAS .modstack .grp > .key{flex:1} (R3): exact shares
+		// (kModiHalfW/kModiThirdW) — like the dock (dock-build.cpp).
+		// Compact wears natural widths + the column width.
+		blk->setOnShape([blk, last, loop, mute, music, cam](bool) {
+			std::fprintf(stderr,
+				     "MODES-COMPACT box=%d musicmin=%d "
+				     "musicmax=%d camhidden=%d\n",
+				     blk->width(), music->minimumWidth(),
+				     music->maximumWidth(),
+				     (int)cam->isHidden());
+			if (blk->isCompact()) {
+				// Natural widths + the column width — with one
+				// floor: ♫ measures 19 px natural, under the
+				// 20 px a key needs to stay hittable below.
+				for (QPushButton *b : {last, loop, mute, music}) {
+					b->setMinimumWidth(20);
+					b->setMaximumWidth(QWIDGETSIZE_MAX);
+				}
+				cam->setMinimumWidth(20);
+				cam->setMaximumWidth(QWIDGETSIZE_MAX);
+				blk->setMinimumWidth(0);
+				blk->setMaximumWidth(QWIDGETSIZE_MAX);
+			} else {
+				blk->setFixedWidth(kModStackW);
+				last->setFixedWidth(kModiHalfW);
+				loop->setFixedWidth(kModiHalfW);
+				const int share = cam->isHidden() ? kModiHalfW
+								  : kModiThirdW;
+				mute->setFixedWidth(share);
+				music->setFixedWidth(share);
+				cam->setFixedWidth(kModiThirdW);
+			}
+		});
 		// Compact (Short): one row of five, like the real panel's —
 		// LOOP and music have no hotkeys, so this row cannot hide.
 		blk->setCompactShapes({{Cell(last, 3), Cell(loop, 3),
@@ -1953,6 +1995,9 @@ private:
 		// click (real panel: poll()/applyMonitorsRoom hides it).
 		if (cam_)
 			cam_->setVisible(!on);
+		// The modes row re-divides (halves vs thirds) — like the dock.
+		if (modesBox_)
+			modesBox_->refresh();
 		applyMonitorsRoom();
 		if (on) {
 			if (bodyChosen() && !savedBody_[modeIdx()].isEmpty())
@@ -3837,10 +3882,13 @@ void runHostChecks(QApplication &app, const QString &outDir)
 		return play && step ? QPair<int, int>(play->height(), step->height())
 				    : QPair<int, int>(0, 0);
 	};
+	// R2 — TAS .key.big{height:42px}: PLAY is the big key before and after
+	// a theme change. (It used to span two rows; the pin that survived the
+	// re-polish then is the same pin that has to survive it now.)
 	const QPair<int, int> before = measurePlayKey();
-	check(before.first >= before.second * 2,
-	      "theme: the play key is two rows before",
-	      QString("%1 px against %2").arg(before.first).arg(before.second));
+	check(before.first == kClipKeyH,
+	      "theme: the play key is big before",
+	      QString("%1 px against %2").arg(before.first).arg(kClipKeyH));
 
 	w->retheme(ThemeChoice::HighContrast, app.palette());
 	w->retheme(ThemeChoice::Light, app.palette());
@@ -3850,14 +3898,11 @@ void runHostChecks(QApplication &app, const QString &outDir)
 	}
 
 	const QPair<int, int> after = measurePlayKey();
-	// THE ONE THE OPERATOR REPORTED: it is two rows at startup and one after
-	// a theme change. A fixed height is not supposed to move, so the fault is
-	// in something that re-runs the section's layout with the folded shape.
-	check(after.first >= after.second * 2,
-	      "theme: ...and still two rows after",
+	check(after.first == kClipKeyH && after.first == before.first,
+	      "theme: ...and still big after",
 	      QString("%1 px against %2 (was %3)")
 		      .arg(after.first)
-		      .arg(after.second)
+		      .arg(kClipKeyH)
 		      .arg(before.first));
 
 	const QImage reshot =
@@ -4288,6 +4333,68 @@ void checkMarcaBoxes(QApplication &app)
 		      detail);
 		check(all,
 		      QStringLiteral("%1: keys centred in their box").arg(form),
+		      detail);
+	}
+	delete host;
+	g_theme = themeWas;
+	g_sc = scWas;
+	g_tints = tintsWas;
+	refreshSheetAssets();
+}
+
+void checkReviewPlayback(QApplication &app)
+{
+	using namespace multireplay::probe;
+	const ThemeChoice themeWas = g_theme;
+	const Scheme scWas = g_sc;
+	const auto tintsWas = g_tints;
+	auto *host = new QWidget();
+	host->setAutoFillBackground(true);
+	auto *hl = new QVBoxLayout(host);
+	hl->setContentsMargins(0, 0, 0, 0);
+	auto *w = new Mock();
+	hl->addWidget(w);
+	for (const ArtifactForm &f : kArtifactForms) {
+		const QString form = QString::fromLatin1(f.name);
+		if (form != QStringLiteral("normale") &&
+		    form != QStringLiteral("fullscreen"))
+			continue;
+		bool all = true;
+		QString detail;
+		for (int theme = 0; theme < 4; theme++) {
+			w->retheme((ThemeChoice)theme, app.palette());
+			w->setLayoutPreset(f.preset);
+			for (int pass = 0; pass < 2; pass++) {
+				host->resize(f.w, f.h);
+				host->show();
+				for (int i = 0; i < 3; i++) {
+					QApplication::processEvents();
+					QApplication::sendPostedEvents();
+				}
+			}
+			const QImage shot = w->grab().toImage();
+			QString d;
+			const bool ok = reviewConform(
+				w, shot, keyById(w, QStringLiteral("playEvents")),
+				keyById(w, QStringLiteral("now")),
+				keysById(w, {"playLast", "loop", "muteAudio",
+					     "music"}),
+				&d);
+			// The first failing theme's numbers, or theme 0's.
+			if (detail.isEmpty() || (!ok && all))
+				detail = QStringLiteral("theme %1: %2").arg(theme).arg(d);
+			all = all && ok;
+		}
+		// TAS «Riproduzione»: .key.big{height:42px;min-width:78px} ▶ PLAY
+		// + NOW; .key.now{background:transparent} a riposo; Modi .key.sm
+		// 24px tratteggiati con la parola intera.
+		check(all,
+		      QStringLiteral("%1: PLAY is 42 tall, NOW its outline twin")
+			      .arg(form),
+		      detail);
+		check(all,
+		      QStringLiteral("%1: modes are 24px equal toggles, labels whole")
+			      .arg(form),
 		      detail);
 	}
 	delete host;
@@ -5004,6 +5111,8 @@ int runChecks(QPalette pal, QApplication &app, const QString &outDir)
 	checkPanelHeaders(app);
 	// The MARCA boxes: always framed, keys centred in them (K3, K4).
 	checkMarcaBoxes(app);
+	// REVIEW playback + modes: big PLAY/NOW, dashed 24px toggles (R2, R3).
+	checkReviewPlayback(app);
 
 	// LAST, because it replaces the application palette and style sheet for
 	// the rest of the process: from here on the panel is a LIGHT one sitting

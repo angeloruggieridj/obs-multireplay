@@ -15,6 +15,7 @@
 #include <QHash>
 #include <QImage>
 #include <QLabel>
+#include <QList>
 #include <QPoint>
 #include <QRect>
 #include <QString>
@@ -23,6 +24,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <initializer_list>
 
 namespace multireplay::probe {
 
@@ -349,6 +351,21 @@ inline bool headersConform(const QWidget *panel, const QImage &shot,
 // this header stays dependency-free), walking up to the ancestor that
 // directly holds a mrBlockFrame. No KeyBlock type named: the structure is
 // the contract, not the class.
+// The bordered frame holding `key`: the ancestor that directly holds a
+// mrBlockFrame. No KeyBlock type named: the structure is the contract.
+inline QWidget *frameOfKey(const QWidget *key, const QWidget *panel)
+{
+	if (!key)
+		return nullptr;
+	for (QWidget *p = key->parentWidget(); p && p != panel;
+	     p = p->parentWidget()) {
+		if (p->findChild<QWidget *>(QStringLiteral("mrBlockFrame"),
+					    Qt::FindDirectChildrenOnly))
+			return p;
+	}
+	return nullptr;
+}
+
 inline QWidget *marcaBoxForKey(const QWidget *panel, const char *keyId)
 {
 	if (!panel || !keyId)
@@ -361,15 +378,7 @@ inline QWidget *marcaBoxForKey(const QWidget *panel, const char *keyId)
 			break;
 		}
 	}
-	if (!key)
-		return nullptr;
-	for (QWidget *p = key->parentWidget(); p && p != panel;
-	     p = p->parentWidget()) {
-		if (p->findChild<QWidget *>(QStringLiteral("mrBlockFrame"),
-					    Qt::FindDirectChildrenOnly))
-			return p;
-	}
-	return nullptr;
+	return frameOfKey(key, panel);
 }
 
 // The bordered frame of a box found above.
@@ -465,6 +474,167 @@ inline bool marcaBoxesConform(const QWidget *panel, const QImage &shot,
 				  .arg(dy, 0, 'f', 1);
 	return cr >= 1.4 && std::abs(dx) <= 3.0 && std::abs(dy) <= 3.0 &&
 	       !keys.isEmpty();
+}
+
+// ── REVIEW PLAYBACK + MODES (R2, R3) ───────────────────────────────────
+// TAS «Riproduzione»: <span class="key play big">▶ PLAY</span><span
+// class="key now big">NOW</span>, .key.big{height:42px;min-width:78px};
+// TAS .key.now{background:transparent;border-color:var(--sig-rec)} — NOW is
+// an outline at rest; TAS .modstack .grp > .key{flex:1} + .key.sm +
+// .key.tog — the modes are 24 px equal toggles with their labels whole.
+inline bool sameRow(const QWidget *a, const QWidget *b, const QWidget *panel,
+		    int tol = 4)
+{
+	if (!a || !b)
+		return false;
+	const QRect ra = rectIn(a, panel), rb = rectIn(b, panel);
+	return std::abs(ra.top() - rb.top()) <= tol &&
+	       std::abs(ra.bottom() - rb.bottom()) <= tol;
+}
+
+// Every VISIBLE key in `keys` is `h` tall. Hidden ones (CAM with the tiles
+// on screen) are not worn and report stale geometry — a different fault.
+inline bool allHeight(const QList<QWidget *> &keys, int h)
+{
+	for (const QWidget *w : keys) {
+		if (!w || !w->isVisible())
+			continue;
+		if (w->height() != h)
+			return false;
+	}
+	return true;
+}
+
+// TAS .modstack .grp > .key{flex:1}: the visible keys sharing a row share
+// its width. Grouped by row, so a two-key row and a three-key row are each
+// judged on their own.
+inline bool equalWidthsPerRow(const QList<QWidget *> &keys,
+			      const QWidget *panel)
+{
+	QList<QWidget *> vis;
+	for (QWidget *w : keys) {
+		if (w && w->isVisible())
+			vis << w;
+	}
+	while (!vis.isEmpty()) {
+		QWidget *first = vis.takeFirst();
+		const int w0 = first->width();
+		QList<QWidget *> rest;
+		for (QWidget *w : vis) {
+			if (sameRow(first, w, panel)) {
+				if (w->width() != w0)
+					return false;
+			} else {
+				rest << w;
+			}
+		}
+		vis = rest;
+	}
+	return true;
+}
+
+// A label that fits is a whole label: Qt elides with "…" past the edge.
+inline bool textFits(const QWidget *w)
+{
+	const auto *b = qobject_cast<const QAbstractButton *>(w);
+	if (!b || !b->isVisible())
+		return true;
+	const QString t = b->text();
+	if (t.isEmpty())
+		return true;
+	return b->fontMetrics().horizontalAdvance(t) <=
+	       b->contentsRect().width();
+}
+inline bool noTextElided(const QList<QWidget *> &keys)
+{
+	for (const QWidget *w : keys) {
+		if (!textFits(w))
+			return false;
+	}
+	return true;
+}
+
+// Find the panel's own keys by mrKey (dock-icons.hpp), without naming the
+// dock type. Missing ids are skipped — the caller decides if that fails.
+inline QList<QWidget *> keysById(const QWidget *panel,
+				 const std::initializer_list<const char *> &ids)
+{
+	QList<QWidget *> out;
+	if (!panel)
+		return out;
+	for (const char *id : ids) {
+		for (QWidget *w : panel->findChildren<QWidget *>()) {
+			if (w->property("mrKey").toString() ==
+			    QString::fromLatin1(id)) {
+				out << w;
+				break;
+			}
+		}
+	}
+	return out;
+}
+
+// THE WHOLE PLAYBACK ANSWER, one copy for the mockup and the gate.
+inline bool reviewConform(const QWidget *panel, const QImage &shot,
+			  const QWidget *playKey, const QWidget *nowKey,
+			  const QList<QWidget *> &modeKeys, QString *detail)
+{
+	if (!playKey || !nowKey) {
+		if (detail)
+			*detail = QStringLiteral("PLAY %1, NOW %2")
+					  .arg(playKey ? "found" : "MISSING")
+					  .arg(nowKey ? "found" : "MISSING");
+		return false;
+	}
+	const auto *play = qobject_cast<const QAbstractButton *>(playKey);
+	const bool big = playKey->height() == 42 && playKey->width() >= 78 &&
+			 play && play->text().contains(QStringLiteral("PLAY"));
+	const bool sameSize = nowKey->height() == playKey->height() &&
+			      nowKey->width() == playKey->width();
+	// TAS .key.now{background:transparent}: the key shows its ground. Read
+	// off-text (the centred word would be the sample) against the box's own
+	// ground, same point Task 5 reads the MARCA frame at.
+	QWidget *frame = frameOfKey(nowKey, panel);
+	const QRect nr = rectIn(nowKey, panel);
+	const QRect fr = frame ? rectIn(boxFrame(frame), panel) : QRect();
+	const bool outline =
+		!fr.isEmpty() &&
+		sameColour(shotPixel(shot, panel, nr.left() + 8,
+				     (int)centreY(nr)),
+			   shotPixel(shot, panel, fr.left() + fr.width() * 3 / 4,
+				     fr.top() + 5));
+	const bool modesH = allHeight(modeKeys, 24);
+	const bool modesW = equalWidthsPerRow(modeKeys, panel);
+	const bool modesT = noTextElided(modeKeys);
+	const bool modes = modesH && modesW && modesT;
+	if (detail) {
+		QString hs, ws, cut;
+		for (const QWidget *w : modeKeys) {
+			if (!w || !w->isVisible())
+				continue;
+			hs += QStringLiteral("%1:%2 ")
+				      .arg(w->property("mrKey").toString())
+				      .arg(w->height());
+			ws += QStringLiteral("%1 ")
+				      .arg(w->width());
+			if (!textFits(w))
+				cut = w->property("mrKey").toString();
+		}
+		*detail = QStringLiteral(
+				  "PLAY %1x%2 '%3', NOW %4x%5 %6, modes h[%7] "
+				  "w[%8] cut:%9")
+				  .arg(playKey->height())
+				  .arg(playKey->width())
+				  .arg(play ? play->text() : QStringLiteral("?"))
+				  .arg(nowKey->height())
+				  .arg(nowKey->width())
+				  .arg(outline ? QStringLiteral("outline")
+					       : QStringLiteral("FILLED"))
+				  .arg(hs.trimmed())
+				  .arg(ws.trimmed())
+				  .arg(cut.isEmpty() ? QStringLiteral("-") : cut);
+	}
+	return big && sameSize && outline && modes;
 }
 
 } // namespace multireplay::probe

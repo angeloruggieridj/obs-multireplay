@@ -88,6 +88,15 @@ inline constexpr int kHeaderRuleW = 1;     // .sub .hd{border-bottom:1px solid}
 // (26 -> 32 there, so 24 -> 30).
 inline constexpr int kHeaderKeyH = 24;     // .key.sm{height:24px}
 inline constexpr int kModStackW = 152;   // .modstack{width:152px}
+// Row shares inside the 152 stack (TAS .modstack .grp > .key{flex:1}): two
+// halves (last+LOOP, or MUTE+music with CAM hidden) or three thirds
+// (MUTE+music+CAM) — minus the frame's own 6+6 px margins and one 4 px grid
+// gap per joint (bandGrid). FIXED, not measured: the hints differ (mark vs
+// word) and a grid stretch preserves the difference, so measuring can never
+// converge — the 2 px wobble the mockup kept reporting. The sums are exact
+// (68+68+4 = 44+44+44+8 = 140 + 12 margins = 152): no slack, no phantom.
+inline constexpr int kModiHalfW = (kModStackW - 12 - 4) / 2;  // 68
+inline constexpr int kModiThirdW = (kModStackW - 12 - 8) / 3; // 44
 inline constexpr int kTrimKeyW = 60;     // Rifinitura keys, fixed equal
 inline constexpr int kTransportKeyH = 40; // .key.tlg{height:40px}
 inline constexpr int kClipKeyH = 42;     // .key.big{height:42px}

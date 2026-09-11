@@ -1351,8 +1351,19 @@ void MultiReplayDock::applyMonitorsRoom()
 	// with the tiles on screen the angle is picked by clicking a picture,
 	// and a key that does the same thing beside them is one more thing to
 	// read past. Absent, not disabled — the modes row reflows.
-	if (camBtn_)
+	if (camBtn_) {
 		camBtn_->setVisible(!monitorsOn_);
+		// ...and re-divides: halves with CAM hidden, thirds with it
+		// showing (R3, kModiHalfW/kModiThirdW — the shape hook reads
+		// isHidden, so it has to run again here, not on the next
+		// relayout).
+		for (QWidget *p = camBtn_->parentWidget(); p;
+		     p = p->parentWidget())
+			if (p->objectName() == QStringLiteral("mrModesBox")) {
+				static_cast<KeyBlock *>(p)->refresh();
+				break;
+			}
+	}
 
 	if (!splitter_ || !leftCol_)
 		return;

@@ -1198,37 +1198,36 @@ KeyBlock *MultiReplayDock::buildPlayback()
 
 	// ▶ PLAY — the biggest key on the panel: the one that takes the
 	// Program, so the one the eye should land on without reading anything.
-	// A filled green rectangle two key-rows tall carrying only the play
-	// mark. Plain QPushButton, no menu (setMenu swallows click(), and a
-	// hotkey and the gate reach it that way).
-	auto *playSel = iconBtn(Icon::Play, "playEvents",
-			       obs_module_text("Dock.PlaySelected"), this,
-			       "mrAccent");
+	// TAS «Riproduzione» (R2): <span class="key play big">▶ PLAY</span> —
+	// .key.big{height:42px;min-width:78px}, mark AND word. Plain
+	// QPushButton, no menu (setMenu swallows click(), and a hotkey and the
+	// gate reach it that way).
+	auto *playSel = iconTextBtn(Icon::Play,
+				   obs_module_text("Dock.PlayWord"),
+				   "playEvents", this, "mrAccent", 16);
+	playSel->setToolTip(obs_module_text("Dock.PlaySelected"));
 	setKeyIconRole(playSel, Icon::Play, IconRole::OnSignal, tintsFor(sc()),
 		       22);
-	playSel->setMinimumWidth(64);
-	playSel->setMaximumHeight(QWIDGETSIZE_MAX);
-	// Two transport rows tall BY CONSTRUCTION, not by slack: the pin is
-	// rowSpan * mrKeyH, so without its own mrKeyH PLAY stands one pin row
-	// (56px) and the "spans two rows" check only passed when the REVIEW
-	// grid happened to have slack to lend. Gated: play_key_spans_two_rows.
-	playSel->setProperty(kKeyHeightProperty, kTransportKeyH);
+	// Big by construction (.key.big): height rides mrKeyH, width is a
+	// minimum (labels differ per locale). One row — the old two-row span
+	// (play_key_spans_two_rows) is superseded by play_key_is_big.
+	playSel->setProperty(kKeyHeightProperty, kClipKeyH);
+	playSel->setMinimumWidth(78);
 	connect(playSel, &QPushButton::clicked, this,
 		&MultiReplayDock::playSelected);
 
 	// NOW — a destination, not a modifier: drop the replay and go back to the
-	// live edge. Keeps the WORD, drawn big and red even at rest, the same
-	// size as PLAY (spec §4).
+	// live edge. TAS (R2): <span class="key now big">NOW</span> — same .key.big
+	// taglia as PLAY, an outline at rest (.key.now{background:transparent;
+	// border-color:var(--sig-rec)} in the sheet).
 	nowBtn_ = new QPushButton(QStringLiteral("NOW"), this);
 	nowBtn_->setObjectName("mrNow");
 	nowBtn_->setProperty("live", false);
 	nowBtn_->setCursor(Qt::PointingHandCursor);
 	nowBtn_->setToolTip(obs_module_text("Dock.JumpToNow"));
 	setKeyId(nowBtn_, QStringLiteral("now"));
-	nowBtn_->setMinimumWidth(64); // same taglia as PLAY (artifact: same class)
-	nowBtn_->setMaximumHeight(QWIDGETSIZE_MAX);
-	// Same two-row pin as PLAY (see above): same taglia, same check.
-	nowBtn_->setProperty(kKeyHeightProperty, kTransportKeyH);
+	nowBtn_->setProperty(kKeyHeightProperty, kClipKeyH);
+	nowBtn_->setMinimumWidth(78); // same taglia as PLAY (artifact: same class)
 	connect(nowBtn_, &QPushButton::clicked, this, [this]() {
 		// the reference controller NOW: drop the replay and watch the
 		// live edge again. The stretch armed on the bar stops being what
@@ -1238,17 +1237,10 @@ KeyBlock *MultiReplayDock::buildPlayback()
 		clearFreeReview();
 	});
 
-	// TWO real grid rows so PLAY and NOW stand two key-rows tall (spec §4,
-	// "▶ PLAY (grande)" · "NOW (grande, stessa taglia di PLAY)"). A 1 px
-	// spacer widget holds row 1 open for the row-span-2 cells to reach into
-	// — a bare null cell is only a hole and rows() would report 1.
-	auto *rowFill = new QWidget(this);
-	rowFill->setObjectName(QStringLiteral("mrRowFill"));
-	rowFill->setFixedHeight(1);
-	blk->setShapes({{Cell(playSel, 3, true, 2), Cell(nowBtn_, 3, true, 2)},
-			{Cell(rowFill, 6, false)}},
-		       {{Cell(playSel, 3, true, 2), Cell(nowBtn_, 3, true, 2)},
-			{Cell(rowFill, 6, false)}});
+	// ONE row: PLAY and NOW side by side, three lanes each — equal spans,
+	// so both wear the same width whatever the locale's words measure.
+	blk->setShapes({{Cell(playSel, 3), Cell(nowBtn_, 3)}},
+		       {{Cell(playSel, 3), Cell(nowBtn_, 3)}});
 	return blk;
 }
 
@@ -1258,12 +1250,13 @@ KeyBlock *MultiReplayDock::buildModes()
 	// Fixed-width stack (artifact .modstack{width:152px}): both rows keep
 	// their length with or without CAM.
 	blk->setObjectName(QStringLiteral("mrModesBox"));
-	blk->setFixedWidth(kModStackW);
 
 	// ↺ "instantly play last event" — a distinct mark from LOOP (Icon::
 	// PlayLast, not Icon::Loop) so the two do not read as the same thing.
 	auto *lastBtn = iconBtn(Icon::PlayLast, "playLast",
-				obs_module_text("Dock.PlayLast"), this);
+			       obs_module_text("Dock.PlayLast"), this,
+			       "mrModeTog");
+	lastBtn->setProperty(kKeyHeightProperty, 24); // TAS .key.sm{height:24px}
 	connect(lastBtn, &QPushButton::clicked, this, [this]() {
 		std::string err;
 		if (!pc().playLastEvent(
@@ -1272,16 +1265,30 @@ KeyBlock *MultiReplayDock::buildModes()
 			showNotice(localizedError(err));
 	});
 
-	loopBtn_ = statusToggle(Icon::Loop, obs_module_text("Dock.Loop"), "loop",
-				obs_module_text("Dock.Loop"), this);
+	// TAS Modi (R3): <span class="key sm tog">LOOP</span> — words, no mark.
+	// A mark beside LOOP would re-ask the PlayLast/LOOP ambiguity the
+	// distinct PlayLast mark just settled. Plain words, checkable, the
+	// dashed toggle look (.key.tog) from the sheet.
+	loopBtn_ = new QPushButton(obs_module_text("Dock.ModeLoop"), this);
+	loopBtn_->setObjectName("mrModeTog");
+	loopBtn_->setCheckable(true);
+	loopBtn_->setCursor(Qt::PointingHandCursor);
+	loopBtn_->setToolTip(obs_module_text("Dock.Loop"));
+	loopBtn_->setProperty(kKeyHeightProperty, 24);
+	setKeyId(loopBtn_, QStringLiteral("loop"));
 	connect(loopBtn_, &QPushButton::toggled, this,
 		[this](bool on) { pc().setLoop(on); });
 
 	// MUTE — the replay input(s) sit muted in the OBS mixer. It LATCHES: a
 	// new replay does not clear it, NOW/Live do not, only the operator does.
-	muteBtn_ = statusToggle(Icon::Mute, obs_module_text("Dock.Mute"),
-				"muteAudio", obs_module_text("Dock.MuteHint"),
-				this);
+	// Word, like LOOP (R3).
+	muteBtn_ = new QPushButton(obs_module_text("Dock.ModeMute"), this);
+	muteBtn_->setObjectName("mrModeTog");
+	muteBtn_->setCheckable(true);
+	muteBtn_->setCursor(Qt::PointingHandCursor);
+	muteBtn_->setToolTip(obs_module_text("Dock.MuteHint"));
+	muteBtn_->setProperty(kKeyHeightProperty, 24);
+	setKeyId(muteBtn_, QStringLiteral("muteAudio"));
 	muteBtn_->setChecked(
 		ReplayCore::instance().getConfig().muteReplayAudio);
 	connect(muteBtn_, &QPushButton::toggled, this, [this](bool on) {
@@ -1289,9 +1296,14 @@ KeyBlock *MultiReplayDock::buildModes()
 			ReplayChannel::instance(w).setMuted(on);
 	});
 
-	musicBtn_ = statusToggle(Icon::Music, obs_module_text("Dock.Music"),
-				 "music", obs_module_text("Dock.MusicHint"),
-				 this);
+	// ♫ — the glyph alone (R3): music under the replay, no word to fit.
+	musicBtn_ = new QPushButton(QString::fromUtf8("\xE2\x99\xAA"), this);
+	musicBtn_->setObjectName("mrModeTog");
+	musicBtn_->setCheckable(true);
+	musicBtn_->setCursor(Qt::PointingHandCursor);
+	musicBtn_->setToolTip(obs_module_text("Dock.MusicHint"));
+	musicBtn_->setProperty(kKeyHeightProperty, 24);
+	setKeyId(musicBtn_, QStringLiteral("music"));
 	connect(musicBtn_, &QPushButton::toggled, this, [this](bool on) {
 		for (Which w : targetChannels())
 			PlaybackCoordinator::instance(w).setMusicEnabled(on);
@@ -1342,16 +1354,53 @@ KeyBlock *MultiReplayDock::buildModes()
 		popupOnClick(camBtn_, menu);
 	}
 
-	for (QPushButton *b : {lastBtn, loopBtn_, muteBtn_, musicBtn_})
-		b->setFixedHeight(kKeyH);
+	// Heights ride mrKeyH (set above), pinned by KeyBlock::apply() — never a
+	// setFixedHeight here, which the next apply would overwrite.
 
 	// Fixed-width stack, equal rows with or without CAM (spec §4). Row 0:
 	// ↺ · LOOP. Row 1: MUTE · ♪ · CAM.
+	// TAS .modstack .grp > .key{flex:1} (R3): exact shares (kModiHalfW /
+	// kModiThirdW, dock-layout.hpp) — the Short one-liner wears natural
+	// widths and the column's width instead. Same hook the camera matrix
+	// uses (setOnShape).
+	blk->setOnShape([this, blk, lastBtn](bool) {
+		if (blk->isCompact()) {
+			// Natural widths and the column's width — with one
+			// floor: ♫ measures 19 px natural, under the 20 px a
+			// key needs to stay hittable (mockup checkHitTargets).
+			for (QPushButton *b :
+			     {lastBtn, loopBtn_, muteBtn_, musicBtn_}) {
+				b->setMinimumWidth(20);
+				b->setMaximumWidth(QWIDGETSIZE_MAX);
+			}
+			camBtn_->setMinimumWidth(20);
+			camBtn_->setMaximumWidth(QWIDGETSIZE_MAX);
+			blk->setMinimumWidth(0);
+			blk->setMaximumWidth(QWIDGETSIZE_MAX);
+		} else {
+			blk->setFixedWidth(kModStackW);
+			lastBtn->setFixedWidth(kModiHalfW);
+			loopBtn_->setFixedWidth(kModiHalfW);
+			// Halves with CAM hidden (TAS Modi Monitors ON), thirds
+			// with it showing. Re-run by refresh() where CAM toggles
+			// (applyMonitorsRoom).
+			const int share = camBtn_->isHidden() ? kModiHalfW
+							      : kModiThirdW;
+			muteBtn_->setFixedWidth(share);
+			musicBtn_->setFixedWidth(share);
+			camBtn_->setFixedWidth(kModiThirdW);
+		}
+	});
 	blk->setShapes({{Cell(lastBtn, 3), Cell(loopBtn_, 3)},
 			{Cell(muteBtn_, 2), Cell(musicBtn_, 2), Cell(camBtn_, 2)}},
 		       {{Cell(lastBtn, 3), Cell(loopBtn_, 3)},
 			{Cell(muteBtn_, 2), Cell(musicBtn_, 2),
 			 Cell(camBtn_, 2)}});
+	// TAS .modstack .grp > .key{flex:1} (R3): the row shares are exact
+	// fixed widths (kModiHalfW/kModiThirdW, set in the shape hook above),
+	// so no stretch columns — and none must linger for the COMPACT shape
+	// either (12 columns: a 0-5 range would starve 6-11 and squeeze music
+	// to 19 px, measured). Exact fit leaves no leftover to share.
 	// Compact (Short ~210px column): all five on one line. LOOP and music
 	// have no hotkeys, so unlike trim and the slider this row cannot hide.
 	blk->setCompactShapes({{Cell(lastBtn, 3), Cell(loopBtn_, 3),

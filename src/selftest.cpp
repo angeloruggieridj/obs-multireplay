@@ -4823,12 +4823,11 @@ void runReopenPass(const std::string &outPath)
 	// "there was nothing to centre it in" look the same from a screenshot and
 	// only the numbers tell them apart.
 	bool keysCentred = false;
-	// THE GREEN PLAY KEY IS TWO ROWS TALL, and it is checked because it has
-	// quietly stopped being so twice. It is one of the three first-function
-	// keys on this panel and it is drawn bigger on purpose; "it looks smaller
-	// again" is an impression until somebody measures it against the key
-	// beside it.
-	bool playKeyIsTall = false;
+	// TAS «Riproduzione» (R2): ▶ PLAY is .key.big — 42 tall, ≥78 wide,
+	// carrying the word. It is checked because its size has quietly
+	// stopped being so twice; "it looks smaller again" is an impression
+	// until somebody measures it.
+	bool playKeyIsBig = false;
 	// SPEC §0/§8 — THE GREEN BAND IS REVIEW'S FOOTER and the health badge is
 	// MARCA's, not the toolbar's. Both are asserted by ancestry: the ClipBar
 	// sits inside #mrReview, and the health key inside #mrMarca.
@@ -4948,9 +4947,10 @@ void runReopenPass(const std::string &outPath)
 	bool panelTickAt75 = false;
 	bool panelReadoutPct = false;
 	int panelPlayW = -1, panelNowW = -1;
-	int panelNowMinW = -1;
-	bool panelPlayNow64 = false;
-	int playKeyH = 0, stepKeyH = 0;
+	int panelPlayH = -1, panelNowH = -1;
+	bool panelPlayNow42x78 = false;
+	bool panelModesNotCut = false;
+	int playKeyH = 0;
 	int keyPadL = 0, keyPadR = 0;
 	QString bandText, noticeText;
 	bool fsKeyShownWhenFloating = false;
@@ -5572,19 +5572,25 @@ void runReopenPass(const std::string &outPath)
 			measure(1500, 900, tilesWideOk, wideTileW, wideTiles, wideMode);
 			tilesWideOk = tilesWideOk && std::strcmp(wideMode, "wide") == 0;
 			runOnUi([&]() {
+				int playH = 0, playW = 0;
+				QString playText;
 				for (QPushButton *b :
 				     dock->findChildren<QPushButton *>()) {
-					const QString id =
-						b->property(kKeyProperty).toString();
-					if (id == QStringLiteral("playEvents"))
-						playKeyH = b->height();
-					else if (id == QStringLiteral("stepFwd"))
-						stepKeyH = b->height();
+					if (b->property(kKeyProperty).toString() !=
+					    QStringLiteral("playEvents"))
+						continue;
+					playH = b->height();
+					playW = b->width();
+					playText = b->text();
+					break;
 				}
-				// Two rows plus the gap between them, less a pixel of
-				// slack: anything near one row is the fault.
-				playKeyIsTall = stepKeyH > 0 &&
-						playKeyH >= stepKeyH * 2;
+				// TAS .key.big{height:42px;min-width:78px} «▶ PLAY»:
+				// big with the word, not spanning rows any more.
+				playKeyH = playH;
+				playKeyIsBig =
+					playH == multireplay::kClipKeyH &&
+					playW >= 78 &&
+					playText.contains(QStringLiteral("PLAY"));
 				panelPaintsItself = dock->testAttribute(
 					Qt::WA_StyledBackground);
 				// A file path rather than `image: none`: the
@@ -5968,10 +5974,31 @@ void runReopenPass(const std::string &outPath)
 				if (play && now) {
 					panelPlayW = play->width();
 					panelNowW = now->width();
-					panelNowMinW = now->minimumWidth();
-					panelPlayNow64 = panelPlayW >= 64 &&
-							 panelNowW >= 64 &&
-							 panelPlayW == panelNowW;
+					panelPlayH = play->height();
+					panelNowH = now->height();
+					// TAS .key.big{height:42px;min-width:78px},
+					// same class: PLAY and NOW one taglia.
+					panelPlayNow42x78 =
+						panelPlayH == 42 &&
+						panelNowH == 42 &&
+						panelPlayW >= 78 &&
+						panelNowW >= 78 &&
+						panelPlayW == panelNowW;
+				}
+				// TAS .modstack .grp > .key{flex:1} + .key.sm (R3):
+				// every visible mode toggle whole — its label
+				// fits the key it is painted on.
+				panelModesNotCut = true;
+				for (const char *id :
+				     {"playLast", "loop", "muteAudio", "music"}) {
+					QWidget *k = byKey(id);
+					auto *b = qobject_cast<QPushButton *>(k);
+					if (!b || !b->isVisible())
+						continue;
+					if (b->fontMetrics().horizontalAdvance(
+						    b->text()) >
+					    b->contentsRect().width())
+						panelModesNotCut = false;
 				}
 				// The trace for widths that come out under their own
 				// minimum: mode + dock size at the read. A hidden
@@ -6141,11 +6168,10 @@ void runReopenPass(const std::string &outPath)
 				multireplay::kAddBankSide, toolbarGearW,
 				toolbarGearH, multireplay::kToolIcoW,
 				multireplay::kToolIcoH);
-			obs_log(playKeyIsTall ? LOG_INFO : LOG_ERROR,
-				"[selftest] reopen: green play key %d px against a "
-				"%d px frame step: %s",
-				playKeyH, stepKeyH,
-				playKeyIsTall ? "two rows" : "NOT two rows");
+			obs_log(playKeyIsBig ? LOG_INFO : LOG_ERROR,
+				"[selftest] reopen: green play key %d px tall: %s",
+				playKeyH, playKeyIsBig ? "big with its word"
+						       : "NOT big");
 			// ── THE MONITORS KEY, PRESSED FOR REAL ──────────────
 			//
 			// At 1100x700, Wide — the arrangement the report came
@@ -6996,7 +7022,7 @@ void runReopenPass(const std::string &outPath)
 			  fsRestoresTheWindow && galleryGrowsInFullscreen &&
 			  tilesWideOk && tilesTallOk &&
 			  shortReachable && shortPacksLines && keysCentred &&
-			  tallCollapsesToMore && playKeyIsTall &&
+			  tallCollapsesToMore && playKeyIsBig &&
 			  bandInReviewFooter && healthInMarcaFooter &&
 			  panelPaintsItself && panelMarksAreDrawn &&
 			  panelFontsAreEmbedded &&
@@ -7017,7 +7043,7 @@ void runReopenPass(const std::string &outPath)
 		  panelShares4060 && panelHeaders34 && panelTransport40 &&
 		  panelTrim6060 && panelClip42 && panelBayLabel && panelModi152 &&
 		  panelSlider120 && panelTickAt75 && panelReadoutPct &&
-		  panelPlayNow64 &&
+		  panelPlayNow42x78 && panelModesNotCut &&
 		  layoutShortStacksLeft && layoutShortSplitsWidth &&
 		  layoutTallTabs && layoutTallHidesOut && layoutPresetSizes &&
 		  layoutFullscreenNeedsFloat && artifactSetCaptured &&
@@ -7107,7 +7133,7 @@ void runReopenPass(const std::string &outPath)
 	obs_data_set_bool(checks, "stacked_keys_are_centred", keysCentred);
 	obs_data_set_bool(checks, "tall_collapses_bay_clips_speed_behind_more",
 			   tallCollapsesToMore);
-	obs_data_set_bool(checks, "play_key_spans_two_rows", playKeyIsTall);
+	obs_data_set_bool(checks, "play_key_is_big", playKeyIsBig);
 	obs_data_set_bool(checks, "on_air_band_is_review_footer", bandInReviewFooter);
 	obs_data_set_bool(checks, "health_badge_is_marca_footer",
 			  healthInMarcaFooter);
@@ -7186,7 +7212,11 @@ void runReopenPass(const std::string &outPath)
 	obs_data_set_bool(checks, "panel_slider_120", panelSlider120);
 	obs_data_set_bool(checks, "panel_tick_at_75", panelTickAt75);
 	obs_data_set_bool(checks, "panel_readout_pct", panelReadoutPct);
-	obs_data_set_bool(checks, "panel_play_now_64", panelPlayNow64);
+	// TAS «Riproduzione» (R2): ▶ PLAY and NOW one .key.big taglia —
+	// 42 tall, ≥78 wide, same size.
+	obs_data_set_bool(checks, "panel_play_now_42x78", panelPlayNow42x78);
+	// TAS Modi (R3): every visible toggle whole.
+	obs_data_set_bool(checks, "panel_modes_not_cut", panelModesNotCut);
 	obs_data_set_obj(root, "checks", checks);
 	obs_data_release(checks);
 	// Numbers, not checks: how much panel there was to centre the keys in.
@@ -7242,7 +7272,8 @@ void runReopenPass(const std::string &outPath)
 	obs_data_set_int(root, "panel_tick_dx", panelTickDX);
 	obs_data_set_int(root, "panel_play_w", panelPlayW);
 	obs_data_set_int(root, "panel_now_w", panelNowW);
-	obs_data_set_int(root, "panel_now_min_w", panelNowMinW);
+	obs_data_set_int(root, "panel_play_h", panelPlayH);
+	obs_data_set_int(root, "panel_now_h", panelNowH);
 	obs_data_set_string(root, "layout_shapes_note",
 			    layoutShapesNote.toUtf8().constData());
 	obs_data_set_int(root, "layout_short_min_w", layoutShortMinW);
