@@ -129,6 +129,11 @@ struct Scheme {
 			      // dark panels, luminance-adapted on light ones — same
 			      // sanctioned transform as tabBar, which is also
 			      // structural rather than signal.
+	QString segOn;      // a lit segment key (artifact pannello: the bay
+			      // selector's A|B, .seg lit #293954). Navy, luminance-
+			      // adapted like tabBar — the theme's accent stays out
+			      // of it, or "follow the OBS theme" repaints what a
+			      // lit segment means.
 	QString seekBar;    // the position bar's played portion
 };
 
@@ -280,6 +285,8 @@ inline Scheme schemeFor(ThemeChoice choice, const QPalette &pal)
 	s.tabBar = hex(signalOn(QColor("#1D3D74"), bg, dark, 0));
 	s.tabBarBorder = hex(mix(QColor(s.tabBar), fg, 0.30));
 	s.tileEdge = hex(signalOn(QColor("#33465F"), bg, dark, 0));
+	// K8 — TAS .seg lit #293954: the bay selector's lit segment.
+	s.segOn = hex(signalOn(QColor("#293954"), bg, dark, 0));
 
 	// SIGNAL. Fixed hues; only their lightness is answerable to the theme.
 	const QColor recHue("#C0202A");
@@ -423,6 +430,12 @@ R"QSS(
 #MultiReplayDock QWidget#mrMarcaFoot {
 	border-top: 1px solid @border@;
 	padding-top: 6px;
+}
+/* K9 — with no badge and no notice the footer is an empty reserved row: no
+   rule over nothing. `empty` is maintained by setFooterNotice, the one funnel
+   that sees both halves. */
+#MultiReplayDock QWidget#mrMarcaFoot[empty="true"] {
+	border-top: 0;
 }
 /* ── BOXED SUB-SECTIONS (spec §4) ────────────────────────────────
    Each group in MARCA and REVIEW is a rounded box whose legend interrupts
@@ -1028,7 +1041,7 @@ QPushButton#mrRec[recording="true"]:hover { background: @rec@; }
 	background: @raise2@; color: @text@;
 }
 #MultiReplayDock QWidget#mrChanSeg QPushButton#mrChanSel:checked {
-	background: @accent@; color: @accentText@;
+	background: @segOn@; color: @accentText@;
 }
 /* A filled checked key is square: round its outer corners to sit inside
    the container's own rounding instead of poking past it. */
@@ -1045,7 +1058,7 @@ QPushButton#mrChanSel {
 }
 QPushButton#mrChanSel:hover { background: @raise2@; color: @text@; }
 QPushButton#mrChanSel:checked {
-	background: @accent@; color: @accentText@; border-color: @accent@;
+	background: @segOn@; color: @accentText@; border-color: @segOn@;
 }
 
 /* M4 health badge: amber = degraded, red = this take is not usable. It sits
@@ -1850,6 +1863,7 @@ inline QString dockStyle(const Scheme &s, int densityLevel = 0,
 		{"@fnBg@", &s.fnBg},           {"@fn@", &s.fn},
 		{"@tabBar@", &s.tabBar},       {"@seekBar@", &s.seekBar},
 		{"@tabBarBorder@", &s.tabBarBorder},
+		{"@segOn@", &s.segOn},
 	};
 	// LONGEST PREFIX FIRST, which is why @borderHi@ is listed above @border@
 	// and @text@ below @textMuted@: these are delimited by @ at both ends, so

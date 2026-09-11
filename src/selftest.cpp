@@ -6559,10 +6559,16 @@ void runReopenPass(const std::string &outPath)
 		bool headersMeasured = false;
 		bool headersOk = false;
 		QString headersDetail;
+		// TAS .fbox (K3, K4): the MARCA boxes are framed and their keys
+		// centred — same shots (dock-probe.hpp marcaBoxesConform).
+		bool boxesMeasured = false;
+		bool boxesOk = false;
+		QString boxesDetail;
 	};
 	std::vector<ArtifactShot> artifactShots;
 	bool artifactSetCaptured = false;
 	bool panelHeadersCentred = false;
+	bool panelMarcaBoxesFramed = false;
 	bool layoutToolbarOnTop = false;
 	bool layoutNoStatusRow = false;
 	bool noticeInMarcaFooter = false;
@@ -6766,6 +6772,12 @@ void runReopenPass(const std::string &outPath)
 											"toOutput")),
 									kHeaderKeyH,
 									&s.headersDetail);
+							// THE MARCA BOXES, same shot (K3, K4).
+							s.boxesMeasured = true;
+							s.boxesOk = multireplay::probe::
+								marcaBoxesConform(
+									dock, shot,
+									&s.boxesDetail);
 						}
 						if (ClipBar *bar =
 							    dock->findChild<ClipBar *>())
@@ -6860,6 +6872,15 @@ void runReopenPass(const std::string &outPath)
 							qUtf8Printable(s.file),
 							s.headersOk ? "conform" : "OFF",
 							qUtf8Printable(s.headersDetail));
+					if (s.boxesMeasured)
+						obs_log(s.boxesOk ? LOG_INFO
+								  : LOG_ERROR,
+							"[selftest] reopen: MARCA boxes %s: "
+							"%s (%s)",
+							qUtf8Printable(s.file),
+							s.boxesOk ? "framed, keys centred"
+								 : "OFF",
+							qUtf8Printable(s.boxesDetail));
 					artifactShots.push_back(s);
 				}
 			}
@@ -6946,6 +6967,20 @@ void runReopenPass(const std::string &outPath)
 			"Fullscreen shots with the headers a rule, centred, IN "
 			"OUTPUT far right",
 			shotsHeadersOk, shotsHeadersMeasured);
+		// K3, K4: same 8 shots, every one with the MARCA boxes framed
+		// and their keys centred.
+		const int shotsBoxesMeasured = (int)std::count_if(
+			artifactShots.begin(), artifactShots.end(),
+			[](const ArtifactShot &s) { return s.boxesMeasured; });
+		const int shotsBoxesOk = (int)std::count_if(
+			artifactShots.begin(), artifactShots.end(),
+			[](const ArtifactShot &s) { return s.boxesOk; });
+		panelMarcaBoxesFramed = shotsBoxesMeasured == 8 && shotsBoxesOk == 8;
+		obs_log(panelMarcaBoxesFramed ? LOG_INFO : LOG_ERROR,
+			"[selftest] reopen: panel_marca_boxes_framed — %d of %d "
+			"Normale/Fullscreen shots with the MARCA boxes framed, "
+			"keys centred",
+			shotsBoxesOk, shotsBoxesMeasured);
 		obs_log(artifactSetCaptured ? LOG_INFO : LOG_ERROR,
 			"[selftest] reopen: artifact set — %d of 16 shots written "
 			"with data (band on air, 6 rows) to %s (project re-opened "
@@ -7139,6 +7174,10 @@ void runReopenPass(const std::string &outPath)
 	// title centred (±3 px), IN OUTPUT within 10 px of the right edge, clock
 	// HH:mm:ss, REC compact — on the Normale and Fullscreen shots.
 	obs_data_set_bool(checks, "panel_headers_centred", panelHeadersCentred);
+	// TAS .fbox (K3, K4): MARCA boxes framed (contrast ≥ 1.4), keys centred
+	// (±3 px) — same shots.
+	obs_data_set_bool(checks, "panel_marca_boxes_framed",
+			  panelMarcaBoxesFramed);
 	obs_data_set_bool(checks, "panel_transport_40", panelTransport40);
 	obs_data_set_bool(checks, "panel_trim_60_40", panelTrim6060);
 	obs_data_set_bool(checks, "panel_clip_42", panelClip42);

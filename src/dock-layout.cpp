@@ -797,13 +797,25 @@ void KeyBlock::apply()
 		return;
 	applied_ = true;
 
+	// A BOXED SUB-SECTION (TAS .fbox — K3, K4). The groups inside MARCA and
+	// REVIEW are rounded boxes whose legend interrupts the top-left of the
+	// border; the border is drawn in EVERY form (the LAY Short wireframe
+	// shows the compact boxes bordered), so `folded` never reaches them,
+	// and their keys ride CENTRED (.fbox{justify-content:center;
+	// align-items:center}), not packed left like the historic strip. Set by
+	// TwoPanelStrip::addToMarca/setReviewGrid — the historic ControlStrip
+	// sections never carry it.
+	const bool boxed = property("mrBoxed").toBool();
+
 	// FIRST, before a single cell is placed: a section that sizes its own keys
 	// per shape (the camera matrix) has to have done it by the time the grid
 	// asks them how big they are. See setOnShape in the header.
 	if (onShape_)
 		onShape_(flatActive_);
 
-	// THE BOX IS A WIDE-LAYOUT FEATURE. Side by side the rounded borders and
+	// THE BOX IS A WIDE-LAYOUT FEATURE — except inside MARCA/REVIEW, where
+	// the boxed sub-sections keep it in every form (see `boxed` above).
+	// Side by side the rounded borders and
 	// legends give the panel its broadcast-desk grid (spec §4). Stacked in a
 	// narrow column they are eight borders and eight legends down a panel
 	// whose scarce axis is height — which is exactly the "too fragmented"
@@ -826,8 +838,8 @@ void KeyBlock::apply()
 		if (auto *fv = qobject_cast<QVBoxLayout *>(frame_->layout()))
 			fv->setContentsMargins(0, 2, 0,
 					       kHeaderPadBottom + kHeaderRuleW);
-	if (property("folded").toBool() != flatActive_) {
-		setProperty("folded", flatActive_);
+	if (property("folded").toBool() != (flatActive_ && !boxed)) {
+		setProperty("folded", flatActive_ && !boxed);
 		if (style()) {
 			style()->unpolish(this);
 			style()->polish(this);
@@ -874,11 +886,29 @@ void KeyBlock::apply()
 	for (int c = 0; c < 16; c++)
 		grid_->setColumnStretch(c, 0);
 
+	// A BOXED section centres its keys (TAS .fbox, K4): a stretch column on
+	// EACH side instead of the phantom one on the right, and a stretch row
+	// above and below instead of none. Only when the shape claims no slack
+	// of its own — beside a declared Cell::stretch a second share would push
+	// the group off centre (same reason the phantom is dropped there).
+	bool shapeSlack = false;
+	for (const QVector<Cell> &row : s)
+		for (const Cell &cell : row)
+			if (cell.slack > 0)
+				shapeSlack = true;
+	const bool centreH = boxed && stretchFrom_ < 0 && !shapeSlack;
+
 	int r = 0;
 	int maxCol = 0;
 	bool hasSlack = false; // a Cell::stretch() owns the leftover width
 	for (const QVector<Cell> &row : s) {
-		int c = 0;
+		int c = centreH ? 1 : 0;
+		const int gr = r;
+		if (centreH)
+			grid_->addItem(new QSpacerItem(0, 0,
+						       QSizePolicy::Expanding,
+						       QSizePolicy::Minimum),
+				       gr, 0, 1, 1);
 		for (const Cell &cell : row) {
 			if (cell.slack > 0) {
 				grid_->setColumnStretch(c, cell.slack);
@@ -892,12 +922,12 @@ void KeyBlock::apply()
 					grid_->addItem(new QSpacerItem(cell.fixedPx, 0,
 								       QSizePolicy::Fixed,
 								       QSizePolicy::Minimum),
-						       r, c, 1, cell.span);
+						       gr, c, 1, cell.span);
 				else if (cell.slack > 0)
 					grid_->addItem(new QSpacerItem(0, 0,
 								       QSizePolicy::Expanding,
 								       QSizePolicy::Minimum),
-						       r, c, 1, cell.span);
+						       gr, c, 1, cell.span);
 				c += cell.span;
 				continue;
 			}
@@ -958,12 +988,12 @@ void KeyBlock::apply()
 				// one of the things that drops this.
 				btn->setFixedHeight(pinned);
 			}
-			const bool wantVisible = !cell.w->isHidden();
-			cell.w->setParent(body_);
-			if (wantVisible)
-				cell.w->show();
-			grid_->addWidget(cell.w, r, c, cell.rowSpan, cell.span,
-					 cell.align);
+		const bool wantVisible = !cell.w->isHidden();
+		cell.w->setParent(body_);
+		if (wantVisible)
+			cell.w->show();
+		grid_->addWidget(cell.w, gr, c, cell.rowSpan, cell.span,
+				 cell.align);
 			if (cell.grow) {
 				QSizePolicy sp = cell.w->sizePolicy();
 				if (sp.horizontalPolicy() == QSizePolicy::Fixed)
@@ -991,7 +1021,40 @@ void KeyBlock::apply()
 		// look. Keys stay at their natural width; the section reads as a
 		// dense group. (No-op when the block is already sized to its
 		// content, e.g. inside ControlStrip's lanes.)
-		grid_->setColumnStretch(maxCol, 1);
+		if (centreH) {
+			// TAS .fbox{justify-content:center}: the row's slack is
+			// shared by a spacer on EACH side, so the group sits in
+			// the middle. Real spacer items both ends — an empty
+			// column's stretch alone does not hold the share.
+			for (int rr = 0; rr < r; rr++)
+				grid_->addItem(new QSpacerItem(
+						       0, 0,
+						       QSizePolicy::Expanding,
+						       QSizePolicy::Minimum),
+					       rr, maxCol, 1, 1);
+			grid_->setColumnStretch(0, 1);
+			grid_->setColumnStretch(maxCol, 1);
+		} else {
+			grid_->setColumnStretch(maxCol, 1);
+		}
+	}
+	if (boxed) {
+		// TAS .fbox{align-items:center} (K4): the keys ride centred in
+		// the box, not hung from its top edge. The frame's column is
+		// body_ over a stretch; boxed, a stretch goes above it too.
+		// Rebuilt from scratch so a re-apply never stacks a third one.
+		if (auto *fv = qobject_cast<QVBoxLayout *>(frame_->layout())) {
+			QWidget *bodyWidget = nullptr;
+			while (QLayoutItem *it = fv->takeAt(0)) {
+				if (!bodyWidget)
+					bodyWidget = it->widget();
+				delete it; // the item only: the widget stays alive
+			}
+			fv->addStretch(1);
+			if (bodyWidget)
+				fv->addWidget(bodyWidget, 0);
+			fv->addStretch(1);
+		}
 	}
 	body_->updateGeometry();
 	updateGeometry();
@@ -1775,6 +1838,18 @@ void setFooterNotice(QLabel *notice, const QWidget *badge, const QString &text)
 	const bool show = !shown.isEmpty();
 	if (notice->isHidden() == show)
 		notice->setVisible(show);
+	// K9 — the footer draws its top rule only while it carries something:
+	// badge hidden and no sentence means an empty reserved row. Guarded on
+	// the change like `notice` above — this runs on every poll tick.
+	if (foot) {
+		QWidget *f = const_cast<QWidget *>(foot);
+		const bool empty = (!badge || badge->isHidden()) && text.isEmpty();
+		if (f->property("empty").toBool() != empty) {
+			f->setProperty("empty", empty);
+			f->style()->unpolish(f);
+			f->style()->polish(f);
+		}
+	}
 }
 
 TwoPanelStrip::TwoPanelStrip(QWidget *parent) : QWidget(parent)
@@ -1867,6 +1942,14 @@ void TwoPanelStrip::addToMarca(KeyBlock *b)
 {
 	if (!b)
 		return;
+	// A BOXED sub-section (TAS .fbox — K3, K4): bordered in every form,
+	// keys centred. Read by KeyBlock::apply().
+	b->setProperty("mrBoxed", true);
+	// AND RE-APPLIED FOR IT: the block was already applied once by
+	// setShapes() at its construction, before this property existed, and
+	// apply() does nothing twice — without this the boxing would wait for
+	// the next shape change to take effect.
+	b->refresh();
 	// After the header, in order; the footer (setFooters) comes last.
 	// 12:12:7 — the bodies' 1.2fr/1.2fr/0.7fr, in Qt integers.
 	const int i = (int)marcaBlocks_.size();
@@ -1882,6 +1965,11 @@ void TwoPanelStrip::setReviewGrid(KeyBlock *playback, KeyBlock *modes,
 	reviewBoxes_ = {playback, modes, transport, trim, speed};
 	for (KeyBlock *b : reviewBoxes_)
 		if (b) {
+			// A BOXED sub-section (TAS .fbox — K3, K4), like MARCA's.
+			b->setProperty("mrBoxed", true);
+			// Re-applied: see addToMarca — the property postdates the
+			// block's first apply().
+			b->refresh();
 			b->setParent(reviewGrid_);
 			reviewBlocks_ << b;
 		}

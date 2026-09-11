@@ -172,6 +172,12 @@ inline double centreX(const QRect &r)
 {
 	return r.left() + r.width() / 2.0;
 }
+// TAS .fbox{justify-content:center;align-items:center} (K4): the vertical
+// centre beside the horizontal one.
+inline double centreY(const QRect &r)
+{
+	return r.top() + r.height() / 2.0;
+}
 inline int rightEdge(const QRect &r)
 {
 	return r.left() + r.width();
@@ -330,6 +336,135 @@ inline bool headersConform(const QWidget *panel, const QImage &shot,
 	return mRule && rRule && std::abs(mOff) <= 3.0 && std::abs(rOff) <= 3.0 &&
 	       outGap >= 0 && outGap <= 10 && hms && compact && !mc.isEmpty() &&
 	       !rt.isEmpty();
+}
+
+// ── THE MARCA BOXES (K3, K4) ───────────────────────────────────────────
+// TAS .fbox{border:1px solid #3a4a63;border-radius:7px} — always, in every
+// form — and .fbox{justify-content:center;align-items:center}: the keys ride
+// centred in their box. One copy for the mockup and the gate, like the
+// header helpers above.
+//
+// `panel` is the dock (or the mockup's Mock): the box is found through the
+// key it holds (`keyId`, the mrKey of dock-icons.hpp — the literal here so
+// this header stays dependency-free), walking up to the ancestor that
+// directly holds a mrBlockFrame. No KeyBlock type named: the structure is
+// the contract, not the class.
+inline QWidget *marcaBoxForKey(const QWidget *panel, const char *keyId)
+{
+	if (!panel || !keyId)
+		return nullptr;
+	QWidget *key = nullptr;
+	for (QWidget *w : panel->findChildren<QWidget *>()) {
+		if (w->property("mrKey").toString() ==
+		    QString::fromLatin1(keyId)) {
+			key = w;
+			break;
+		}
+	}
+	if (!key)
+		return nullptr;
+	for (QWidget *p = key->parentWidget(); p && p != panel;
+	     p = p->parentWidget()) {
+		if (p->findChild<QWidget *>(QStringLiteral("mrBlockFrame"),
+					    Qt::FindDirectChildrenOnly))
+			return p;
+	}
+	return nullptr;
+}
+
+// The bordered frame of a box found above.
+inline QWidget *boxFrame(const QWidget *block)
+{
+	return block ? block->findChild<QWidget *>(
+			       QStringLiteral("mrBlockFrame"))
+		     : nullptr;
+}
+
+// The keys a box shows, in `panel`'s coordinates.
+inline QRect keysRect(const QWidget *block, const QWidget *panel)
+{
+	QRect u;
+	if (!block)
+		return u;
+	for (QWidget *c : block->findChildren<QWidget *>()) {
+		if (!c->isVisible() ||
+		    !qobject_cast<const QAbstractButton *>(c))
+			continue;
+		u = u.united(rectIn(c, panel));
+	}
+	return u;
+}
+
+// One logical pixel of `panel` read back from its grab (`shot`), DPR-aware.
+// The grab is OF the panel, so shot coordinates are panel coordinates.
+inline QColor shotPixel(const QImage &shot, const QWidget *panel, int x,
+			int y)
+{
+	(void)panel;
+	const qreal dpr = shot.devicePixelRatio() > 0 ? shot.devicePixelRatio() : 1.0;
+	const int dx = std::min(shot.width() - 1,
+				std::max(0, (int)std::floor(x * dpr)));
+	const int dy = std::min(shot.height() - 1,
+				std::max(0, (int)std::floor(y * dpr)));
+	return QColor::fromRgb(shot.pixel(dx, dy));
+}
+
+// WCAG relative luminance and contrast ratio: "is this edge there" as a
+// number. 1.4 is barely-there, which is the point — a frame nobody can see
+// is not a frame.
+inline double luminanceOf(const QColor &c)
+{
+	auto ch = [](double v) {
+		return v <= 0.03928 ? v / 12.92
+				    : std::pow((v + 0.055) / 1.055, 2.4);
+	};
+	return 0.2126 * ch(c.redF()) + 0.7152 * ch(c.greenF()) +
+	       0.0722 * ch(c.blueF());
+}
+inline double contrastRatio(const QColor &a, const QColor &b)
+{
+	const double la = luminanceOf(a), lb = luminanceOf(b);
+	return (std::max(la, lb) + 0.05) / (std::min(la, lb) + 0.05);
+}
+
+// THE WHOLE BOX ANSWER, one copy for the mockup and the gate: the quick-clip
+// box is framed (its top edge, right of the legend that interrupts the
+// border at the left, separates from the ground inside) and its keys ride
+// centred in it, both axes. `detail` says the numbers.
+inline bool marcaBoxesConform(const QWidget *panel, const QImage &shot,
+			      QString *detail)
+{
+	QWidget *box = marcaBoxForKey(panel, "mark5");
+	QWidget *frame = boxFrame(box);
+	if (!box || !frame || !box->isVisible()) {
+		if (detail)
+			*detail = QStringLiteral("quick-clip box %1, frame %2")
+					  .arg(box ? "found" : "MISSING")
+					  .arg(frame ? "found" : "MISSING");
+		return false;
+	}
+	const QRect fr = rectIn(frame, panel);
+	// TAS .fbox > .flabel{left:12px}: the legend sits on the top-left of
+	// the border, so the edge is read right of centre, and the ground 5 px
+	// under it — still margin (the frame insets its content), never a key.
+	const int px = fr.left() + fr.width() * 3 / 4;
+	const QColor edge = shotPixel(shot, panel, px, fr.top());
+	const QColor ground = shotPixel(shot, panel, px, fr.top() + 5);
+	const double cr = contrastRatio(edge, ground);
+	const QRect keys = keysRect(box, panel);
+	const double dx = centreX(keys) - centreX(fr);
+	const double dy = centreY(keys) - centreY(fr);
+	if (detail)
+		*detail = QStringLiteral(
+				  "frame contrast %1 (edge %2 on %3), keys off "
+				  "centre %4/%5 px")
+				  .arg(cr, 0, 'f', 2)
+				  .arg(edge.name())
+				  .arg(ground.name())
+				  .arg(dx, 0, 'f', 1)
+				  .arg(dy, 0, 'f', 1);
+	return cr >= 1.4 && std::abs(dx) <= 3.0 && std::abs(dy) <= 3.0 &&
+	       !keys.isEmpty();
 }
 
 } // namespace multireplay::probe

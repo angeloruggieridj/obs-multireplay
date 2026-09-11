@@ -1512,6 +1512,10 @@ private:
 			// instant".
 			auto *b = key(QString("\xE2\x88\x92%1s").arg(sec), "mrFn");
 			setKeyId(b, QString("mark%1").arg(sec));
+			// K6 — the dock's measures (dock-build.cpp): big keys
+			// (TAS .key.big 42x78), height riding mrKeyH.
+			b->setProperty(kKeyHeightProperty, kClipKeyH);
+			b->setMinimumWidth(78);
 			row << Cell(b);
 		}
 		blk->setShapes({row}, {row});
@@ -1527,15 +1531,22 @@ private:
 		// you hover to use. Neutral commands, not the filled green PLAY.
 		auto *in = key(QStringLiteral("IN"));
 		setKeyId(in, QStringLiteral("markIn"));
+		in->setProperty(kKeyHeightProperty, kClipKeyH);
+		in->setMinimumWidth(78);
 		auto *out = key(QStringLiteral("OUT"));
 		setKeyId(out, QStringLiteral("markOut"));
+		out->setProperty(kKeyHeightProperty, kClipKeyH);
+		out->setMinimumWidth(78);
 		auto *cancel = iconKey(Icon::Cancel, QStringLiteral("markCancel"),
 				       QStringLiteral("Annulla la marcatura"),
-				       "mrDanger");
-		// #mrDanger colours a LABEL and this key has none — only the ✕ —
-		// so without a role the one destructive key of the group was drawn
-		// exactly as neutral as the two it undoes.
-		setKeyIconRole(cancel, Icon::Cancel, IconRole::Danger, g_tints);
+				       "mrWarn");
+		// #mrWarn colours it AMBER like the dock's (dock-build.cpp): the
+		// one destructive key of the group destroys work but takes
+		// nothing on air, and red has one meaning here. Small
+		// (TAS .key.sm 24x32).
+		setKeyIconRole(cancel, Icon::Cancel, IconRole::Warn, g_tints);
+		cancel->setProperty(kKeyHeightProperty, 24);
+		cancel->setMinimumWidth(32);
 		blk->setShapes({{Cell(in), Cell(out), Cell(cancel)}},
 			       {{Cell(in), Cell(out), Cell(cancel)}});
 		return blk;
@@ -1552,15 +1563,15 @@ private:
 	//
 	// With one bay the section is SECTION-HIDDEN by the caller — absent from
 	// the strip's arithmetic, not merely empty (buildControls, one bay).
-	KeyBlock *buildBaySelector()
+		KeyBlock *buildBaySelector()
 	{
 		auto *blk = new KeyBlock(QStringLiteral("Canali replay"), this);
 		QVector<Cell> row;
-		// A↔B, not A|B: it says what the mode DOES (a command goes to
-		// both bays) rather than naming two things with a bar between.
-		// Same code mapping as the real dock's buildChannelRow: A↔B is 2,
+		// A|B, as drawn (dock-build.cpp) — the spec's label wins over the
+		// old comment's reading. (↔ came out as tofu here: K7.)
+		// Same code mapping as the real dock's buildChannelRow: A|B is 2,
 		// A is 0, B is 1.
-		for (const auto &lc : {std::make_pair("A↔B", 2),
+		for (const auto &lc : {std::make_pair("A|B", 2),
 				       std::make_pair("A", 0),
 				       std::make_pair("B", 1)}) {
 			auto *b = key(QString::fromUtf8(lc.first), "mrChanSel");
@@ -3794,7 +3805,10 @@ void runHostChecks(QApplication &app, const QString &outDir)
 	// was never the problem — the mark simply belonged to a different key.
 	checkMarkInk(w, QStringLiteral("rec"), QColor(g_sc.rec),
 		     QStringLiteral("rec key"));
-	checkMarkInk(w, QStringLiteral("markCancel"), QColor(g_sc.danger),
+	// K6 — ✕ is AMBER (TAS .key.xcancel): clearing a mark destroys work
+	// but takes nothing on air, and red has one meaning here. The mark and
+	// the label agree on the warn ink, like the dock's mrWarn key.
+	checkMarkInk(w, QStringLiteral("markCancel"), QColor(g_sc.warn),
 		     QStringLiteral("cancel key"));
 	// The gear opens a menu, which is where OBS printed a second arrow over
 	// our own mark. (The old play-options ▾ and clip-actions ⋯ keys are gone
@@ -4220,6 +4234,60 @@ void checkPanelHeaders(QApplication &app)
 		      QStringLiteral("%1: headers are a rule, centred, IN OUTPUT far "
 				     "right, clock HH:mm:ss, REC compact")
 			      .arg(form),
+		      detail);
+	}
+	delete host;
+	g_theme = themeWas;
+	g_sc = scWas;
+	g_tints = tintsWas;
+	refreshSheetAssets();
+}
+
+void checkMarcaBoxes(QApplication &app)
+{
+	using namespace multireplay::probe;
+	const ThemeChoice themeWas = g_theme;
+	const Scheme scWas = g_sc;
+	const auto tintsWas = g_tints;
+	auto *host = new QWidget();
+	host->setAutoFillBackground(true);
+	auto *hl = new QVBoxLayout(host);
+	hl->setContentsMargins(0, 0, 0, 0);
+	auto *w = new Mock();
+	hl->addWidget(w);
+	for (const ArtifactForm &f : kArtifactForms) {
+		const QString form = QString::fromLatin1(f.name);
+		if (form != QStringLiteral("normale") &&
+		    form != QStringLiteral("fullscreen"))
+			continue;
+		bool all = true;
+		QString detail;
+		for (int theme = 0; theme < 4; theme++) {
+			w->retheme((ThemeChoice)theme, app.palette());
+			w->setLayoutPreset(f.preset);
+			for (int pass = 0; pass < 2; pass++) {
+				host->resize(f.w, f.h);
+				host->show();
+				for (int i = 0; i < 3; i++) {
+					QApplication::processEvents();
+					QApplication::sendPostedEvents();
+				}
+			}
+			const QImage shot = w->grab().toImage();
+			QString d;
+			const bool ok = marcaBoxesConform(w, shot, &d);
+			// The first failing theme's numbers, or theme 0's.
+			if (detail.isEmpty() || (!ok && all))
+				detail = QStringLiteral("theme %1: %2").arg(theme).arg(d);
+			all = all && ok;
+		}
+		// TAS .fbox{border:1px solid #3a4a63;border-radius:7px} — sempre, in
+		// ogni forma; .fbox{justify-content:center;align-items:center}
+		check(all,
+		      QStringLiteral("%1: MARCA boxes are framed").arg(form),
+		      detail);
+		check(all,
+		      QStringLiteral("%1: keys centred in their box").arg(form),
 		      detail);
 	}
 	delete host;
@@ -4820,6 +4888,9 @@ int runChecks(QPalette pal, QApplication &app, const QString &outDir)
 			      label + ": the health footer keeps its top edge");
 			check(truleHas("QWidget#mrMarcaFoot {", "padding-top: 6px"),
 			      label + ": the health footer keeps its breathing room");
+			check(truleHas("QWidget#mrMarcaFoot[empty=\"true\"] {",
+				       "border-top: 0"),
+			      label + ": the health footer drops its edge when empty");
 			check(truleHas("QWidget#mrBlockFrame {", "border-radius: 7px"),
 			      label + ": section boxes are 7px-rounded");
 			check(truleHas("QWidget#mrMarca {",
@@ -4830,6 +4901,10 @@ int runChecks(QPalette pal, QApplication &app, const QString &outDir)
 			      label + ": the bay selector is one control");
 			check(truleHas("mrChanSel[segPos=\"last\"]", "border-right: 0"),
 			      label + ": segments divide once, not twice");
+			check(truleHas("mrChanSeg QPushButton#mrChanSel:checked",
+				       "background: " + w->sc_.segOn),
+			      label + ": the lit segment is navy, not the theme accent",
+			      w->sc_.segOn);
 			check(truleHas("QPushButton#mrWarn {",
 				       "border-color: " + w->sc_.warn),
 			      label + ": clearing a mark is amber, not red",
@@ -4927,6 +5002,8 @@ int runChecks(QPalette pal, QApplication &app, const QString &outDir)
 	// The MARCA and REVIEW headers: a rule, centred, IN OUTPUT at the far
 	// right, the clock without a date, REC compact (K1, K2, R1).
 	checkPanelHeaders(app);
+	// The MARCA boxes: always framed, keys centred in them (K3, K4).
+	checkMarcaBoxes(app);
 
 	// LAST, because it replaces the application palette and style sheet for
 	// the rest of the process: from here on the panel is a LIGHT one sitting
