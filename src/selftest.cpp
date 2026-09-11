@@ -6448,6 +6448,272 @@ void runReopenPass(const std::string &outPath)
 			availWidth, fsDoubleClickIsInert ? "yes" : "NO");
 	}
 
+	// ── THE JUDGE: THE REAL DOCK AT THE FOUR ARTIFACT FORMS, WITH DATA ─────────
+	//
+	// Every later change to this panel is judged against the design artifacts,
+	// and that judgement is made by LOOKING — so the panel is photographed here,
+	// inside OBS, at the geometry each artifact draws: fullscreen 1920x1080
+	// (worn as the Wide preset until a Fullscreen form exists), Normale
+	// 1180x770, Short 900x340, Tall 320x900, in each of the four themes
+	// (Config.uiTheme 0..3). The mockup writes the same set under the same names
+	// (--artifact-set), so the two can be laid side by side file for file.
+	//
+	// WITH DATA, because an empty table and a dark band are the two surfaces the
+	// artifacts spend most of their drawing on: six events on the list, three
+	// angle-speed overrides, three comments, one event on air and a second clip
+	// queued behind it so the green band is lit with a join on it.
+	//
+	// In THIS pass because nothing records and nothing is timed: floating and
+	// resizing the dock rebuilds every display's native window, and a theme
+	// change restyles the whole panel.
+	//
+	// NAMED BY THE SIZE OBTAINED, not asked: today's panel refuses Short at
+	// 900x340, and a file claiming 340 would be the lie the comparison is made
+	// against.
+	struct ArtifactShot {
+		QString file;
+		QString form;
+		int theme = 0;
+		QSize got;
+		bool saved = false;
+		bool bandLit = false;
+		int rows = 0;
+	};
+	std::vector<ArtifactShot> artifactShots;
+	bool artifactSetCaptured = false;
+	int artifactEvents = 0;
+	int artifactQueued = 0;
+	const std::string artifactDir = envStr(
+		"OBS_MULTIREPLAY_SELFTEST_ARTIFACTS",
+		pathToUtf8(utf8ToPath(outPath).parent_path() /
+			   "obs-multireplay-artifacts"));
+	if (dock) {
+		std::error_code mkEc;
+		std::filesystem::create_directories(utf8ToPath(artifactDir), mkEc);
+
+		// The index was left stopped by the second measurement above, on a
+		// simulated reboot's epoch. Reopened through the call the operator's
+		// menu makes, it is back on this session's clock and on the product's
+		// camera mapping (a slot that duplicates another's source reads that
+		// one's files) — which is what a clip has to be played from.
+		runOnUi([&]() {
+			std::string perr;
+			ReplayCore::instance().openProject(kSelfTestProject, perr);
+		});
+		int64_t originNs = kNoInstant, endNs = kNoInstant;
+		for (int i = 0; i < 120; i++) {
+			originNs = SegmentIndex::instance().projectOriginNs();
+			endNs = SegmentIndex::instance().projectEndNs();
+			if (originNs != kNoInstant && endNs != kNoInstant &&
+			    endNs > originNs)
+				break;
+			std::this_thread::sleep_for(std::chrono::milliseconds(500));
+		}
+		// ONE span, the longest: an event across the join between two takes
+		// is refused, so all six live inside the same recording.
+		int64_t spanIn = 0, spanOut = 0;
+		for (const auto &s : SegmentIndex::instance().recordedSpans())
+			if (s.second - s.first > spanOut - spanIn) {
+				spanIn = s.first;
+				spanOut = s.second;
+			}
+		auto &store = EventStore::instance();
+		std::vector<int> ids;
+		const int64_t margin = 300'000'000LL;
+		const int64_t step = (spanOut - spanIn - 2 * margin) / 6;
+		const int64_t len =
+			std::min<int64_t>(1'500'000'000LL, step - 200'000'000LL);
+		const bool twoCams =
+			!ReplayCore::instance().getConfig().cameras[1].sourceName.empty();
+		if (len >= 400'000'000LL) {
+			for (int i = 0; i < 6; i++) {
+				const int64_t in = spanIn + margin + i * step;
+				const int id = store.markIn(in, 0);
+				store.markOut(in + len);
+				if (id > 0)
+					ids.push_back(id);
+			}
+		}
+		if (ids.size() == 6) {
+			store.setAngleSpeed(ids[0], 1, 0.50);
+			store.setAngleSpeed(ids[2], 1, 0.25);
+			store.setAngleSpeed(ids[4], 1, 1.25);
+			store.setDescription(ids[0], "Gol");
+			store.setDescription(ids[1], "Fallo");
+			store.setDescription(ids[3], "Esultanza");
+			if (twoCams) {
+				store.setAngle(ids[1], 2, true);
+				store.setAngle(ids[4], 2, true);
+			}
+		}
+		artifactEvents = (int)ids.size();
+		obs_log(artifactEvents == 6 ? LOG_INFO : LOG_ERROR,
+			"[selftest] reopen: artifact set — %d events inside the "
+			"span %lld..%lld ms (%lld ms each)",
+			artifactEvents, (long long)((spanIn - originNs) / 1000000),
+			(long long)((spanOut - originNs) / 1000000),
+			(long long)(len / 1000000));
+
+		// Event 1 (50% on angle 1) on air, event 2 queued behind it: the
+		// coordinator directly, never playSelected(), which on a refusal
+		// opens a modal and parks the UI thread inside runOnUi(). Restarted
+		// before each shot, because a sequence of two short clips does not
+		// outlast sixteen resizes.
+		std::string playErr;
+		const auto putOnAir = [&]() {
+			if (ids.size() < 2)
+				return;
+			runOnUi([&]() {
+				auto &pc = PlaybackCoordinator::instance();
+				pc.playEvents({ids[0], ids[1]}, 0, /*toOutput*/ false,
+					      playErr,
+					      PlaybackCoordinator::AngleMode::AllEnabled);
+				artifactQueued = pc.playState().queued;
+			});
+		};
+
+		QDockWidget *host = nullptr;
+		QAction *presetAct[4] = {};
+		bool wasFloat = false, wasVisible = false;
+		QRect wasGeom;
+		const int themeWas = ReplayCore::instance().getConfig().uiTheme;
+		runOnUi([&]() {
+			for (QWidget *w = dock->parentWidget(); w; w = w->parentWidget())
+				if (auto *d = qobject_cast<QDockWidget *>(w)) {
+					host = d;
+					break;
+				}
+			presetAct[0] = dock->findChild<QAction *>(
+				QStringLiteral("mrActLayoutAuto"));
+			presetAct[1] = dock->findChild<QAction *>(
+				QStringLiteral("mrActLayoutWide"));
+			presetAct[2] = dock->findChild<QAction *>(
+				QStringLiteral("mrActLayoutShort"));
+			presetAct[3] = dock->findChild<QAction *>(
+				QStringLiteral("mrActLayoutTall"));
+			if (!host)
+				return;
+			wasFloat = host->isFloating();
+			wasVisible = host->isVisible();
+			wasGeom = host->geometry();
+			host->show();
+			host->setFloating(true);
+		});
+		struct Form {
+			const char *name;
+			int w, h, preset;
+		};
+		// quattro-layout: the four forms, by preset (1 Wide, 2 Short, 3
+		// Tall) and by the artifact's own geometry.
+		static const Form kForms[4] = {{"fullscreen", 1920, 1080, 1},
+					       {"normale", 1180, 770, 1},
+					       {"short", 900, 340, 2},
+					       {"tall", 320, 900, 3}};
+		if (host && presetAct[0] && presetAct[1] && presetAct[2] &&
+		    presetAct[3]) {
+			std::this_thread::sleep_for(std::chrono::milliseconds(700));
+			for (int theme = 0; theme < 4; theme++) {
+				runOnUi([&]() {
+					ReplayCore::instance().setUiTheme(theme);
+					dock->applyTheme();
+				});
+				std::this_thread::sleep_for(
+					std::chrono::milliseconds(300));
+				for (const Form &f : kForms) {
+					QAction *act = presetAct[f.preset];
+					runOnUi([&]() { act->trigger(); });
+					std::this_thread::sleep_for(
+						std::chrono::milliseconds(700));
+					// TWICE: a mode change rewrites the floor, so a
+					// size only the new arrangement holds lands on
+					// the second resize. The frame (host minus
+					// panel) is added back so it is the PANEL that
+					// is asked for the artifact's size.
+					for (int pass = 0; pass < 2; pass++) {
+						runOnUi([&]() {
+							const QSize frame =
+								host->size() -
+								dock->size();
+							host->resize(QSize(f.w, f.h) +
+								     frame);
+							if (QScreen *sc = host->screen())
+								host->move(
+									sc->availableGeometry()
+										.topLeft());
+						});
+						std::this_thread::sleep_for(
+							std::chrono::milliseconds(700));
+					}
+					putOnAir();
+					std::this_thread::sleep_for(
+						std::chrono::milliseconds(700));
+					ArtifactShot s;
+					s.form = QString::fromLatin1(f.name);
+					s.theme = theme;
+					runOnUi([&]() {
+						s.got = dock->size();
+						s.file = QString("real-%1-%2x%3-%4.png")
+								 .arg(s.form)
+								 .arg(s.got.width())
+								 .arg(s.got.height())
+								 .arg(theme);
+						s.saved = dock->grab().save(
+							QString::fromUtf8(
+								joinUtf8(artifactDir,
+									 s.file.toStdString())
+									.c_str()));
+						if (ClipBar *bar =
+							    dock->findChild<ClipBar *>())
+							s.bandLit = bar->onAir();
+						if (auto *t = dock->findChild<QTableWidget *>(
+							    QStringLiteral("mrEvents")))
+							s.rows = t->rowCount();
+					});
+					obs_log(s.saved ? LOG_INFO : LOG_ERROR,
+						"[selftest] reopen: artifact shot %s "
+						"(asked %dx%d, got %dx%d, rows %d, band "
+						"%s)",
+						qUtf8Printable(s.file), f.w, f.h,
+						s.got.width(), s.got.height(), s.rows,
+						s.bandLit ? "on air" : "DARK");
+					artifactShots.push_back(s);
+				}
+			}
+		}
+		if (!playErr.empty())
+			obs_log(LOG_WARNING,
+				"[selftest] reopen: artifact set on-air clip: %s",
+				playErr.c_str());
+		// Put it all back: nothing playing, the theme and the automatic
+		// arrangement the operator had, the dock where it was.
+		runOnUi([&]() {
+			PlaybackCoordinator::instance().stopEvents();
+			ReplayCore::instance().setUiTheme(themeWas);
+			dock->applyTheme();
+			if (presetAct[0])
+				presetAct[0]->trigger();
+			if (host) {
+				host->setFloating(wasFloat);
+				if (wasFloat && wasGeom.isValid())
+					host->setGeometry(wasGeom);
+				host->setVisible(wasVisible);
+			}
+		});
+		std::this_thread::sleep_for(std::chrono::milliseconds(400));
+		artifactSetCaptured =
+			artifactShots.size() == 16 &&
+			std::all_of(artifactShots.begin(), artifactShots.end(),
+				    [](const ArtifactShot &s) { return s.saved; });
+		obs_log(artifactSetCaptured ? LOG_INFO : LOG_ERROR,
+			"[selftest] reopen: artifact set — %d of 16 shots written "
+			"to %s (events %d, clips queued %d)",
+			(int)std::count_if(artifactShots.begin(), artifactShots.end(),
+					   [](const ArtifactShot &s) {
+						   return s.saved;
+					   }),
+			artifactDir.c_str(), artifactEvents, artifactQueued);
+	}
+
 	const bool pass = sameBoot.ok && rebooted.ok && fsKeyHiddenWhenDocked &&
 			  fsWindowOffersMaximise && fsDoubleClickIsInert &&
 			  fsKeyShownWhenFloating && fsCoversTheScreen &&
@@ -6478,7 +6744,7 @@ void runReopenPass(const std::string &outPath)
 		  panelPlayNow64 &&
 		  layoutShortStacksLeft && layoutShortSplitsWidth &&
 		  layoutTallTabs && layoutTallHidesOut && layoutPresetSizes &&
-		  layoutFullscreenNeedsFloat;
+		  layoutFullscreenNeedsFloat && artifactSetCaptured;
 
 	// --- Put everything back ----------------------------------------------
 	// The operator's project first (so nothing is pointing into the test one),
@@ -6541,6 +6807,9 @@ void runReopenPass(const std::string &outPath)
 	obs_data_set_bool(checks, "layout_preset_sizes", layoutPresetSizes);
 	obs_data_set_bool(checks, "layout_fullscreen_needs_float",
 			  layoutFullscreenNeedsFloat);
+	// The four artifact forms x four themes, written as PNGs (see the block
+	// that takes them). The pictures are judged by eye; this says they exist.
+	obs_data_set_bool(checks, "artifact_set_captured", artifactSetCaptured);
 	obs_data_set_bool(checks, "camera_tiles_have_width_when_wide", tilesWideOk);
 	obs_data_set_bool(checks, "camera_tiles_have_width_in_a_column", tilesTallOk);
 	obs_data_set_bool(checks, "short_arrangement_is_reachable", shortReachable);
@@ -6683,6 +6952,29 @@ void runReopenPass(const std::string &outPath)
 			    layoutShapesNote.toUtf8().constData());
 	obs_data_set_int(root, "layout_short_min_w", layoutShortMinW);
 	obs_data_set_int(root, "layout_short_min_h", layoutShortMinH);
+	// Which files the artifact set wrote, at which size OBTAINED — the name
+	// carries it too, but a list here is what a script can compare.
+	obs_data_set_string(root, "artifact_dir", artifactDir.c_str());
+	obs_data_set_int(root, "artifact_events", artifactEvents);
+	obs_data_set_int(root, "artifact_clips_queued", artifactQueued);
+	{
+		obs_data_array_t *shots = obs_data_array_create();
+		for (const ArtifactShot &s : artifactShots) {
+			obs_data_t *o = obs_data_create();
+			obs_data_set_string(o, "file", s.file.toUtf8().constData());
+			obs_data_set_string(o, "form", s.form.toUtf8().constData());
+			obs_data_set_int(o, "theme", s.theme);
+			obs_data_set_int(o, "width", s.got.width());
+			obs_data_set_int(o, "height", s.got.height());
+			obs_data_set_bool(o, "saved", s.saved);
+			obs_data_set_bool(o, "band_on_air", s.bandLit);
+			obs_data_set_int(o, "table_rows", s.rows);
+			obs_data_array_push_back(shots, o);
+			obs_data_release(o);
+		}
+		obs_data_set_array(root, "artifact_captures", shots);
+		obs_data_array_release(shots);
+	}
 
 	if (!obs_data_save_json_safe(root, outPath.c_str(), "tmp", "bak"))
 		obs_log(LOG_ERROR, "[selftest] could not write report to %s",

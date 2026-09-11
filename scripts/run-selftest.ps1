@@ -634,15 +634,24 @@ if (Test-Path $reopenReport) { Remove-Item $reopenReport -Force }
 # operator's own project and deletes the test one before it finishes.
 $env:OBS_MULTIREPLAY_SELFTEST_REOPEN = '1'
 $env:OBS_MULTIREPLAY_SELFTEST_OUT = $reopenReport
+# THE ARTIFACT SET: the reopen pass photographs the real dock at the four
+# artifact forms in the four themes (real-<form>-<W>x<H>-<theme>.png). Written
+# into a folder of this run's own, emptied first so a file from an earlier run
+# can never pass for one of this run's; copied into the repo below.
+$artifactDir = Join-Path $env:TEMP 'obs-multireplay-artifacts'
+if (Test-Path $artifactDir) { Remove-Item $artifactDir -Recurse -Force }
+New-Item -ItemType Directory -Force -Path $artifactDir | Out-Null
+$env:OBS_MULTIREPLAY_SELFTEST_ARTIFACTS = $artifactDir
 
 Step 'Relaunching OBS on the same project (reopen pass)'
 $proc2 = Start-Process -FilePath $obsExe -WorkingDirectory $obsDir `
     -ArgumentList '--disable-shutdown-check', '--multi', '--collection', $testCollection -PassThru
 
 # The file lengths are demuxed one per watcher pass and only accepted when two
-# reads agree, so this pass waits in the tens of seconds by design.
+# reads agree, so this pass waits in the tens of seconds by design — and then
+# takes sixteen artifact shots, a few seconds each.
 $waited = 0
-while (-not (Test-Path $reopenReport) -and $waited -lt 150) {
+while (-not (Test-Path $reopenReport) -and $waited -lt 330) {
     if ($proc2.HasExited) { break }
     Start-Sleep -Seconds 2
     $waited += 2
@@ -658,8 +667,20 @@ if (-not $proc2.HasExited) {
 Start-Sleep -Seconds 2
 
 Remove-Item Env:OBS_MULTIREPLAY_SELFTEST_REOPEN -ErrorAction SilentlyContinue
+Remove-Item Env:OBS_MULTIREPLAY_SELFTEST_ARTIFACTS -ErrorAction SilentlyContinue
 
-$log2 = Get-ChildItem "$env:APPDATA\obs-studio\logs\*.txt" |
+# Whatever the verdict: the pictures are the evidence either way.
+$realShots = @(Get-ChildItem -Path $artifactDir -Filter 'real-*.png' -ErrorAction SilentlyContinue)
+if ($realShots.Count -gt 0) {
+    $realDir = Join-Path $repo "docs\redesign\audit-$(Get-Date -f yyyy-MM-dd)\real"
+    New-Item -ItemType Directory -Force -Path $realDir | Out-Null
+    $realShots | Copy-Item -Destination $realDir -Force
+    Step "Artifact set: $($realShots.Count) real-*.png copied to $realDir"
+} else {
+    Fail "Artifact set: no real-*.png in $artifactDir"
+}
+
+$log2 =Get-ChildItem "$env:APPDATA\obs-studio\logs\*.txt" |
     Sort-Object LastWriteTime -Descending | Select-Object -First 1
 Write-Host ''
 Write-Host "OBS log (reopen): $($log2.FullName)" -ForegroundColor DarkGray

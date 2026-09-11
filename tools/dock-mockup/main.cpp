@@ -790,10 +790,33 @@ public:
 		bankRow_->show();
 	}
 
+	// The Layout menu's forced shape (0 automatic, 1 Wide, 2 Short, 3 Tall),
+	// the same switch MultiReplayDock::effectivePanelMode() reads: the
+	// artifact set photographs each FORM, not whatever a size happens to pick.
+	int layoutPreset_ = 0;
+	PanelMode effectivePanelMode() const
+	{
+		switch (layoutPreset_) {
+		case 1:
+			return PanelMode::Wide;
+		case 2:
+			return PanelMode::Short;
+		case 3:
+			return PanelMode::Tall;
+		default:
+			return panelModeFor(size(), mode_, wideFloorH_);
+		}
+	}
+	void setLayoutPreset(int preset)
+	{
+		layoutPreset_ = qBound(0, preset, 3);
+		applyPanelMode(effectivePanelMode(), /*force*/ true);
+	}
+
 	void resizeEvent(QResizeEvent *e) override
 	{
 		QWidget::resizeEvent(e);
-		applyPanelMode(panelModeFor(size(), mode_, wideFloorH_));
+		applyPanelMode(effectivePanelMode());
 		// THE FLOOR IS SAMPLED AFTER THE PASS, never during one. Asking a
 		// widget for its minimumSizeHint ACTIVATES its layout, and doing
 		// that anywhere inside the resize cascade does not merely read a
@@ -4615,6 +4638,76 @@ int runChecks(QPalette pal, QApplication &app, const QString &outDir)
 	return g_fail ? 1 : 0;
 }
 
+// --artifact-set — THE MOCK HALF OF THE JUDGE. The gate photographs the real
+// dock at the four artifact forms in the four themes (real-<form>-<W>x<H>-
+// <theme>.png, see the reopen pass in selftest.cpp); this writes the same set
+// from the mockup under the same names, so the two are compared file for file.
+// Named by the size OBTAINED, like the gate: a refused resize must not
+// mislabel its shot. Theme ids are Config.uiTheme's (ThemeChoice 0..3), and
+// main() has put OBS's palette underneath, so "follow OBS" means what it
+// means in OBS.
+int runArtifactSet(QApplication &app, const QString &outDir)
+{
+	struct Form {
+		const char *name;
+		int w, h, preset;
+	};
+	// quattro-layout: fullscreen (worn as Wide until a Fullscreen form
+	// exists), Normale, Short, Tall — by preset and by the artifact geometry.
+	const Form forms[4] = {{"fullscreen", 1920, 1080, 1},
+			       {"normale", 1180, 770, 1},
+			       {"short", 900, 340, 2},
+			       {"tall", 320, 900, 3}};
+	QDir().mkpath(outDir);
+	// INSIDE A WINDOW painted OBS's colour, as in runHostChecks: the dock is
+	// a child of OBS's QDockWidget, and a top-level would paint its own
+	// palette where the real panel shows its parent.
+	auto *host = new QWidget();
+	host->setAutoFillBackground(true);
+	{
+		QPalette hp = host->palette();
+		hp.setColor(QPalette::Window, QColor(QStringLiteral("#1D1F26")));
+		host->setPalette(hp);
+	}
+	auto *hl = new QVBoxLayout(host);
+	hl->setContentsMargins(0, 0, 0, 0);
+	auto *w = new Mock();
+	hl->addWidget(w);
+	int written = 0;
+	for (int theme = 0; theme < 4; theme++) {
+		w->retheme((ThemeChoice)theme, app.palette());
+		for (const Form &f : forms) {
+			w->setLayoutPreset(f.preset);
+			// TWICE: a mode change rewrites the minimums the next
+			// pass is measured against.
+			for (int pass = 0; pass < 2; pass++) {
+				host->resize(f.w, f.h);
+				host->show();
+				for (int i = 0; i < 3; i++) {
+					QApplication::processEvents();
+					QApplication::sendPostedEvents();
+				}
+			}
+			const QImage shot =
+				host->grab().toImage().copy(w->geometry());
+			const QString name = QString("mock-%1-%2x%3-%4.png")
+						     .arg(QLatin1String(f.name))
+						     .arg(w->width())
+						     .arg(w->height())
+						     .arg(theme);
+			const bool ok = shot.save(QDir(outDir).filePath(name));
+			written += ok ? 1 : 0;
+			std::printf("%-34s asked %4dx%4d  got %4dx%4d  %-5s %s\n",
+				    qUtf8Printable(name), f.w, f.h, w->width(),
+				    w->height(), panelModeName(w->mode_),
+				    ok ? "written" : "NOT WRITTEN");
+		}
+	}
+	std::printf("\nartifact set: %d of 16 written to %s\n", written,
+		    qUtf8Printable(outDir));
+	return written == 16 ? 0 : 1;
+}
+
 } // namespace
 
 int main(int argc, char **argv)
@@ -4624,7 +4717,10 @@ int main(int argc, char **argv)
 	// THE HOST FIRST, because it replaces the application palette and the
 	// panel's scheme is derived from it. Done after g_sc was computed it
 	// would style the panel against a palette nothing on screen is wearing.
-	if (args.contains(QStringLiteral("--host=obs")))
+	// --artifact-set wears the OBS host too: its theme 0 is "follow OBS",
+	// and the real dock it is compared against follows Yami.
+	const bool artifactSet = args.contains(QStringLiteral("--artifact-set"));
+	if (args.contains(QStringLiteral("--host=obs")) || artifactSet)
 		installObsHost(app, QDir::temp().filePath(
 					    QStringLiteral("mr-mock-host")));
 	// --font-scale=N (percent, default 100): Settings > Appearance in OBS
@@ -4732,6 +4828,12 @@ int main(int argc, char **argv)
 		std::printf("wrote mock-settings.png\n");
 		return 0;
 	}
+
+	if (artifactSet)
+		return runArtifactSet(app, args.size() > 1 &&
+						   !args[1].startsWith("--")
+					   ? args[1]
+					   : QStringLiteral("."));
 
 	auto *w = new Mock();
 

@@ -856,6 +856,18 @@ void ReplayCore::setLayoutPreset(int preset)
 	saveConfig();
 }
 
+void ReplayCore::setUiTheme(int theme)
+{
+	const int t = std::clamp(theme, 0, 3);
+	{
+		std::lock_guard<std::mutex> lock(mutex_);
+		if (config_.uiTheme == t)
+			return;
+		config_.uiTheme = t;
+	}
+	saveConfig();
+}
+
 void ReplayCore::setEventListCount(int count)
 {
 	// The "+" key in the toolbar (spec §1). A targeted write like

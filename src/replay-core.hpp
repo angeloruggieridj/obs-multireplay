@@ -323,6 +323,10 @@ public:
 	void setLayoutPreset(int preset);
 	// The toolbar "+" key: raise how many list tabs are shown (spec §1).
 	void setEventListCount(int count);
+	// The same targeted write for Config.uiTheme (0..3, see ThemeChoice). The
+	// gate photographs the running panel in every theme, while a clip plays
+	// off the SegmentIndex that setConfig() would re-point under it.
+	void setUiTheme(int theme);
 
 	// --- Project management ---
 	// Returns sessionFolder/currentProjectName, or sessionFolder if no project.
