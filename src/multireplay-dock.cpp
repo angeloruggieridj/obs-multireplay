@@ -1571,10 +1571,10 @@ void MultiReplayDock::applyPanelMode(PanelMode m, bool force)
 		};
 		obs_log(LOG_INFO,
 			"[dock] floor parts: pictures %d, list %d, keys %d "
-			"(strip %d, status %d, band %d, bar %d)",
+			"(strip %d, band %d, bar %d)",
 			floorOf(previewPane_), floorOf(events_),
-			floorOf(bottomBar_), floorOf(strip_),
-			floorOf(statusBar_), floorOf(clipBar_), floorOf(seek_));
+			floorOf(bottomBar_), floorOf(strip_), floorOf(clipBar_),
+			floorOf(seek_));
 	}
 }
 
@@ -1986,8 +1986,7 @@ void MultiReplayDock::applyPreviewAspect()
 // called from every resize.
 void MultiReplayDock::applyControlsColumn(bool inColumn)
 {
-	if (!bottomBar_ || !rootLayout_ || !leftColLayout_ || !strip_ ||
-	    !statusBar_ || !seek_)
+	if (!bottomBar_ || !rootLayout_ || !leftColLayout_ || !strip_ || !seek_)
 		return;
 	if (inColumn == controlsInColumn_)
 		return;
@@ -1996,31 +1995,24 @@ void MultiReplayDock::applyControlsColumn(bool inColumn)
 	if (!bv)
 		return;
 	if (inColumn) {
-		// SHORT: the strip and the status line stack under the pictures
-		// in the left column — but the position bar STAYS at the root
-		// bottom, full width (artifact: "SeekBar piena larghezza sempre
-		// in fondo", Toolbar-cima/SeekBar-fondo being the two rules the
-		// layouts never break). Moving the whole bottomBar_ down there
-		// narrowed the one control that reaches the whole project to
-		// the column.
+		// SHORT: the strip stacks under the pictures in the left column
+		// — but the position bar STAYS at the root bottom, full width
+		// (artifact: "SeekBar piena larghezza sempre in fondo",
+		// Toolbar-cima/SeekBar-fondo being the two rules the layouts
+		// never break). Moving the whole bottomBar_ down there narrowed
+		// the one control that reaches the whole project to the column.
+		// (The status line that rode along is gone — S2, B2, D5.)
 		rootLayout_->removeWidget(bottomSep_);
 		bottomSep_->hide();
 		bv->removeWidget(strip_);
-		bv->removeWidget(statusBar_);
 		leftColLayout_->addWidget(strip_);
-		leftColLayout_->addWidget(statusBar_);
 		strip_->show();
-		statusBar_->show();
 	} else {
 		leftColLayout_->removeWidget(strip_);
-		leftColLayout_->removeWidget(statusBar_);
 		strip_->setParent(bottomBar_);
-		statusBar_->setParent(bottomBar_);
-		// Back in dock order: strip, status, seek.
+		// Back in dock order: strip, then seek.
 		bv->insertWidget(0, strip_);
-		bv->insertWidget(1, statusBar_);
 		strip_->show();
-		statusBar_->show();
 		rootLayout_->addWidget(bottomSep_);
 		bottomSep_->show();
 	}
@@ -4327,10 +4319,12 @@ bool MultiReplayDock::confirmDelete(const std::vector<int> &ids)
 
 void MultiReplayDock::showNotice(const QString &text)
 {
-	// Shown on the STATUS LINE, which owns it for a few seconds (see
-	// updateChannelStrip). It runs the width of the panel, it is next to the
-	// modes the sentence is usually about, and it is the one place left that
-	// can hold a sentence at all now that the three-line channel band is gone.
+	// Shown in MARCA's footer beside the health badge (S2, B2, D5), which it
+	// owns for a few seconds (see updateChannelStrip). The status line it
+	// used to run along is gone — the artifacts put nothing between
+	// MARCA|REVIEW and the SeekBar; a sentence too long for the footer is
+	// elided there and whole in the tooltip, and in Tall the MARCA tab says
+	// the footer has something to say.
 	//
 	// §7.3.8 — QUEUED, not overwritten, when the line is already showing
 	// something: a mark rejected followed within the same tick by a skip

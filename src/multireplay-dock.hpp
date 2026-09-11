@@ -651,16 +651,6 @@ private:
 	bool tallCollapsed_ = false;
 	QWidget *buildEvents();
 	QWidget *buildBottomBar();
-	// The status line, above the on-air band. It OWNS the modes — loop, music,
-	// "in output" — rather than mirroring keys that live somewhere else.
-	QWidget *buildStatusBar(QWidget *parent);
-	// How tall it is. Shorter than a key row because nothing in it is reached
-	// for blind: these are pressed while being looked at.
-	// 26, NOT 22. The three toggles on this line are pinned to four less
-	// than it, and at 18 px the frame the style draws is exactly 18 too - so
-	// the bottom border sat on the widget edge and any rounding put it past.
-	// Four more pixels is a border that can be seen rather than deduced.
-	static constexpr int kStatusBarH = 26;
 
 	// --- engine interaction ---
 	void poll();             // periodic transport/status refresh
@@ -928,6 +918,9 @@ private:
 	// The green strip under the preview: list, clip x/y, remaining, event id,
 	// IN/OUT offsets, timecode, speed. Same fields the reference controller puts there.
 	void updateChannelStrip();
+	// TALL: MARCA is a tab behind REVIEW. While its footer carries a notice or
+	// the health badge, the MARCA tab says so (TwoPanelStrip::setMarcaAlert).
+	void updateMarcaAlert();
 	void renameListDialog(); // gear menu → rename the selected list
 	void renameListAt(int list); // the bank tab's own menu → rename that one
 	void onEventItemChanged(QTableWidgetItem *item);
@@ -992,11 +985,6 @@ private:
 	// construction — see the definition.
 	void moveSelectedEvent(int delta);
 	void seekToFraction(double frac);
-	// One-line transient message in the status area. Used for the things the
-	// operator triggers with a single press (an angle button, a scrub) where a
-	// modal would be worse than the silence it replaces — but silence is what
-	// made him think the dock had ignored him.
-	void showNotice(const QString &text);
 	// M4: the health badge was clicked — show every finding, in full, with
 	// the numbers. Read-only, like everything else in the health path.
 	void showHealthDetails();
@@ -1135,6 +1123,13 @@ public:
 	// bays silently resetting the one being switched TO — is invisible
 	// to a check that cannot ask about the inactive one.
 	int angleOnChannel(Which which) const { return angle1_[(int)which]; }
+	// One-line transient message, in MARCA's footer beside the health badge.
+	// Used for the things the operator triggers with a single press (an angle
+	// button, a scrub) where a modal would be worse than the silence it
+	// replaces — but silence is what made him think the dock had ignored him.
+	// Public for the gate: the Tall MARCA-tab marker can only be proved with
+	// a notice the check fires itself, on a panel with nothing open to mark.
+	void showNotice(const QString &text);
 
 private:
 	// How many columns the camera tiles get. Two were cabled in, which is
@@ -1452,20 +1447,15 @@ private:
 	QLabel *labelA_ = nullptr; // the letter under each box
 	QLabel *labelB_ = nullptr;
 	void replayCurrentOn(Which which);
-	// the reference controller's green channel strip under the A preview.
-	// THE STATUS LINE. It replaced a three-line green band under the
-	// pictures, nearly all of which was a second copy of what the on-air band
-	// and the position bar already say — in a second green the eye had to
-	// tell apart from the first. What is here is what was said nowhere else:
-	// which list and which event the transport keys are about, where the
-	// playhead is, and the answer to a key the operator just pressed.
+	// THE NOTICE (mrNotice), in MARCA's footer beside the health badge — S2,
+	// B2, D5. It had a status row of its own between MARCA|REVIEW and the
+	// position bar; the artifacts put nothing there but the SeekBar. What it
+	// says is the one thing said nowhere else: the answer to a key the
+	// operator just pressed. Built by buildMarcaFootRow, filled by
+	// updateChannelStrip through setFooterNotice (dock-layout).
 	QLabel *statusNotice_ = nullptr;
-	QLabel *statusSpeed_ = nullptr;
-	QLabel *statusTake_ = nullptr; // elapsed / remaining, while recording
-	QWidget *statusBar_ = nullptr;
-	// Whether the line is currently carrying a notice rather than the resting
-	// text. Kept so the restyle that goes with it happens on the CHANGE, not
-	// thirty times a second.
+	// Whether a notice is lit right now. Read by updateMarcaAlert: in Tall the
+	// MARCA tab flags a footer that has something to say.
 	bool statusNoticeLit_ = false;
 
 	// recording / status

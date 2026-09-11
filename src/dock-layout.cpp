@@ -1647,6 +1647,93 @@ void addStrip(QBoxLayout *parent, ControlStrip *s)
 // Short stacks them and REVIEW's grid collapses to one column; Tall swaps
 // them behind a REVIEW / MARCA tab bar.
 
+// ── MARCA'S FOOTER: badge + notice (S2, B2, D5) ──────────────────────────
+
+namespace {
+// Air either side of the sentence inside its capped box; the text is centred,
+// so it is split evenly. Also what keeps a bold face measured before a repolish
+// from clipping its last letter.
+constexpr int kNoticeSlack = 6;
+} // namespace
+
+QLabel *buildMarcaFootRow(QWidget *foot, QWidget *badge)
+{
+	auto *mfl = new QHBoxLayout(foot);
+	mfl->setContentsMargins(0, 0, 0, 0);
+	mfl->setSpacing(6);
+	// TAS .subfoot{justify-content:center}: «⚠ N» + the notice, centred.
+	mfl->addStretch(1);
+	if (badge)
+		mfl->addWidget(badge, 0, Qt::AlignVCenter);
+	auto *notice = new QLabel(foot);
+	notice->setObjectName(QStringLiteral("mrNotice"));
+	notice->setTextFormat(Qt::PlainText);
+	notice->setAlignment(Qt::AlignCenter);
+	// Ignored horizontally: what it says changes and its natural width
+	// would otherwise be a floor under the whole panel. It still has to GET
+	// a width — an Ignored item's hint is zero, so beside two spacers it
+	// would get none — hence the stretch that out-bids them, capped by
+	// setFooterNotice to the sentence it shows.
+	notice->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+	notice->setMaximumWidth(0);
+	notice->hide();
+	mfl->addWidget(notice, 1000, Qt::AlignVCenter);
+	mfl->addStretch(1);
+	return notice;
+}
+
+void setFooterNotice(QLabel *notice, const QWidget *badge, const QString &text)
+{
+	if (!notice)
+		return;
+	const bool lit = !text.isEmpty();
+	// The sheet colours a lit notice; restyle on the CHANGE only — this is
+	// called thirty times a second.
+	if (notice->property("notice").toBool() != lit) {
+		notice->setProperty("notice", lit);
+		notice->style()->unpolish(notice);
+		notice->style()->polish(notice);
+	}
+	notice->ensurePolished();
+	const QFontMetrics fm = notice->fontMetrics();
+
+	// What the footer has left beside the badge. A footer never laid out
+	// (Tall, MARCA behind REVIEW since the start) has no width yet: the
+	// sentence goes whole, and the next pass after it is shown elides it.
+	QString shown = text;
+	const QWidget *foot = notice->parentWidget();
+	int avail = foot ? foot->contentsRect().width() : 0;
+	if (lit && avail > 0) {
+		if (badge && !badge->isHidden()) {
+			const int bw = badge->isVisible() && badge->width() > 0
+					       ? badge->width()
+					       : badge->sizeHint().width();
+			const int sp = foot->layout() ? foot->layout()->spacing() : 0;
+			avail -= bw + sp;
+		}
+		shown = fm.elidedText(text, Qt::ElideRight,
+				      std::max(0, avail - kNoticeSlack));
+	}
+	if (notice->text() != shown)
+		notice->setText(shown);
+	// The whole sentence, always, while lit: elided or not, the tooltip is
+	// where the operator (and a check) reads what was said.
+	const QString tip = lit ? text : QString();
+	if (notice->toolTip() != tip)
+		notice->setToolTip(tip);
+	const int want = shown.isEmpty()
+				 ? 0
+				 : fm.horizontalAdvance(shown) + kNoticeSlack;
+	if (notice->maximumWidth() != want)
+		notice->setMaximumWidth(want);
+	// Hidden when there is nothing to show: a zero-width label would still
+	// be charged the row's spacing, and the lone badge would sit 3 px off
+	// centre.
+	const bool show = !shown.isEmpty();
+	if (notice->isHidden() == show)
+		notice->setVisible(show);
+}
+
 TwoPanelStrip::TwoPanelStrip(QWidget *parent) : QWidget(parent)
 {
 	setObjectName(QStringLiteral("mrStrip"));
@@ -1834,6 +1921,36 @@ void TwoPanelStrip::setMode(PanelMode m)
 	relayout();
 }
 
+void TwoPanelStrip::setMarcaAlert(bool on)
+{
+	if (on == marcaAlert_)
+		return;
+	marcaAlert_ = on;
+	updateMarcaTab();
+}
+
+// TALL: MARCA sits behind REVIEW, so a notice or a health finding in its footer
+// is out of sight. Flag the MARCA tab while there is one and MARCA is not the
+// current tab: «MARCA •», and `alert` on the tab bar for the sheet's warn
+// colour. Called from relayout(), which the tab bar's currentChanged and every
+// setMode run — so becoming current clears it in the same pass.
+void TwoPanelStrip::updateMarcaTab()
+{
+	const bool flag = marcaAlert_ && mode_ == PanelMode::Tall &&
+			  tabs_->currentIndex() != 1;
+	const QString text = flag ? QStringLiteral("MARCA •")
+				  : QStringLiteral("MARCA");
+	if (tabs_->tabText(1) != text)
+		tabs_->setTabText(1, text);
+	if (tabs_->property("alert").toBool() != flag) {
+		tabs_->setProperty("alert", flag);
+		// A property selector is matched at polish time.
+		tabs_->style()->unpolish(tabs_);
+		tabs_->style()->polish(tabs_);
+		tabs_->update();
+	}
+}
+
 void TwoPanelStrip::relayout()
 {
 	const bool tall = mode_ == PanelMode::Tall;
@@ -1880,6 +1997,7 @@ void TwoPanelStrip::relayout()
 		tick->setVisible(mode_ != PanelMode::Short);
 
 	applyGrid();
+	updateMarcaTab();
 	updateGeometry();
 	update();
 }

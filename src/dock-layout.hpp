@@ -948,6 +948,29 @@ void addStrip(QBoxLayout *parent, ControlStrip *s);
 // does not carry two different heights at one width, because its mode is set
 // from the outside (applyPanelMode → setMode) rather than derived from the
 // height it is handed, so there is no chicken-and-egg to break.
+// ---------------------------------------------------------------------------
+// MARCA'S FOOTER — the health badge and the notice beside it (S2, B2, D5)
+// ---------------------------------------------------------------------------
+//
+// TAS «Le due barre»: under MARCA|REVIEW there is only the SeekBar, so the
+// notice that had a status row of its own lives here, beside «⚠ N» (TAS footer
+// MARCA: «badge health + testo dell'avviso»). One copy, for the dock and the
+// mockup both.
+//
+// Lays `foot` out (it must have no layout yet) as stretch · badge · notice ·
+// stretch — TAS .subfoot{justify-content:center}: the two centred as a group —
+// and returns the notice label (objectName mrNotice). The label is Ignored
+// horizontally, so its text is never a floor under the panel; the width it
+// gets is capped to the sentence it shows (setFooterNotice) with a stretch
+// factor that out-bids the two spacers, so it takes what it needs and they
+// share the rest.
+QLabel *buildMarcaFootRow(QWidget *foot, QWidget *badge);
+// Puts `text` on the notice (empty = none: the label hides, so no spacing sits
+// beside a lone badge). A sentence that does not fit beside `badge` is elided
+// right and carried whole in the tooltip. The `notice` property, which the
+// sheet colours, follows the text and is restyled only when it changes.
+void setFooterNotice(QLabel *notice, const QWidget *badge, const QString &text);
+
 class TwoPanelStrip : public QWidget {
 public:
 	explicit TwoPanelStrip(QWidget *parent);
@@ -968,6 +991,12 @@ public:
 	// centred (artifact .livebody.center) instead of stretched edge to
 	// edge: with the angle section gone there is nothing to align to.
 	void setMarcaCentered(bool centred);
+	// TALL: MARCA is a tab behind REVIEW, so its footer — the notice and the
+	// health badge — is out of sight. While `on` (the footer has something to
+	// say) and MARCA is not the current tab, the tab reads «MARCA •» and the
+	// tab bar carries `alert`, which the sheet colours warn. Plain otherwise,
+	// and in every other arrangement (there is no tab bar to flag).
+	void setMarcaAlert(bool on);
 
 	void setMode(PanelMode m);
 	PanelMode mode() const { return mode_; }
@@ -984,7 +1013,9 @@ protected:
 private:
 	void relayout();
 	void applyGrid();
+	void updateMarcaTab();
 	int wantedHeight() const;
+	bool marcaAlert_ = false;
 
 	QWidget *marca_ = nullptr;
 	QWidget *review_ = nullptr;

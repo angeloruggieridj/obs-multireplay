@@ -1476,53 +1476,11 @@ KeyBlock *MultiReplayDock::buildTrim()
 // Bottom bar — the reference controller's two control rows plus the full-width position bar
 // ---------------------------------------------------------------------------
 
-// ---------------------------------------------------------------------------
-// The status line
-// ---------------------------------------------------------------------------
-//
-// One row. On the left the health badge and the sentence — which list and which
-// event the transport keys are about, where the playhead is, and the answer to
-// a key the operator just pressed; on the right the three modes and the speed
-// the next replay will run at.
-//
-// THE MODES SIT AGAINST THE RIGHT EDGE, not in the middle: a group centred on a
-// bar whose width changes with the dock is a group that moves every time the
-// panel is resized, and against an edge the hand finds it the same way twice.
-QWidget *MultiReplayDock::buildStatusBar(QWidget *parent)
-{
-	statusBar_ = new QWidget(parent);
-	statusBar_->setObjectName(QStringLiteral("mrStatusBar"));
-	statusBar_->setFixedHeight(kStatusBarH);
-	auto *h = new QHBoxLayout(statusBar_);
-	h->setContentsMargins(6, 2, 6, 2);
-	h->setSpacing(6);
-
-	// (The health badge used to sit here. Spec §8 moves it to the footer of
-	// the MARCA panel — set up in buildRecBlock, placed by
-	// TwoPanelStrip::setFooters.)
-
-	statusNotice_ = new QLabel(statusBar_);
-	statusNotice_->setObjectName(QStringLiteral("mrChanStrip"));
-	statusNotice_->setTextFormat(Qt::PlainText);
-	// Ignored horizontally: what it says changes every tick and its natural
-	// width would otherwise be a floor under the whole panel.
-	statusNotice_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
-	h->addWidget(statusNotice_, 1);
-
-	// (loop · music · mute · in output used to sit here. Spec §4 makes them
-	// REVIEW's "modes" — loop/mute/music in buildModes(), IN OUTPUT in the
-	// REVIEW header. This line is now only the notice and the speed
-	// read-out.)
-	auto *sep2 = new QWidget(statusBar_);
-	sep2->setObjectName(QStringLiteral("mrStatSep"));
-	sep2->setFixedWidth(1);
-	h->addWidget(sep2);
-
-	statusSpeed_ = new QLabel(QStringLiteral("1.00\xc3\x97"), statusBar_);
-	statusSpeed_->setObjectName(QStringLiteral("mrStatusValue"));
-	h->addWidget(statusSpeed_);
-	return statusBar_;
-}
+// (The status line that stood here — a row of its own between MARCA|REVIEW and
+// the position bar, "Lista 01 · evento 0003 … 1.00×" — is gone: S2, B2, D5.
+// TAS «Le due barre» puts nothing there but the SeekBar. Its notice lives in
+// MARCA's footer beside the health badge (buildBottomBar); its speed read-out
+// repeated REVIEW's own "100%".)
 
 QWidget *MultiReplayDock::buildBottomBar()
 {
@@ -1640,36 +1598,27 @@ QWidget *MultiReplayDock::buildBottomBar()
 		reviewFoot = wrap;
 	}
 
-	// FOOTERS: the health badge under MARCA (spec §8), the on-air band under
-	// REVIEW (spec §0). The band is a real footer of the panel now, not a
-	// full-width row below it. The health badge is hidden until there is
-	// something to say, so it rides in a fixed-height carrier — the row is
-	// reserved either way and MARCA's body lines up with REVIEW's (spec §4:
-	// "in REVIEW il footer è riservato ma invisibile", the same the other
-	// way round).
+	// FOOTERS: the health badge and the notice under MARCA (spec §8; S2, B2,
+	// D5), the on-air band under REVIEW (spec §0). The band is a real footer
+	// of the panel now, not a full-width row below it. Badge and notice are
+	// hidden until there is something to say, so they ride in a fixed-height
+	// carrier — the row is reserved either way and MARCA's body lines up with
+	// REVIEW's (spec §4: "in REVIEW il footer è riservato ma invisibile", the
+	// same the other way round).
 	auto *marcaFoot = new QWidget(box);
 	marcaFoot->setObjectName(QStringLiteral("mrMarcaFoot"));
 	// 26px of badge + the sheet's 6px padding-top above the edge: 32 total
 	// (artifact .subfoot{min-height:26px;padding-top:6px}). A fixed 26 with
 	// padding would clip the 26px badge it carries.
 	marcaFoot->setFixedHeight(kKeyH + 6);
-	auto *mfl = new QHBoxLayout(marcaFoot);
-	mfl->setContentsMargins(0, 0, 0, 0);
-	// Centred (artifact .subfoot{justify-content:center}): a lone badge
-	// hugging the left edge reads as a layout that gave up halfway.
-	mfl->addStretch(1);
-	mfl->addWidget(healthBtn_, 0, Qt::AlignVCenter);
-	mfl->addStretch(1);
+	// TAS .subfoot{justify-content:center}: «⚠ N» + the notice's sentence,
+	// centred as a group — a lone badge hugging the left edge reads as a
+	// layout that gave up halfway. The row is dock-layout's, shared with the
+	// mockup; updateChannelStrip() fills the label.
+	statusNotice_ = buildMarcaFootRow(marcaFoot, healthBtn_);
 	strip_->setFooters(marcaFoot, reviewFoot);
 
 	v->addWidget(strip_);
-
-	// ── THE STATUS LINE ─────────────────────────────────────────────
-	// What the NEXT replay will run under: which list and event the
-	// transport is about, where the playhead is, the answer to a key just
-	// pressed. It OWNS the modes (loop, music, mute, in output) rather than
-	// mirroring keys that live elsewhere.
-	v->addWidget(buildStatusBar(box));
 
 	// (The channel selector A|B / A / B and the swap key used to be a row of
 	// their own here, under the green band. They are part of the camera

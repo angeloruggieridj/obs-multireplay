@@ -104,6 +104,18 @@ namespace multireplay {
 // The green channel strip (the reference controller's information band under the A output)
 // ---------------------------------------------------------------------------
 
+// TALL: MARCA is a tab behind REVIEW, so its footer is out of sight. While the
+// footer carries a notice or the health badge, the MARCA tab says so; it clears
+// when both are empty or when MARCA becomes current (TwoPanelStrip). Cheap
+// enough to run on every tick: the strip only acts on a change.
+void MultiReplayDock::updateMarcaAlert()
+{
+	if (!strip_)
+		return;
+	const bool health = healthBtn_ && !healthBtn_->isHidden();
+	strip_->setMarcaAlert(statusNoticeLit_ || health);
+}
+
 void MultiReplayDock::updateChannelStrip()
 {
 	// Both are built before the first poll(), but showNotice() can be reached
@@ -172,7 +184,7 @@ void MultiReplayDock::updateChannelStrip()
 		clipPos = std::clamp(playheadNs_, ev.tInNs, hi);
 	}
 
-	// ── ONE LINE, ON THE STATUS BAR ──────────────────────────────────────
+	// ── ONE LINE, IN MARCA'S FOOTER (was: THE STATUS BAR) ──────────────────────────────────────
 	//
 	// This was a three-line green band under the pictures — list / clip x of
 	// y / remaining, then the event id with the two offsets, then timecode and
@@ -208,18 +220,16 @@ void MultiReplayDock::updateChannelStrip()
 	//
 	// So the line is the notice's, and empty the rest of the time. That is
 	// not waste: it is the difference between a message and a caption.
-	if (statusNotice_) {
-		statusNotice_->setText(line);
-		statusNotice_->setProperty("notice", notice);
-		if (statusNoticeLit_ != notice) {
-			statusNoticeLit_ = notice;
-			repolish(statusNotice_);
-		}
-		statusNotice_->setToolTip(notice ? noticeText_ : QString());
-	}
-	if (statusSpeed_)
-		statusSpeed_->setText(
-			QString::asprintf("%.2f\xc3\x97", speedPct_ / 100.0));
+	//
+	// IN MARCA'S FOOTER NOW, beside the health badge (S2, B2, D5): the row it
+	// had under the panel is gone, and so is the speed read-out that sat at
+	// its right end — REVIEW's own "100%" already says it. A sentence that
+	// does not fit beside the badge is elided and whole in the tooltip
+	// (setFooterNotice, dock-layout — the same code the mockup runs).
+	statusNoticeLit_ = notice;
+	if (statusNotice_)
+		setFooterNotice(statusNotice_, healthBtn_, line);
+	updateMarcaAlert();
 	// clipPos and signedTc are still what the on-air band below is built from.
 	(void)clipPos;
 	(void)signedTc;
@@ -1157,6 +1167,8 @@ void MultiReplayDock::poll()
 				healthBtn_->show();
 			}
 		}
+		// The badge came or went: in Tall the MARCA tab says so.
+		updateMarcaAlert();
 	}
 
 	// A MARK AND A WORD, not a mark and a word with a second mark inside it.

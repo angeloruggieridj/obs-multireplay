@@ -230,14 +230,6 @@ QPushButton *iconTextKey(Icon ic, const QString &text, const QString &id,
 	return b;
 }
 
-QWidget *statusSep(QWidget *parent)
-{
-	auto *s = new QWidget(parent);
-	s->setObjectName(QStringLiteral("mrStatSep"));
-	s->setFixedWidth(1);
-	return s;
-}
-
 // (The camera block's arithmetic - how many columns and how big a tile - used
 // to be duplicated here. It lives in src/dock-layout now, so this tool and the
 // panel cannot disagree about it: they did, and that is how two rounds of "the
@@ -553,33 +545,26 @@ public:
 
 		// SHORT PUTS THE CONTROLS IN THE LEFT COLUMN. The panel is wide
 		// and shallow, so the list goes down the right-hand half and the
-		// strip + status stack under the pictures on the left — while the
-		// position bar STAYS root-bottom full width (Toolbar on top,
-		// SeekBar at the bottom, in every shape). Like the real panel's
-		// applyControlsColumn.
+		// strip stacks under the pictures on the left — while the position
+		// bar STAYS root-bottom full width (Toolbar on top, SeekBar at the
+		// bottom, in every shape). Like the real panel's
+		// applyControlsColumn. (The status line that rode along is gone:
+		// S2, B2, D5.)
 		const bool sideBySide = m == PanelMode::Short;
 		if (sideBySide != controlsInColumn_) {
 			controlsInColumn_ = sideBySide;
 			auto *v = qobject_cast<QVBoxLayout *>(
 				controls_->layout());
-			auto *status = controls_->findChild<QWidget *>(
-				QStringLiteral("mrStatusBar"));
-			if (v && status) {
+			if (v) {
 				if (sideBySide) {
 					v->removeWidget(strip_);
-					v->removeWidget(status);
 					leftColLayout_->addWidget(strip_);
-					leftColLayout_->addWidget(status);
 				} else {
 					leftColLayout_->removeWidget(strip_);
-					leftColLayout_->removeWidget(status);
 					strip_->setParent(controls_);
-					status->setParent(controls_);
 					v->insertWidget(0, strip_);
-					v->insertWidget(1, status);
 				}
 				strip_->show();
-				status->show();
 			}
 		}
 		bodySplit_->setOrientation(sideBySide ? Qt::Horizontal
@@ -635,8 +620,6 @@ public:
 			wc.b->setText(compact ? QString() : wc.text);
 			wc.b->setMinimumWidth(compact ? 26 : wc.wide);
 		}
-		if (statusDetail_)
-			statusDetail_->setVisible(!compact);
 		// search_'s width and projectLbl_'s visibility are arrangeToolbar()'s
 		// now (spec section 1/5): the project button stays visible and
 		// narrower in Tall, never hidden, and search_ gets its own
@@ -866,6 +849,20 @@ public:
 	const QWidget *monitorPane() const { return monitorSplit_; }
 	// The toolbar's box (all its rows), for the zone-order checks.
 	const QWidget *toolbarBox() const { return toolbarBox_; }
+	// The position bar's row, for "nothing between MARCA|REVIEW and the bar".
+	const QWidget *seekRow() const { return seekRow_; }
+	const QWidget *healthBadge() const { return health_; }
+	// What MARCA's footer carries: the health badge shown or not, and the
+	// notice (empty = none). The mock has no poll, so a check drives it here.
+	void setMarcaFooterState(bool healthShown, const QString &notice)
+	{
+		if (health_)
+			health_->setVisible(healthShown);
+		// The dock's own two calls (updateChannelStrip, updateMarcaAlert).
+		setFooterNotice(noticeLbl_, health_, notice);
+		if (strip_)
+			strip_->setMarcaAlert(healthShown || !notice.isEmpty());
+	}
 
 	// THE OPERATOR DRAGS THE DIVIDERS, and until now nothing in this tool ever
 	// did — every measurement it has ever taken was of a panel whose dividers
@@ -997,7 +994,9 @@ private:
 		int wide;
 	};
 	QVector<Worded> worded_;
-	QWidget *statusDetail_ = nullptr;
+	QWidget *seekRow_ = nullptr;
+	QPushButton *health_ = nullptr;
+	QLabel *noticeLbl_ = nullptr;
 	QLineEdit *search_ = nullptr;
 	// Table tools export key: icon-only in Tall like the real panel's.
 	QPushButton *exp_ = nullptr;
@@ -1360,19 +1359,21 @@ private:
 				      buildTransportBox(), buildTrimBox(),
 				      buildSpeedBox());
 		strip_->setFooters(buildMarcaFooter(), buildReviewFooter());
+		// The mock's badge is shown, so in Tall its MARCA tab is flagged —
+		// what the dock does with a finding on screen.
+		strip_->setMarcaAlert(health_ && !health_->isHidden());
 		v->addWidget(strip_);
 
-		// THE STATUS LINE SITS ABOVE THE GREEN BAND. The band says what is
-		// on air; the line says what the next replay will run under. Below
-		// it, the modes read as a footnote to a clip that is already
-		// playing.
-		v->addWidget(buildStatusBar());
+		// (No status line: TAS «Le due barre» puts nothing between
+		// MARCA|REVIEW and the SeekBar — S2, B2, D5. The notice is in
+		// MARCA's footer.)
 
 		// ── the position bar ─────────────────────────────────────────
 		// Root-bottom in every shape (see the Short note above): the one
 		// control that reaches the whole project keeps the whole width.
 		auto *seekRow = new QWidget(controls_);
 		seekRow->setObjectName(QStringLiteral("mrSeekRow"));
+		seekRow_ = seekRow;
 		auto *skh = new QHBoxLayout(seekRow);
 		skh->setContentsMargins(0, 0, 0, 0);
 		skh->setSpacing(4);
@@ -1393,37 +1394,6 @@ private:
 		skh->addWidget(seek, 1);
 		skh->addWidget(zoom, 0);
 		v->addWidget(seekRow);
-	}
-
-	// ── the status line ─────────────────────────────────────────────────
-	//
-	// What the NEXT replay will run under: which list and event the
-	// transport is about, and the speed. The modes (loop · music · mute ·
-	// in output) used to sit here; spec §4 makes them REVIEW's "Modi" box
-	// and the REVIEW header's IN OUTPUT, and the health badge moves to
-	// MARCA's footer — so this line is now only the notice and the speed
-	// read-out.
-	QWidget *buildStatusBar()
-	{
-		auto *box = new QWidget(controls_);
-		box->setObjectName(QStringLiteral("mrStatusBar"));
-		box->setFixedHeight(kStatusH);
-		auto *h = new QHBoxLayout(box);
-		h->setContentsMargins(6, 2, 6, 2);
-		h->setSpacing(6);
-
-		auto *notice = new QLabel(QStringLiteral("Lista 01 · evento 0003"),
-					  box);
-		notice->setObjectName(QStringLiteral("mrStatusText"));
-		notice->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
-		statusDetail_ = notice;
-		h->addWidget(notice, 1);
-
-		h->addWidget(statusSep(box));
-		auto *speed = new QLabel(QStringLiteral("1.00×"), box);
-		speed->setObjectName(QStringLiteral("mrStatusValue"));
-		h->addWidget(speed);
-		return box;
 	}
 
 	QPushButton *statusKey(Icon ic, const QString &text, const QString &id,
@@ -1760,16 +1730,16 @@ private:
 		return blk;
 	}
 
-	// ── FOOTERS: health badge under MARCA, the green on-air band under
-	// REVIEW (spec §0/§4). MARCA's footer is a fixed-height carrier so its
-	// body lines up with REVIEW's grid even while the badge is hidden.
+	// ── FOOTERS: health badge + notice under MARCA (S2, B2, D5), the green
+	// on-air band under REVIEW (spec §0/§4). MARCA's footer is a fixed-height
+	// carrier so its body lines up with REVIEW's grid even while the badge is
+	// hidden — the dock's own: 26px badge + the sheet's 6px padding-top
+	// (artifact .subfoot{min-height:26px;padding-top:6px}).
 	QWidget *buildMarcaFooter()
 	{
 		auto *foot = new QWidget(this);
 		foot->setObjectName(QStringLiteral("mrMarcaFoot"));
-		foot->setFixedHeight(kKeyH);
-		auto *h = new QHBoxLayout(foot);
-		h->setContentsMargins(0, 0, 0, 0);
+		foot->setFixedHeight(kKeyH + 6);
 		auto *health = key(QStringLiteral("1"), "mrHealth");
 		health->setProperty("level", QStringLiteral("warn"));
 		health->setProperty("dense", true);
@@ -1777,12 +1747,11 @@ private:
 		health->setFixedHeight(kKeyH);
 		setKeyIconRole(health, Icon::Health, IconRole::Warn, g_tints, 11);
 		setKeyId(health, QStringLiteral("health"));
-		// AlignLeft only, no vertical flag: an aligned layout item is given
-		// its sizeHint, and #mrHealth[dense] asks for min-height 0 — so a
-		// vertically-aligned badge renders ~13 px and reads as un-hittable.
-		// Letting it fill the fixed-height carrier keeps it a real target.
-		h->addWidget(health, 0, Qt::AlignLeft);
-		h->addStretch(1);
+		health_ = health;
+		// TAS .subfoot{justify-content:center}: badge + notice, centred —
+		// the dock's row, from dock-layout. (Vertically aligned is safe:
+		// the badge's height is fixed above, so its hint is the full 26.)
+		noticeLbl_ = buildMarcaFootRow(foot, health);
 		return foot;
 	}
 
@@ -4020,6 +3989,179 @@ void checkZoneOrder(QApplication &app)
 	refreshSheetAssets();
 }
 
+// ── THE NOTICE IN MARCA'S FOOTER, NOTHING ELSE UNDER THE PANEL (S2, B2, D5) ─
+//
+// TAS «Le due barre»: under MARCA|REVIEW there is only the SeekBar. The status
+// row that sat there ("Lista 01 · evento 0003 … 1.00×") was a leftover of a
+// superseded concept; its one job left — the answer to a key just pressed —
+// is a label beside the health badge in MARCA's footer (D5). Measured at the
+// four artifact forms, each forced by its preset like checkZoneOrder. And in
+// Tall, where MARCA is a tab behind REVIEW, the MARCA tab says the footer has
+// something to say. The geometry is dock-probe.hpp's, the same the gate reads.
+void checkNoticeFooter()
+{
+	using namespace multireplay::probe;
+	auto *host = new QWidget();
+	host->setAutoFillBackground(true);
+	auto *hl = new QVBoxLayout(host);
+	hl->setContentsMargins(0, 0, 0, 0);
+	auto *w = new Mock();
+	hl->addWidget(w);
+	const auto settle = [&](int fw, int fh) {
+		// TWICE: a mode change rewrites the minimums the next pass is
+		// measured against (same as runArtifactSet).
+		for (int pass = 0; pass < 2; pass++) {
+			host->resize(fw, fh);
+			host->show();
+			for (int i = 0; i < 3; i++) {
+				QApplication::processEvents();
+				QApplication::sendPostedEvents();
+			}
+		}
+	};
+	// Long on purpose: in Short's ~260 px column it cannot fit beside the
+	// badge, so the elision and the tooltip are exercised too.
+	const QString sentence = QStringLiteral(
+		"Nessun evento aperto: premi IN prima di OUT per chiudere la clip");
+	for (const ArtifactForm &f : kArtifactForms) {
+		const QString form = QString::fromLatin1(f.name);
+		w->setLayoutPreset(f.preset);
+		w->setMarcaFooterState(true, sentence);
+		settle(f.w, f.h);
+		// AGAIN, at the size just reached: the elision is measured against
+		// the footer's width, and the dock re-runs it on every poll tick —
+		// the first call saw the previous form's footer.
+		w->setMarcaFooterState(true, sentence);
+		QApplication::processEvents();
+		QApplication::sendPostedEvents();
+		const QWidget *panel = w;
+		const QWidget *foot = panel->findChild<QWidget *>(marcaFootName());
+		const QWidget *row = panel->findChild<QWidget *>(statusRowName());
+		QLabel *notice = noticeInMarcaFoot(panel);
+		const int gap = w->seekRow() ? gapStripToSeek(w->strip_, w->seekRow(),
+							      panel)
+					     : -1;
+		const QString detail =
+			QStringLiteral("status row %1, notice %2, strip-to-seek gap %3 px")
+				.arg(row ? "PRESENT" : "gone")
+				.arg(notice ? "in MARCA footer"
+					    : (panel->findChild<QLabel *>(noticeName())
+						       ? "ELSEWHERE"
+						       : "MISSING"))
+				.arg(gap);
+		// TAS «Le due barre»: sotto MARCA|REVIEW c'è solo la SeekBar.
+		check(!row, QStringLiteral("%1: no status row").arg(form), detail);
+		// TAS footer MARCA: «badge health + testo dell'avviso»
+		check(foot && foot->findChild<QLabel *>(noticeName()) != nullptr,
+		      QStringLiteral("%1: notice lives in MARCA footer").arg(form),
+		      detail);
+		// TAS «Le due barre»: between the panel and the bar, layout spacing
+		// and nothing else (the old row alone was 26 px).
+		check(gap >= 0 && gap <= 12,
+		      QStringLiteral("%1: only the SeekBar under MARCA|REVIEW").arg(form),
+		      detail);
+		// TAS .subfoot{justify-content:center}: badge + sentence side by
+		// side, centred on the footer; a sentence that does not fit is
+		// elided and whole in the tooltip. Only where MARCA is on screen
+		// (Tall shows REVIEW).
+		const QWidget *badge = w->healthBadge();
+		if (notice && foot && badge && foot->isVisible()) {
+			const QRect b = rectIn(badge, foot), n = rectIn(notice, foot);
+			const int groupMid = (b.left() + n.right()) / 2;
+			const int footMid = foot->width() / 2;
+			const bool elided = notice->text() != sentence;
+			const bool beside = n.width() > 0 && n.left() >= b.right() &&
+					    std::abs(b.center().y() - n.center().y()) <= 3;
+			const bool centred = std::abs(groupMid - footMid) <= 4;
+			const bool whole = noticeFullText(notice) == sentence &&
+					   (!elided || notice->text().endsWith(
+							       QStringLiteral("…")));
+			check(beside && centred && whole,
+			      QStringLiteral("%1: notice beside the badge, centred, whole "
+					     "sentence reachable")
+				      .arg(form),
+			      QStringLiteral("badge x%1-%2 y%3, notice x%4-%5 y%6, group "
+					     "mid %7 vs footer mid %8, shown '%9'")
+				      .arg(b.left())
+				      .arg(b.right())
+				      .arg(b.center().y())
+				      .arg(n.left())
+				      .arg(n.right())
+				      .arg(n.center().y())
+				      .arg(groupMid)
+				      .arg(footMid)
+				      .arg(notice->text()));
+		}
+	}
+
+	// TALL: MARCA is a tab behind REVIEW, so its footer is out of sight. The
+	// MARCA tab carries « •» while the footer has something to say and MARCA
+	// is not the current tab; plain otherwise.
+	for (const ArtifactForm &f : kArtifactForms) {
+		if (QString::fromLatin1(f.name) != QStringLiteral("tall"))
+			continue;
+		w->setLayoutPreset(f.preset);
+		settle(f.w, f.h);
+	}
+	auto *tabs = w->strip_->findChild<QTabBar *>(QStringLiteral("mrPanelTabs"));
+	bool restPlain = false, flagNotice = false, plainOnMarca = false,
+	     flagAgain = false, flagHealth = false, plainCleared = false;
+	if (tabs && w->mode_ == PanelMode::Tall) {
+		const auto step = [&]() {
+			QApplication::processEvents();
+			QApplication::sendPostedEvents();
+		};
+		tabs->setCurrentIndex(0);
+		w->setMarcaFooterState(false, QString());
+		step();
+		restPlain = marcaTabPlain(tabs);
+		w->setMarcaFooterState(false, sentence);
+		step();
+		flagNotice = marcaTabFlagged(tabs);
+		tabs->setCurrentIndex(1);
+		step();
+		plainOnMarca = marcaTabPlain(tabs);
+		tabs->setCurrentIndex(0);
+		step();
+		flagAgain = marcaTabFlagged(tabs);
+		w->setMarcaFooterState(true, QString());
+		step();
+		flagHealth = marcaTabFlagged(tabs);
+		w->setMarcaFooterState(false, QString());
+		step();
+		plainCleared = marcaTabPlain(tabs);
+	}
+	const QString td =
+		QStringLiteral("mode %1; rest %2, notice %3, MARCA current %4, back "
+			       "%5, health %6, cleared %7; tab now '%8'")
+			.arg(panelModeName(w->mode_))
+			.arg(restPlain)
+			.arg(flagNotice)
+			.arg(plainOnMarca)
+			.arg(flagAgain)
+			.arg(flagHealth)
+			.arg(plainCleared)
+			.arg(tabs ? tabs->tabText(1) : QStringLiteral("NO TABS"));
+	check(flagNotice && flagAgain && flagHealth,
+	      QStringLiteral("tall: MARCA tab flags the footer behind REVIEW"), td);
+	check(restPlain && plainOnMarca && plainCleared,
+	      QStringLiteral("tall: MARCA tab plain when current or footer empty"),
+	      td);
+	// Amber: the warn signal, by a rule on the tab bar's `alert` property.
+	{
+		const QString qss = w->styleSheet();
+		const int at = qss.indexOf(QStringLiteral(
+			"QTabBar#mrPanelTabs[alert=\"true\"]::tab:last:!selected"));
+		check(at >= 0 && qss.mid(at, 200).contains(g_sc.warn),
+		      QStringLiteral("tall: the MARCA marker is drawn in the warn "
+				     "signal"),
+		      at < 0 ? QStringLiteral("no rule")
+			     : qss.mid(at, 120).simplified());
+	}
+	w->setMarcaFooterState(true, QString());
+	delete host;
+}
+
 int runChecks(QPalette pal, QApplication &app, const QString &outDir)
 {
 	struct Want {
@@ -4712,6 +4854,9 @@ int runChecks(QPalette pal, QApplication &app, const QString &outDir)
 
 	// The zones, top to bottom, at the four artifact forms x four themes.
 	checkZoneOrder(app);
+	// The notice in MARCA's footer, nothing else under the panel, and the
+	// Tall MARCA-tab marker (S2, B2, D5).
+	checkNoticeFooter();
 
 	// LAST, because it replaces the application palette and style sheet for
 	// the rest of the process: from here on the panel is a LIGHT one sitting

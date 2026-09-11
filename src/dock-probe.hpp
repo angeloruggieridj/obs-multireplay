@@ -10,9 +10,11 @@
 // written for. So the measuring lives here, pure Qt with no OBS types (like
 // dock-style.hpp), and both include it.
 
+#include <QLabel>
 #include <QPoint>
 #include <QRect>
 #include <QString>
+#include <QTabBar>
 #include <QWidget>
 
 namespace multireplay::probe {
@@ -56,6 +58,67 @@ inline QString zoneOrderDetail(const QWidget *toolbar, const QWidget *monitors,
 		.arg(t.width())
 		.arg(m.top())
 		.arg(panel->width());
+}
+
+// ── THE NOTICE LIVES IN MARCA'S FOOTER (S2, B2, D5) ─────────────────────
+// TAS «Le due barre»: under MARCA|REVIEW there is only the SeekBar. The status
+// row that used to sit there is gone; its one job left — the answer to a key
+// just pressed — is a label beside the health badge. The retired row's name is
+// kept here so a check can say it is GONE, not merely hidden.
+inline QString statusRowName()
+{
+	return QStringLiteral("mrStatusBar");
+}
+inline QString marcaFootName()
+{
+	return QStringLiteral("mrMarcaFoot");
+}
+inline QString noticeName()
+{
+	return QStringLiteral("mrNotice");
+}
+
+// The notice label, when it sits inside MARCA's footer; nullptr otherwise.
+inline QLabel *noticeInMarcaFoot(const QWidget *panel)
+{
+	const QWidget *foot = panel->findChild<QWidget *>(marcaFootName());
+	return foot ? foot->findChild<QLabel *>(noticeName()) : nullptr;
+}
+
+// What the notice SAYS, in full. The label elides a sentence that does not fit
+// the footer and carries the whole of it in its tooltip, so the text alone can
+// be a shortened copy — a check that looks for a sentence reads this.
+inline QString noticeFullText(const QLabel *l)
+{
+	if (!l)
+		return QString();
+	return l->toolTip().isEmpty() ? l->text() : l->toolTip();
+}
+
+// TALL: MARCA is a tab behind REVIEW, so its footer is out of sight. While the
+// footer has something to say and MARCA is not the current tab, the MARCA tab
+// title carries « •» and the tab bar's `alert` property (coloured warn by the
+// sheet). Tab 1 is MARCA (TwoPanelStrip).
+inline bool marcaTabFlagged(const QTabBar *tabs)
+{
+	return tabs && tabs->count() > 1 &&
+	       tabs->tabText(1).endsWith(QStringLiteral(" •")) &&
+	       tabs->property("alert").toBool();
+}
+inline bool marcaTabPlain(const QTabBar *tabs)
+{
+	return tabs && tabs->count() > 1 &&
+	       tabs->tabText(1) == QStringLiteral("MARCA") &&
+	       !tabs->property("alert").toBool();
+}
+
+// Nothing between the command panel and the position bar: the gap from the
+// strip's bottom edge to the bar's top edge. The old status row was 26 px, so
+// anything past a few pixels of layout spacing means a row came back.
+inline int gapStripToSeek(const QWidget *strip, const QWidget *seek,
+			  const QWidget *panel)
+{
+	return rectIn(seek, panel).top() - rectIn(strip, panel).bottom() - 1;
 }
 
 } // namespace multireplay::probe

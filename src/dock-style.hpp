@@ -482,6 +482,16 @@ R"QSS(
 	background: @tabBar@;
 	color: #ffffff;
 }
+)QSS"
+/* MSVC C2026: this chunk crossed 16380 bytes with the rule below; broken here
+   rather than made longer. */
+R"QSS(
+/* TALL: MARCA sits behind REVIEW, so a notice or a health finding in its
+   footer is out of sight. While there is one and MARCA is not current, its tab
+   reads «MARCA •» in the warn signal (TwoPanelStrip::setMarcaAlert). */
+#MultiReplayDock QTabBar#mrPanelTabs[alert="true"]::tab:last:!selected {
+	color: @warn@;
+}
 /* EVERY SURFACE THE PANEL OWNS, and BY ID so OBS's own theme cannot out-rank
    it. These were left to the application palette, which is invisible while the
    panel and OBS are both dark and is a set of black patches the moment they are
@@ -916,27 +926,19 @@ QLabel#mrChanTag {
 }
 QLabel#mrChanTag[chan="A"][active="true"] { color: @onAir@; }
 QLabel#mrChanTag[chan="B"][active="true"] { color: @accent@; }
-/* ONE LINE, not three. It used to stack list / clip / remaining, then id and
-   the two offsets, then timecode and speed — 44 px under the pictures, most of
-   which the on-air band and the position bar were already saying. What is left
-   here is what is said NOWHERE else: which list, how far the playhead is past
-   IN and short of OUT, and whatever showNotice() has to tell the operator about
-   the key he just pressed.
-
-   AND IT IS NO LONGER GREEN. It was a full-width green band directly above the
-   on-air band, which is also a full-width green band — so the panel had two of
-   them, one saying what is playing and one saying what the playhead is near,
-   and telling them apart meant reading both. Green is reserved for on air. This
-   is a reading, so it is drawn like one; the BADGE keeps its colour, because
-   that is the channel's identity and it matches the tally under the picture. */
-QLabel#mrChanStrip {
-	background: @sink1@; color: @textMuted@;
-	font-size: 10px; padding: 1px 7px;
+/* THE NOTICE, IN MARCA'S FOOTER (S2, B2, D5). The answer to a key the operator
+   just pressed, beside the health badge (TAS footer MARCA: «badge health +
+   testo dell'avviso»). It had a status row of its own under the panel; the
+   artifacts put nothing between MARCA|REVIEW and the SeekBar. On the footer's
+   own ground, and hidden while there is nothing to say. Lit, it is allowed to
+   be brighter than the chrome around it: it is a message, not a caption. */
+#MultiReplayDock QLabel#mrNotice {
+	background: transparent; color: @textMuted@; border: 0;
+	font-size: 10px; padding: 0;
 }
-/* A notice owns the line for a few seconds — it is the answer to a key the
-   operator just pressed, so it is allowed to be brighter than the reading it
-   replaces. */
-QLabel#mrChanStrip[notice="true"] { color: @warn@; font-weight: 700; }
+#MultiReplayDock QLabel#mrNotice[notice="true"] {
+	color: @warn@; font-weight: 700;
+}
 
 )QSS"
 /* MSVC caps a single string literal at 16380 bytes, so the sheet is written in
@@ -944,26 +946,11 @@ QLabel#mrChanStrip[notice="true"] { color: @warn@; font-weight: 700; }
    C2026 and breaking here rather than making the last chunk longer. */
 R"QSS(
 /* ── THE STATUS LINE ────────────────────────────────────────────────
-   One row, and it OWNS the modes rather than mirroring them: Loop, music, "in
-   output" and the return to the live edge are buttons here and nowhere else.
-   That is the whole reason it can exist at all — a status bar that repeated
-   four toggles which are also keys in the strip would be four states with two
-   homes, which is exactly how a toggle ends up left in the wrong position.
-   Beside them it carries the numbers about the take that are pure readings:
-   how long it has been running, what the health monitor found, what speed the
-   next replay will run at. */
-QWidget#mrStatusBar { background: @sink1@; border-top: 1px solid @border@; }
-QLabel#mrStatusText  { color: @textMuted@; font-size: 10px; }
-QLabel#mrStatusValue { color: @text@; font-size: 10px; font-weight: 700;
-                       letter-spacing: 0.3px; }
-QLabel#mrStatusValue[rec="true"] { color: @rec@; }
-/* A vertical hairline between two groups of the status line, and between two
-   sections of the control strip. It is what replaced the six captions: a rule
-   costs one pixel of width and says the same thing a heading said in a whole
-   line of height. */
-QWidget#mrStatSep { background: @border@; }
-/* The toggles that live on this line. Shorter than a key in the strip because
-   the line is shorter; still a STATE when lit — hollow, not filled. */
+   GONE (S2, B2, D5): the artifacts put nothing between MARCA|REVIEW and the
+   SeekBar. Its notice lives in MARCA's footer (#mrNotice); its speed read-out
+   repeated REVIEW's own. What stays is the toggle role it lent its name to:
+   #mrStatKey, the short key IN OUTPUT wears in REVIEW's header. Shorter than
+   a key in the strip; still a STATE when lit — hollow, not filled. */
 QPushButton#mrStatKey {
 	background: transparent; color: @textMuted@;
 	border: 1px solid transparent; border-radius: 3px;

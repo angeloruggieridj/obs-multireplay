@@ -1165,9 +1165,11 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 		const bool noModal = QApplication::activeModalWidget() == nullptr;
 		QString notice;
 		runOnUi([&]() {
-			if (auto *nl = dock->findChild<QLabel *>(
-				    QStringLiteral("mrChanStrip")))
-				notice = nl->text();
+			// MARCA's footer now (S2, B2, D5); the whole sentence —
+			// the label elides one that does not fit.
+			notice = multireplay::probe::noticeFullText(
+				dock->findChild<QLabel *>(
+					multireplay::probe::noticeName()));
 		});
 		c.markOutWithoutOpenEventUsesNotice =
 			noModal &&
@@ -1211,17 +1213,17 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 			runOnUi([&]() {
 				markOutBtn->click();  // "Dock.NoOpenEvent", shows now
 				moveUpBtn->click();   // "Dock.SelectToReorder", queued
-				if (auto *nl = dock->findChild<QLabel *>(
-					    QStringLiteral("mrChanStrip")))
-					immediateText = nl->text();
+				immediateText = multireplay::probe::noticeFullText(
+					dock->findChild<QLabel *>(
+						multireplay::probe::noticeName()));
 			});
 			// Past kNoticeNs (5s) so the first has expired and the
 			// queue has had a poll tick to advance past it.
 			std::this_thread::sleep_for(std::chrono::milliseconds(5300));
 			runOnUi([&]() {
-				if (auto *nl = dock->findChild<QLabel *>(
-					    QStringLiteral("mrChanStrip")))
-					laterText = nl->text();
+				laterText = multireplay::probe::noticeFullText(
+					dock->findChild<QLabel *>(
+						multireplay::probe::noticeName()));
 			});
 		}
 		c.noticeQueueWorks =
@@ -4798,6 +4800,9 @@ void runReopenPass(const std::string &outPath)
 	// rides on top and shows one of them. (This replaced the old "collapse
 	// bay + clips + speed behind a more menu".)
 	bool tallCollapsesToMore = false;
+	// S2, B2, D5: in Tall the MARCA tab says its footer has something to say.
+	bool tallMarcaTabFlags = false;
+	QString tallMarcaTabNote;
 	// PUTTING THE MONITORS DOWN HAS TO GIVE THE ROOM TO THE LIST, and this is
 	// the one check that can tell the difference between the pictures going
 	// away and the room coming back. They are not the same thing, and for a
@@ -6275,9 +6280,9 @@ void runReopenPass(const std::string &outPath)
 				keysCentred = std::abs(keyPadL - keyPadR) <= 6;
 				if (auto *cb = dock->findChild<ClipBar *>())
 					bandText = cb->overlayText();
-				if (auto *nl = dock->findChild<QLabel *>(
-					    QStringLiteral("mrChanStrip")))
-					noticeText = nl->text();
+				noticeText = multireplay::probe::noticeFullText(
+					dock->findChild<QLabel *>(
+						multireplay::probe::noticeName()));
 				// TALL SWAPS MARCA / REVIEW BEHIND A TAB BAR (spec
 				// §4): the tab bar is visible and exactly one of
 				// the two panels is shown.
@@ -6315,7 +6320,44 @@ void runReopenPass(const std::string &outPath)
 							healthInMarcaFooter = true;
 							break;
 						}
+
+				// TALL: MARCA behind REVIEW — the MARCA tab flags a
+				// footer with something to say (S2, B2, D5). A notice
+				// fired here with REVIEW current: flagged; MARCA
+				// current: plain; back on REVIEW: flagged again.
+				if (auto *pt = strip->findChild<QTabBar *>(
+					    QStringLiteral("mrPanelTabs"))) {
+					using namespace multireplay::probe;
+					const int was = pt->currentIndex();
+					pt->setCurrentIndex(0);
+					dock->showNotice(QStringLiteral(
+						"selftest: MARCA tab marker"));
+					const bool onReview = marcaTabFlagged(pt);
+					const QString flaggedText = pt->tabText(1);
+					pt->setCurrentIndex(1);
+					const bool onMarca = marcaTabPlain(pt);
+					pt->setCurrentIndex(0);
+					const bool back = marcaTabFlagged(pt);
+					pt->setCurrentIndex(was);
+					tallMarcaTabFlags = onReview && onMarca && back;
+					tallMarcaTabNote =
+						QStringLiteral("REVIEW current '%1' %2, "
+							       "MARCA current %3, back "
+							       "on REVIEW %4")
+							.arg(flaggedText)
+							.arg(onReview ? "flagged"
+								      : "NOT flagged")
+							.arg(onMarca ? "plain" : "NOT plain")
+							.arg(back ? "flagged"
+								  : "NOT flagged");
+				} else {
+					tallMarcaTabNote =
+						QStringLiteral("no panel tab bar");
+				}
 			});
+			obs_log(tallMarcaTabFlags ? LOG_INFO : LOG_ERROR,
+				"[selftest] reopen: tall MARCA tab marker: %s",
+				qUtf8Printable(tallMarcaTabNote));
 			obs_log(tallCollapsesToMore ? LOG_INFO : LOG_ERROR,
 				"[selftest] reopen: tall swaps MARCA/REVIEW behind a "
 				"tab bar: %s",
@@ -6330,7 +6372,7 @@ void runReopenPass(const std::string &outPath)
 			obs_log(keysCentred ? LOG_INFO : LOG_ERROR,
 				"[selftest] reopen: stacked keys - %d px of panel to "
 				"the left of them, %d to the right: %s; band says "
-				"'%s'; status line says '%s'",
+				"'%s'; notice says '%s'",
 				keyPadL, keyPadR, keysCentred ? "centred" : "NOT "
 									 "centred",
 				qUtf8Printable(bandText), qUtf8Printable(noticeText));
@@ -6486,10 +6528,17 @@ void runReopenPass(const std::string &outPath)
 		// full width, in every form (dock-probe.hpp).
 		bool toolbarOnTop = false;
 		QString zones;
+		// TAS «Le due barre» / D5 (S2, B2): no status row under the
+		// panel, and the notice in MARCA's footer (dock-probe.hpp).
+		bool noStatusRow = false;
+		bool noticeInFoot = false;
+		int stripSeekGap = -1;
 	};
 	std::vector<ArtifactShot> artifactShots;
 	bool artifactSetCaptured = false;
 	bool layoutToolbarOnTop = false;
+	bool layoutNoStatusRow = false;
+	bool noticeInMarcaFooter = false;
 	bool artifactOpened = false;
 	int artifactEvents = 0;
 	int artifactQueued = 0;
@@ -6683,6 +6732,19 @@ void runReopenPass(const std::string &outPath)
 						// camera tile, and crosses the panel —
 						// in Short over both columns.
 						using namespace multireplay::probe;
+						// UNDER THE PANEL (S2, B2, D5): no
+						// status row, the notice in MARCA's
+						// footer, and the gap to the bar.
+						s.noStatusRow = !dock->findChild<QWidget *>(
+							statusRowName());
+						s.noticeInFoot =
+							noticeInMarcaFoot(dock) != nullptr;
+						if (QWidget *st = dock->findChild<QWidget *>(
+							    QStringLiteral("mrStrip")))
+							if (SeekBar *sb =
+								    dock->findChild<SeekBar *>())
+								s.stripSeekGap = gapStripToSeek(
+									st, sb, dock);
 						const QWidget *tb = dock->findChild<QWidget *>(
 							toolbarBoxName());
 						const QWidget *mon = dock->findChild<QWidget *>(
@@ -6732,6 +6794,17 @@ void runReopenPass(const std::string &outPath)
 						qUtf8Printable(s.file),
 						s.toolbarOnTop ? "yes" : "NO",
 						qUtf8Printable(s.zones));
+					obs_log((s.noStatusRow && s.noticeInFoot)
+							? LOG_INFO
+							: LOG_ERROR,
+						"[selftest] reopen: under the panel %s: "
+						"status row %s, notice %s, strip-to-seek "
+						"gap %d px",
+						qUtf8Printable(s.file),
+						s.noStatusRow ? "gone" : "PRESENT",
+						s.noticeInFoot ? "in MARCA footer"
+							       : "NOT in MARCA footer",
+						s.stripSeekGap);
 					artifactShots.push_back(s);
 				}
 			}
@@ -6782,6 +6855,28 @@ void runReopenPass(const std::string &outPath)
 			"[selftest] reopen: layout_toolbar_on_top — %d of 16 shots "
 			"with the toolbar above the monitors and full width",
 			shotsToolbarOnTop);
+		// TAS «Le due barre» / D5 (S2, B2): on each of the sixteen shots, no
+		// status row under MARCA|REVIEW and the notice in MARCA's footer.
+		// "Gone" means gone from the tree AND nothing but layout spacing
+		// between the strip and the bar (the old row alone was 26 px; the
+		// mockup measures 3 in every form).
+		const int shotsNoRow = (int)std::count_if(
+			artifactShots.begin(), artifactShots.end(),
+			[](const ArtifactShot &s) {
+				return s.noStatusRow && s.stripSeekGap >= 0 &&
+				       s.stripSeekGap <= 12;
+			});
+		const int shotsNoticeInFoot = (int)std::count_if(
+			artifactShots.begin(), artifactShots.end(),
+			[](const ArtifactShot &s) { return s.noticeInFoot; });
+		layoutNoStatusRow = artifactShots.size() == 16 && shotsNoRow == 16;
+		noticeInMarcaFooter =
+			artifactShots.size() == 16 && shotsNoticeInFoot == 16;
+		obs_log((layoutNoStatusRow && noticeInMarcaFooter) ? LOG_INFO
+								   : LOG_ERROR,
+			"[selftest] reopen: layout_no_status_row — %d of 16 shots "
+			"without it; notice_in_marca_footer — %d of 16",
+			shotsNoRow, shotsNoticeInFoot);
 		obs_log(artifactSetCaptured ? LOG_INFO : LOG_ERROR,
 			"[selftest] reopen: artifact set — %d of 16 shots written "
 			"with data (band on air, 6 rows) to %s (project re-opened "
@@ -6822,7 +6917,8 @@ void runReopenPass(const std::string &outPath)
 		  layoutShortStacksLeft && layoutShortSplitsWidth &&
 		  layoutTallTabs && layoutTallHidesOut && layoutPresetSizes &&
 		  layoutFullscreenNeedsFloat && artifactSetCaptured &&
-		  layoutToolbarOnTop;
+		  layoutToolbarOnTop && layoutNoStatusRow &&
+		  noticeInMarcaFooter && tallMarcaTabFlags;
 
 	// --- Put everything back ----------------------------------------------
 	// The operator's project first (so nothing is pointing into the test one),
@@ -6891,6 +6987,12 @@ void runReopenPass(const std::string &outPath)
 	// LAY «Le cinque zone» / SPEC §0 (S1, S4): the toolbar above the monitor
 	// block and the first tile, and full width, on each of the sixteen shots.
 	obs_data_set_bool(checks, "layout_toolbar_on_top", layoutToolbarOnTop);
+	// TAS «Le due barre» / D5 (S2, B2): nothing but the SeekBar under
+	// MARCA|REVIEW, the notice beside the health badge in MARCA's footer, and
+	// in Tall the MARCA tab flags that footer while REVIEW is current.
+	obs_data_set_bool(checks, "layout_no_status_row", layoutNoStatusRow);
+	obs_data_set_bool(checks, "notice_in_marca_footer", noticeInMarcaFooter);
+	obs_data_set_bool(checks, "tall_marca_tab_flags_footer", tallMarcaTabFlags);
 	obs_data_set_bool(checks, "camera_tiles_have_width_when_wide", tilesWideOk);
 	obs_data_set_bool(checks, "camera_tiles_have_width_in_a_column", tilesTallOk);
 	obs_data_set_bool(checks, "short_arrangement_is_reachable", shortReachable);
