@@ -669,10 +669,20 @@ public: // restored: everything below was public before resizeEvent was
 	// Both arrangements are declared by hand — see the note at the top.
 	// `flat` may be empty, which means "this section has only one shape".
 	void setShapes(const BlockShape &tall, const BlockShape &flat);
+	// A third packing for Short's ~210px column (artifact Short wireframe):
+	// shared lines the two-shape system cannot say. Empty means "wear flat".
+	// Only sections that need it declare one (today: the Modi stack, whose
+	// two rows become one of five).
+	void setCompactShapes(const BlockShape &compact);
 	// Re-lay the keys. Cheap and idempotent: it does nothing unless the shape
 	// actually changed.
 	void setFlat(bool flat);
 	bool isFlat() const { return flatActive_; }
+	// Compact on/off (Short). Like setFlat's guard: no work unless the
+	// answer changed. Captions go with it — at ~210px a legend per group
+	// is six lines saying what the keys already say.
+	void setCompact(bool compact);
+	bool isCompact() const { return compactActive_; }
 	// Rows of the shape currently applied.
 	int rows() const;
 	// What this section needs in one shape or the other — caption, rows, and
@@ -714,9 +724,10 @@ private:
 	void placeCaption();
 	QWidget *body_ = nullptr;
 	QGridLayout *grid_ = nullptr;
-	BlockShape tall_, flat_;
+	BlockShape tall_, flat_, compact_;
 	std::function<void(bool)> onShape_;
 	bool flatActive_ = false;
+	bool compactActive_ = false;
 	bool sectionHidden_ = false;
 	bool applied_ = false;
 	int stretchFrom_ = -1, stretchTo_ = -1;

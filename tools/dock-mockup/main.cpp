@@ -519,6 +519,9 @@ public:
 	// The "Canali replay" box, kept so the channel-B toggle can hide it
 	// whole (absent, not disabled, with one bay).
 	KeyBlock *bay_ = nullptr;
+	// The Modi stack, kept so the checks can ask how many rows it wears
+	// (findChild needs Q_OBJECT, which KeyBlock deliberately lacks).
+	KeyBlock *modesBox_ = nullptr;
 	bool tallCollapsed_ = false;
 	PanelMode mode_ = PanelMode::Wide;
 	// What the wide arrangement asks for, measured while it is worn: Short is
@@ -545,22 +548,35 @@ public:
 		bBox_->setVisible(g_haveB);
 
 		// SHORT PUTS THE CONTROLS IN THE LEFT COLUMN. The panel is wide
-		// and shallow, so the list goes down the right-hand half and
-		// everything else — pictures, keys, the on-air band and the
-		// position bar — stacks on the left. The strip carries no
-		// picture, so moving it between the two layouts is free.
+		// and shallow, so the list goes down the right-hand half and the
+		// strip + status stack under the pictures on the left — while the
+		// position bar STAYS root-bottom full width (Toolbar on top,
+		// SeekBar at the bottom, in every shape). Like the real panel's
+		// applyControlsColumn.
 		const bool sideBySide = m == PanelMode::Short;
 		if (sideBySide != controlsInColumn_) {
 			controlsInColumn_ = sideBySide;
-			if (sideBySide) {
-				root_->removeWidget(controls_);
-				leftColLayout_->addWidget(controls_);
-			} else {
-				leftColLayout_->removeWidget(controls_);
-				controls_->setParent(this);
-				root_->addWidget(controls_);
+			auto *v = qobject_cast<QVBoxLayout *>(
+				controls_->layout());
+			auto *status = controls_->findChild<QWidget *>(
+				QStringLiteral("mrStatusBar"));
+			if (v && status) {
+				if (sideBySide) {
+					v->removeWidget(strip_);
+					v->removeWidget(status);
+					leftColLayout_->addWidget(strip_);
+					leftColLayout_->addWidget(status);
+				} else {
+					leftColLayout_->removeWidget(strip_);
+					leftColLayout_->removeWidget(status);
+					strip_->setParent(controls_);
+					status->setParent(controls_);
+					v->insertWidget(0, strip_);
+					v->insertWidget(1, status);
+				}
+				strip_->show();
+				status->show();
 			}
-			controls_->show();
 		}
 		bodySplit_->setOrientation(sideBySide ? Qt::Horizontal
 						      : Qt::Vertical);
@@ -1319,7 +1335,10 @@ private:
 		v->addWidget(buildStatusBar());
 
 		// ── the position bar ─────────────────────────────────────────
+		// Root-bottom in every shape (see the Short note above): the one
+		// control that reaches the whole project keeps the whole width.
 		auto *seekRow = new QWidget(controls_);
+		seekRow->setObjectName(QStringLiteral("mrSeekRow"));
 		auto *skh = new QHBoxLayout(seekRow);
 		skh->setContentsMargins(0, 0, 0, 0);
 		skh->setSpacing(4);
@@ -1575,6 +1594,7 @@ private:
 	KeyBlock *buildModesBox()
 	{
 		auto *blk = new KeyBlock(QStringLiteral("Modi"), this);
+		blk->setObjectName(QStringLiteral("mrModesBox"));
 		auto *last = iconKey(Icon::PlayLast, QStringLiteral("playLast"),
 				     QStringLiteral("Riproduci l'ultimo evento"));
 		auto *loop = key(QStringLiteral("LOOP"), "mrToggle");
@@ -1617,6 +1637,12 @@ private:
 				{Cell(mute, 2), Cell(music, 2), Cell(cam, 2)}},
 			       {{Cell(last, 3), Cell(loop, 3)},
 				{Cell(mute, 2), Cell(music, 2), Cell(cam, 2)}});
+		// Compact (Short): one row of five, like the real panel's —
+		// LOOP and music have no hotkeys, so this row cannot hide.
+		blk->setCompactShapes({{Cell(last, 3), Cell(loop, 3),
+					Cell(mute, 2), Cell(music, 2),
+					Cell(cam, 2)}});
+		modesBox_ = blk;
 		return blk;
 	}
 
@@ -4070,17 +4096,71 @@ int runChecks(QPalette pal, QApplication &app, const QString &outDir)
 					      QString("marca right %1 review left %2")
 						      .arg(marcaR)
 						      .arg(reviewL));
+					// Full rows outside Short.
+					if (check(w->modesBox_ != nullptr,
+						  label + ": the Modi stack exists"))
+						check(w->modesBox_->rows() == 2,
+						      label + ": Modi keeps two rows in Wide",
+						      QString("%1 rows")
+							      .arg(w->modesBox_->rows()));
+					auto *dial = w->strip_->findChild<QSlider *>(
+						QStringLiteral("mrSpeed"));
+					if (check(dial != nullptr,
+						  label + ": the speed dial exists"))
+						check(dial->isVisible(),
+						      label + ": the dial stays in Wide");
+					QWidget *trimIn = nullptr;
+					for (QWidget *v :
+					     w->strip_->findChildren<QWidget *>())
+						if (v->property(kKeyProperty)
+							    .toString() ==
+						    QStringLiteral("trimIn"))
+							trimIn = v;
+					if (check(trimIn != nullptr,
+						  label + ": the trim keys exist"))
+						check(trimIn->isVisible(),
+						      label + ": trim stays in Wide");
 				} else if (t.mode == PanelMode::Short) {
 					check(!tabs->isVisible(),
 					      label + ": no tabs in Short");
-					// The strip rides controls_, which Short
-					// reparents into the left column: two hops
-					// up from the strip is the column.
-					QWidget *up = w->strip_->parentWidget();
-					check(up &&
-						      up->parentWidget() ==
-							      w->leftCol_,
+					// The strip itself rides the left column
+					// (the seek row stays root-bottom).
+					check(w->strip_->parentWidget() ==
+						      w->leftCol_,
 					      label + ": the strip rides the left column");
+					auto *seekRow = w->findChild<QWidget *>(
+						QStringLiteral("mrSeekRow"));
+					if (check(seekRow != nullptr,
+						  label + ": the seek row exists"))
+						check(seekRow->parentWidget() !=
+							      w->leftCol_,
+						      label + ": the seek row stays out");
+					// ── COMPACT — artifact Short wireframe: one
+					// row per box, no legends; trim and the dial
+					// hide (hotkeys and chips cover them).
+					if (check(w->modesBox_ != nullptr,
+						  label + ": the Modi stack exists"))
+						check(w->modesBox_->rows() == 1,
+						      label + ": Modi packs one row in Short",
+						      QString("%1 rows")
+							      .arg(w->modesBox_->rows()));
+					auto *dial = w->strip_->findChild<QSlider *>(
+						QStringLiteral("mrSpeed"));
+					if (check(dial != nullptr,
+						  label + ": the speed dial exists"))
+						check(!dial->isVisible(),
+						      label + ": the dial hides in Short");
+					QWidget *trimIn = nullptr;
+					for (QWidget *v :
+					     w->strip_->findChildren<QWidget *>())
+						if (v->property(kKeyProperty)
+							    .toString() ==
+						    QStringLiteral("trimIn"))
+							trimIn = v;
+					if (check(trimIn != nullptr,
+						  label + ": the trim keys exist"))
+						check(!trimIn->isVisible(),
+						      label + ": trim hides in Short");
 					check(w->bodySplit_->orientation() ==
 						      Qt::Horizontal,
 					      label + ": the body splits width in Short");
@@ -4091,6 +4171,31 @@ int runChecks(QPalette pal, QApplication &app, const QString &outDir)
 						  label + ": the event table exists"))
 						check(ev->isColumnHidden(2),
 						      label + ": OUT folds away in Tall");
+					// Compact is Short-only: Tall keeps full
+					// rows, dial and trim.
+					if (check(w->modesBox_ != nullptr,
+						  label + ": the Modi stack exists"))
+						check(w->modesBox_->rows() == 2,
+						      label + ": Modi keeps two rows in Tall",
+						      QString("%1 rows")
+							      .arg(w->modesBox_->rows()));
+					auto *dial = w->strip_->findChild<QSlider *>(
+						QStringLiteral("mrSpeed"));
+					if (check(dial != nullptr,
+						  label + ": the speed dial exists"))
+						check(dial->isVisible(),
+						      label + ": the dial stays in Tall");
+					QWidget *trimIn = nullptr;
+					for (QWidget *v :
+					     w->strip_->findChildren<QWidget *>())
+						if (v->property(kKeyProperty)
+							    .toString() ==
+						    QStringLiteral("trimIn"))
+							trimIn = v;
+					if (check(trimIn != nullptr,
+						  label + ": the trim keys exist"))
+						check(trimIn->isVisible(),
+						      label + ": trim stays in Tall");
 					QWidget *cam = nullptr;
 					for (QWidget *v :
 					     w->findChildren<QWidget *>())

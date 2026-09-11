@@ -1996,21 +1996,42 @@ void MultiReplayDock::applyPreviewAspect()
 // called from every resize.
 void MultiReplayDock::applyControlsColumn(bool inColumn)
 {
-	if (!bottomBar_ || !rootLayout_ || !leftColLayout_)
+	if (!bottomBar_ || !rootLayout_ || !leftColLayout_ || !strip_ ||
+	    !statusBar_ || !seek_)
 		return;
 	if (inColumn == controlsInColumn_)
 		return;
 	controlsInColumn_ = inColumn;
+	auto *bv = qobject_cast<QVBoxLayout *>(bottomBar_->layout());
+	if (!bv)
+		return;
 	if (inColumn) {
+		// SHORT: the strip and the status line stack under the pictures
+		// in the left column — but the position bar STAYS at the root
+		// bottom, full width (artifact: "SeekBar piena larghezza sempre
+		// in fondo", Toolbar-cima/SeekBar-fondo being the two rules the
+		// layouts never break). Moving the whole bottomBar_ down there
+		// narrowed the one control that reaches the whole project to
+		// the column.
 		rootLayout_->removeWidget(bottomSep_);
-		rootLayout_->removeWidget(bottomBar_);
 		bottomSep_->hide();
-		leftColLayout_->addWidget(bottomBar_);
+		bv->removeWidget(strip_);
+		bv->removeWidget(statusBar_);
+		leftColLayout_->addWidget(strip_);
+		leftColLayout_->addWidget(statusBar_);
+		strip_->show();
+		statusBar_->show();
 	} else {
-		leftColLayout_->removeWidget(bottomBar_);
-		bottomBar_->setParent(this);
+		leftColLayout_->removeWidget(strip_);
+		leftColLayout_->removeWidget(statusBar_);
+		strip_->setParent(bottomBar_);
+		statusBar_->setParent(bottomBar_);
+		// Back in dock order: strip, status, seek.
+		bv->insertWidget(0, strip_);
+		bv->insertWidget(1, statusBar_);
+		strip_->show();
+		statusBar_->show();
 		rootLayout_->addWidget(bottomSep_);
-		rootLayout_->addWidget(bottomBar_);
 		bottomSep_->show();
 	}
 	bottomBar_->show();
@@ -2025,16 +2046,25 @@ void MultiReplayDock::applyPreviewSplit(int want)
 		// shortSplitLeftWidth (dock-layout.hpp) — the width divider `want`
 		// (a height) means nothing to. Only until he has dragged it, same
 		// rule as the height case below.
-		if (!splitChosen() && splitter_->width() > 0 && listPane_) {
+		//
+		// THE LEFT COLUMN OPENS AT 260, not at "whatever is left". The
+		// drawing says ~210, but its own key widths say otherwise: three
+		// 78px quick keys plus gaps alone are 250+, so 210 clips the
+		// strip it is meant to hold. 260 holds every compact row (the
+		// widest, transport's five 42px keys, is 250) with air to spare —
+		// measured, not styled. Past the first drag his divider wins.
+		if (!splitChosen() && splitter_->width() > 0 && listPane_ &&
+		    leftCol_) {
 			const int total = splitter_->width() - splitter_->handleWidth();
-			const int rightWant = listPane_->sizeHint().width();
+			const int leftMin = leftCol_->minimumSizeHint().width();
+			const int rightMin =
+				listPane_->minimumSizeHint().width();
+			const int give = std::clamp(260, leftMin,
+						    std::max(leftMin,
+							     total - rightMin));
 			const QList<int> now = splitter_->sizes();
-			if (now.size() > 1 && now[1] < rightWant) {
-				const int give = shortSplitLeftWidth(
-					total, leftCol_->minimumSizeHint().width(),
-					rightWant);
+			if (now.size() > 1 && std::abs(now[0] - give) > 2)
 				splitter_->setSizes({give, total - give});
-			}
 		}
 		return;
 	}
@@ -2124,9 +2154,19 @@ void MultiReplayDock::setLayoutPreset(int preset)
 void MultiReplayDock::resizeEvent(QResizeEvent *event)
 {
 	QWidget::resizeEvent(event);
+	const PanelMode before = panelMode_;
 	applyPanelMode(effectivePanelMode(size()));
-	QTimer::singleShot(0, this, [this]() {
-		if (panelMode_ == PanelMode::Wide)
+	QTimer::singleShot(0, this, [this, before]() {
+		// ONLY WHEN NOTHING CHANGED HANDS. A mode change rewrites what
+		// the minimum means: sampling the floor while the strip is
+		// still wearing the OLD arrangement's shape poisons wideFloorH_
+		// with it (measured: a Short-stacked transient sampled as the
+		// Wide floor, after which need() sat above every reachable
+		// height and the panel could never leave Short again). The
+		// mapping has to agree before AND after for the number to be
+		// the Wide floor rather than a transition caught mid-step.
+		if (panelMode_ == PanelMode::Wide && before == PanelMode::Wide &&
+		    effectivePanelMode(size()) == PanelMode::Wide)
 			wideFloorH_ = minimumSizeHint().height();
 	});
 	// AFTER THE LAYOUT PASS, not during it. A resizeEvent arrives before the

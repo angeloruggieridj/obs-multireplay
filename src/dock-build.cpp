@@ -1342,6 +1342,11 @@ KeyBlock *MultiReplayDock::buildModes()
 		       {{Cell(lastBtn, 3), Cell(loopBtn_, 3)},
 			{Cell(muteBtn_, 2), Cell(musicBtn_, 2),
 			 Cell(camBtn_, 2)}});
+	// Compact (Short ~210px column): all five on one line. LOOP and music
+	// have no hotkeys, so unlike trim and the slider this row cannot hide.
+	blk->setCompactShapes({{Cell(lastBtn, 3), Cell(loopBtn_, 3),
+				Cell(muteBtn_, 2), Cell(musicBtn_, 2),
+				Cell(camBtn_, 2)}});
 	return blk;
 }
 

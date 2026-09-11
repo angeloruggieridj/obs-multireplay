@@ -8,6 +8,7 @@
 #include <QStyle>
 #include <QPushButton>
 #include <QSizePolicy>
+#include <QSlider>
 #include <QPainter>
 #include <QPen>
 #include <QStringList>
@@ -692,6 +693,23 @@ void KeyBlock::setFlat(bool flat)
 	apply();
 }
 
+void KeyBlock::setCompactShapes(const BlockShape &compact)
+{
+	compact_ = compact;
+	applied_ = false;
+	apply();
+}
+
+void KeyBlock::setCompact(bool compact)
+{
+	const bool want = compact && !compact_.isEmpty();
+	if (applied_ && want == compactActive_)
+		return;
+	compactActive_ = want;
+	applied_ = false;
+	apply();
+}
+
 void KeyBlock::refresh()
 {
 	applied_ = false;
@@ -700,7 +718,10 @@ void KeyBlock::refresh()
 
 int KeyBlock::rows() const
 {
-	const BlockShape &s = (flatActive_ && !flat_.isEmpty()) ? flat_ : tall_;
+	const BlockShape &s = (compactActive_ && !compact_.isEmpty())
+				      ? compact_
+			      : (flatActive_ && !flat_.isEmpty()) ? flat_
+								  : tall_;
 	return (int)s.size();
 }
 
@@ -815,16 +836,18 @@ void KeyBlock::apply()
 		// arrangement, not only the wide one — the boxes are stacked in
 		// Short and behind a tab in Tall, and a box with no name there is
 		// just a rectangle.
-		cap_->setVisible(!sectionHidden_);
+		cap_->setVisible(!sectionHidden_ && !compactActive_);
 		cap_->setFixedHeight(kCaptionH);
 	}
-
-	const BlockShape &s = (flatActive_ && !flat_.isEmpty()) ? flat_ : tall_;
 
 	// Take everything out first. Deleting the layout ITEMS leaves the widgets
 	// alive and parented to body_, which is the point: the checked state, the
 	// tally and every connection live on those widgets, so a shape change
 	// re-places them and never rebuilds them.
+	const BlockShape &s = (compactActive_ && !compact_.isEmpty())
+				      ? compact_
+			      : (flatActive_ && !flat_.isEmpty()) ? flat_
+								  : tall_;
 	while (QLayoutItem *it = grid_->takeAt(0))
 		delete it;
 	for (int c = 0; c < 16; c++)
@@ -1832,10 +1855,29 @@ void TwoPanelStrip::relayout()
 	}
 
 	// Every sub-box wears its wide shape only in Wide; folded otherwise.
+	// Short goes one further: sections that declared a compact packing
+	// wear it (captions off, shared lines) — the ~210px column cannot
+	// hold full boxes (artifact Short wireframe).
 	for (KeyBlock *b : marcaBlocks_)
 		b->setFlat(!wide);
 	for (KeyBlock *b : reviewBlocks_)
 		b->setFlat(!wide);
+	const bool compact = mode_ == PanelMode::Short;
+	for (KeyBlock *b : marcaBlocks_)
+		b->setCompact(compact);
+	for (KeyBlock *b : reviewBlocks_)
+		b->setCompact(compact);
+	// SHORT HIDES WHAT HOTKEYS AND CHIPS ALREADY COVER. Every trim nudge
+	// has a hotkey (TrimIn/Out ×/±1s/±5s, SetIn/OutHere) and the chips say
+	// 25–125, so the trim box and the slider row cost two lines the ~210px
+	// column cannot spare. What has no other door stays: modes (LOOP and
+	// music have no hotkeys), the band (skip + status) and the badge.
+	if (KeyBlock *trim = reviewBoxes_.value(3, nullptr))
+		trim->setVisible(mode_ != PanelMode::Short);
+	if (auto *sl = findChild<QSlider *>(QStringLiteral("mrSpeed")))
+		sl->setVisible(mode_ != PanelMode::Short);
+	if (auto *tick = findChild<QWidget *>(QStringLiteral("mrSpeedTick")))
+		tick->setVisible(mode_ != PanelMode::Short);
 
 	applyGrid();
 	updateGeometry();

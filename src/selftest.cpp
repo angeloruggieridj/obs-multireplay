@@ -3841,8 +3841,16 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 			int rowId = 0;
 			runOnUi([&]() {
 				QTableWidget *t = dock->findChild<QTableWidget *>();
-				if (!t)
+				if (!t || t->rowCount() == 0)
 					return;
+				// The shortcuts act on the SELECTION: with a
+				// single unselected row there is none, so take
+				// row 0 first (the ↑/↓ dance above moves
+				// nothing with one row). Focus too: the filter
+				// only answers keys the table itself sees.
+				if (t->selectionModel()->selectedRows().empty())
+					t->selectRow(0);
+				t->setFocus();
 				const auto sel =
 					t->selectionModel()->selectedRows();
 				if (sel.empty())
@@ -3872,22 +3880,40 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 			};
 			if (rowId > 0 && a1 >= 1) {
 				const int id = rowId;
+				// TO THE TABLE, not the dock: the shortcuts live
+				// in the dock's event filter FOR the table
+				// (watched == events_), and an event sent to the
+				// dock never passes through it — the arrows above
+				// worked because keyPressEvent answers those.
+				const auto tableKey = [&](int key) {
+					runOnUi([&]() {
+						QTableWidget *t =
+							dock->findChild<QTableWidget *>();
+						if (!t)
+							return;
+						QKeyEvent press(QEvent::KeyPress,
+								key,
+								Qt::NoModifier);
+						QCoreApplication::sendEvent(
+							t, &press);
+					});
+				};
 				const bool wasOn = angleOn(id);
-				sendKey(Qt::Key_5);
+				tableKey(Qt::Key_5);
 				for (int i = 0; i < 40 &&
 				     angleSpeed(id) != 1.25;
 				     i++)
 					std::this_thread::sleep_for(
 						std::chrono::milliseconds(50));
 				c.speedPresetKey = angleSpeed(id) == 1.25;
-				sendKey(Qt::Key_0);
+				tableKey(Qt::Key_0);
 				for (int i = 0; i < 40 &&
 				     angleSpeed(id) != -1.0;
 				     i++)
 					std::this_thread::sleep_for(
 						std::chrono::milliseconds(50));
 				c.speedClearKey = angleSpeed(id) == -1.0;
-				sendKey(Qt::Key_Space);
+				tableKey(Qt::Key_Space);
 				for (int i = 0; i < 40 &&
 				     angleOn(id) == wasOn;
 				     i++)
@@ -5262,6 +5288,13 @@ void runReopenPass(const std::string &outPath)
 					std::this_thread::sleep_for(
 						std::chrono::milliseconds(700));
 					runOnUi([&]() {
+						// The STRIP rides the left column in
+						// Short; the bottom bar (seekbar)
+						// stays root-bottom full width.
+						auto *strip = dock->findChild<
+							QWidget *>(
+							QStringLiteral(
+								"mrStrip"));
 						auto *bar = dock->findChild<
 							QWidget *>(
 							QStringLiteral(
@@ -5276,10 +5309,17 @@ void runReopenPass(const std::string &outPath)
 								"mrBodySplit"));
 						shortOk = dock->panelMode() ==
 							PanelMode::Short;
-						layoutShortStacksLeft =
-							shortOk && bar && left &&
-							bar->parentWidget() ==
+						const bool stripInLeft =
+							strip && left &&
+							strip->parentWidget() ==
 								left;
+						const bool barStaysRoot =
+							bar && left &&
+							bar->parentWidget() !=
+								left;
+						layoutShortStacksLeft =
+							shortOk && stripInLeft &&
+							barStaysRoot;
 						layoutShortSplitsWidth =
 							body &&
 							body->orientation() ==
@@ -5295,16 +5335,16 @@ void runReopenPass(const std::string &outPath)
 						layoutShapesNote +=
 							QString("short forced "
 							      "%1x%2 mode=%3 "
-							      "barInLeft=%4 "
-							      "bodyHoriz=%5; ")
+							      "stripInLeft=%4 "
+							      "barStaysRoot=%5 "
+							      "bodyHoriz=%6; ")
 								.arg(s.width())
 								.arg(s.height())
 								.arg(QString::fromLatin1(
 									panelModeName(
 										dock->panelMode())))
-								.arg(bar && left &&
-								     bar->parentWidget() ==
-									     left)
+								.arg(stripInLeft)
+								.arg(barStaysRoot)
 								.arg(body &&
 								     body->orientation() ==
 									     Qt::Horizontal);
@@ -5372,6 +5412,11 @@ void runReopenPass(const std::string &outPath)
 							     MultiReplayDock::
 								     kColOut));
 			});
+			// SHORT SIZE-ENTRY PROBE (no assert yet): can a drag land
+			// Short now that the strip packs compact? The trace in
+			// floatResize records asked/got/floor/mode — the number the
+			// next cycle asserts against.
+			floatResize(900, 600, "short-size");
 			// (Preset sizes are asserted inside the Short/Tall blocks
 			// above, next to the arrangement each preset forces.)
 			// FULLSCREEN stays disabled while docked: a docked panel
