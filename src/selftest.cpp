@@ -5526,6 +5526,16 @@ void runReopenPass(const std::string &outPath)
 			// the arrangement instead of inheriting whatever the window
 			// happens to be wearing. Settled twice: a mode change
 			// rewrites the floor, and only the second resize lands it.
+			// FORCED, not dragged: 1500x900 can sit inside Short's
+			// hysteresis band (measured: the band top follows the Wide
+			// floor past 900), where a resize keeps Short. The Normale
+			// preset pins Wide whatever the size; Auto goes back on
+			// after the reads.
+			if (QAction *aWide = dock->findChild<QAction *>(
+				    QStringLiteral("mrActLayoutWide")))
+				runOnUi([&, aWide]() { aWide->trigger(); });
+			std::this_thread::sleep_for(
+				std::chrono::milliseconds(700));
 			runOnUi([&]() {
 				host->setFloating(true);
 				host->resize(1500, 900);
@@ -6065,6 +6075,13 @@ void runReopenPass(const std::string &outPath)
 				}
 			}
 		});
+			// Back to automatic: Wide was forced for the reads above,
+			// and the preset must not leak into the checks below.
+			if (QAction *aAuto = dock->findChild<QAction *>(
+				    QStringLiteral("mrActLayoutAuto")))
+				runOnUi([&, aAuto]() { aAuto->trigger(); });
+			std::this_thread::sleep_for(
+				std::chrono::milliseconds(700));
 			obs_log(panelPaintsItself ? LOG_INFO : LOG_ERROR,
 				"[selftest] reopen: panel styled background: %s",
 				panelPaintsItself ? "yes" : "NO (it will show "

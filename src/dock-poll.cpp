@@ -1552,6 +1552,13 @@ void MultiReplayDock::refreshListNames()
 			}
 		}
 	}
+	// Visibility is state, not paint: it rides every path, including the
+	// early-out below. At 20 lists there is nothing to create, so the +
+	// key goes away instead of sitting there inert (artifact toolbar,
+	// decided) — and the count usually doesn't change between polls,
+	// which is exactly when the early-out would otherwise swallow it.
+	if (addBankBtn_)
+		addBankBtn_->setVisible(shown < kEventLists);
 	if (same)
 		return;
 
