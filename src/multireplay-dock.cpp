@@ -1126,26 +1126,18 @@ MultiReplayDock::MultiReplayDock(QWidget *parent) : QWidget(parent)
 		return s;
 	};
 
-	// ── The broadcast replay controller's zoning, top to bottom ────────────
-	// 1. the pictures: channel A big, the multiview beside it, green strip
-	// 2. search · Live
-	// 3. the list tabs
-	// 4. the event list, one column per camera
-	// 5. mark keys · angle row · export
-	// 6. record + transport + slow-motion speed
-	// 7. the green on-air band
-	// 8. the full-width position bar
+	// ── Le zone, dall'alto (SPEC §0, LAY «Le cinque zone») ─────────────────
+	// toolbar · monitor · tabella · MARCA|REVIEW (banda verde = footer di
+	// REVIEW) · SeekBar. La toolbar sta SEMPRE in cima e a piena larghezza, in
+	// tutte e quattro le forme: in Short sopra entrambe le colonne.
 	//
-	// An operator who has used the reference controller finds every control where his hand
-	// already goes, which is the entire point of this layout.
-	//
-	// THE PICTURES COME FIRST. They did not, for a while: the tabs, the
-	// search box and Live sat above them, which put a row of small text
-	// where the operator's eye goes for the picture and pushed the picture
-	// down. In the controller this panel is modelled on, everything that
-	// SELECTS an event (which list, which words, live or parked) belongs to
-	// the list — so it lives with the list, directly under the pictures and
-	// directly above the table it filters.
+	// It used to be the other way round — "the pictures come first", with the
+	// toolbar living in the list pane under them. The artifacts overrule that
+	// in every form, and in Short it left the toolbar covering the table's
+	// column only. The box carries no picture, so it sits in the root layout
+	// directly; the preview pane (every OBSQTDisplay) stays where it is inside
+	// leftCol_ — nothing holding a display is re-parented by this.
+	root->addWidget(buildToolbar());
 	{
 		// Preview above, list below: the reference controller stacks them, and the previous
 		// side-by-side split had no equivalent there. Draggable, because an
@@ -1171,17 +1163,15 @@ MultiReplayDock::MultiReplayDock(QWidget *parent) : QWidget(parent)
 		leftColLayout_->addWidget(buildPreview(), 1);
 		splitter_->addWidget(leftCol_);
 
-		// The list pane: what picks the events, then the events. One
-		// widget so the splitter treats them as the single zone they are
-		// — dragging the handle must not be able to leave the search row
-		// stranded away from its table.
+		// The list pane: the events, with their own bar (the barretta)
+		// on top. The toolbar is no longer in here — it is the first zone
+		// of the panel, above this splitter (see above).
 		auto *listPane = new QWidget(this);
 		listPane->setObjectName(QStringLiteral("mrListPane"));
 		auto *lv = new QVBoxLayout(listPane);
 		lv->setContentsMargins(0, 0, 0, 0);
 		lv->setSpacing(2);
-		lv->addWidget(buildToolbar());
-		lv->addWidget(buildEvents(), 1);
+		lv->addWidget(buildEvents(), 1); // la barretta resta con la tabella
 		splitter_->addWidget(listPane);
 		listPane_ = listPane;
 
@@ -2983,6 +2973,8 @@ MultiReplayDock::LayoutProbe MultiReplayDock::layoutProbe() const
 	// them.
 	lp.previewBottomY =
 		std::max(bottomOf(displayA_), bottomOf(multiviewBox_));
+	// ...and "under the toolbar" has to mean all of them start below it.
+	lp.previewTopY = std::min(topOf(displayA_), topOf(multiviewBox_));
 	lp.searchY = topOf(search_);
 	lp.listTabsY = topOf(listTabs_);
 	lp.tableY = topOf(events_);

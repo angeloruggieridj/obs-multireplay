@@ -32,6 +32,7 @@
 #include "../../src/dock-fonts.hpp"
 #include "../../src/dock-icons.hpp"
 #include "../../src/dock-layout.hpp"
+#include "../../src/dock-probe.hpp"
 #include "../../src/dock-style.hpp"
 // kEventLists only (OBS-free header): the bank strip wears the real count.
 #include "../../src/event-store.hpp"
@@ -332,20 +333,20 @@ public:
 
 		buildMonitors();
 
-		// ── the list pane: the toolbar, the tabs, the table ───────────
-		// THE TOOLBAR IS UNDER THE PICTURES, not above them. The pictures
-		// lead — that is what an operator's eye goes to — and everything
-		// that picks WHICH event (search, the tabs) belongs to the list it
-		// filters, so it lives with the list.
+		// ── Le zone, dall'alto (SPEC §0, LAY «Le cinque zone») ─────────
+		// toolbar · monitor · tabella · MARCA|REVIEW · SeekBar. The toolbar
+		// is the first zone and full width in all four forms — in Short
+		// over both columns — mirroring the dock's constructor. It used to
+		// live in the list pane under the pictures; the artifacts overrule
+		// that. bankRow_ (the "1 │ 2 │ 3 … + " strip) is placed inside it by
+		// arrangeToolbar(): the single row in Wide/Short, its own in Tall.
+		v->addWidget(buildToolbar(this));
+
+		// ── the list pane: the table's bar and the table ──────────────
 		listPane_ = new QWidget(this);
 		auto *lv = new QVBoxLayout(listPane_);
 		lv->setContentsMargins(0, 0, 0, 0);
 		lv->setSpacing(2);
-		lv->addWidget(buildToolbar(listPane_));
-		// bankRow_ (the "1 │ 2 │ 3 … + " strip) is built and placed by
-		// buildToolbar()/arrangeToolbar() now — folded into the single
-		// row in Wide/Short, its own row in Tall (spec §1/§5) — not a
-		// fixed sibling here any more.
 		lv->addWidget(buildTableTools(listPane_));
 		table_ = new QTableWidget(6, 6, listPane_);
 		table_->setObjectName(QStringLiteral("mrEvents"));
@@ -860,6 +861,8 @@ public:
 	// The pane the whole monitoring row lives in, so a check can ask how much
 	// of it the pictures actually cover.
 	const QWidget *monitorPane() const { return monitorSplit_; }
+	// The toolbar's box (all its rows), for the zone-order checks.
+	const QWidget *toolbarBox() const { return toolbarBox_; }
 
 	// THE OPERATOR DRAGS THE DIVIDERS, and until now nothing in this tool ever
 	// did — every measurement it has ever taken was of a panel whose dividers
@@ -950,6 +953,7 @@ private:
 	QGridLayout *tilesGrid_ = nullptr;
 	PictureBox *tile_[kTiles] = {};
 	QWidget *listPane_ = nullptr;
+	QWidget *toolbarBox_ = nullptr;
 	QWidget *controls_ = nullptr;
 	QTableWidget *table_ = nullptr;
 	// ── WHERE THE OPERATOR PUT THE DIVIDERS, PER ARRANGEMENT ─────────────
@@ -1166,6 +1170,10 @@ private:
 	QWidget *buildToolbar(QWidget *parent)
 	{
 		auto *box = new QWidget(parent);
+		// Named as in dock-build.cpp: the zone-order checks find it by name
+		// (dock-probe.hpp), in both binaries.
+		box->setObjectName(multireplay::probe::toolbarBoxName());
+		toolbarBox_ = box;
 		auto *v = new QVBoxLayout(box);
 		v->setContentsMargins(9, 7, 9, 7); // .tbar{padding:7px 9px}
 		v->setSpacing(2);
@@ -3939,6 +3947,76 @@ void runHostChecks(QApplication &app, const QString &outDir)
 	delete host;
 }
 
+// ── THE ZONES, TOP TO BOTTOM, AT THE FOUR ARTIFACT FORMS ─────────────────
+//
+// LAY «Le cinque zone» / SPEC §0: toolbar · monitor · tabella · MARCA|REVIEW ·
+// SeekBar. The toolbar is the FIRST zone in all four forms, and in Short it
+// crosses both columns instead of sitting over the table's alone. Measured at
+// kArtifactForms (the sizes the artifacts draw and the gate photographs), in
+// the four themes, inside a window as runArtifactSet does, each form forced by
+// its preset. The geometry is dock-probe.hpp's, the same the gate reads.
+void checkZoneOrder(QApplication &app)
+{
+	using namespace multireplay::probe;
+	// The theme this pass leaves behind is the one it found.
+	const ThemeChoice themeWas = g_theme;
+	const Scheme scWas = g_sc;
+	const auto tintsWas = g_tints;
+	auto *host = new QWidget();
+	host->setAutoFillBackground(true);
+	auto *hl = new QVBoxLayout(host);
+	hl->setContentsMargins(0, 0, 0, 0);
+	auto *w = new Mock();
+	hl->addWidget(w);
+	for (const ArtifactForm &f : kArtifactForms) {
+		const QString form = QString::fromLatin1(f.name);
+		bool above = true, spans = true, failed = false;
+		QString detail;
+		for (int theme = 0; theme < 4; theme++) {
+			w->retheme((ThemeChoice)theme, app.palette());
+			w->setLayoutPreset(f.preset);
+			// TWICE: a mode change rewrites the minimums the next
+			// pass is measured against (same as runArtifactSet).
+			for (int pass = 0; pass < 2; pass++) {
+				host->resize(f.w, f.h);
+				host->show();
+				for (int i = 0; i < 3; i++) {
+					QApplication::processEvents();
+					QApplication::sendPostedEvents();
+				}
+			}
+			const QWidget *toolbar = w->toolbarBox();
+			const QWidget *monitors = w->monitorPane();
+			const QWidget *panel = w;
+			const bool a = toolbarAboveMonitors(toolbar, monitors, panel);
+			const bool s = spansPanel(toolbar, panel);
+			// The first failing theme's numbers, or theme 0's.
+			if (detail.isEmpty() || ((!a || !s) && !failed)) {
+				detail = QStringLiteral("theme %1: %2")
+						 .arg(theme)
+						 .arg(zoneOrderDetail(toolbar, monitors,
+								      panel));
+				failed = !a || !s;
+			}
+			above = above && a;
+			spans = spans && s;
+		}
+		// LAY «Le cinque zone»: 1 Toolbar … in cima; SPEC §0 «Cinque zone,
+		// dall'alto: toolbar · blocco monitor · …»
+		check(above, QStringLiteral("%1: toolbar above monitors").arg(form),
+		      detail);
+		// LAY Short: la toolbar attraversa tutta la larghezza, non la sola
+		// colonna tabella
+		check(spans, QStringLiteral("%1: toolbar spans the panel").arg(form),
+		      detail);
+	}
+	delete host;
+	g_theme = themeWas;
+	g_sc = scWas;
+	g_tints = tintsWas;
+	refreshSheetAssets();
+}
+
 int runChecks(QPalette pal, QApplication &app, const QString &outDir)
 {
 	struct Want {
@@ -4628,6 +4706,9 @@ int runChecks(QPalette pal, QApplication &app, const QString &outDir)
 			     Drag::Body);
 	checkDividerGoesBothWays(QStringLiteral("monitors"));
 	checkGalleryScalesKeys();
+
+	// The zones, top to bottom, at the four artifact forms x four themes.
+	checkZoneOrder(app);
 
 	// LAST, because it replaces the application palette and style sheet for
 	// the rest of the process: from here on the panel is a LIGHT one sitting

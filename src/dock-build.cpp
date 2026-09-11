@@ -15,6 +15,7 @@ into their own translation units keeps each concern reviewable on its own.
 #include "angle-channels.hpp"
 #include "dock-internal.hpp"
 #include "dock-layout.hpp"
+#include "dock-probe.hpp"
 #include "error-locale.hpp"
 #include "dock-style.hpp"
 #include "dock-assets.hpp"
@@ -110,12 +111,17 @@ namespace multireplay {
 // they scroll; sharing a line with them is what squeezed the search box down to
 // a slot too narrow to read what had been typed into it.
 //
-// The whole block sits UNDER the pictures (see the constructor).
+// The whole block is the FIRST zone of the panel, full width, in every form
+// (SPEC §0, LAY «Le cinque zone»; see the constructor).
 // ---------------------------------------------------------------------------
 
 QWidget *MultiReplayDock::buildToolbar()
 {
 	auto *box = new QWidget(this);
+	// Named: the sheet keeps it transparent (a panel container), and the
+	// zone-order checks find it by this name (dock-probe.hpp), in the gate
+	// and in the mockup.
+	box->setObjectName(probe::toolbarBoxName());
 	auto *v = new QVBoxLayout(box);
 	// .tbar{padding:7px 9px} and .tbar.tall{row-gap:7px}. Without the
 	// horizontal pad the last key on the row - LIVE, deliberately at the far

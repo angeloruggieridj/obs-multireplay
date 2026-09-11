@@ -26,6 +26,7 @@ extern "C" {
 #include "dock-internal.hpp" // kSeekTrackH/kSeekRulerH, for the zoom badge test
 #include "dock-icons.hpp"
 #include "dock-fonts.hpp" // panel_fonts_are_embedded — the real dock, not the mockup
+#include "dock-probe.hpp" // the geometry the checks measure, shared with the mockup
 #include "packet-tap.hpp"
 // pathToUtf8: a path handed to FFmpeg is UTF-8, never path::string() (which is
 // the ANSI code page on MSVC).
@@ -548,9 +549,9 @@ struct DockChecks {
 	bool listTabCountFollowsConfig = false;
 	int visibleListTabs = 0;
 	// M6: the ORDER of the panel's zones, and the position bar being a scale.
-	// Both are things every other check in this file was blind to: the search
-	// row sat above the pictures for a whole milestone with every widget
-	// check passing (they were all present, just in the wrong place), and
+	// Both are things every other check in this file was blind to: a zone in
+	// the wrong place passes every widget check (they are all present, just
+	// misplaced) — the order now asserted is SPEC §0's, toolbar first — and
 	// "there is a SeekBar" stayed true while the operator was telling us he
 	// could not see one. Read off real geometry through MultiReplayDock::
 	// layoutProbe().
@@ -1468,13 +1469,13 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 			c.displaysReparented);
 	}
 
-	// --- the zones are in the operator's order, and the bar is a scale -----
-	// The panel is read top to bottom: pictures, then what picks the event
-	// (search + Live, then the list tabs), then the events, then the
-	// controls, the green on-air band and the position bar. That order was
-	// wrong for a whole milestone — the tabs and the search box were ABOVE
-	// the pictures — and not one check noticed, because every widget was
-	// present and findable. Geometry is the only thing that can tell.
+	// --- the zones are in the artifacts' order, and the bar is a scale -----
+	// SPEC §0 / LAY «Le cinque zone», top to bottom: the toolbar (search,
+	// Live, the list tabs), then the pictures, then the events, then the
+	// controls, the green on-air band and the position bar. (Until S1/S4 this
+	// asserted the opposite — pictures first, the toolbar under them — which
+	// is the order the artifacts overrule.) Every widget is present and
+	// findable in either order; geometry is the only thing that can tell.
 	//
 	// The bar at the end has to be a SCALE. A take has been running for the
 	// whole measurement window, so the timeline exists and the graduations
@@ -1484,9 +1485,11 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 		MultiReplayDock::LayoutProbe lp;
 		runOnUi([&]() { lp = dock->layoutProbe(); });
 		c.layoutOrderTopToBottom =
-			lp.previewBottomY > 0 && lp.searchY >= lp.previewBottomY &&
-			lp.listTabsY >= lp.searchY && lp.tableY > lp.listTabsY &&
-			lp.clipBarY > lp.tableY && lp.seekY > lp.clipBarY;
+			lp.previewBottomY > 0 && lp.searchY >= 0 &&
+			lp.searchY < lp.previewTopY &&
+			lp.listTabsY >= lp.searchY && lp.listTabsY < lp.previewTopY &&
+			lp.tableY > lp.previewBottomY && lp.clipBarY > lp.tableY &&
+			lp.seekY > lp.clipBarY;
 		c.seekGraduations = lp.seekGraduations;
 		c.seekHeight = lp.seekHeight;
 		// >= 2 marks: one is an accident of rounding, two is a scale.
@@ -1495,10 +1498,11 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 		obs_log((c.layoutOrderTopToBottom && c.seekbarGraduated)
 				? LOG_INFO
 				: LOG_ERROR,
-			"[selftest] dock: zones at y — pictures end %d, search %d, "
-			"tabs %d, table %d, on-air band %d, position bar %d "
+			"[selftest] dock: zones at y — search %d, tabs %d, pictures "
+			"%d..%d, table %d, on-air band %d, position bar %d "
 			"(%d px tall, %d graduations, timeline %s)",
-			lp.previewBottomY, lp.searchY, lp.listTabsY, lp.tableY,
+			lp.searchY, lp.listTabsY, lp.previewTopY, lp.previewBottomY,
+			lp.tableY,
 			lp.clipBarY, lp.seekY, lp.seekHeight, lp.seekGraduations,
 			lp.seekEnabled ? "yes" : "NO");
 	}
@@ -6478,9 +6482,14 @@ void runReopenPass(const std::string &outPath)
 		bool saved = false;
 		bool bandLit = false;
 		int rows = 0;
+		// LAY «Le cinque zone» / SPEC §0: the toolbar is the first zone,
+		// full width, in every form (dock-probe.hpp).
+		bool toolbarOnTop = false;
+		QString zones;
 	};
 	std::vector<ArtifactShot> artifactShots;
 	bool artifactSetCaptured = false;
+	bool layoutToolbarOnTop = false;
 	bool artifactOpened = false;
 	int artifactEvents = 0;
 	int artifactQueued = 0;
@@ -6668,6 +6677,47 @@ void runReopenPass(const std::string &outPath)
 						if (auto *t = dock->findChild<QTableWidget *>(
 							    QStringLiteral("mrEvents")))
 							s.rows = t->rowCount();
+						// THE ZONES, on the shot just taken: the
+						// toolbar starts above bay A's row (the
+						// monitor block) and above the first
+						// camera tile, and crosses the panel —
+						// in Short over both columns.
+						using namespace multireplay::probe;
+						const QWidget *tb = dock->findChild<QWidget *>(
+							toolbarBoxName());
+						const QWidget *mon = dock->findChild<QWidget *>(
+							QStringLiteral("mrMonitorSplit"));
+						const QWidget *tile = nullptr;
+						for (QWidget *c : dock->findChildren<QWidget *>(
+							     QStringLiteral("mrTile")))
+							if (c->isVisible() &&
+							    (!tile ||
+							     rectIn(c, dock).top() <
+								     rectIn(tile, dock).top()))
+								tile = c;
+						if (tb && mon && mon->isVisible()) {
+							s.toolbarOnTop =
+								toolbarAboveMonitors(tb, mon,
+										     dock) &&
+								(!tile ||
+								 toolbarAboveMonitors(tb, tile,
+										      dock)) &&
+								spansPanel(tb, dock);
+							s.zones = zoneOrderDetail(tb, mon, dock);
+							if (tile)
+								s.zones += QStringLiteral(
+									", first tile y%1")
+										   .arg(rectIn(tile,
+											       dock)
+												.top());
+						} else {
+							s.zones = QStringLiteral(
+								"toolbar box %1, monitor block %2")
+									  .arg(tb ? "found" : "MISSING")
+									  .arg(mon && mon->isVisible()
+										       ? "shown"
+										       : "MISSING/hidden");
+						}
 					});
 					obs_log(s.saved ? LOG_INFO : LOG_ERROR,
 						"[selftest] reopen: artifact shot %s "
@@ -6676,6 +6726,12 @@ void runReopenPass(const std::string &outPath)
 						qUtf8Printable(s.file), f.w, f.h,
 						s.got.width(), s.got.height(), s.rows,
 						s.bandLit ? "on air" : "DARK");
+					obs_log(s.toolbarOnTop ? LOG_INFO : LOG_ERROR,
+						"[selftest] reopen: zones %s: toolbar on "
+						"top %s (%s)",
+						qUtf8Printable(s.file),
+						s.toolbarOnTop ? "yes" : "NO",
+						qUtf8Printable(s.zones));
 					artifactShots.push_back(s);
 				}
 			}
@@ -6715,6 +6771,17 @@ void runReopenPass(const std::string &outPath)
 				      artifactQueued >= 2 &&
 				      artifactShots.size() == 16 &&
 				      shotsWithData == 16;
+		// All sixteen: four forms x four themes, the toolbar on top and
+		// full width in every one.
+		const int shotsToolbarOnTop = (int)std::count_if(
+			artifactShots.begin(), artifactShots.end(),
+			[](const ArtifactShot &s) { return s.toolbarOnTop; });
+		layoutToolbarOnTop = artifactShots.size() == 16 &&
+				     shotsToolbarOnTop == 16;
+		obs_log(layoutToolbarOnTop ? LOG_INFO : LOG_ERROR,
+			"[selftest] reopen: layout_toolbar_on_top — %d of 16 shots "
+			"with the toolbar above the monitors and full width",
+			shotsToolbarOnTop);
 		obs_log(artifactSetCaptured ? LOG_INFO : LOG_ERROR,
 			"[selftest] reopen: artifact set — %d of 16 shots written "
 			"with data (band on air, 6 rows) to %s (project re-opened "
@@ -6754,7 +6821,8 @@ void runReopenPass(const std::string &outPath)
 		  panelPlayNow64 &&
 		  layoutShortStacksLeft && layoutShortSplitsWidth &&
 		  layoutTallTabs && layoutTallHidesOut && layoutPresetSizes &&
-		  layoutFullscreenNeedsFloat && artifactSetCaptured;
+		  layoutFullscreenNeedsFloat && artifactSetCaptured &&
+		  layoutToolbarOnTop;
 
 	// --- Put everything back ----------------------------------------------
 	// The operator's project first (so nothing is pointing into the test one),
@@ -6820,6 +6888,9 @@ void runReopenPass(const std::string &outPath)
 	// The four artifact forms x four themes, written as PNGs (see the block
 	// that takes them). The pictures are judged by eye; this says they exist.
 	obs_data_set_bool(checks, "artifact_set_captured", artifactSetCaptured);
+	// LAY «Le cinque zone» / SPEC §0 (S1, S4): the toolbar above the monitor
+	// block and the first tile, and full width, on each of the sixteen shots.
+	obs_data_set_bool(checks, "layout_toolbar_on_top", layoutToolbarOnTop);
 	obs_data_set_bool(checks, "camera_tiles_have_width_when_wide", tilesWideOk);
 	obs_data_set_bool(checks, "camera_tiles_have_width_in_a_column", tilesTallOk);
 	obs_data_set_bool(checks, "short_arrangement_is_reachable", shortReachable);

@@ -535,6 +535,7 @@ public:
 	// y coordinates are in the dock's own coordinate system; -1 = no widget.
 	// UI thread only.
 	struct LayoutProbe {
+		int previewTopY = -1;    // highest edge of the picture block
 		int previewBottomY = -1; // lowest edge of the picture block
 		int searchY = -1;
 		int listTabsY = -1;
@@ -1177,10 +1178,9 @@ private:
 	QVBoxLayout *rootLayout_ = nullptr;
 	QWidget *leftCol_ = nullptr;
 	QVBoxLayout *leftColLayout_ = nullptr;
-	// The splitter's other child (toolbar + event list). Read by
-	// applyPreviewSplit's Short branch (shortSplitLeftWidth, dock-layout.hpp)
-	// to keep the toolbar's own words from being squeezed toward their CSS
-	// floor by a divider nothing else was minding on that axis.
+	// The splitter's other child (the event list and its bar; the toolbar is
+	// the panel's top zone, above the splitter). Read by applyPreviewSplit's
+	// Short branch to keep the list's own minimum width.
 	QWidget *listPane_ = nullptr;
 	QWidget *bottomBar_ = nullptr;
 	QWidget *bottomSep_ = nullptr;

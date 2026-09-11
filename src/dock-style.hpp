@@ -403,6 +403,9 @@ R"QSS(
    application background (Yami QWidget) — three black bands across the bar
    and a frame behind every tile on a light panel. */
 #MultiReplayDock QWidget#mrToolbar,
+/* The toolbar's box: a direct child of the panel since it became the top zone,
+   so no longer covered by mrListPane's rule above. */
+#MultiReplayDock QWidget#mrToolbarBox,
 #MultiReplayDock QWidget#mrTiles, #MultiReplayDock QWidget#mrTile {
 	background: transparent;
 }

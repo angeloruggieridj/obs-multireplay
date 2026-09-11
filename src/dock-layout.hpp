@@ -242,8 +242,9 @@ inline int monitorRoomFor(const MonitorRoom &m)
 // So this divider gets the same treatment as the height one: left alone once
 // the operator has dragged it (that check happens at the call site, same as
 // bodyChosen/splitChosen elsewhere), it otherwise guarantees the RIGHT pane
-// (the toolbar + event list) its own preferred width before the left column
-// gets whatever is left — floored at the left column's own minimum, since
+// (the event list — the toolbar now spans both columns above it) its own
+// preferred width before the left column gets whatever is left — floored at
+// the left column's own minimum, since
 // giving away more than exists is not "guaranteeing" anything.
 inline int shortSplitLeftWidth(int totalW, int leftMinW, int rightWantW)
 {
