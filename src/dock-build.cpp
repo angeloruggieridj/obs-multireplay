@@ -1159,11 +1159,12 @@ KeyBlock *MultiReplayDock::buildReviewHeader()
 	name->setObjectName(QStringLiteral("mrPanelTitle"));
 	name->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
 
-	// Which event ▶ is about, padded like the table's id column, centred,
-	// kept up to date by updateChannelStrip().
-	reviewEventLbl_ = new QLabel(QStringLiteral("\xE2\x80\x94"), this);
+	// Which event ▶ is about — «· evento 0003», padded like the table's id
+	// column — kept up to date by updateChannelStrip(). EMPTY when there is
+	// none, never a dash: the title then reads «■ REVIEW» on its own.
+	reviewEventLbl_ = new QLabel(QString(), this);
 	reviewEventLbl_->setObjectName(QStringLiteral("mrReviewEvent"));
-	reviewEventLbl_->setAlignment(Qt::AlignCenter);
+	reviewEventLbl_->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
 	reviewEventLbl_->setFont(QFont(monoFamily()));
 
 	// IN OUTPUT — the toggle that decides whether a replay takes the
@@ -1176,16 +1177,18 @@ KeyBlock *MultiReplayDock::buildReviewHeader()
 				    obs_module_text("Dock.ToOutput"), this);
 	toOutputBtn_->setChecked(
 		ReplayCore::instance().getConfig().toOutputOnPlay);
-	toOutputBtn_->setFixedHeight(kKeyH);
+	// Its height is the header's compact key (kHeaderKeyH), pinned by
+	// TwoPanelStrip::setHeaders through KeyBlock::apply().
 
-	// event id centred and growing, IN OUTPUT far right. The title rides
-	// the event's own width (artifact .sub.review .hd packs right with the
-	// title centred over the row): event takes the slack, name and key hug
-	// the right edge.
-	blk->setShapes({{Cell(reviewEventLbl_, 4), Cell(name, 1, false),
-			 Cell(toOutputBtn_, 2, false)}},
-		       {{Cell(reviewEventLbl_, 4), Cell(name, 1, false),
-			 Cell(toOutputBtn_, 2, false)}});
+	// TAS .sub.review .hd{justify-content:flex-end} + .hd .st{position:
+	// absolute;left:50%;transform:translateX(-50%)}: «■ REVIEW · evento
+	// 0003» CENTRED ON THE ROW, IN OUTPUT at the far right. Two equal slack
+	// columns either side of the title centre it; IN OUTPUT rides the right
+	// one, so it does not push the title off centre by half its width.
+	const BlockShape row = {{Cell::stretch(1), Cell(name, 1, false),
+				 Cell(reviewEventLbl_, 1, false),
+				 Cell::stretch(1, toOutputBtn_)}};
+	blk->setShapes(row, row);
 	return blk;
 }
 
@@ -1749,7 +1752,10 @@ KeyBlock *MultiReplayDock::buildRecBlock()
 	// disagreeing about what the key is.
 	setKeyIconRole(recBtn_, Icon::Rec, IconRole::Rec, tintsFor(sc()), 13);
 	recBtn_->setProperty("recording", false);
-	recBtn_->setMinimumWidth(78);
+	// THE COMPACT KEY (K1): TAS .key.sm{min-width:32px}. Its 24 px height is
+	// the header's (TwoPanelStrip::setHeaders), its outline and colour
+	// states the #mrRec rules'.
+	recBtn_->setMinimumWidth(32);
 	connect(recBtn_, &QPushButton::clicked, this, [this]() {
 		auto &core = ReplayCore::instance();
 		if (core.isRecording()) {
@@ -1798,16 +1804,31 @@ KeyBlock *MultiReplayDock::buildRecBlock()
 	// what gives it up is the pictures, whose resize re-allocates a swap chain
 	// on the graphics thread. A label that cannot change width cannot start
 	// that chain.
+	//
+	// TAS «09:52:20 · rim 01:10:24» (K1): the time of day with no date, then
+	// the room left. Two labels, each measured once on the widest text it
+	// will ever show, in the header's mono face (.sub .hd{font-family:
+	// var(--ff-mono)}). ensurePolished() first: the size comes from the
+	// sheet, and a width measured before it is a width for another font.
 	clockLbl_ = new QLabel(this);
 	clockLbl_->setObjectName("mrClock");
 	clockLbl_->setFont(QFont(monoFamily()));
+	clockLbl_->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+	clockLbl_->ensurePolished();
+	clockLbl_->setFixedWidth(clockLbl_->fontMetrics().horizontalAdvance(
+					 QStringLiteral("00:00:00")) +
+				 4);
 	statusLbl_ = new QLabel(this);
 	statusLbl_->setObjectName("mrMuted");
-	const int kClockW = clockLbl_->fontMetrics().horizontalAdvance(
-				    QStringLiteral("0000-00-00 00:00:00")) +
-			    8;
-	clockLbl_->setFixedWidth(kClockW);
-	statusLbl_->setFixedWidth(kClockW);
+	statusLbl_->setFont(QFont(monoFamily()));
+	statusLbl_->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+	statusLbl_->ensurePolished();
+	statusLbl_->setFixedWidth(
+		statusLbl_->fontMetrics().horizontalAdvance(
+			QStringLiteral("\xC2\xB7 %1 00:00:00")
+				.arg(QString::fromUtf8(
+					obs_module_text("Dock.Remaining")))) +
+		4);
 
 	// MARCA — the panel names itself in its header row (spec §4), beside a
 	// COMPACT record key and the clock + room-left, all on ONE line so the
@@ -1818,12 +1839,14 @@ KeyBlock *MultiReplayDock::buildRecBlock()
 	// REC's height is pinned by KeyBlock::apply() (which follows gallery
 	// scale) — no setFixedHeight here, or it would stop growing in the
 	// full-screen gallery view the gate checks.
-	statusLbl_->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
 
-	blk->setShapes({{Cell(name, 1, false), Cell(recBtn_, 1, false),
-			 Cell(clockLbl_, 1, false), Cell(statusLbl_, 1)}},
-		       {{Cell(name, 1, false), Cell(recBtn_, 1, false),
-			 Cell(clockLbl_, 1, false), Cell(statusLbl_, 1)}});
+	// TAS .sub.live .hd{justify-content:center}: «MARCA · ● REC · 09:52:20
+	// · rim 01:10:24» as one group CENTRED on the row — two equal slack
+	// columns, one either side.
+	const BlockShape row = {{Cell::stretch(1), Cell(name, 1, false),
+				 Cell(recBtn_, 1, false), Cell(clockLbl_, 1, false),
+				 Cell(statusLbl_, 1, false), Cell::stretch(1)}};
+	blk->setShapes(row, row);
 	return blk;
 }
 

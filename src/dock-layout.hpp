@@ -79,14 +79,23 @@ inline constexpr int kBandVGap = 4;
 // Same rule as the toolbar/monitor constants: one copy, cited where it is
 // written and read back by the gate.
 inline constexpr int kHeaderH = 34;      // .sub .hd{min-height:34px}
+// The header row's own box (K1, K2, R1): `*{box-sizing:border-box}`, so the
+// 34 px above hold the 6 px of padding and the 1 px rule under the content.
+inline constexpr int kHeaderPadBottom = 6; // .sub .hd{padding-bottom:6px}
+inline constexpr int kHeaderRuleW = 1;     // .sub .hd{border-bottom:1px solid}
+// The keys a header carries (REC, IN OUTPUT) are the COMPACT key:
+// .key.sm{height:24px}. Gallery scale grows them like every section key
+// (26 -> 32 there, so 24 -> 30).
+inline constexpr int kHeaderKeyH = 24;     // .key.sm{height:24px}
 inline constexpr int kModStackW = 152;   // .modstack{width:152px}
 inline constexpr int kTrimKeyW = 60;     // Rifinitura keys, fixed equal
 inline constexpr int kTransportKeyH = 40; // .key.tlg{height:40px}
 inline constexpr int kClipKeyH = 42;     // .key.big{height:42px}
 inline constexpr int kSpeedSliderMinW = 120; // slider min-width
 // A button cell that stands taller than the section pin (transport 40,
-// clip 42, trim 40): KeyBlock::apply() pins every button to the section
-// height, so a tall key carries its own height in this property instead.
+// clip 42, trim 40) — or shorter, the headers' compact keys (24):
+// KeyBlock::apply() pins every button to the section height, so a key of
+// another height carries its own in this property instead.
 // Folded shapes ignore it (compact by design) — see apply().
 inline const char *kKeyHeightProperty = "mrKeyH";
 
@@ -620,11 +629,45 @@ struct Cell {
 	int span = 1;      // columns
 	int rowSpan = 1;   // rows: a group that stands beside several of them
 	bool grow = true;  // fills its cell rather than sitting at its own size
+	// A HOLE WITH A SIZE. Cell(nullptr) is a hole and an empty grid column
+	// COLLAPSES to nothing, so it cannot hold a gap open. These two can:
+	int fixedPx = 0; // spacer(px): an empty column exactly this wide
+	int slack = 0;   // stretch(f): a column that takes the leftover width,
+			 // in f parts against the other stretch cells of its row
+	// Where a widget riding a stretch column sits in it.
+	Qt::Alignment align = {};
 
 	Cell() = default;
 	Cell(QWidget *widget, int columns = 1, bool fill = true, int rows = 1)
 		: w(widget), span(columns), rowSpan(rows), grow(fill)
 	{
+	}
+
+	// A fixed gap that never collapses (a QSpacerItem, not a hole).
+	static Cell spacer(int px)
+	{
+		Cell c;
+		c.fixedPx = px;
+		return c;
+	}
+	// The row's slack, in `factor` parts. Two of them on either side of a
+	// group CENTRE it — the artifact's justify-content:center — which a hole
+	// cannot, and the phantom stretch column KeyBlock adds past the last key
+	// is dropped for a shape that declares its own slack.
+	//
+	// With `anchored`, that widget rides one end of the slack column
+	// (`edge`, right by default): the artifact's REVIEW header centres its
+	// title on the row while IN OUTPUT sits at the far right, and the title
+	// is only centred if the two slack columns either side of it are equal —
+	// so the key has to live INSIDE the right one, not beside it.
+	static Cell stretch(int factor = 1, QWidget *anchored = nullptr,
+			    Qt::Alignment edge = Qt::AlignRight | Qt::AlignVCenter)
+	{
+		Cell c(anchored, 1, false);
+		c.slack = factor > 0 ? factor : 1;
+		if (anchored)
+			c.align = edge;
+		return c;
 	}
 };
 
@@ -730,6 +773,14 @@ public: // restored: everything below was public before resizeEvent was
 	// in both without anybody sequencing it.
 	void setOnShape(std::function<void(bool flat)> fn);
 
+	// A HEADER ROW, NOT A BOX (K1, K2, R1). The MARCA and REVIEW headers are
+	// KeyBlocks for their cells, but the artifact draws them as a row with a
+	// rule under it (.sub .hd{padding-bottom:6px;border-bottom:1px}): no
+	// inset from the panel's edges — REVIEW's IN OUTPUT sits at the far
+	// right — and the rule's padding under the keys. The frame's box is
+	// turned off by the sheet (#mrPanelHeader QWidget#mrBlockFrame).
+	void setBare(bool bare);
+
 private:
 	void apply();
 
@@ -744,6 +795,7 @@ private:
 	bool flatActive_ = false;
 	bool compactActive_ = false;
 	bool sectionHidden_ = false;
+	bool bare_ = false;
 	bool applied_ = false;
 	int stretchFrom_ = -1, stretchTo_ = -1;
 };

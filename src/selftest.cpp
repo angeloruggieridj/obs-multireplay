@@ -5470,6 +5470,12 @@ void runReopenPass(const std::string &outPath)
 		// process may set: a docked panel's size belongs to OBS.
 		int wideTileW = 0, tallTileW = 0, wideTiles = 0, tallTiles = 0;
 		const char *wideMode = "?", *tallMode = "?";
+		// What 1100x700 wears on Auto, as a NUMBER: on this rig it is
+		// Short (the Wide floor is past 700), whose left column opens at
+		// its designed 260 px — see applyPreviewSplit.
+		bool autoTilesOk = false;
+		int autoTileW = 0, autoTiles = 0;
+		const char *autoMode = "?";
 		if (host && dock) {
 			auto measure = [&](int w, int h, bool &ok, int &narrowest,
 					   int &seen, const char *&modeName) {
@@ -5526,7 +5532,14 @@ void runReopenPass(const std::string &outPath)
 					ok = n > 0 && narrowest >= 40;
 				});
 			};
-			measure(1100, 700, tilesWideOk, wideTileW, wideTiles, wideMode);
+			// THE WIDE CHECK IS TAKEN IN WIDE, below, under the forced
+			// preset. 1100x700 on Auto lands in Short on this rig (the
+			// Wide floor passed 700 before K1), so the check had been
+			// measuring Short's tiles under Wide's name — and passed only
+			// while a date-and-time clock inflated MARCA's header and with
+			// it Short's left column (424 px; 282 once the header became
+			// the compact K1 row). Kept as a logged number, not a check.
+			measure(1100, 700, autoTilesOk, autoTileW, autoTiles, autoMode);
 			// WIDE BEFORE THE TOOLBAR READS. The geometry below (cluster
 			// order, search width) only exists in Wide: in Short the
 			// search field hides until tapped (narrow, 112) and Monitors
@@ -5554,6 +5567,10 @@ void runReopenPass(const std::string &outPath)
 			runOnUi([&]() { host->resize(1500, 900); });
 			std::this_thread::sleep_for(
 				std::chrono::milliseconds(700));
+			// camera_tiles_have_width_when_wide — in the arrangement its
+			// name promises, and asserted to be that arrangement.
+			measure(1500, 900, tilesWideOk, wideTileW, wideTiles, wideMode);
+			tilesWideOk = tilesWideOk && std::strcmp(wideMode, "wide") == 0;
 			runOnUi([&]() {
 				for (QPushButton *b :
 				     dock->findChildren<QPushButton *>()) {
@@ -6469,9 +6486,11 @@ void runReopenPass(const std::string &outPath)
 		}
 		obs_log((tilesWideOk && tilesTallOk) ? LOG_INFO : LOG_ERROR,
 			"[selftest] reopen: camera tiles — %s: %d on screen, narrowest "
-			"%d px: %s; %s: %d on screen, narrowest %d px: %s",
+			"%d px: %s; %s: %d on screen, narrowest %d px: %s (auto "
+			"1100x700 wears %s: %d on screen, narrowest %d px — a number)",
 			wideMode, wideTiles, wideTileW, tilesWideOk ? "yes" : "NO",
-			tallMode, tallTiles, tallTileW, tilesTallOk ? "yes" : "NO");
+			tallMode, tallTiles, tallTileW, tilesTallOk ? "yes" : "NO",
+			autoMode, autoTiles, autoTileW);
 
 		const bool fsOk = fsKeyHiddenWhenDocked && fsKeyShownWhenFloating &&
 				  fsCoversTheScreen && fsRestoresTheWindow &&
@@ -6533,9 +6552,17 @@ void runReopenPass(const std::string &outPath)
 		bool noStatusRow = false;
 		bool noticeInFoot = false;
 		int stripSeekGap = -1;
+		// TAS .sub .hd (K1, K2, R1): the headers are a rule, MARCA's group
+		// and REVIEW's title centred, IN OUTPUT at the far right, the clock
+		// without a date, REC compact — on the Normale and Fullscreen shots
+		// (dock-probe.hpp headersConform, the mockup's same helper).
+		bool headersMeasured = false;
+		bool headersOk = false;
+		QString headersDetail;
 	};
 	std::vector<ArtifactShot> artifactShots;
 	bool artifactSetCaptured = false;
+	bool panelHeadersCentred = false;
 	bool layoutToolbarOnTop = false;
 	bool layoutNoStatusRow = false;
 	bool noticeInMarcaFooter = false;
@@ -6715,11 +6742,31 @@ void runReopenPass(const std::string &outPath)
 								 .arg(s.got.width())
 								 .arg(s.got.height())
 								 .arg(theme);
-						s.saved = dock->grab().save(
-							QString::fromUtf8(
-								joinUtf8(artifactDir,
-									 s.file.toStdString())
-									.c_str()));
+						const QImage shot = dock->grab().toImage();
+						s.saved = shot.save(QString::fromUtf8(
+							joinUtf8(artifactDir,
+								 s.file.toStdString())
+								.c_str()));
+						// THE HEADERS, read on this very shot
+						// (K1, K2, R1): Wide forms only — Short
+						// and Tall are other tasks' zones.
+						if (s.form == QStringLiteral("normale") ||
+						    s.form == QStringLiteral("fullscreen")) {
+							s.headersMeasured = true;
+							s.headersOk = multireplay::probe::
+								headersConform(
+									dock, shot,
+									findKeyButton(
+										dock,
+										QStringLiteral(
+											"rec")),
+									findKeyButton(
+										dock,
+										QStringLiteral(
+											"toOutput")),
+									kHeaderKeyH,
+									&s.headersDetail);
+						}
 						if (ClipBar *bar =
 							    dock->findChild<ClipBar *>())
 							s.bandLit = bar->onAir();
@@ -6805,6 +6852,14 @@ void runReopenPass(const std::string &outPath)
 						s.noticeInFoot ? "in MARCA footer"
 							       : "NOT in MARCA footer",
 						s.stripSeekGap);
+					if (s.headersMeasured)
+						obs_log(s.headersOk ? LOG_INFO
+								    : LOG_ERROR,
+							"[selftest] reopen: headers %s: %s "
+							"(%s)",
+							qUtf8Printable(s.file),
+							s.headersOk ? "conform" : "OFF",
+							qUtf8Printable(s.headersDetail));
 					artifactShots.push_back(s);
 				}
 			}
@@ -6877,6 +6932,20 @@ void runReopenPass(const std::string &outPath)
 			"[selftest] reopen: layout_no_status_row — %d of 16 shots "
 			"without it; notice_in_marca_footer — %d of 16",
 			shotsNoRow, shotsNoticeInFoot);
+		// K1, K2, R1: the two Wide forms x four themes = 8 shots, every one
+		// with the headers conforming.
+		const int shotsHeadersMeasured = (int)std::count_if(
+			artifactShots.begin(), artifactShots.end(),
+			[](const ArtifactShot &s) { return s.headersMeasured; });
+		const int shotsHeadersOk = (int)std::count_if(
+			artifactShots.begin(), artifactShots.end(),
+			[](const ArtifactShot &s) { return s.headersOk; });
+		panelHeadersCentred = shotsHeadersMeasured == 8 && shotsHeadersOk == 8;
+		obs_log(panelHeadersCentred ? LOG_INFO : LOG_ERROR,
+			"[selftest] reopen: panel_headers_centred — %d of %d Normale/"
+			"Fullscreen shots with the headers a rule, centred, IN "
+			"OUTPUT far right",
+			shotsHeadersOk, shotsHeadersMeasured);
 		obs_log(artifactSetCaptured ? LOG_INFO : LOG_ERROR,
 			"[selftest] reopen: artifact set — %d of 16 shots written "
 			"with data (band on air, 6 rows) to %s (project re-opened "
@@ -6918,7 +6987,7 @@ void runReopenPass(const std::string &outPath)
 		  layoutTallTabs && layoutTallHidesOut && layoutPresetSizes &&
 		  layoutFullscreenNeedsFloat && artifactSetCaptured &&
 		  layoutToolbarOnTop && layoutNoStatusRow &&
-		  noticeInMarcaFooter && tallMarcaTabFlags;
+		  noticeInMarcaFooter && tallMarcaTabFlags && panelHeadersCentred;
 
 	// --- Put everything back ----------------------------------------------
 	// The operator's project first (so nothing is pointing into the test one),
@@ -7066,6 +7135,10 @@ void runReopenPass(const std::string &outPath)
 			  tableSortIsCompact);
 	obs_data_set_bool(checks, "panel_shares_40_60", panelShares4060);
 	obs_data_set_bool(checks, "panel_headers_34", panelHeaders34);
+	// TAS .sub .hd (K1, K2, R1): a rule not a box, MARCA's group and REVIEW's
+	// title centred (±3 px), IN OUTPUT within 10 px of the right edge, clock
+	// HH:mm:ss, REC compact — on the Normale and Fullscreen shots.
+	obs_data_set_bool(checks, "panel_headers_centred", panelHeadersCentred);
 	obs_data_set_bool(checks, "panel_transport_40", panelTransport40);
 	obs_data_set_bool(checks, "panel_trim_60_40", panelTrim6060);
 	obs_data_set_bool(checks, "panel_clip_42", panelClip42);

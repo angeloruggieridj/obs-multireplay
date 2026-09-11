@@ -446,9 +446,22 @@ R"QSS(
    eight borders down a narrow column is the fragmentation the redesign
    removed, plus ~100 px the Short floor cannot spare. */
 #MultiReplayDock QWidget#mrBlock[folded="true"] QWidget#mrBlockFrame { border: 0; }
+/* K1, K2, R1 — TAS .sub .hd{border-bottom:1px solid} (#26334a in the
+   artifact's dark panel: the edge the sheet already draws its rules in, the
+   same @border@ as #mrMarcaFoot's top). A RULE UNDER THE ROW, NOT A BOX: the
+   header is a KeyBlock, and a KeyBlock's frame draws the rounded box of a
+   sub-section (#mrBlockFrame above) - turned off here, or the header reads
+   as one more boxed group instead of the panel's title line. */
 #MultiReplayDock QWidget#mrPanelHeader {
 	border: 0;
 	border-bottom: 1px solid @border@;
+	border-radius: 0;
+	background: transparent;
+}
+#MultiReplayDock QWidget#mrPanelHeader QWidget#mrBlockFrame {
+	border: 0;
+	border-radius: 0;
+	background: transparent;
 }
 /* MARCA | REVIEW — the two command panels. Each carries a quiet title above
    its blocks (hidden in Tall, where the tab bar prints the name instead). */

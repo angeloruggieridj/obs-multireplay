@@ -9,6 +9,7 @@
 #include <QPushButton>
 #include <QSizePolicy>
 #include <QSlider>
+#include <QSpacerItem>
 #include <QPainter>
 #include <QPen>
 #include <QStringList>
@@ -772,6 +773,15 @@ void KeyBlock::setOnShape(std::function<void(bool flat)> fn)
 	apply();
 }
 
+void KeyBlock::setBare(bool bare)
+{
+	if (bare_ == bare)
+		return;
+	bare_ = bare;
+	applied_ = false;
+	apply();
+}
+
 void KeyBlock::setSectionVisible(bool visible)
 {
 	if (sectionHidden_ == !visible)
@@ -802,9 +812,20 @@ void KeyBlock::apply()
 	// margins, the legend as a plain caption line.
 	if (auto *v = qobject_cast<QVBoxLayout *>(layout())) {
 		const bool legend = cap_ && !caption_.isEmpty();
-		v->setContentsMargins(6, flatActive_ ? 0 : (legend ? 8 : 2), 6,
-				      flatActive_ ? 0 : 4);
+		if (bare_)
+			v->setContentsMargins(0, 0, 0, 0);
+		else
+			v->setContentsMargins(6, flatActive_ ? 0 : (legend ? 8 : 2), 6,
+					      flatActive_ ? 0 : 4);
 	}
+	// A HEADER ROW (setBare): the content runs edge to edge, and under it
+	// the artifact's padding plus the rule the sheet draws on this widget
+	// (.sub .hd{padding-bottom:6px;border-bottom:1px}). 2 px on top so the
+	// 24 px compact keys sit on the 27 px content line's centre.
+	if (bare_)
+		if (auto *fv = qobject_cast<QVBoxLayout *>(frame_->layout()))
+			fv->setContentsMargins(0, 2, 0,
+					       kHeaderPadBottom + kHeaderRuleW);
 	if (property("folded").toBool() != flatActive_) {
 		setProperty("folded", flatActive_);
 		if (style()) {
@@ -855,10 +876,28 @@ void KeyBlock::apply()
 
 	int r = 0;
 	int maxCol = 0;
+	bool hasSlack = false; // a Cell::stretch() owns the leftover width
 	for (const QVector<Cell> &row : s) {
 		int c = 0;
 		for (const Cell &cell : row) {
-			if (!cell.w) { // a hole: a deliberate gap in the grid
+			if (cell.slack > 0) {
+				grid_->setColumnStretch(c, cell.slack);
+				hasSlack = true;
+			}
+			if (!cell.w) {
+				// Cell::spacer / Cell::stretch: a gap that holds
+				// its width (an empty column collapses to zero, a
+				// spacer item does not). A plain hole stays a hole.
+				if (cell.fixedPx > 0)
+					grid_->addItem(new QSpacerItem(cell.fixedPx, 0,
+								       QSizePolicy::Fixed,
+								       QSizePolicy::Minimum),
+						       r, c, 1, cell.span);
+				else if (cell.slack > 0)
+					grid_->addItem(new QSpacerItem(0, 0,
+								       QSizePolicy::Expanding,
+								       QSizePolicy::Minimum),
+						       r, c, 1, cell.span);
 				c += cell.span;
 				continue;
 			}
@@ -923,7 +962,8 @@ void KeyBlock::apply()
 			cell.w->setParent(body_);
 			if (wantVisible)
 				cell.w->show();
-			grid_->addWidget(cell.w, r, c, cell.rowSpan, cell.span);
+			grid_->addWidget(cell.w, r, c, cell.rowSpan, cell.span,
+					 cell.align);
 			if (cell.grow) {
 				QSizePolicy sp = cell.w->sizePolicy();
 				if (sp.horizontalPolicy() == QSizePolicy::Fixed)
@@ -939,8 +979,11 @@ void KeyBlock::apply()
 	if (stretchFrom_ >= 0) {
 		for (int c = stretchFrom_; c <= stretchTo_; c++)
 			grid_->setColumnStretch(c, 1);
-	} else if (maxCol > 0) {
-		// A PHANTOM STRETCH COLUMN just past the last key. Any width the
+	} else if (maxCol > 0 && !hasSlack) {
+		// A PHANTOM STRETCH COLUMN just past the last key. (Not for a
+		// shape that declared its own slack with Cell::stretch: a phantom
+		// beside a pair of centring columns would take a share and push
+		// the group off centre.) Any width the
 		// block is given beyond what its keys ask for lands here, on the
 		// right, instead of being shared out among the key columns —
 		// which is what spread a row of three keys across a whole 40%
@@ -1800,6 +1843,19 @@ void TwoPanelStrip::setHeaders(KeyBlock *marcaHeader, KeyBlock *reviewHeader)
 		h->setParent(h == marcaHeader ? marca_ : review_);
 		h->setObjectName(QStringLiteral("mrPanelHeader"));
 		h->setMinimumHeight(kHeaderH);
+		// A rule under a row, not a boxed group (K1, K2, R1).
+		h->setBare(true);
+		// ITS KEYS ARE THE COMPACT KEY (.key.sm{height:24px}): REC and IN
+		// OUTPUT. Through the height mechanism every section key uses
+		// (kKeyHeightProperty, read by apply()), never a sheet min-height,
+		// which would beat the pin (repinKeys). Asked again on every
+		// apply() so the full-screen gallery scale grows them by what it
+		// grows every other key (26 -> 32, so 24 -> 30).
+		h->setOnShape([h](bool) {
+			const int px = kHeaderKeyH + (sectionKeyH() - kKeyH);
+			for (QAbstractButton *b : h->findChildren<QAbstractButton *>())
+				b->setProperty(kKeyHeightProperty, px);
+		});
 	}
 	if (marcaHeader_)
 		marcaCol_->insertWidget(0, marcaHeader_);

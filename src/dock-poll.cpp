@@ -163,13 +163,15 @@ void MultiReplayDock::updateChannelStrip()
 	const int idDigits =
 		std::clamp(ReplayCore::instance().getConfig().eventIdDigits, 1, 8);
 
-	// REVIEW header (spec §4): the event ▶ is about, padded like the table's
-	// id column. An em-dash when there is nothing selected or marked.
+	// REVIEW header (R1): «· evento 0003», the event ▶ is about, padded like
+	// the table's id column. EMPTY when there is nothing selected or marked —
+	// never a dash: the centred title then reads «■ REVIEW» on its own.
 	if (reviewEventLbl_)
 		reviewEventLbl_->setText(
-			haveEv ? QString("%1").arg(evId, idDigits, 10,
-						   QLatin1Char('0'))
-			       : QStringLiteral("—"));
+			haveEv ? QString::fromUtf8(obs_module_text("Dock.ReviewEvent"))
+					 .arg(QString("%1").arg(evId, idDigits, 10,
+								QLatin1Char('0')))
+			       : QString());
 
 	// Where the playhead is INSIDE this clip. Clamped on purpose: parked at
 	// the live edge (or at 0, with a project reopened and nothing recording)
@@ -1289,29 +1291,39 @@ void MultiReplayDock::poll()
 		// the reference controller's second line: how much recording time is left, in
 		// hours:minutes, not a bare minute count nobody converts under
 		// pressure.
+		// TAS «09:52:20 · rim 01:10:24» (K1): a middle dot after the clock,
+		// then «rim hh:mm:ss».
 		QString s;
 		if (!boOk)
 			s = QStringLiteral("⚠ Branch Output");
 		else if (mins >= 0)
-			s = QString("%1 %2")
+			s = QStringLiteral("\xC2\xB7 %1 %2")
+				    .arg(QString::fromUtf8(
+					    obs_module_text("Dock.Remaining")))
 				    .arg(QString::asprintf("%02lld:%02lld:00",
 							   (long long)(mins / 60),
-							   (long long)(mins % 60)))
-				    .arg(obs_module_text("Dock.Remaining"));
+							   (long long)(mins % 60)));
 		else
 			s = QString("v%1 • %2")
 				    .arg(ver)
 				    .arg(rec ? obs_module_text("Dock.Recording")
 					     : obs_module_text("Dock.Idle"));
-		statusLbl_->setText(s);
+		// FIXED WIDTH (measured on the room-left text in buildRecBlock):
+		// the two rarer states are elided to it and whole in the tooltip,
+		// never allowed to widen the label and move the centred group.
+		const QString shown = statusLbl_->fontMetrics().elidedText(
+			s, Qt::ElideRight, statusLbl_->contentsRect().width());
+		statusLbl_->setText(shown);
+		statusLbl_->setToolTip(shown == s ? QString() : s);
 	}
 
 	// The wall clock above it, red while the take runs (the reference controller). Same 4 Hz as
 	// the rest of the status block — a clock that ticks 30 times a second
 	// costs a restyle 30 times a second and reads no better.
 	if (refreshStatus && clockLbl_) {
+		// TAS «09:52:20» (K1): the time of day, no date.
 		clockLbl_->setText(QDateTime::currentDateTime().toString(
-			QStringLiteral("yyyy-MM-dd HH:mm:ss")));
+			QStringLiteral("HH:mm:ss")));
 		if (clockLbl_->property("rec").toBool() != rec) {
 			clockLbl_->setProperty("rec", rec);
 			repolish(clockLbl_);

@@ -1432,25 +1432,41 @@ private:
 		// #mrRec[recording="false"] nor ["true"] matched and the key fell
 		// back to the ordinary key colour.
 		rec->setProperty("recording", false);
-		rec->setMinimumWidth(78);
+		// THE COMPACT KEY (K1): TAS .key.sm{min-width:32px}; its 24 px
+		// height is the header's (TwoPanelStrip::setHeaders).
+		rec->setMinimumWidth(32);
 		// UNCAP THE HEIGHT: iconTextKey pins it at kKeyH, but REC's height
 		// is KeyBlock::apply()'s to set — it follows gallery scale, and a
 		// hard max would stop it growing in the full-screen view.
 		rec->setMaximumHeight(QWIDGETSIZE_MAX);
 
+		// TAS «09:52:20 · rim 01:10:24» (K1): the time of day with no
+		// date, then the room left, in the header's mono face. FIXED
+		// WIDTH, measured on the widest text each will show: they change
+		// four times a second and a width change re-flows the strip.
 		auto *clock = new QLabel(QStringLiteral("09:52:20"), this);
 		clock->setObjectName(QStringLiteral("mrClock"));
-		auto *sub = new QLabel(QStringLiteral("rim. 01:10:24"), this);
+		clock->setFont(QFont(multireplay::fonts::monoFamily()));
+		clock->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+		clock->ensurePolished();
+		clock->setFixedWidth(clock->fontMetrics().horizontalAdvance(
+					     QStringLiteral("00:00:00")) +
+				     4);
+		auto *sub = new QLabel(QStringLiteral("\xC2\xB7 rim 01:10:24"), this);
 		sub->setObjectName(QStringLiteral("mrMuted"));
-		sub->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-		// FIXED WIDTH: these change four times a second and their text
-		// changes LENGTH with it; a width change re-flows the strip.
-		clock->setFixedWidth(96);
+		sub->setFont(QFont(multireplay::fonts::monoFamily()));
+		sub->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+		sub->ensurePolished();
+		sub->setFixedWidth(sub->fontMetrics().horizontalAdvance(
+					   QStringLiteral("\xC2\xB7 rim 00:00:00")) +
+				   4);
 
-		blk->setShapes({{Cell(name, 1, false), Cell(rec, 1, false),
-				 Cell(clock, 1, false), Cell(sub, 1)}},
-			       {{Cell(name, 1, false), Cell(rec, 1, false),
-				 Cell(clock, 1, false), Cell(sub, 1)}});
+		// TAS .sub.live .hd{justify-content:center}: one group centred
+		// on the row — two equal slack columns, one either side.
+		const BlockShape row = {{Cell::stretch(1), Cell(name, 1, false),
+					 Cell(rec, 1, false), Cell(clock, 1, false),
+					 Cell(sub, 1, false), Cell::stretch(1)}};
+		blk->setShapes(row, row);
 		return blk;
 	}
 
@@ -1462,20 +1478,24 @@ private:
 		name->setObjectName(QStringLiteral("mrPanelTitle"));
 		name->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
 
-		auto *ev = new QLabel(QStringLiteral("0003"), this);
+		// «· evento 0003» (Dock.ReviewEvent); the dock empties it when
+		// there is no event, never a dash.
+		auto *ev = new QLabel(QStringLiteral("\xC2\xB7 evento 0003"), this);
 		ev->setObjectName(QStringLiteral("mrReviewEvent"));
-		ev->setAlignment(Qt::AlignCenter);
+		ev->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
 
 		auto *toOut = statusKey(Icon::ToOutput, QStringLiteral("IN OUTPUT"),
 					QStringLiteral("toOutput"),
 					QStringLiteral("Il replay prende il Program"));
 		toOut->setChecked(true);
-		toOut->setFixedHeight(kKeyH);
 
-		blk->setShapes({{Cell(name, 2, false), Cell(ev, 3),
-				 Cell(toOut, 2, false)}},
-			       {{Cell(name, 2, false), Cell(ev, 3),
-				 Cell(toOut, 2, false)}});
+		// TAS .sub.review .hd{justify-content:flex-end} + .st{left:50%}:
+		// the title centred on the row, IN OUTPUT riding the right slack
+		// column at the far right.
+		const BlockShape row = {{Cell::stretch(1), Cell(name, 1, false),
+					 Cell(ev, 1, false),
+					 Cell::stretch(1, toOut)}};
+		blk->setShapes(row, row);
 		return blk;
 	}
 
@@ -2997,22 +3017,10 @@ QDialog *buildSettingsMock(QWidget *parent)
 // light panel that fails to paint something comes back dark, and that is a
 // number.
 
-// The most common colour in a region: the fill, whatever it happens to be.
-QColor dominant(const QImage &img, const QRect &r)
-{
-	QHash<QRgb, int> counts;
-	for (int y = r.top(); y <= r.bottom(); y++)
-		for (int x = r.left(); x <= r.right(); x++)
-			counts[img.pixel(x, y)]++;
-	QRgb best = 0;
-	int most = -1;
-	for (auto it = counts.constBegin(); it != counts.constEnd(); ++it)
-		if (it.value() > most) {
-			most = it.value();
-			best = it.key();
-		}
-	return QColor::fromRgb(best);
-}
+// The most common colour in a region, and "same colour within a tolerance":
+// dock-probe.hpp, shared with the gate.
+using multireplay::probe::dominant;
+using multireplay::probe::sameColour;
 
 // The pixel in `r` that stands furthest off `from`: the mark, if there is one.
 QColor boldest(const QImage &img, const QRect &r, const QColor &from)
@@ -3029,12 +3037,6 @@ QColor boldest(const QImage &img, const QRect &r, const QColor &from)
 			}
 		}
 	return best;
-}
-
-bool sameColour(const QColor &a, const QColor &b, int tol = 6)
-{
-	return qAbs(a.red() - b.red()) <= tol && qAbs(a.green() - b.green()) <= tol &&
-	       qAbs(a.blue() - b.blue()) <= tol;
 }
 
 QAbstractButton *keyById(QWidget *root, const QString &id)
@@ -4162,6 +4164,71 @@ void checkNoticeFooter()
 	delete host;
 }
 
+// ── THE MARCA AND REVIEW HEADERS (K1, K2, R1) ──────────────────────────────
+//
+// TAS .sub .hd{min-height:34px;padding-bottom:6px;border-bottom:1px solid}: a
+// header is a RULE under a row, not a box around it. MARCA's row is centred
+// (.sub.live .hd{justify-content:center}): «MARCA · ● REC · 09:52:20 · rim
+// 01:10:24». REVIEW's title is centred on the row with IN OUTPUT at the far
+// right (.sub.review .hd{justify-content:flex-end} + .st{left:50%}). REC is the
+// compact key (.key.sm{height:24px}). Measured at the two Wide artifact forms in
+// the four themes, on a grab — the same helper the gate runs on the real dock
+// (dock-probe.hpp headersConform).
+void checkPanelHeaders(QApplication &app)
+{
+	using namespace multireplay::probe;
+	const ThemeChoice themeWas = g_theme;
+	const Scheme scWas = g_sc;
+	const auto tintsWas = g_tints;
+	auto *host = new QWidget();
+	host->setAutoFillBackground(true);
+	auto *hl = new QVBoxLayout(host);
+	hl->setContentsMargins(0, 0, 0, 0);
+	auto *w = new Mock();
+	hl->addWidget(w);
+	for (const ArtifactForm &f : kArtifactForms) {
+		const QString form = QString::fromLatin1(f.name);
+		if (form != QStringLiteral("normale") &&
+		    form != QStringLiteral("fullscreen"))
+			continue;
+		bool all = true;
+		QString detail;
+		for (int theme = 0; theme < 4; theme++) {
+			w->retheme((ThemeChoice)theme, app.palette());
+			w->setLayoutPreset(f.preset);
+			for (int pass = 0; pass < 2; pass++) {
+				host->resize(f.w, f.h);
+				host->show();
+				for (int i = 0; i < 3; i++) {
+					QApplication::processEvents();
+					QApplication::sendPostedEvents();
+				}
+			}
+			const QImage shot = w->grab().toImage();
+			QString d;
+			const bool ok = headersConform(
+				w, shot, keyById(w, QStringLiteral("rec")),
+				keyById(w, QStringLiteral("toOutput")), kHeaderKeyH, &d);
+			// The first failing theme's numbers, or theme 0's.
+			if (detail.isEmpty() || (!ok && all))
+				detail = QStringLiteral("theme %1: %2").arg(theme).arg(d);
+			all = all && ok;
+		}
+		// TAS .sub .hd — un filetto, non un box; .sub.live .hd centrato;
+		// .sub.review .hd .st{left:50%} + IN OUTPUT a destra; .key.sm 24px
+		check(all,
+		      QStringLiteral("%1: headers are a rule, centred, IN OUTPUT far "
+				     "right, clock HH:mm:ss, REC compact")
+			      .arg(form),
+		      detail);
+	}
+	delete host;
+	g_theme = themeWas;
+	g_sc = scWas;
+	g_tints = tintsWas;
+	refreshSheetAssets();
+}
+
 int runChecks(QPalette pal, QApplication &app, const QString &outDir)
 {
 	struct Want {
@@ -4857,6 +4924,9 @@ int runChecks(QPalette pal, QApplication &app, const QString &outDir)
 	// The notice in MARCA's footer, nothing else under the panel, and the
 	// Tall MARCA-tab marker (S2, B2, D5).
 	checkNoticeFooter();
+	// The MARCA and REVIEW headers: a rule, centred, IN OUTPUT at the far
+	// right, the clock without a date, REC compact (K1, K2, R1).
+	checkPanelHeaders(app);
 
 	// LAST, because it replaces the application palette and style sheet for
 	// the rest of the process: from here on the panel is a LIGHT one sitting
