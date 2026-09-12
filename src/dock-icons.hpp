@@ -178,7 +178,10 @@ enum class IconRole {
 	Rec,        // red at rest: the mark is the take
 	Danger,     // red: this key destroys something
 	Warn,       // amber: the badge that says the take is degraded
-};
+	Ghost,      // 40% white at rest, white on hover — ≫ riding the
+	            // on-air band (TAS .band .edge): a glyph, not a key, so it
+	            // must not shout over the state the band is already saying
+}; // (hover white is the affordance: no box lights up around it)
 
 inline const char *kIconRoleProperty = "mrIconRole";
 
@@ -218,6 +221,13 @@ inline IconTints tintsForRole(const IconTints &t, IconRole role)
 		break;
 	case IconRole::Warn:
 		r.rest = r.hover = r.on = t.warn;
+		break;
+	case IconRole::Ghost:
+		// White at 40% alpha: composited by Qt over the band, so it is
+		// 40% over EITHER green (played or remainder) with one pixmap.
+		// Hover goes solid — the affordance, since no box lights up.
+		r.rest = QColor(0xff, 0xff, 0xff, 0x66);
+		r.hover = r.on = QColor(Qt::white);
 		break;
 	case IconRole::Chrome:
 	default:

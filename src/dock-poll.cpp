@@ -372,6 +372,20 @@ void MultiReplayDock::updateChannelStrip()
 			text = obs_module_text("Dock.NoEvent");
 		}
 		clipBar_->setState(frac, text, onAir, joins);
+		// TAS .band .edge (R7): ≫ is 40% white at rest, solid while
+		// something is on air. The mark is a pixmap, so dimming means
+		// redrawing it (IconRole::Ghost) — a sheet rule cannot tint
+		// pixels. Change-guarded like every property here: poll runs
+		// at 30 Hz and a redraw every tick would rasterise for nothing.
+		if (nextClipBtn_ &&
+		    nextClipBtn_->property("live").toBool() != onAir) {
+			nextClipBtn_->setProperty("live", onAir);
+			setKeyIconRole(nextClipBtn_, Icon::SkipNext,
+				       onAir ? IconRole::OnSignal
+					     : IconRole::Ghost,
+				       tintsFor(sc()));
+			repolish(nextClipBtn_);
+		}
 	}
 	// >> stays ENABLED, always. It used to follow ps.active, which is read
 	// here at 30 Hz — so for the first frames of a sequence the key was still

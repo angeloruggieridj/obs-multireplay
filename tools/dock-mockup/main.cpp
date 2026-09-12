@@ -1875,6 +1875,9 @@ private:
 			QStringLiteral("  0003 · C2 · 50%          −00:03.20   Σ 00:11"),
 			foot);
 		clip->setObjectName(QStringLiteral("mrClipBar"));
+		// TAS .band{justify-content:center} (R7): the text rides the whole
+		// band — the >> floats over its right end, like the dock's paint.
+		clip->setAlignment(Qt::AlignCenter);
 		clip->setStyleSheet(
 			QString("background:%1;color:#fff;font-weight:700;font-size:10px;")
 				.arg(sc_.onAir));
@@ -1886,11 +1889,14 @@ private:
 		clip->setMinimumWidth(60);
 		auto *skip = iconKey(Icon::SkipNext, QStringLiteral("skipNext"),
 				     QStringLiteral("Clip successiva"), "mrSkip");
-		setKeyIconRole(skip, Icon::SkipNext, IconRole::OnSignal, g_tints);
+		// TAS .band .edge (R7): the ghost at rest — like the dock before
+		// its first poll tick (live=false, dimmed 40%).
+		skip->setProperty("live", false);
+		setKeyIconRole(skip, Icon::SkipNext, IconRole::Ghost, g_tints);
 		skip->setFixedSize(30, kClipBarH - 6);
 		skip->setMinimumHeight(0);
 		auto *cl = new QHBoxLayout(clip);
-		cl->setContentsMargins(4, 3, 4, 3);
+		cl->setContentsMargins(4, 3, 10, 3);
 		cl->addStretch(1);
 		cl->addWidget(skip, 0, Qt::AlignVCenter);
 		h->addWidget(clip, 1);
@@ -2322,10 +2328,14 @@ void checkHitTargets(Mock *w, const QString &label)
 		if (!b->isVisible() || inEventList(b) || inTabBar(b))
 			continue;
 		// The status line's own keys are shorter by design — they are
-		// pressed while being looked at, not reached for blind.
+		// pressed while being looked at, not reached for blind. So is >>
+		// on the band it talks about (TAS .band .edge, R7): a glyph, not
+		// a key, 16 px by construction.
 		const int floor = b->objectName() == QStringLiteral("mrStatKey") ||
 						  b->objectName() ==
-							  QStringLiteral("mrHealth")
+							  QStringLiteral("mrHealth") ||
+						  b->objectName() ==
+							  QStringLiteral("mrSkip")
 					  ? 15
 					  : kKeyFoldedH - 4;
 		if (b->width() >= 20 && b->height() >= floor)
@@ -3879,10 +3889,12 @@ void runHostChecks(QApplication &app, const QString &outDir)
 		    qUtf8Printable(
 			    w->palette().color(QPalette::Window).name()));
 	checkPanelSurface(w, shot, QStringLiteral("host"));
-	// The two keys whose mark sits on a signal fill, and the one that is a
+	// The key whose mark sits on a signal fill, and the one that is a
 	// mark and a word in the signal colour.
 	checkMarkOnKey(w, QStringLiteral("playEvents"), QStringLiteral("play key"));
-	checkMarkOnKey(w, QStringLiteral("skipNext"), QStringLiteral("skip key"));
+	// NOT skipNext: ≫ is dimmed 40% at rest ON PURPOSE (TAS .band .edge,
+	// R7) and fails a 3:1 legibility bar by design — checkBand asserts its
+	// state-aware ink (dim at rest, solid on air) instead.
 	// These two are chrome-coloured keys with a SIGNAL label, so legibility
 	// was never the problem — the mark simply belonged to a different key.
 	checkMarkInk(w, QStringLiteral("rec"), QColor(g_sc.rec),
@@ -4552,6 +4564,64 @@ void checkReviewSpeed(QApplication &app)
 		      detail);
 		check(all,
 		      QStringLiteral("%1: speed is one segmented navy row").arg(form),
+		      detail);
+	}
+	delete host;
+	g_theme = themeWas;
+	g_sc = scWas;
+	g_tints = tintsWas;
+	refreshSheetAssets();
+}
+
+void checkBand(QApplication &app)
+{
+	using namespace multireplay::probe;
+	const ThemeChoice themeWas = g_theme;
+	const Scheme scWas = g_sc;
+	const auto tintsWas = g_tints;
+	auto *host = new QWidget();
+	host->setAutoFillBackground(true);
+	auto *hl = new QVBoxLayout(host);
+	hl->setContentsMargins(0, 0, 0, 0);
+	auto *w = new Mock();
+	hl->addWidget(w);
+	for (const ArtifactForm &f : kArtifactForms) {
+		const QString form = QString::fromLatin1(f.name);
+		if (form != QStringLiteral("normale") &&
+		    form != QStringLiteral("fullscreen"))
+			continue;
+		bool all = true;
+		QString detail;
+		for (int theme = 0; theme < 4; theme++) {
+			w->retheme((ThemeChoice)theme, app.palette());
+			w->setLayoutPreset(f.preset);
+			for (int pass = 0; pass < 2; pass++) {
+				host->resize(f.w, f.h);
+				host->show();
+				for (int i = 0; i < 3; i++) {
+					QApplication::processEvents();
+					QApplication::sendPostedEvents();
+				}
+			}
+			const QImage shot = w->grab().toImage();
+			QString d;
+			QWidget *band = w->findChild<QWidget *>(
+				QStringLiteral("mrClipBar"));
+			QWidget *skip = nullptr;
+			for (QWidget *v : w->findChildren<QWidget *>())
+				if (v->property("mrKey").toString() ==
+				    QStringLiteral("skipNext"))
+					skip = v;
+			const bool ok = bandConform(w, shot, band, skip, &d);
+			// The first failing theme's numbers, or theme 0's.
+			if (detail.isEmpty() || (!ok && all))
+				detail = QStringLiteral("theme %1: %2").arg(theme).arg(d);
+			all = all && ok;
+		}
+		// TAS .band (R7): centred text, ≫ a bare glyph dimmed at rest.
+		check(all,
+		      QStringLiteral("%1: band text centred, skip a dim glyph")
+			      .arg(form),
 		      detail);
 	}
 	delete host;
@@ -5272,6 +5342,8 @@ int runChecks(QPalette pal, QApplication &app, const QString &outDir)
 	checkReviewPlayback(app);
 	// REVIEW transport + trim + speed: margin, IN/OUT, one navy row (R4–R6).
 	checkReviewSpeed(app);
+	// The green band: centred text, bare ≫ dimmed at rest (R7).
+	checkBand(app);
 
 	// LAST, because it replaces the application palette and style sheet for
 	// the rest of the process: from here on the panel is a LIGHT one sitting

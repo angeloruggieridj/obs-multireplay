@@ -704,12 +704,19 @@ QPushButton#mrTransport:hover { background: @raise2@; border-color: @borderHi@; 
    min-height LARGER than the widget's own fixed height makes the style draw a
    taller frame than the widget owns, and the bottom border lands outside it.
    Hence its own role, with the height it can actually have. */
+/* >> on the on-air band (R7): TAS .band .edge — a bare glyph riding the
+   band's right end, not a key: no border, no fill, at rest a 40% white
+   (IconRole::Ghost draws it; the sheet cannot tint a pixmap). Hover
+   brightens the mark itself, since no box lights up around it. */
 QPushButton#mrSkip {
-	background: @onAirDim@; border: 1px solid @onAir@; border-radius: 4px;
+	background: transparent; border: 0; border-radius: 0;
 	color: #ffffff; font-size: 11px; font-weight: 700;
 	min-width: 30px; min-height: 0px; padding: 0px 4px;
 }
-QPushButton#mrSkip:hover { background: @onAir@; color: #ffffff; }
+QPushButton#mrSkip:hover { background: transparent; border: 0; }
+/* ...and dim while nothing is on air (the «live» property follows the
+   band; the poll swaps the mark's role with it). */
+QPushButton#mrSkip[live="false"] { color: rgba(255, 255, 255, 0.4); }
 
 /* play/pause — a COMMAND at rest, a STATE while it runs.
    NO min-width, same reason as mrTransport above: PLAY wears 64 and the

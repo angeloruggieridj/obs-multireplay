@@ -6596,12 +6596,20 @@ void runReopenPass(const std::string &outPath)
 		bool speedMeasured = false;
 		bool speedOk = false;
 		QString speedDetail;
+		// TAS .band (R7): the text centred on the whole band, ≫ bare
+		// and solid while on air — same shots
+		// (dock-probe.hpp bandConform; the dim rest state is the
+		// mockup's, same draw code).
+		bool bandMeasured = false;
+		bool bandOk = false;
+		QString bandDetail;
 	};
 	std::vector<ArtifactShot> artifactShots;
 	bool artifactSetCaptured = false;
 	bool panelHeadersCentred = false;
 	bool panelMarcaBoxesFramed = false;
 	bool panelSpeedOneRow = false;
+	bool panelBandCentred = false;
 	bool layoutToolbarOnTop = false;
 	bool layoutNoStatusRow = false;
 	bool noticeInMarcaFooter = false;
@@ -6848,6 +6856,20 @@ void runReopenPass(const std::string &outPath)
 												"mrSpeedHi")),
 										&s.speedDetail);
 							}
+							// THE BAND, same shot (R7).
+							if (ClipBar *bar =
+								    dock->findChild<ClipBar *>()) {
+								s.bandMeasured = true;
+								s.bandOk = multireplay::probe::
+									bandConform(
+										dock, shot,
+										bar,
+										findKeyButton(
+											dock,
+											QStringLiteral(
+												"skipNext")),
+										&s.bandDetail);
+							}
 						}
 						if (ClipBar *bar =
 							    dock->findChild<ClipBar *>())
@@ -6960,6 +6982,15 @@ void runReopenPass(const std::string &outPath)
 							s.speedOk ? "one row, ends labelled"
 								 : "OFF",
 							qUtf8Printable(s.speedDetail));
+					if (s.bandMeasured)
+						obs_log(s.bandOk ? LOG_INFO
+								 : LOG_ERROR,
+							"[selftest] reopen: band %s: "
+							"%s (%s)",
+							qUtf8Printable(s.file),
+							s.bandOk ? "centred, skip bare"
+								 : "OFF",
+							qUtf8Printable(s.bandDetail));
 					artifactShots.push_back(s);
 				}
 			}
@@ -7073,6 +7104,20 @@ void runReopenPass(const std::string &outPath)
 			"[selftest] reopen: panel_speed_one_row — %d of %d "
 			"Normale/Fullscreen shots with one speed row, ends 25/125",
 			shotsSpeedOk, shotsSpeedMeasured);
+		// R7: same 8 shots, every one with the band text centred and >>
+		// a bare glyph (solid white: the shots run on air — the dim
+		// rest ink is the mockup's, same draw code).
+		const int shotsBandMeasured = (int)std::count_if(
+			artifactShots.begin(), artifactShots.end(),
+			[](const ArtifactShot &s) { return s.bandMeasured; });
+		const int shotsBandOk = (int)std::count_if(
+			artifactShots.begin(), artifactShots.end(),
+			[](const ArtifactShot &s) { return s.bandOk; });
+		panelBandCentred = shotsBandMeasured == 8 && shotsBandOk == 8;
+		obs_log(panelBandCentred ? LOG_INFO : LOG_ERROR,
+			"[selftest] reopen: panel_band_centred — %d of %d "
+			"Normale/Fullscreen shots with centred band text, bare >>",
+			shotsBandOk, shotsBandMeasured);
 		obs_log(artifactSetCaptured ? LOG_INFO : LOG_ERROR,
 			"[selftest] reopen: artifact set — %d of 16 shots written "
 			"with data (band on air, 6 rows) to %s (project re-opened "
@@ -7273,6 +7318,8 @@ void runReopenPass(const std::string &outPath)
 	// TAS «Velocità» (R6): chips, dial and readout on one row, ends
 	// labelled 25/125 — same shots.
 	obs_data_set_bool(checks, "panel_speed_one_row", panelSpeedOneRow);
+	// TAS .band (R7): text centred, >> bare and solid on air — same shots.
+	obs_data_set_bool(checks, "panel_band_centred", panelBandCentred);
 	obs_data_set_bool(checks, "panel_transport_40", panelTransport40);
 	obs_data_set_bool(checks, "panel_trim_60_40", panelTrim6060);
 	obs_data_set_bool(checks, "panel_clip_42", panelClip42);

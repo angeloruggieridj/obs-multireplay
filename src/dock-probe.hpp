@@ -703,4 +703,118 @@ inline bool speedConform(const QWidget *panel, const QImage &shot,
 	return row && noPct && ends;
 }
 
+// ── THE ON-AIR BAND (R7) ───────────────────────────────────────────────
+// TAS .band{justify-content:center} + .band .edge{position:absolute;
+// right:10px}: the text centred on the WHOLE band, ≫ a bare glyph over its
+// right end — borderless, 40% white at rest, solid while on air.
+//
+// The text is PAINT, not a widget, so centring is read off pixels: ink =
+// pixels far (in lightness) from the band's own fill, scanned on the middle
+// rows but outside the >> key and outside the white sequence joins (read on
+// the text-free top/bottom rows first — they cross the full height, the
+// text does not).
+inline bool bandConform(const QWidget *panel, const QImage &shot,
+			const QWidget *band, const QWidget *skip, QString *detail)
+{
+	if (!band || !skip || !band->isVisible()) {
+		if (detail)
+			*detail = QStringLiteral("band %1, skip %2")
+					  .arg(band ? "found" : "MISSING")
+					  .arg(skip ? "found" : "MISSING");
+		return false;
+	}
+	const QRect br = rectIn(band, panel);
+	const QRect sr = rectIn(skip, panel);
+	const auto px = [&](int x, int y) {
+		return shotPixel(shot, panel, x, y);
+	};
+	const auto lum = [](const QColor &c) { return luminanceOf(c); };
+	// The fill, from a corner the text never reaches (vertically centred
+	// paint stays clear of the top rows); most common wins, so a join
+	// crossing the corner cannot take it. Sampled one pixel at a time:
+	// dominant() reads device pixels, this helper is logical.
+	QHash<QRgb, int> fills;
+	for (int y = br.top(); y <= br.top() + 4; y++)
+		for (int x = br.left(); x <= br.left() + 15; x++)
+			fills[px(x, y).rgba()]++;
+	QRgb best = 0;
+	int most = -1;
+	for (auto it = fills.constBegin(); it != fills.constEnd(); ++it)
+		if (it.value() > most) {
+			most = it.value();
+			best = it.key();
+		}
+	const QColor fill = QColor::fromRgba(best);
+	const auto isInk = [&](const QColor &c) {
+		return std::abs(lum(c) - lum(fill)) * 255.0 >= 60.0;
+	};
+	// Joins first, on the text-free rows.
+	QList<int> joinX;
+	for (int y : {br.top() + 2, br.bottom() - 2}) {
+		for (int x = br.left(); x <= br.right(); x++) {
+			if (x >= sr.left() && x <= sr.right())
+				continue;
+			if (isInk(px(x, y)))
+				joinX << x;
+		}
+	}
+	const auto nearJoin = [&](int x) {
+		for (int jx : joinX) {
+			if (std::abs(x - jx) <= 1)
+				return true;
+		}
+		return false;
+	};
+	// Then the text, on the middle rows.
+	int L = br.right(), R = br.left(), n = 0;
+	for (int y = br.top() + br.height() / 2 - 7;
+	     y <= br.top() + br.height() / 2 + 7; y++) {
+		for (int x = br.left(); x <= br.right(); x++) {
+			if ((x >= sr.left() && x <= sr.right()) || nearJoin(x))
+				continue;
+			if (isInk(px(x, y))) {
+				L = std::min(L, x);
+				R = std::max(R, x);
+				n++;
+			}
+		}
+	}
+	const double off = (L <= R) ? ((L + R) / 2.0 - centreX(br)) : 999.0;
+	// >>: no border of its own. Compared horizontally, inside against
+	// just outside at mid-height: the band's fill runs full-height but
+	// varies along x (played vs remainder), so a vertical comparison
+	// would read the progress edge as a frame. The inside sample sits 2 px
+	// in — clear of the centred 16 px mark — the outside one 2 px out.
+	const int cy = sr.top() + sr.height() / 2;
+	const bool bare = sameColour(px(sr.left() - 2, cy), px(sr.left() + 2, cy));
+	// ...and the ink the band's state calls for: solid white on air, 40%
+	// at rest. The rest pixmap composites over the fill, so it reads
+	// between fill and white — never white, never fill.
+	QColor mark(0, 0, 0);
+	int mn = 0;
+	for (int y = sr.top() + 2; y <= sr.bottom() - 2; y++)
+		for (int x = sr.left() + 2; x <= sr.right() - 2; x++) {
+			const QColor c = px(x, y);
+			if (lum(c) > lum(mark)) {
+				mark = c;
+				mn++;
+			}
+		}
+	const bool live = skip->property("live").toBool();
+	const QColor white(255, 255, 255);
+	const bool inkOk = mn > 0 && (live ? sameColour(mark, white, 30)
+					  : !sameColour(mark, white, 30) &&
+						    lum(mark) > lum(fill) + 0.1);
+	if (detail)
+		*detail = QStringLiteral("text %1 px centred %2, >> %3, mark %4 (%5)")
+				  .arg(n)
+				  .arg(off, 0, 'f', 1)
+				  .arg(bare ? QStringLiteral("bare")
+					    : QStringLiteral("FRAMED"))
+				  .arg(mark.name())
+				  .arg(live ? QStringLiteral("live")
+					    : QStringLiteral("rest"));
+	return n > 0 && std::abs(off) <= 3.0 && bare && inkOk;
+}
+
 } // namespace multireplay::probe

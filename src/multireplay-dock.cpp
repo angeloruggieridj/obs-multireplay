@@ -965,14 +965,10 @@ void ClipBar::paintEvent(QPaintEvent *)
 	QFont f = p.font();
 	f.setBold(true);
 	p.setFont(f);
-	// The right end belongs to the >> key, which is a child of this widget:
-	// centring the text across the whole width would run it under the button.
-	int rightGap = 12;
-	for (const QObject *o : children())
-		if (auto *cw = qobject_cast<const QWidget *>(o))
-			if (cw->isVisible())
-				rightGap = std::max(rightGap, cw->width() + 12);
-	const QRectF tr(m + 6, y, w - 6 - rightGap, h);
+	// TAS .band{justify-content:center} + .band .edge{position:absolute;
+	// right:10px}: centred on the WHOLE band — the >> rides over the text's
+	// right end instead of the text making room for it.
+	const QRectF tr(m, y, w, h);
 	// Dark halo first: the text crosses both greens and has to stay legible
 	// over either.
 	p.setPen(QColor(0x00, 0x20, 0x0c, 0xb0));

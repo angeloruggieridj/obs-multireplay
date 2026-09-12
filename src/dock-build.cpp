@@ -1643,11 +1643,12 @@ QWidget *MultiReplayDock::buildBottomBar()
 		nextClipBtn_ = iconBtn(Icon::SkipNext, "skipNext",
 				       obs_module_text("Dock.NextClip"), clipBar_,
 				       "mrSkip");
-		// ...AND ITS MARK IS WHITE, because this key never sits on chrome:
-		// it lives on the green band, at every theme and in every state.
-		// #mrSkip already writes its label in #ffffff; drawn in the panel's
-		// resting grey the chevrons were a grey-on-green smudge.
-		setKeyIconRole(nextClipBtn_, Icon::SkipNext, IconRole::OnSignal,
+		// ...AND ITS MARK IS WHITE WHILE ON AIR, 40% at rest (TAS .band
+		// .edge, R7): IconRole::Ghost draws the dim rest pixmap, OnSignal
+		// the solid live one — the poll swaps them with the band (the
+		// property starts false so the first tick agrees with the mark).
+		nextClipBtn_->setProperty("live", false);
+		setKeyIconRole(nextClipBtn_, Icon::SkipNext, IconRole::Ghost,
 			       tintsFor(sc()));
 		// Four less than the band, which is 28: the key needs room for its
 		// own bottom border inside it.
@@ -1667,7 +1668,10 @@ QWidget *MultiReplayDock::buildBottomBar()
 				showNotice(obs_module_text("Dock.NothingQueued"));
 		});
 		auto *bl = new QHBoxLayout(clipBar_);
-		bl->setContentsMargins(4, 2, 4, 2);
+		// TAS .band .edge{position:absolute;right:10px}: the >> floats
+		// over the text's right end (the band centres across the whole
+		// width now), 10 px off the edge.
+		bl->setContentsMargins(4, 2, 10, 2);
 		bl->addStretch(1);
 		bl->addWidget(nextClipBtn_, 0, Qt::AlignVCenter);
 
