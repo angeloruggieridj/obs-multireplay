@@ -1220,7 +1220,12 @@ private:
 	// their aspect height or what is left after this, whichever is smaller —
 	// a perfect picture over two visible rows of events is the wrong trade on
 	// a panel whose point is the list.
-	static constexpr int kListPaneFloor = 110;
+	// 190 = five 26 px rows (the Normale minimum, S3) + ~60 of tools bar
+	// and header. Was 110, which showed three rows at 1180x770 while the
+	// monitors kept room they could not fill past their own half-panel cap.
+	// Plus a few px of splitter slack: measured 128 px of viewport at 190,
+	// two short of the fifth row.
+	static constexpr int kListPaneFloor = 200;
 
 	// --- THE KEYBOARD: one layer, not a second set of commands -------------
 	// Arrows on the timeline, ↑/↓ between events, +/− on the speed, Enter to

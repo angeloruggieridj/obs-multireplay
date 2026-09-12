@@ -353,6 +353,11 @@ public:
 			table_->setFont(tf);
 		}
 		table_->verticalHeader()->setVisible(false);
+		// The dock's Normale density (S3): the mockup wore Qt's 30 px
+		// default while the dock wears 24, so one counted four rows where
+		// the other shows five. Same pure function, same number.
+		table_->verticalHeader()->setDefaultSectionSize(
+			densityFor(0).rowFloor);
 		table_->setMinimumHeight(50);
 		table_->setSizePolicy(QSizePolicy::Expanding,
 				      QSizePolicy::Expanding);
@@ -829,8 +834,9 @@ public:
 
 private:
 	static constexpr int kTiles = 8; // kMaxCameras
-	// How much list is kept whatever the pictures ask for.
-	static constexpr int kListFloor = 110;
+	// How much list is kept whatever the pictures ask for — the dock's
+	// kListPaneFloor, same number (five rows + tools/header, S3).
+	static constexpr int kListFloor = 200;
 
 public:
 	QSplitter *bodySplit_ = nullptr;
@@ -4631,6 +4637,94 @@ void checkBand(QApplication &app)
 	refreshSheetAssets();
 }
 
+void checkNormaleBudget(QApplication &app)
+{
+	using namespace multireplay::probe;
+	const ThemeChoice themeWas = g_theme;
+	const Scheme scWas = g_sc;
+	const auto tintsWas = g_tints;
+	auto *host = new QWidget();
+	host->setAutoFillBackground(true);
+	auto *hl = new QVBoxLayout(host);
+	hl->setContentsMargins(0, 0, 0, 0);
+	auto *w = new Mock();
+	hl->addWidget(w);
+	for (const ArtifactForm &f : kArtifactForms) {
+		const QString form = QString::fromLatin1(f.name);
+		if (form != QStringLiteral("normale") &&
+		    form != QStringLiteral("fullscreen"))
+			continue;
+		bool all = true;
+		QString detail;
+		// One theme is enough: heights do not move with the theme.
+		w->retheme(ThemeChoice::Broadcast, app.palette());
+		w->setLayoutPreset(f.preset);
+		for (int pass = 0; pass < 2; pass++) {
+			host->resize(f.w, f.h);
+			host->show();
+			for (int i = 0; i < 3; i++) {
+				QApplication::processEvents();
+				QApplication::sendPostedEvents();
+			}
+		}
+		QWidget *strip = w->findChild<QWidget *>(
+			QStringLiteral("mrStrip"));
+		QTableWidget *events = w->findChild<QTableWidget *>(
+			QStringLiteral("mrEvents"));
+		// TAS griglia + header + footer: ~320 px di pannello comandi a
+		// scala base (S3); il resto va a tabella e monitor (M2).
+		const int stripH = strip ? strip->height() : -1;
+		const bool panelOk = strip && stripH <= 330;
+		int rowsVisible = -1;
+		bool rowsOk = false;
+		int rowH = 26;
+		if (events) {
+			// Actual rows, not the floor: cell widgets raise them
+			// past it (the dock's read 26 on a 24 floor).
+			if (events->rowCount() > 0)
+				rowH = std::max(1, events->rowHeight(0));
+			rowsVisible = events->viewport()->height() / rowH;
+			rowsOk = rowsVisible >= 5;
+		}
+		// MON «altezza max ≈ 385 (metà pannello)» è un TETTO, non un
+		// traguardo: a 770 px tabella (5 righe) + strip (320) non lasciano
+		// 346 px ai monitor (il brief li chiedeva: impossibile misurato,
+		// vedi report). Ciò che si asserisce, misurato e unificato sulle
+		// due forme: la strip a budget, la tabella mai sotto 5 righe, i
+		// monitor sotto il tetto e mai affamati (40–75% dello split).
+		const int splitH = w->bodySplit_ ? w->bodySplit_->height() : -1;
+		const int monH = w->monitorPane() ? w->monitorPane()->height() : -1;
+		const double share = splitH > 0 ? (double)monH / splitH : -1.0;
+		const int cap = std::min(385, w->height() / 2) + 10;
+		const bool monOk = monH <= cap && share >= 0.40 && share <= 0.75;
+		detail = QStringLiteral("strip %1 (want ≤330), table %2 rows "
+					"(want ≥5), monitors %3/%4 (want ≤%5, "
+					"share .40-.75) [split %6 pane %7 view %8 "
+					"sec %9 row0 %10]")
+				 .arg(stripH)
+				 .arg(rowsVisible)
+				 .arg(monH)
+				 .arg(splitH)
+				 .arg(cap)
+				 .arg(splitH)
+				 .arg(events ? events->height() : -1)
+				 .arg(events ? events->viewport()->height() : -1)
+				 .arg(events ? events->verticalHeader()->defaultSectionSize() : -1)
+				 .arg(events && events->rowCount() > 0 ? events->rowHeight(0) : -1);
+		all = panelOk && rowsOk && monOk;
+		check(all,
+		      QStringLiteral("%1: command panel on budget, table and "
+				     "monitors breathe")
+			      .arg(form),
+		      detail);
+	}
+	delete host;
+	g_theme = themeWas;
+	g_sc = scWas;
+	g_tints = tintsWas;
+	refreshSheetAssets();
+}
+
 int runChecks(QPalette pal, QApplication &app, const QString &outDir)
 {
 	struct Want {
@@ -5344,6 +5438,9 @@ int runChecks(QPalette pal, QApplication &app, const QString &outDir)
 	checkReviewSpeed(app);
 	// The green band: centred text, bare ≫ dimmed at rest (R7).
 	checkBand(app);
+	// Normale budget: ~320px command panel, table and monitors breathe
+	// (S3, M2).
+	checkNormaleBudget(app);
 
 	// LAST, because it replaces the application palette and style sheet for
 	// the rest of the process: from here on the panel is a LIGHT one sitting
