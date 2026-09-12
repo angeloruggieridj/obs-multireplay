@@ -526,31 +526,22 @@ TileBlock tileBlockFor(int paneW, int bays, int n, int gap, int maxH,
 	th = aspect(tw);
 	const int blockW = cols * tw + (cols - 1) * kTileGap;
 
-	// THE ROW STILL SPANS THE PANE AFTER h HAS BEEN CLAMPED.
+	// THE ROW STILL SPANS THE PANE AFTER h HAS BEEN CLAMPED — OR RATHER,
+	// IT DOES NOT, AND THAT IS FINE NOW.
 	//
 	// h is solved so that bays*aw(h) + block(h) == paneW — the row is exactly
 	// as wide as the pane. maxH (monitorRoomH: the list's floor, and the
-	// half-panel rule) then caps h, and finalBayW/blockW below are taken from
-	// the CAPPED h. At that shorter height a 16:9 row of this composition is
-	// narrower than the pane, and the difference used to come back as dead
-	// panel — the bays' AspectBox letterboxed it and the tile grid left it
-	// trailing. The note under the clamp called this out ("the row simply
-	// stops short of the pane's width") and accepted it; on a tall Wide panel
-	// with two tile rows it is a band up to ~185 px wide (measured: eight
-	// cameras at 1456).
+	// half-panel rule) then caps h, and at that shorter height a 16:9 row of
+	// this composition is narrower than the pane. The old answer gave the
+	// difference to the BAYS (finalBayW widened past aw(h)): A/B sat centred
+	// in a wider slot and the images stopped being adjacent — measured
+	// 342 px of air between A and its tile with one camera (M1).
 	//
-	// The tiles are confidence monitors and keep the size their height gives
-	// them; the freed width goes to the BAYS, which are what is being watched.
-	// Their AspectBox still centres a 16:9 picture, so A/B sit centred in a
-	// slightly wider slot instead of the row falling short of the edge. Only
-	// ever a widen: a bay narrower than aw(h) would letterbox vertically,
-	// which is worse, and the caller already clamps an over-wide block.
+	// TAS MON .mrow{gap:6px} wants the images adjacent and the slack
+	// trailing at the row's end, so the boxes hug their pictures and the
+	// callers park the leftover after the tiles (which keep it trailing on
+	// their own — same rule as the filmstrip comment below).
 	int finalBayW = std::max(40, (h - tagH) * 16 / 9);
-	if (bays > 0) {
-		const int filled = (paneW - blockW - gap * bays) / bays;
-		if (filled > finalBayW)
-			finalBayW = filled;
-	}
 
 	best = {cols,
 		rows,

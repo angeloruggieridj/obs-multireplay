@@ -1938,12 +1938,14 @@ void MultiReplayDock::applyPreviewAspect()
 		// and the tile arithmetic above was given the same number.
 		want = std::min(std::max(bayH, blockH), monitorRoomH());
 		if (haveTiles && !monitorSplitChosen()) {
-			// Anything the row cannot fill is split between the two
-			// panes, so each picture is centred in its own rather than
-			// the whole block hugging one edge.
+			// TAS MON .mrow (M1): images adjacent, slack trailing — all
+			// of it to the tiles pane, none split into the bays (that
+			// split centred A/B in a wider slot and parked up to ~185 px
+			// of air between the groups). The tiles grid keeps leftover
+			// trailing on its own (see rebuildMultiview), so the row
+			// reads A|B|tiles + air, never A + air + tiles.
 			const int slack = std::max(0, paneW - baysW - tilesW - gap);
-			monitorSplit_->setSizes(
-				{baysW + slack / 2, tilesW + slack - slack / 2});
+			monitorSplit_->setSizes({baysW, tilesW + slack});
 		}
 	}
 
@@ -1971,8 +1973,12 @@ void MultiReplayDock::applyPreviewAspect()
 			// Only when it CHANGED. Setting a maximum invalidates
 			// the layout, and this runs from the resize it would
 			// then cause.
-			if (t.box->maximumWidth() != tileCap_)
-				t.box->setMaximumWidth(tileCap_);
+			// FIXED width (M1, see the AlignLeft note below):
+			// tileCap_ is always > 0, and an aligned box with only
+			// a maximum collapses to its (empty) hint.
+			if (t.box->minimumWidth() != tileCap_ ||
+			    t.box->maximumWidth() != tileCap_)
+				t.box->setFixedWidth(tileCap_);
 			if (t.box->maximumHeight() != tileCapH)
 				t.box->setMaximumHeight(tileCapH);
 		}
@@ -2422,8 +2428,19 @@ void MultiReplayDock::rebuildMultiview()
 		// applyPreviewAspect settles the real ceiling a moment later; this
 		// only stops a freshly shown tile claiming the whole row for one
 		// frame.
-		t.box->setMaximumWidth(tileCap_ > 0 ? tileCap_ : QWIDGETSIZE_MAX);
-		multiviewGrid_->addWidget(t.box, (int)k / cols, (int)k % cols);
+		// FIXED, not maximumed (see the AlignLeft note below): tileCap_ is
+		// always > 0 (78 at birth, every write maxes with it).
+		if (t.box->minimumWidth() != tileCap_ ||
+		    t.box->maximumWidth() != tileCap_)
+			t.box->setFixedWidth(tileCap_);
+		// LEFT-PACKED (TAS MON .mrow, M1): the columns stay stretched
+		// open and the box wears its capped width FIXED, not maximumed —
+		// an aligned item is given its sizeHint, and an AspectBox holding
+		// a native display has none (0 px wide tiles, measured). With a
+		// fixed width there is no hint left to fall back on. The cap
+		// itself comes from the pane's share, so it always fits.
+		multiviewGrid_->addWidget(t.box, (int)k / cols, (int)k % cols,
+					  Qt::AlignLeft);
 		t.box->setVisible(show);
 	}
 	// RESERVED EMPTY SLOTS (artifact monitor: .box.ghost). Narrow modes run
@@ -2445,29 +2462,22 @@ void MultiReplayDock::rebuildMultiview()
 			tileGhosts_.push_back(g);
 		}
 	}
-	// THE COLUMNS IN USE SHARE THE ROW, and a box in this grid has no size
-	// of its own to fall back on: AspectBox declares no floor and no hint
-	// deliberately (a floor here becomes the panel's). A column left at
-	// stretch 0 beside one that has it is therefore not "narrow", it is
-	// ZERO — which is how the column arrangement came to show an empty box
-	// where the cameras are. It was drawn correctly only by accident: the
-	// early-out above kept the wide arrangement's stretches in place on a rig
-	// whose column count did not change when the panel was turned, and the
-	// column rule below was never actually reached.
-	//
-	// The leftover cannot land in the tiles either way, because each one is
-	// capped at the width its own picture may have (see applyPreviewAspect):
-	// it stays as trailing space, so a filmstrip of two on a rig of two still
-	// starts at the left edge instead of floating in the middle of the row.
+	// THE CONTENT COLUMNS TAKE NO STRETCH; ONE TRAILING COLUMN TAKES IT
+	// ALL (TAS MON .mrow, M1). Stretched content columns divide the pane
+	// and park the leftover BETWEEN the tiles (measured 210 px gaps on a
+	// five-camera rig) — the fault this task closes. Content-sized (the
+	// boxes wear fixed widths now), the tiles stand adjacent and the
+	// leftover trails past the last one, where the M1 check wants it.
 	// COVER EVERY COLUMN THAT HAS EVER EXISTED, not just 0..cols. A
 	// QGridLayout's columnCount() never comes back down, so the filmstrip
-	// arrangement (up to eight columns) leaves columns 5-7 stretched, and a
-	// later Wide pass that only reset 0..4 would split the pane among seven
-	// stretched columns instead of four — the tiles come back at half width.
-	// This is the column twin of the usedRows/rowCount() guard just below.
-	for (int c = 0; c < std::max(cols + 1, multiviewGrid_->columnCount());
-	     c++)
-		multiviewGrid_->setColumnStretch(c, c < cols ? 1 : 0);
+	// arrangement (up to eight columns) leaves stale columns behind: they
+	// stay at stretch 0 and collapse, and the trailing spacer sits past
+	// all of them. This is the column twin of the usedRows/rowCount()
+	// guard just below.
+	const int trail =
+		std::max(cols, multiviewGrid_->columnCount());
+	for (int c = 0; c <= trail; c++)
+		multiviewGrid_->setColumnStretch(c, c == trail ? 1 : 0);
 	// THE ROWS IN USE SHARE THE BLOCK; the rest hold nothing. A
 	// QGridLayout remembers the stretch of a row it no longer has anything
 	// in and rowCount() never comes back down, so a rig that once wanted

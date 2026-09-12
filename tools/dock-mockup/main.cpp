@@ -929,6 +929,21 @@ public:
 				v << tile_[i]->picture();
 		return v;
 	}
+	// The boxes holding those pictures, parallel to pictureBoxes(): the
+	// M1 check reads gaps off boxes and fills off pictures. Same
+	// visibility filter, or the two lists part ways the moment B hides.
+	QVector<const QWidget *> monitorBoxes() const
+	{
+		QVector<const QWidget *> v;
+		if (aBox_->isVisible())
+			v << aBox_;
+		if (bBox_->isVisible())
+			v << bBox_;
+		for (int i = 0; i < kTiles; i++)
+			if (tile_[i]->isVisible())
+				v << tile_[i];
+		return v;
+	}
 	static int tagHeight() { return 0; }
 
 	// The camera block and the pictures in it, on their own: A filling the row
@@ -1917,26 +1932,33 @@ private:
 			return;
 		while (QLayoutItem *it = tilesGrid_->takeAt(0))
 			delete it;
-		// NO ALIGNMENT FLAG. An aligned layout item is given its
+		// NO VERTICAL ALIGNMENT FLAG. An aligned layout item is given its
 		// sizeHint, not its cell — so a tile whose minimum is nothing and
 		// whose content is a caption would draw itself caption-sized.
-		// Unaligned, it fills the cell and its MAXIMUM is what holds it to
-		// a picture-shaped rectangle.
+		// Unaligned vertically, it fills the cell and its MAXIMUM is what
+		// holds it to a picture-shaped rectangle. Horizontally the tiles
+		// ride LEFT (TAS MON .mrow, M1): the columns below stay stretched
+		// open, so no column ever sizes to a hint and the trap cannot
+		// bite — while an unaligned capped box floats mid-column, hundreds
+		// of px from its bay (measured).
 		for (int i = 0; i < kTiles; i++)
-			tilesGrid_->addWidget(tile_[i], i / cols, i % cols);
+			tilesGrid_->addWidget(tile_[i], i / cols, i % cols,
+					      Qt::AlignLeft);
 		// FROM THE TILES THAT ARE ON SCREEN, not from the eight that
 		// exist. Counted from kTiles, a two-camera rig stretched four
 		// rows to hold one row of pictures and each got a quarter of the
 		// block: 164 px wide and 26 px tall, which is a strip of
 		// letterboxing where two confidence monitors should be.
 		const int rows = (std::max(1, g_cams) + cols - 1) / cols;
-		// EVERY row and column, not just the ones in use now. A
-		// QGridLayout remembers the stretch of a row it no longer has
-		// items in, and rowCount() never comes back down — so a block
-		// that was once eight rows deep kept four EMPTY stretching rows
-		// after it became four, and they took half the block's height.
-		for (int c = 0; c < std::max(cols, tilesGrid_->columnCount()); c++)
-			tilesGrid_->setColumnStretch(c, c < cols ? 1 : 0);
+		// CONTENT COLUMNS TAKE NO STRETCH; ONE TRAILING COLUMN TAKES IT
+		// ALL (TAS MON .mrow, M1 — like the dock): stretched content
+		// columns divide the pane and park the leftover between the
+		// tiles. Content-sized (fixed widths now), they stand adjacent
+		// and the leftover trails. Cover every column that has ever
+		// existed: stale ones stay at 0 and collapse.
+		const int trail = std::max(cols, tilesGrid_->columnCount());
+		for (int c = 0; c <= trail; c++)
+			tilesGrid_->setColumnStretch(c, c == trail ? 1 : 0);
 		// NO SPARE ROW: one here took a THIRD of the block, because with
 		// every row at stretch 1 and the ceiling never reached the grid
 		// simply divided the height three ways. The tiles own ceiling is
@@ -2139,10 +2161,11 @@ private:
 			// number.
 			want = std::min(std::max(bayH, blockH), roomH());
 			if (!monitorChosen()) {
+				// TAS MON .mrow (M1): images adjacent, slack trailing
+				// — like the dock, all of it to the tiles pane.
 				const int slack =
 					std::max(0, paneW - baysW - tilesW - gap);
-				monitorSplit_->setSizes({baysW + slack / 2,
-							 tilesW + slack - slack / 2});
+				monitorSplit_->setSizes({baysW, tilesW + slack});
 			}
 		}
 
@@ -2199,8 +2222,11 @@ private:
 					 ? QWIDGETSIZE_MAX
 					 : aspectHeight(tileCap) + kTagH;
 		for (int i = 0; i < kTiles; i++) {
-			if (tile_[i]->maximumWidth() != tileCap)
-				tile_[i]->setMaximumWidth(tileCap);
+			// FIXED width (M1, like the dock): an aligned box with
+			// only a maximum collapses to its hint.
+			if (tile_[i]->minimumWidth() != tileCap ||
+			    tile_[i]->maximumWidth() != tileCap)
+				tile_[i]->setFixedWidth(tileCap);
 			if (tile_[i]->maximumHeight() != capH)
 				tile_[i]->setMaximumHeight(capH);
 		}
@@ -2455,6 +2481,11 @@ struct RowFit {
 	// beside it do not.
 	int tilePaneW = 0, tileCoveredW = 0, tileGapW = 0;
 	int tilePaneH = 0, tileCoveredH = 0, tileGapH = 0;
+	// TAS MON .mrow (M1): where the tile block STARTS in its pane. Fill
+	// follows from the caps (tileBlockFor, unit-checked); what the old
+	// fill-bound punished was trailing slack, which is exactly where
+	// leftover belongs once the pictures hug the left edge.
+	int tileLeadX = -1, tileLeadY = -1;
 };
 
 RowFit rowFit(Mock *w)
@@ -2500,6 +2531,8 @@ RowFit rowFit(Mock *w)
 			f.tileCoveredH = b - t;
 			f.tileGapW = f.tilePaneW - f.tileCoveredW;
 			f.tileGapH = f.tilePaneH - f.tileCoveredH;
+			f.tileLeadX = l;
+			f.tileLeadY = t;
 		}
 	}
 	return f;
@@ -3679,24 +3712,26 @@ void checkMonitorRowFills(const QString &label, Drag drag = Drag::None)
 			    f.gapW, f.gapH, w->tileSize().width(),
 			    w->tileSize().height(), w->tileBlockSize().width(),
 			    w->tileBlockSize().height());
-		// THE SMALLER OF THE TWO AXES, because only one of them can be
-		// full: see the note on RowFit. Short on BOTH is the fault.
-		// Asked of the CAMERA block, which is the half that was reported
-		// — A can fill the row while the cameras beside it do not.
+		// WHERE THE TILE BLOCK STARTS IN ITS PANE, horizontally: TAS MON
+		// .mrow (M1) trails leftover to the right, so a pane with room to
+		// spare fails a fill-bound by design — while a block floating
+		// mid-pane (the old centred tiles, hundreds of px from the edge)
+		// fails a lead-bound however big it is. Vertical is untouched
+		// (fill + maximums, as before): not this task's axis.
 		if (f.tilePaneW > 0) {
-			const int bound = qMin(f.tileGapW, f.tileGapH);
+			const int bound = f.tileLeadX;
 			if (bound > worstGap) {
 				worstGap = bound;
 				worstAt = QString("%1x%2: cameras %3x%4 in a "
-						  "%5x%6 pane (short %7 x %8)")
+						  "%5x%6 pane (lead %7 x %8)")
 						  .arg(s.w)
 						  .arg(s.h)
 						  .arg(f.tileCoveredW)
 						  .arg(f.tileCoveredH)
 						  .arg(f.tilePaneW)
 						  .arg(f.tilePaneH)
-						  .arg(f.tileGapW)
-						  .arg(f.tileGapH);
+						  .arg(f.tileLeadX)
+						  .arg(f.tileLeadY);
 			}
 		}
 		host->hide();
@@ -3708,7 +3743,7 @@ void checkMonitorRowFills(const QString &label, Drag drag = Drag::None)
 	// the report was about — is nothing like it: the reported panel drew its
 	// cameras 237x133 in a pane 722x224, short 485 px on one axis and 91 on
 	// the other at the same time.
-	check(worstGap <= 12, label + ": the cameras fill one axis of their pane",
+	check(worstGap <= 12, label + ": the cameras start at their pane's edge",
 	      worstAt.isEmpty() ? QStringLiteral("no camera block") : worstAt);
 }
 
@@ -4725,6 +4760,85 @@ void checkNormaleBudget(QApplication &app)
 	refreshSheetAssets();
 }
 
+void checkMonitorRow(QApplication &app)
+{
+	using namespace multireplay::probe;
+	const ThemeChoice themeWas = g_theme;
+	const Scheme scWas = g_sc;
+	const auto tintsWas = g_tints;
+	const int camsWas = g_cams;
+	const bool haveBWas = g_haveB;
+	// TAS MON .mrow{gap:6px} (M1): A, B and the tile grid adjacent — the
+	// sweep the brief asks for (1..8 cameras, with and without B), on the
+	// two Wide forms. Fresh Mock per rig: the rig is read at construction.
+	for (const ArtifactForm &f : kArtifactForms) {
+		const QString form = QString::fromLatin1(f.name);
+		if (form != QStringLiteral("normale") &&
+		    form != QStringLiteral("fullscreen"))
+			continue;
+		bool all = true;
+		QString detail;
+		for (int n = 1; n <= 8; n++) {
+			for (int b = 0; b <= 1; b++) {
+				g_cams = n;
+				g_haveB = b != 0;
+				auto *host = new QWidget();
+				host->setAutoFillBackground(true);
+				auto *hl = new QVBoxLayout(host);
+				hl->setContentsMargins(0, 0, 0, 0);
+				auto *w = new Mock();
+				hl->addWidget(w);
+				w->retheme(ThemeChoice::Broadcast,
+					   app.palette());
+				w->setLayoutPreset(f.preset);
+				for (int pass = 0; pass < 2; pass++) {
+					host->resize(f.w, f.h);
+					host->show();
+					for (int i = 0; i < 3; i++) {
+						QApplication::processEvents();
+						QApplication::sendPostedEvents();
+					}
+				}
+				QList<QWidget *> pics;
+				QList<QWidget *> mboxes;
+				// Paired from the BOXES (not pictureBoxes(), which
+				// lists B unconditionally): a hidden B picture
+				// against a filtered B box read as "pics 3 boxes
+				// 2" for a whole session.
+				for (const QWidget *b : w->monitorBoxes()) {
+					auto *ab = static_cast<AspectBox *>(
+						const_cast<QWidget *>(b));
+					pics << ab->picture();
+					mboxes << const_cast<QWidget *>(b);
+				}
+				QString d;
+				// Geometry, not pixels: the pictures are placed by
+				// the layout, and their rects ARE the measurement.
+				const bool ok =
+					monitorRowConform(w, pics, mboxes, &d);
+				if (!ok && all)
+					detail = QStringLiteral(
+							 "%1 cams%2B: %3")
+							 .arg(n)
+							 .arg(b ? "+" : "-")
+							 .arg(d);
+				all = all && ok;
+				delete host;
+			}
+		}
+		check(all,
+		      QStringLiteral("%1: A, B and the tile grid stand adjacent")
+			      .arg(form),
+		      detail);
+	}
+	g_cams = camsWas;
+	g_haveB = haveBWas;
+	g_theme = themeWas;
+	g_sc = scWas;
+	g_tints = tintsWas;
+	refreshSheetAssets();
+}
+
 int runChecks(QPalette pal, QApplication &app, const QString &outDir)
 {
 	struct Want {
@@ -5441,6 +5555,8 @@ int runChecks(QPalette pal, QApplication &app, const QString &outDir)
 	// Normale budget: ~320px command panel, table and monitors breathe
 	// (S3, M2).
 	checkNormaleBudget(app);
+	// Monitor row: A, B and the tile grid adjacent, slack trailing (M1).
+	checkMonitorRow(app);
 
 	// LAST, because it replaces the application palette and style sheet for
 	// the rest of the process: from here on the panel is a LIGHT one sitting

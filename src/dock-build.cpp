@@ -823,6 +823,9 @@ QWidget *MultiReplayDock::buildPreview()
 	// and the point of a second bay is having the next replay ready while the
 	// first is on air, which cannot be done if only one can be seen.
 	aBox_ = new AspectBox(bays_);
+	// A HANDLE FOR THE GATE, like mrBlock/mrTile: the reopen pass reads
+	// the picture rects off these boxes (M1).
+	aBox_->setObjectName(QStringLiteral("mrBayA"));
 	{
 		displayA_ = new OBSQTDisplay(aBox_);
 		displayA_->setRenderCallback(&MultiReplayDock::drawChannelA, this);
@@ -838,6 +841,7 @@ QWidget *MultiReplayDock::buildPreview()
 		aBox_->setTallyFrame(QColor(sc().tileEdge), kTileEdgeW);
 	}
 	bBox_ = new AspectBox(bays_);
+	bBox_->setObjectName(QStringLiteral("mrBayB"));
 	{
 		displayB_ = new OBSQTDisplay(bBox_);
 		displayB_->setRenderCallback(&MultiReplayDock::drawChannelB, this);

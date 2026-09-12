@@ -817,4 +817,129 @@ inline bool bandConform(const QWidget *panel, const QImage &shot,
 	return n > 0 && std::abs(off) <= 3.0 && bare && inkOk;
 }
 
+// ── THE MONITOR ROW (M1) ───────────────────────────────────────────────
+// TAS MON .mrow{gap:6px}: A, B and the tile grid ADJACENT — images, not
+// boxes: a box wider than its picture centres it and the gap reads as a
+// black band. Whatever slack the row cannot fill trails at its end, never
+// between two pictures.
+//
+// `pics` are the PICTURE widgets (AspectBox::picture()) in any order; rows
+// are read off y. `paneW` is the row's pane width.
+// ── THE MONITOR ROW (M1) ───────────────────────────────────────────────
+// TAS MON .mrow{gap:6px}: A, B and the tile grid ADJACENT — boxes, whose
+// pictures fill them. Two halves, because they are two different faults:
+// boxes apart (slack parked between groups) and pictures afloat inside
+// their boxes (a box wider than its image centres it: the black band).
+// The pictures alone cannot tell them apart: every box draws a 2–3 px
+// tally ring inside its edge, so adjacent boxes (6 px) always read 10–12 px
+// picture-to-picture — demanding ≤8 there fails the drawing itself
+// (measured). `pics`/`boxes` run parallel (AspectBox::picture() of each).
+inline bool monitorRowConform(const QWidget *panel, const QList<QWidget *> &pics,
+			      const QList<QWidget *> &boxes, QString *detail)
+{
+	if (pics.size() != boxes.size() || pics.size() < 2) {
+		if (detail)
+			*detail = QStringLiteral("pics %1 boxes %2")
+					  .arg(pics.size())
+					  .arg(boxes.size());
+		return false;
+	}
+	struct Item {
+		QWidget *pic;
+		QWidget *box;
+	};
+	QList<Item> vis;
+	for (int i = 0; i < pics.size(); i++) {
+		QWidget *p = pics[i];
+		QWidget *b = boxes[i];
+		// Filtered as PAIRS: dropping only one side scrambles the
+		// rest (a hidden B picture against a filtered B box read as
+		// "pics 3 boxes 2" for a whole session).
+		if (!p || !b || !p->isVisible() || !b->isVisible() ||
+		    p->width() <= 0)
+			continue;
+		vis << Item{p, b};
+	}
+	if (vis.size() < 2) {
+		if (detail)
+			*detail = QStringLiteral("only %1 pictures").arg(vis.size());
+		return vis.size() == 1;
+	}
+	std::sort(vis.begin(), vis.end(), [panel](const Item &a, const Item &b) {
+		const QRect ra = rectIn(a.pic, panel), rb = rectIn(b.pic, panel);
+		if (ra.top() != rb.top())
+			return ra.top() < rb.top();
+		return ra.left() < rb.left();
+	});
+	// Rows are vertical bands (tops within a few px would miss a short
+	// tile beside a tall bay).
+	QList<QList<Item>> rows;
+	for (const Item &it : vis) {
+		const QRect r = rectIn(it.pic, panel);
+		bool placed = false;
+		for (QList<Item> &row : rows) {
+			const QRect first = rectIn(row.first().pic, panel);
+			if (r.top() < first.bottom()) {
+				row << it;
+				placed = true;
+				break;
+			}
+		}
+		if (!placed)
+			rows << QList<Item>{it};
+	}
+	int worstGap = -999;
+	bool overlap = false;
+	int pairs = 0;
+	int worstFill = 0;
+	for (QList<Item> row : rows) {
+		std::sort(row.begin(), row.end(),
+			  [panel](const Item &a, const Item &b) {
+				  return rectIn(a.pic, panel).left() <
+					 rectIn(b.pic, panel).left();
+			  });
+		for (int i = 0; i < row.size(); i++) {
+			const QRect br = rectIn(row[i].box, panel);
+			const QRect pr = rectIn(row[i].pic, panel);
+			// Width only: M1 is the horizontal band between images.
+			// A few px of vertical letterbox (tall row, 16:9 picture)
+			// is panel-coloured air, not a band between neighbours.
+			// Budget 12, not 8: boxes draw 2–3 px tally rings inside
+			// their edge, and a column of mixed rings (on-air 3 px
+			// beside watched 2 px) legitimately differs by more than
+			// the rings alone — measured 9. Anything structural (the
+			// 342 px this task started from) is an order above.
+			worstFill = std::max(worstFill, br.width() - pr.width());
+			if (i == 0)
+				continue;
+			// Side by side only (see the stacked-tiles note above).
+			const QRect p = rectIn(row[i - 1].pic, panel);
+			const QRect r = pr;
+			const int vOverlap =
+				std::min(p.bottom(), r.bottom()) -
+				std::max(p.top(), r.top());
+			if (vOverlap <= 0)
+				continue;
+			// ...but the GAP is the boxes': the rings live inside.
+			const QRect pb = rectIn(row[i - 1].box, panel);
+			const QRect rb2 = br;
+			const int g = rb2.left() - rightEdge(pb);
+			worstGap = std::max(worstGap, g);
+			if (g < 0)
+				overlap = true;
+			pairs++;
+		}
+	}
+	if (detail)
+		*detail = QStringLiteral(
+				  "%1 pictures in %2 rows, worst box gap %3, worst fill %4%5")
+				  .arg(vis.size())
+				  .arg(rows.size())
+				  .arg(worstGap)
+				  .arg(worstFill)
+				  .arg(overlap ? QStringLiteral(" OVERLAP")
+					       : QStringLiteral(""));
+	return pairs > 0 && !overlap && worstGap <= 8 && worstFill <= 12;
+}
+
 } // namespace multireplay::probe

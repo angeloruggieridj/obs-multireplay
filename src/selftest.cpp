@@ -6603,6 +6603,11 @@ void runReopenPass(const std::string &outPath)
 		bool bandMeasured = false;
 		bool bandOk = false;
 		QString bandDetail;
+		// TAS MON .mrow (M1): A, B and the tile grid adjacent, slack
+		// trailing — same shots (dock-probe.hpp monitorRowConform).
+		bool monMeasured = false;
+		bool monOk = false;
+		QString monDetail;
 	};
 	std::vector<ArtifactShot> artifactShots;
 	bool artifactSetCaptured = false;
@@ -6610,6 +6615,7 @@ void runReopenPass(const std::string &outPath)
 	bool panelMarcaBoxesFramed = false;
 	bool panelSpeedOneRow = false;
 	bool panelBandCentred = false;
+	bool monitorRowContiguous = false;
 	bool layoutToolbarOnTop = false;
 	bool layoutNoStatusRow = false;
 	bool noticeInMarcaFooter = false;
@@ -6870,6 +6876,48 @@ void runReopenPass(const std::string &outPath)
 												"skipNext")),
 										&s.bandDetail);
 							}
+							// THE MONITOR ROW, same shot (M1).
+							// AspectBox has no Q_OBJECT by design
+							// (dock-layout), so no findChildren
+							// on its type: the boxes are named
+							// (mrBayA/mrBayB/mrTile); pictures and
+							// boxes run parallel into the probe.
+							{
+								QList<QWidget *> pics;
+								QList<QWidget *> mboxes;
+								for (const char *name :
+								     {"mrBayA", "mrBayB"}) {
+									QWidget *box = dock->findChild<
+										QWidget *>(
+										QString::fromLatin1(
+											name));
+									auto *ab = static_cast<
+										multireplay::AspectBox *>(
+										box);
+									if (ab && ab->picture()) {
+										mboxes << box;
+										pics << ab->picture();
+									}
+								}
+								for (QWidget *box : dock->findChildren<
+								     QWidget *>(
+								     QStringLiteral(
+									     "mrTile"))) {
+									auto *ab = static_cast<
+										multireplay::AspectBox *>(
+										box);
+									if (ab && ab->picture()) {
+										mboxes << box;
+										pics << ab->picture();
+									}
+								}
+								s.monMeasured = true;
+								s.monOk = multireplay::probe::
+									monitorRowConform(
+										dock, pics,
+										mboxes,
+										&s.monDetail);
+							}
 						}
 						if (ClipBar *bar =
 							    dock->findChild<ClipBar *>())
@@ -6991,6 +7039,14 @@ void runReopenPass(const std::string &outPath)
 							s.bandOk ? "centred, skip bare"
 								 : "OFF",
 							qUtf8Printable(s.bandDetail));
+					if (s.monMeasured)
+						obs_log(s.monOk ? LOG_INFO
+								: LOG_ERROR,
+							"[selftest] reopen: monitor row %s: "
+							"%s (%s)",
+							qUtf8Printable(s.file),
+							s.monOk ? "adjacent" : "GAPPED",
+							qUtf8Printable(s.monDetail));
 					artifactShots.push_back(s);
 				}
 			}
@@ -7118,6 +7174,19 @@ void runReopenPass(const std::string &outPath)
 			"[selftest] reopen: panel_band_centred — %d of %d "
 			"Normale/Fullscreen shots with centred band text, bare >>",
 			shotsBandOk, shotsBandMeasured);
+		// M1: same 8 shots, every one with A, B and the tile grid
+		// adjacent and the slack trailing.
+		const int shotsMonMeasured = (int)std::count_if(
+			artifactShots.begin(), artifactShots.end(),
+			[](const ArtifactShot &s) { return s.monMeasured; });
+		const int shotsMonOk = (int)std::count_if(
+			artifactShots.begin(), artifactShots.end(),
+			[](const ArtifactShot &s) { return s.monOk; });
+		monitorRowContiguous = shotsMonMeasured == 8 && shotsMonOk == 8;
+		obs_log(monitorRowContiguous ? LOG_INFO : LOG_ERROR,
+			"[selftest] reopen: monitor_row_contiguous — %d of %d "
+			"Normale/Fullscreen shots with an adjacent monitor row",
+			shotsMonOk, shotsMonMeasured);
 		obs_log(artifactSetCaptured ? LOG_INFO : LOG_ERROR,
 			"[selftest] reopen: artifact set — %d of 16 shots written "
 			"with data (band on air, 6 rows) to %s (project re-opened "
@@ -7320,6 +7389,9 @@ void runReopenPass(const std::string &outPath)
 	obs_data_set_bool(checks, "panel_speed_one_row", panelSpeedOneRow);
 	// TAS .band (R7): text centred, >> bare and solid on air — same shots.
 	obs_data_set_bool(checks, "panel_band_centred", panelBandCentred);
+	// TAS MON .mrow (M1): monitor row adjacent — same shots.
+	obs_data_set_bool(checks, "monitor_row_contiguous",
+			  monitorRowContiguous);
 	obs_data_set_bool(checks, "panel_transport_40", panelTransport40);
 	obs_data_set_bool(checks, "panel_trim_60_40", panelTrim6060);
 	obs_data_set_bool(checks, "panel_clip_42", panelClip42);
