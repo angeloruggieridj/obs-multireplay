@@ -544,8 +544,9 @@ public:
 		// The monitoring block: bays beside the tiles, or bays above them
 		// in a column. setOrientation does not touch the children, which
 		// is the whole reason this is a splitter and not two layouts.
-		monitorSplit_->setOrientation(m == PanelMode::Tall ? Qt::Vertical
-								  : Qt::Horizontal);
+		// Tall and Short alike stack it (M3, like the dock).
+		monitorSplit_->setOrientation(m == PanelMode::Wide ? Qt::Horizontal
+								  : Qt::Vertical);
 		bBox_->setVisible(g_haveB);
 
 		// SHORT PUTS THE CONTROLS IN THE LEFT COLUMN. The panel is wide
@@ -2095,10 +2096,10 @@ private:
 		// --- 1. what the two halves would like -----------------------
 		int baysW, tilesW, want;
 		int tileCap = kTileMinWidth;
-		if (mode_ == PanelMode::Tall) {
+		if (mode_ != PanelMode::Wide) {
 			// A COLUMN: the bays across the top, the cameras under
 			// them. Both halves have the whole width; the divider
-			// between them is a HEIGHT.
+			// between them is a HEIGHT. Tall and Short alike (M3).
 			baysW = tilesW = paneW;
 			const int bayH = aspectHeight((paneW - 3 * (bays - 1)) /
 						      bays) +
@@ -4839,6 +4840,96 @@ void checkMonitorRow(QApplication &app)
 	refreshSheetAssets();
 }
 
+void checkMonitorShort(QApplication &app)
+{
+	using namespace multireplay::probe;
+	const ThemeChoice themeWas = g_theme;
+	const Scheme scWas = g_sc;
+	const auto tintsWas = g_tints;
+	const int camsWas = g_cams;
+	const bool haveBWas = g_haveB;
+	// TAS MON colonna stretta (M3): A e B affiancati pari sopra, 4 slot
+	// sotto. Eight cameras so the grid has two full rows to show.
+	g_cams = 8;
+	g_haveB = true;
+	auto *host = new QWidget();
+	host->setAutoFillBackground(true);
+	auto *hl = new QVBoxLayout(host);
+	hl->setContentsMargins(0, 0, 0, 0);
+	auto *w = new Mock();
+	hl->addWidget(w);
+	for (const ArtifactForm &f : kArtifactForms) {
+		const QString form = QString::fromLatin1(f.name);
+		if (form != QStringLiteral("short"))
+			continue;
+		w->retheme(ThemeChoice::Broadcast, app.palette());
+		w->setLayoutPreset(f.preset);
+		for (int pass = 0; pass < 2; pass++) {
+			host->resize(f.w, f.h);
+			host->show();
+			for (int i = 0; i < 3; i++) {
+				QApplication::processEvents();
+				QApplication::sendPostedEvents();
+			}
+		}
+		QString detail;
+		QList<QWidget *> pics;
+		for (const QWidget *p : w->pictureBoxes())
+			pics << const_cast<QWidget *>(p);
+		// Arrangement, not pixels: Short does not fit 340 px until the
+		// compact strip (Task 14), so heights are squeezed to nothing
+		// here — but rows, columns and order settle anyway. A|B side by
+		// side on their row, tiles below in rows of 4 distinct columns.
+		bool ok = pics.size() >= 3;
+		QString d;
+		if (ok) {
+			const QRect ra = rectIn(pics[0], w);
+			const QRect rb = rectIn(pics[1], w);
+			ok = ra.top() == rb.top() &&
+			     std::abs(ra.width() - rb.width()) <= 1;
+			d = QStringLiteral("A y%1 w%2, B y%3 w%4")
+				    .arg(ra.top())
+				    .arg(ra.width())
+				    .arg(rb.top())
+				    .arg(rb.width());
+			QList<int> cols;
+			if (ok) {
+				for (int i = 2; i < pics.size(); i++) {
+					const QRect r = rectIn(pics[i], w);
+					if (r.top() <= ra.bottom())
+						continue;
+					bool known = false;
+					for (int x : cols) {
+						if (std::abs(x - r.left()) <= 4) {
+							known = true;
+							break;
+						}
+					}
+					if (!known)
+						cols << r.left();
+				}
+				// Exactly four: eight in one row, or two, are a
+				// different grid wearing the same tiles.
+				ok = cols.size() == 4;
+				d += QStringLiteral(", tile cols %1").arg(cols.size());
+			}
+		} else {
+			d = QStringLiteral("only %1 pictures").arg(pics.size());
+		}
+		detail = d;
+		check(ok,
+		      QStringLiteral("%1: A|B over a 4-slot grid").arg(form),
+		      detail);
+	}
+	delete host;
+	g_cams = camsWas;
+	g_haveB = haveBWas;
+	g_theme = themeWas;
+	g_sc = scWas;
+	g_tints = tintsWas;
+	refreshSheetAssets();
+}
+
 int runChecks(QPalette pal, QApplication &app, const QString &outDir)
 {
 	struct Want {
@@ -5557,6 +5648,8 @@ int runChecks(QPalette pal, QApplication &app, const QString &outDir)
 	checkNormaleBudget(app);
 	// Monitor row: A, B and the tile grid adjacent, slack trailing (M1).
 	checkMonitorRow(app);
+	// Short monitors: A|B over a 4-slot grid (M3).
+	checkMonitorShort(app);
 
 	// LAST, because it replaces the application palette and style sheet for
 	// the rest of the process: from here on the panel is a LIGHT one sitting

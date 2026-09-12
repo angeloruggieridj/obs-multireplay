@@ -1468,11 +1468,13 @@ void MultiReplayDock::applyPanelMode(PanelMode m, bool force)
 	// OBSQTDisplay between two layouts destroys its native window and strands
 	// the obs_display presenting into it.
 	//
-	// A AND B STAY SIDE BY SIDE IN ALL THREE. They are two bays of one deck;
-	// stacking them would make the pair read as a hierarchy, and it is the one
-	// relationship on this panel that is exactly equal.
-	monitorSplit_->setOrientation(m == PanelMode::Tall ? Qt::Vertical
-							   : Qt::Horizontal);
+	// TALL AND SHORT ALIKE stack it: a ~210 px column cannot hold bays
+	// beside tiles (M3 — measured crushed to a 40 px strip), so the bays
+	// take a row and the 4-slot camera grid goes under them, in both.
+	// (A and B stay side by side WITHIN their row in all three — two bays
+	// of one deck, never a hierarchy.)
+	monitorSplit_->setOrientation(m == PanelMode::Wide ? Qt::Horizontal
+							   : Qt::Vertical);
 	splitter_->setOrientation(m == PanelMode::Short ? Qt::Horizontal
 						       : Qt::Vertical);
 
@@ -1849,10 +1851,11 @@ void MultiReplayDock::applyPreviewAspect()
 	const int tagH = AspectBox::kTagH;
 
 	int want = 0;
-	if (panelMode_ == PanelMode::Tall) {
+	if (panelMode_ != PanelMode::Wide) {
 		// A COLUMN: the bays across the top (A full width, or A|B side by
 		// side), then the SAME grid of cameras as the Wide layout under
-		// them — ceil(n/2) columns, up to two rows.
+		// them — ceil(n/2) columns, up to two rows. Tall AND Short (M3):
+		// a narrow column divides heights, whatever its width.
 		const int bayH =
 			aspectHeight((paneW - 3 * (bays - 1)) / bays) + tagH;
 		int stripH = 0;

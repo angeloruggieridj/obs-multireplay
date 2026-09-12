@@ -6608,6 +6608,11 @@ void runReopenPass(const std::string &outPath)
 		bool monMeasured = false;
 		bool monOk = false;
 		QString monDetail;
+		// TAS MON colonna stretta (M3): A|B sopra, slot sotto — short
+		// shots only (the 4-slot grid itself is the mockup's, with 8).
+		bool shortBaysMeasured = false;
+		bool shortBaysOk = false;
+		QString shortBaysDetail;
 	};
 	std::vector<ArtifactShot> artifactShots;
 	bool artifactSetCaptured = false;
@@ -6616,6 +6621,7 @@ void runReopenPass(const std::string &outPath)
 	bool panelSpeedOneRow = false;
 	bool panelBandCentred = false;
 	bool monitorRowContiguous = false;
+	bool shortBaysOverSlots = false;
 	bool layoutToolbarOnTop = false;
 	bool layoutNoStatusRow = false;
 	bool noticeInMarcaFooter = false;
@@ -6919,6 +6925,85 @@ void runReopenPass(const std::string &outPath)
 										&s.monDetail);
 							}
 						}
+						// SHORT BAYS OVER SLOTS, short shots (M3) —
+						// outside the Wide block above: short shots
+						// never enter it. Compared in dock coords:
+						// bays and tiles live under different
+						// parents, so raw y() would lie.
+						if (s.form == QStringLiteral("short")) {
+							QWidget *aBay = dock->findChild<
+								QWidget *>(
+								QStringLiteral(
+									"mrBayA"));
+							QWidget *bBay = dock->findChild<
+								QWidget *>(
+								QStringLiteral(
+									"mrBayB"));
+							QWidget *firstTile = nullptr;
+							int firstTileTop = INT_MAX;
+							for (QWidget *t : dock->findChildren<
+							     QWidget *>(
+							     QStringLiteral(
+								     "mrTile"))) {
+								if (!t->isVisible())
+									continue;
+								const int ty =
+									t->mapTo(
+										dock,
+										QPoint(0,
+										       0))
+										.y();
+								if (ty < firstTileTop) {
+									firstTileTop = ty;
+									firstTile = t;
+								}
+							}
+							const int aTop =
+								aBay ? aBay->mapTo(
+									       dock,
+									       QPoint(0,
+										      0))
+									     .y()
+								     : -1;
+							const int bTop =
+								bBay ? bBay->mapTo(
+									       dock,
+									       QPoint(0,
+										      0))
+									     .y()
+								     : -1;
+							const int aBot =
+								aBay
+									? aBay->mapTo(
+										  dock,
+										  QPoint(
+											  0,
+											  aBay->height()))
+										  .y() -
+									  1
+									: -1;
+							s.shortBaysMeasured = true;
+							s.shortBaysOk =
+								aBay && bBay &&
+								aTop == bTop &&
+								std::abs(aBay->width() -
+									 bBay->width()) <=
+									1 &&
+								firstTile &&
+								firstTileTop > aBot;
+							s.shortBaysDetail =
+								QStringLiteral(
+									"A y%1 w%2, B y%3 w%4, tile y%5")
+									.arg(aTop)
+									.arg(aBay ? aBay->width()
+										  : -1)
+									.arg(bTop)
+									.arg(bBay ? bBay->width()
+										  : -1)
+									.arg(firstTile
+										     ? firstTileTop
+										     : -1);
+						}
 						if (ClipBar *bar =
 							    dock->findChild<ClipBar *>())
 							s.bandLit = bar->onAir();
@@ -7047,6 +7132,16 @@ void runReopenPass(const std::string &outPath)
 							qUtf8Printable(s.file),
 							s.monOk ? "adjacent" : "GAPPED",
 							qUtf8Printable(s.monDetail));
+					if (s.shortBaysMeasured)
+						obs_log(s.shortBaysOk ? LOG_INFO
+								      : LOG_ERROR,
+							"[selftest] reopen: short bays %s: "
+							"%s (%s)",
+							qUtf8Printable(s.file),
+							s.shortBaysOk ? "bays over slots"
+								      : "OFF",
+							qUtf8Printable(
+								s.shortBaysDetail));
 					artifactShots.push_back(s);
 				}
 			}
@@ -7187,6 +7282,19 @@ void runReopenPass(const std::string &outPath)
 			"[selftest] reopen: monitor_row_contiguous — %d of %d "
 			"Normale/Fullscreen shots with an adjacent monitor row",
 			shotsMonOk, shotsMonMeasured);
+		// M3: the 4 short shots, every one with A|B over the slots.
+		const int shotsShortBaysMeasured = (int)std::count_if(
+			artifactShots.begin(), artifactShots.end(),
+			[](const ArtifactShot &s) { return s.shortBaysMeasured; });
+		const int shotsShortBaysOk = (int)std::count_if(
+			artifactShots.begin(), artifactShots.end(),
+			[](const ArtifactShot &s) { return s.shortBaysOk; });
+		shortBaysOverSlots = shotsShortBaysMeasured == 4 &&
+				     shotsShortBaysOk == 4;
+		obs_log(shortBaysOverSlots ? LOG_INFO : LOG_ERROR,
+			"[selftest] reopen: layout_short_bays_over_slots — %d of %d "
+			"short shots with A|B over the slots",
+			shotsShortBaysOk, shotsShortBaysMeasured);
 		obs_log(artifactSetCaptured ? LOG_INFO : LOG_ERROR,
 			"[selftest] reopen: artifact set — %d of 16 shots written "
 			"with data (band on air, 6 rows) to %s (project re-opened "
@@ -7392,6 +7500,9 @@ void runReopenPass(const std::string &outPath)
 	// TAS MON .mrow (M1): monitor row adjacent — same shots.
 	obs_data_set_bool(checks, "monitor_row_contiguous",
 			  monitorRowContiguous);
+	// TAS MON colonna stretta (M3): A|B over slots — short shots.
+	obs_data_set_bool(checks, "layout_short_bays_over_slots",
+			  shortBaysOverSlots);
 	obs_data_set_bool(checks, "panel_transport_40", panelTransport40);
 	obs_data_set_bool(checks, "panel_trim_60_40", panelTrim6060);
 	obs_data_set_bool(checks, "panel_clip_42", panelClip42);
