@@ -6,7 +6,7 @@
 **Instant replay multicamera per OBS Studio, in una dock nativa.**
 
 [![Build](https://github.com/angeloruggieridj/obs-multireplay/actions/workflows/push.yaml/badge.svg)](https://github.com/angeloruggieridj/obs-multireplay/actions/workflows/push.yaml)
-[![Latest release](https://img.shields.io/github/v/release/angeloruggieridj/obs-multireplay?include_prereleases&sort=date)](https://github.com/angeloruggieridj/obs-multireplay/releases)
+[![Latest release](https://img.shields.io/github/v/release/angeloruggieridj/obs-multireplay?sort=date)](https://github.com/angeloruggieridj/obs-multireplay/releases)
 [![Downloads](https://img.shields.io/github/downloads/angeloruggieridj/obs-multireplay/total)](https://github.com/angeloruggieridj/obs-multireplay/releases)
 [![License: GPL v2](https://img.shields.io/badge/license-GPL--2.0--or--later-blue.svg)](LICENSE)
 
@@ -26,17 +26,16 @@ The panel adapts to the room it is given — three arrangements, one codebase, j
 
 </div>
 
-> [!WARNING]
-> **This is a beta — do not put it in a critical gallery.** Behaviour can change
-> between builds. Try it on a rehearsal or a rig you can afford to restart. Hit a
+> [!TIP]
+> **1.0.0 is the first stable release.** As with any new tool in a gallery, run it
+> on a rehearsal before the first live match. Hit a
 > problem? [Open an issue](https://github.com/angeloruggieridj/obs-multireplay/issues/new)
 > and **attach the OBS log** (Help ▸ Log Files ▸ Show Log Files) — without it
 > almost nothing can be diagnosed.
 
-> [!WARNING]
-> **Questa è una beta — non metterla in una regia critica.** Il comportamento può
-> cambiare da una build all'altra. Provala su una prova generale o su un impianto
-> che puoi permetterti di riavviare. Problemi?
+> [!TIP]
+> **La 1.0.0 è la prima release stabile.** Come per ogni strumento nuovo in regia,
+> provala su una prova generale prima della prima partita in diretta. Problemi?
 > [Apri una issue](https://github.com/angeloruggieridj/obs-multireplay/issues/new)
 > e **allega il log di OBS** (Aiuto ▸ File di log ▸ Mostra i file di log) — senza,
 > non si diagnostica quasi niente.
@@ -104,6 +103,7 @@ camera. Native Qt dock inside OBS: no browser, no web server, no second app.
 - ⌨️ **A hotkey for every command**, registered with OBS itself — visible in OBS's Hotkeys settings, reachable from a Stream Deck with no extra plugin in between.
 - 🖱️ **A keyboard layer on the dock**: arrows step a frame (a second with Shift), up/down walk the list, `+` / `−` change speed, Enter plays. Typing always wins.
 - ⛶ **Float the panel onto a whole monitor** — one key fills the screen, `Esc` brings it back; double-click the title bar to maximise. Maximize box added; no Minimize (an OBS dock is owned by the main window, which gets no taskbar button).
+- 🎛️ **Hardware replay controllers** — JLCooper SloMo Mini and Contour ShuttlePRO v2 through small Node.js bridges over obs-websocket (jog, T-bar/shuttle speed, keys, SloMo Mini display). See [`tools/hardware-bridge`](tools/hardware-bridge/README.md).
 
 **Projects & updates**
 
@@ -314,6 +314,7 @@ OBS: niente browser, niente server web, nessuna seconda applicazione.
 - ⌨️ **Una scorciatoia per ogni comando**, registrata dentro OBS — compaiono nelle Scorciatoie di OBS e uno Stream Deck le raggiunge senza altri plugin di mezzo.
 - 🖱️ **Uno strato tastiera sulla dock**: le frecce spostano di un fotogramma (di un secondo con Shift), su/giù scorrono la lista, `+` / `−` cambiano velocità, Invio riproduce. Mentre scrivi ha la precedenza la scrittura.
 - ⛶ **Sgancia il pannello su un monitor intero** — un tasto riempie lo schermo, `Esc` lo riporta; doppio click sulla barra del titolo per massimizzare. C'è l'Ingrandisci; niente Riduci a icona (un pannello OBS è posseduto dalla finestra principale, che non ha un pulsante nella barra delle applicazioni).
+- 🎛️ **Controller di replay hardware** — JLCooper SloMo Mini e Contour ShuttlePRO v2 tramite piccoli bridge Node.js su obs-websocket (jog, velocità da T-bar/shuttle, tasti, display del SloMo Mini). Vedi [`tools/hardware-bridge`](tools/hardware-bridge/README.md).
 
 **Progetti e aggiornamenti**
 
