@@ -1059,6 +1059,45 @@ private:
 	void applyPanelMode(PanelMode m, bool force = false);
 
 public:
+	// --- EXTERNAL CONTROL (obs-websocket vendor requests) --------------------
+	// What remote-control.cpp calls on behalf of an obs-websocket client — a
+	// hardware controller bridge, see tools/hardware-bridge. Each one is the
+	// same code path as the panel key or hotkey it stands for, so a USB jog
+	// wheel cannot drift from the button the operator would have pressed.
+	//
+	// GUI THREAD ONLY. obs-websocket runs requests on a worker of its own
+	// thread pool, and every one of these touches widgets; remote-control.cpp
+	// marshals each request onto the UI task queue before it gets here.
+	struct RemoteStatus {
+		// Position on the bar, in FOOTAGE (what the seek bar's own clock
+		// shows), or -1 when there is no timeline yet.
+		int64_t cursorMs = -1;
+		int speedPct = 100;
+		int eventId = 0; // selected event, else the last one marked
+		int list = 1;
+		bool recording = false;
+		const char *channel = "A"; // "A", "B" or "AB"
+	};
+	// Frame steps, each one the ⏮/⏭ key. Several in one request are meant for
+	// the ±1 keys of a controller, not for a jog wheel: every step restarts
+	// playback, so a wheel should use remoteScrubSeconds.
+	void remoteStepFrames(int delta);
+	void remoteSetSpeed(int pct);
+	// One jump along the footage axis, whatever its size.
+	void remoteScrubSeconds(double seconds);
+	// ↑/↓ in the event list: selecting cues the event.
+	void remoteStepEvent(int delta);
+	// Selects (and so cues) the event with this id; false if no row has it.
+	bool remoteSelectEvent(int id);
+	// A ↔ B. False when the second bay is switched off: toggling onto a
+	// channel the panel does not show would drive keys nobody can see. The
+	// linked A|B mode stays a panel gesture.
+	bool remoteToggleChannel();
+	// Previous/next of the lists that are shown; stops at either end, like the
+	// hotkeys. Returns the list now selected (1-based).
+	int remoteStepList(int delta);
+	RemoteStatus remoteStatus() const;
+
 	// --- THE PANEL'S COLOURS ------------------------------------------------
 	// Rebuilds the style sheet from Config.uiTheme and the application palette
 	// — which is where OBS puts the current theme's colours (see schemeFor in

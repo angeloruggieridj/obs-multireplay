@@ -3941,6 +3941,99 @@ void MultiReplayDock::nudgeSpeed(int deltaPct)
 	applyReplaySpeed(std::clamp(speedPct_ + deltaPct, 5, 200));
 }
 
+// ---------------------------------------------------------------------------
+// External control — see remote-control.cpp, which marshals every request onto
+// this thread before calling any of these.
+// ---------------------------------------------------------------------------
+
+namespace {
+// Each step restarts playback on a GOP decode, so a request asking for a
+// hundred of them would hold the GUI thread for seconds. A controller's ±1 keys
+// need one; anything that turns continuously belongs on remoteScrubSeconds.
+constexpr int kRemoteMaxFrameSteps = 10;
+} // namespace
+
+void MultiReplayDock::remoteStepFrames(int delta)
+{
+	const int n = std::min(std::abs(delta), kRemoteMaxFrameSteps);
+	for (int i = 0; i < n; i++) {
+		if (delta > 0)
+			stepFrameForward();
+		else
+			stepFrameBackward();
+	}
+}
+
+void MultiReplayDock::remoteSetSpeed(int pct)
+{
+	// applyReplaySpeed clamps, re-speeds a clip on air without restarting it
+	// and only arms the number when nothing plays; poll() moves the slider.
+	applyReplaySpeed(pct);
+}
+
+void MultiReplayDock::remoteScrubSeconds(double seconds)
+{
+	scrubBySeconds(seconds);
+}
+
+void MultiReplayDock::remoteStepEvent(int delta)
+{
+	stepEventSelection(delta);
+}
+
+bool MultiReplayDock::remoteSelectEvent(int id)
+{
+	if (!events_ || id <= 0)
+		return false;
+	for (int row = 0; row < events_->rowCount(); row++) {
+		QTableWidgetItem *it = events_->item(row, kColId);
+		if (!it || it->data(Qt::UserRole).toInt() != id)
+			continue;
+		// selectRow alone: the selection signal is what cues the event, so
+		// calling cueSelected() here as well would cue it twice.
+		events_->selectRow(row);
+		events_->scrollToItem(it);
+		return true;
+	}
+	return false;
+}
+
+bool MultiReplayDock::remoteToggleChannel()
+{
+	if (!ReplayCore::instance().getConfig().enableChannelB)
+		return false;
+	const Which next = activeChannel_ == Which::A ? Which::B : Which::A;
+	setActiveChannel(next, /*linked*/ false);
+	// The selector keys only follow their own clicks; say which one is lit.
+	if (QAbstractButton *b =
+		    chanSel_ ? chanSel_->button(next == Which::B ? 1 : 0)
+			     : nullptr)
+		b->setChecked(true);
+	return true;
+}
+
+int MultiReplayDock::remoteStepList(int delta)
+{
+	stepList(delta);
+	return EventStore::instance().selectedList();
+}
+
+MultiReplayDock::RemoteStatus MultiReplayDock::remoteStatus() const
+{
+	RemoteStatus s;
+	const int64_t at = markTimeNs();
+	if (!timeline_.empty() && at != kNoInstant && at != 0)
+		s.cursorMs = timeline_.footageBefore(at) / 1000000;
+	s.speedPct = speedPct_;
+	const auto selected = selectedEventIds();
+	s.eventId = !selected.empty() ? selected.front()
+				      : EventStore::instance().lastEventId();
+	s.list = EventStore::instance().selectedList();
+	s.recording = ReplayCore::instance().isRecording();
+	s.channel = linkedAB_ ? "AB" : (activeChannel_ == Which::B ? "B" : "A");
+	return s;
+}
+
 void MultiReplayDock::cueSelected()
 {
 	// Selecting a row SHOWS that event, on the channel the selector points at.

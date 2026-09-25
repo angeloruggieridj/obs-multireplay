@@ -1,0 +1,16 @@
+{
+  "name": "obs-multireplay-hardware-bridge",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Bridges from USB replay controllers to obs-multireplay over obs-websocket",
+  "license": "GPL-2.0-or-later",
+  "scripts": {
+    "slomo-mini": "node jlcooper-slomo-mini.js",
+    "shuttlepro": "node shuttlepro-v2.js"
+  },
+  "dependencies": {
+    "node-hid": "^3.1.0",
+    "obs-websocket-js": "^5.0.6",
+    "usb": "^3.1.0"
+  }
+}

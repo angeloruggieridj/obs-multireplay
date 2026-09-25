@@ -37,6 +37,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #include "selftest.hpp"
 #include "branch-output-install.hpp"
 #include "updater.hpp"
+#include "remote-control.hpp"
 
 namespace {
 constexpr const char *kDockId = "obs-multireplay-dock";
@@ -140,9 +141,12 @@ void onFrontendEvent(enum obs_frontend_event event, void *)
 		// followed by more work (the new collection has to be adopted), but
 		// an exit is not, and a tick between here and the clearing would take
 		// a fresh reference to the very sources we have just let go of.
-		if (event == OBS_FRONTEND_EVENT_EXIT)
+		if (event == OBS_FRONTEND_EVENT_EXIT) {
 			multireplay::MultiReplayDock::prepareForShutdown();
-		else
+			// A controller still sending requests would queue them
+			// to a UI thread that is about to stop turning.
+			multireplay::remote_control::stopAccepting();
+		} else
 			multireplay::MultiReplayDock::releasePreviewRefs();
 		for (int i = 0; i < multireplay::kChannels; i++) {
 			multireplay::ReplayChannel::instance((multireplay::Which)i)
@@ -228,6 +232,10 @@ void obs_module_post_load(void)
 		obs_log(LOG_ERROR, "Failed to register the obs-multireplay dock");
 		delete dock;
 	}
+
+	// External control for hardware controllers (tools/hardware-bridge).
+	// After the dock, which every request drives.
+	multireplay::remote_control::registerRequests();
 }
 
 // EVERY SUBSYSTEM THAT OWNS A THREAD IS STOPPED HERE, IN THIS ORDER.
@@ -250,9 +258,12 @@ void obs_module_post_load(void)
 //   core   — hotkeys and recording state
 //   updater — a network thread that touches none of the above, and the Branch
 //            Output fetch beside it, which is the same kind of thread
+// External control goes first of all: obs-websocket's workers call into the
+// dock, and the dock is being removed on the very next line.
 void obs_module_unload(void)
 {
 	obs_frontend_remove_event_callback(onFrontendEvent, nullptr);
+	multireplay::remote_control::shutdown();
 	obs_frontend_remove_dock(kDockId);
 	// Detach from Branch Output's encoders before anything else tears down.
 	multireplay::PacketTap::instance().unload();

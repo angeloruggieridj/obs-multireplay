@@ -96,6 +96,8 @@ target_sources(
   PRIVATE
     src/plugin-main.cpp
     src/replay-core.cpp
+    # External control over obs-websocket (vendored header, no link dependency)
+    src/remote-control.cpp
     src/branch-output-control.cpp
     # Fetching and verifying the Branch Output INSTALLER, which is not an update
     # of ours: without that plugin this one cannot record at all, so a fresh
