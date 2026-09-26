@@ -306,8 +306,21 @@ bool pickAsset(obs_data_array_t *assets, ReleaseInfo &out)
 			list.push_back(std::move(item));
 	}
 
+	// Which Ubuntu this is, so the .deb built for it is the one offered: the
+	// packages are per release. Empty elsewhere, and on any other distro.
+	std::string distro;
+#if defined(__linux__)
+	{
+		std::ifstream in("/etc/os-release");
+		std::ostringstream text;
+		text << in.rdbuf();
+		distro = update_asset::distroTag(text.str());
+	}
+#endif
+
 	update_asset::Asset chosen;
-	if (!update_asset::pick(list, update_asset::hostPlatform(), chosen))
+	if (!update_asset::pick(list, update_asset::hostPlatform(), chosen,
+				distro))
 		return false;
 	out.assetUrl = chosen.url;
 	out.assetName = chosen.name;

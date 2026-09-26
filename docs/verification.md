@@ -14,7 +14,7 @@ as untrusted, and what you have to do about it:
 |---|---|---|
 | **macOS** | Gatekeeper quarantines anything downloaded from a browser. Double-clicking the `.pkg` gives *"cannot be opened because it is from an unidentified developer"*, and if OBS ends up loading a quarantined plugin bundle it usually fails silently — the dock never appears under *Docks*. | Right-click the `.pkg` → **Open** → **Open** again in the dialog; or clear the quarantine first with `xattr -dr com.apple.quarantine obs-multireplay-1.0.0-macos-universal.pkg`, then run it. If the plugin still will not load, clear it on the installed bundle too: `xattr -dr com.apple.quarantine "$HOME/Library/Application Support/obs-studio/plugins/obs-multireplay.plugin"`. |
 | **Windows** | SmartScreen may stop the unsigned installer (*"Windows protected your PC"*); the downloaded `.zip` is marked as coming from the internet, and some antivirus products flag unsigned DLLs on sight. | Installer: **More info** → **Run anyway**. Zip: right-click it → **Properties** → tick **Unblock**, then extract into `%ProgramData%\obs-studio\plugins`. If your antivirus quarantines the DLL, verify it first (below) and add an exclusion. |
-| **Linux** | Nothing. There is no signature check to fail. | `sudo apt install ./obs-multireplay-1.0.0-x86_64-linux-gnu.deb`. |
+| **Linux** | Nothing. There is no signature check to fail. | Take the `.deb` named after your Ubuntu release, e.g. `sudo apt install ./obs-multireplay-1.0.1-x86_64-linux-gnu-ubuntu-26.04.deb`. |
 
 "Unsigned" means nobody paid to vouch for the file — it does not mean the file
 is unverified. Every release is built in public by

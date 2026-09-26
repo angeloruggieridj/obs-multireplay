@@ -135,7 +135,7 @@ and keeps the last minutes of them in a bounded ring in RAM.
 | **Built against** | 31.1.1 (the OBS SDK the released binaries are compiled with) |
 | **Also builds against** | 33.0.0-beta4 (prerelease, not supported) |
 | **Branch Output** | [Download](https://github.com/OPENSPHERE-Inc/branch-output/releases) · [repository](https://github.com/OPENSPHERE-Inc/branch-output) — the recording layer; MultiReplay does nothing without it |
-| **Platforms** | Windows (primary) · macOS · Linux (X11/XWayland; under native Wayland the embedded previews say so in the box rather than going black) |
+| **Platforms** | Windows (primary) · macOS · Linux: Ubuntu 24.04 and 26.04 (X11/XWayland; under native Wayland the embedded previews say so in the box rather than going black) |
 
 <details>
 <summary>Every OBS version CI probed</summary>
@@ -180,6 +180,10 @@ there for portable OBS or a manual install: extract it into that same folder.
 **macOS:** the `.pkg` is not notarised — if the dock does not appear, run
 `xattr -dr com.apple.quarantine "$HOME/Library/Application Support/obs-studio/plugins/obs-multireplay.plugin"`
 and restart OBS.
+**Linux:** there is one `.deb` per Ubuntu release — take the one named after
+yours (`…-ubuntu-24.04.deb` or `…-ubuntu-26.04.deb`) and install it with
+`sudo apt install ./<file>.deb`. It works with OBS from the PPA and with OBS's
+own `.deb`, on OBS 32 and 33.
 
 ### Unsigned builds
 
@@ -371,7 +375,7 @@ tiene gli ultimi minuti in un buffer circolare in RAM.
 | **Compilato contro** | 31.1.1 (l'SDK di OBS con cui sono compilate le build pubblicate) |
 | **Compila anche contro** | 33.0.0-beta4 (pre-release, non supportata) |
 | **Branch Output** | [Download](https://github.com/OPENSPHERE-Inc/branch-output/releases) · [repository](https://github.com/OPENSPHERE-Inc/branch-output) — è lo strato che registra, e senza di lui MultiReplay non fa niente |
-| **Piattaforme** | Windows (principale) · macOS · Linux (X11/XWayland; sotto Wayland nativo le anteprime lo scrivono nel riquadro invece di restare nere) |
+| **Piattaforme** | Windows (principale) · macOS · Linux: Ubuntu 24.04 e 26.04 (X11/XWayland; sotto Wayland nativo le anteprime lo scrivono nel riquadro invece di restare nere) |
 
 <details>
 <summary>Tutte le versioni di OBS provate dalla CI</summary>
@@ -417,6 +421,10 @@ un'installazione manuale: estrailo in quella stessa cartella.
 **macOS:** il `.pkg` non è notarizzato — se la dock non compare, esegui
 `xattr -dr com.apple.quarantine "$HOME/Library/Application Support/obs-studio/plugins/obs-multireplay.plugin"`
 e riavvia OBS.
+**Linux:** c'è un `.deb` per ogni versione di Ubuntu — prendi quello col nome
+della tua (`…-ubuntu-24.04.deb` o `…-ubuntu-26.04.deb`) e installalo con
+`sudo apt install ./<file>.deb`. Funziona con OBS del PPA e con il `.deb`
+ufficiale di OBS, su OBS 32 e 33.
 
 ### Build non firmate
 

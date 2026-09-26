@@ -307,8 +307,8 @@ STATIC_ROWS = {
          "[repository](https://github.com/OPENSPHERE-Inc/branch-output) — the recording "
          "layer; MultiReplay does nothing without it"),
         ("Platforms",
-         "Windows (primary) · macOS · Linux (X11/XWayland; under native Wayland the "
-         "embedded previews say so in the box rather than going black)"),
+         "Windows (primary) · macOS · Linux: Ubuntu 24.04 and 26.04 (X11/XWayland; under "
+         "native Wayland the embedded previews say so in the box rather than going black)"),
     ],
     "it": [
         ("Branch Output",
@@ -316,8 +316,8 @@ STATIC_ROWS = {
          "[repository](https://github.com/OPENSPHERE-Inc/branch-output) — è lo strato che "
          "registra, e senza di lui MultiReplay non fa niente"),
         ("Piattaforme",
-         "Windows (principale) · macOS · Linux (X11/XWayland; sotto Wayland nativo le "
-         "anteprime lo scrivono nel riquadro invece di restare nere)"),
+         "Windows (principale) · macOS · Linux: Ubuntu 24.04 e 26.04 (X11/XWayland; sotto "
+         "Wayland nativo le anteprime lo scrivono nel riquadro invece di restare nere)"),
     ],
 }
 

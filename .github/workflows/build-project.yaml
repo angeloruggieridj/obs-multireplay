@@ -279,6 +279,18 @@ jobs:
           config: ${{ needs.check-event.outputs.config }}
           package: ${{ fromJSON(needs.check-event.outputs.package) }}
 
+      # One .deb per Ubuntu release (see ubuntu-2604-build), so the name says
+      # which: their FFmpeg and Qt package names differ, and a .deb for one
+      # release does not install on the other. The in-app updater reads the
+      # same tag to offer the right one (update_asset::distroTag).
+      - name: Name the Package After Its Ubuntu 🏷️
+        run: |
+          : Name the Package After Its Ubuntu 🏷️
+          shopt -s nullglob
+          for f in release/*-x86_64-linux-gnu.deb release/*-x86_64-linux-gnu-dbgsym.ddeb; do
+            mv -v "$f" "${f/-x86_64-linux-gnu/-x86_64-linux-gnu-${{ matrix.os }}}"
+          done
+
       - name: Upload Source Tarball 🗜️
         uses: actions/upload-artifact@v7
         with:
@@ -303,6 +315,147 @@ jobs:
         with:
           path: ${{ github.workspace }}/.ccache
           key: ${{ runner.os }}-${{ matrix.os }}-ccache-x86_64-${{ needs.check-event.outputs.config }}
+
+  # UBUNTU 26.04 — the only Ubuntu OBS 33 is published for. Its own job, and
+  # not the template's scripts: those add ppa:obsproject/obs-studio and build
+  # against the libobs it ships, and a PPA for a new Ubuntu release may not
+  # exist yet. This builds against OBS's own .deb for that release instead
+  # (the version obs-compat.json says was last tested), which installs under
+  # /usr/local. Same preset, same flags, same CPack package as 24.04.
+  ubuntu-2604-build:
+    name: Build for Ubuntu 🐧 (ubuntu-26.04)
+    runs-on: ubuntu-24.04
+    container: ubuntu:26.04
+    needs: check-event
+    defaults:
+      run:
+        shell: bash
+    env:
+      UBUNTU: ubuntu-26.04
+    steps:
+      # git before checkout, or actions/checkout falls back to a tarball with
+      # no history, and the build number comes from git.
+      - name: Install git 🧰
+        run: |
+          apt-get update -qq
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq git ca-certificates curl jq > /dev/null
+
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Set Up Environment 🔧
+        id: setup
+        run: |
+          : Set Up Environment 🔧
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          echo "pluginName=$(jq -r .name buildspec.json)" >> "$GITHUB_OUTPUT"
+          echo "pluginVersion=$(jq -r .version buildspec.json)" >> "$GITHUB_OUTPUT"
+          echo "obsVersion=$(jq -r .max_tested obs-compat.json)" >> "$GITHUB_OUTPUT"
+
+      - name: Install OBS ${{ steps.setup.outputs.obsVersion }} and Build Dependencies 📦
+        run: |
+          : Install OBS and Build Dependencies 📦
+          obs="${{ steps.setup.outputs.obsVersion }}"
+          deb="OBS-Studio-${obs}-Ubuntu-26.04-x86_64.deb"
+          curl -fsSLO "https://github.com/obsproject/obs-studio/releases/download/${obs}/${deb}" \
+            || { echo "::error::OBS ${obs} publishes no ${deb}"; exit 1; }
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "./${deb}" \
+            cmake ninja-build g++ pkg-config file dpkg-dev libsimde-dev libgles2-mesa-dev \
+            qt6-base-dev qt6-base-private-dev libqt6svg6-dev libcurl4-openssl-dev \
+            libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev > /dev/null
+          rm -f "${deb}"
+          # OBS's .deb carries no shlibs file, so dpkg-shlibdeps (which CPack
+          # runs to write our Depends) would not know which package provides
+          # libobs.so.30. It is obs-studio, and that is all this says.
+          printf 'libobs 30 obs-studio (>= 32.0)\nlibobs-frontend-api 30 obs-studio (>= 32.0)\n' \
+            > /var/lib/dpkg/info/obs-studio.shlibs
+          ldconfig
+
+      - name: Build Plugin 🧱
+        run: |
+          : Build Plugin 🧱
+          cmake --preset ubuntu-ci-x86_64 -G Ninja \
+            -DCMAKE_BUILD_TYPE=${{ needs.check-event.outputs.config }} \
+            -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_PREFIX_PATH=/usr/local \
+            -DENABLE_CCACHE=OFF -DENABLE_TESTS=OFF
+          cmake --build build_x86_64 --config ${{ needs.check-event.outputs.config }} --parallel
+
+      # The whole point of building against OBS's .deb: verify it happened.
+      - name: Links Against OBS's libobs 🔗
+        run: |
+          so="$(find build_x86_64 -name obs-multireplay.so -type f | head -1)"
+          echo "plugin: $so"
+          needed="$(objdump -p "$so" | awk '/NEEDED/ && /libobs/ {print $2}' | sort)"
+          echo "$needed"
+          echo "$needed" | grep -qx "libobs.so.30" \
+            || { echo "::error::expected NEEDED libobs.so.30 (OBS's soname), got: $needed"; exit 1; }
+
+      - name: Package Plugin 📀
+        run: |
+          : Package Plugin 📀
+          cmake --build build_x86_64 --config ${{ needs.check-event.outputs.config }} -t package
+          shopt -s nullglob
+          for f in release/*-x86_64-linux-gnu.deb release/*-x86_64-linux-gnu-dbgsym.ddeb; do
+            mv -v "$f" "${f/-x86_64-linux-gnu/-x86_64-linux-gnu-${UBUNTU}}"
+          done
+          ls -la release
+          dpkg-deb -f release/*-${UBUNTU}.deb Depends
+
+      - name: Upload Artifacts 📡
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.setup.outputs.pluginName }}-${{ steps.setup.outputs.pluginVersion }}-ubuntu-26.04-x86_64-${{ needs.check-event.outputs.commitHash }}
+          path: ${{ github.workspace }}/release/${{ steps.setup.outputs.pluginName }}-${{ steps.setup.outputs.pluginVersion }}-x86_64*.*
+
+  # Compiling says nothing about whether the package loads into the OBS people
+  # actually install. Each case starts a clean container of that Ubuntu,
+  # installs that OBS, installs our .deb with apt, and starts OBS under Xvfb to
+  # read in its own log that the plugin was loaded
+  # (.github/scripts/linux-load-check.sh). The prerelease case is reported,
+  # never enforced.
+  linux-load:
+    name: Loads into OBS 🐧 (${{ matrix.ubuntu }}, ${{ matrix.obs }})
+    needs: [check-event, ubuntu-build, ubuntu-2604-build]
+    if: fromJSON(needs.check-event.outputs.package)
+    runs-on: ubuntu-24.04
+    container: ubuntu:${{ matrix.ubuntu }}
+    continue-on-error: ${{ !matrix.required }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # "stable" and "beta" are max_tested and beta_tested in
+          # obs-compat.json, read at run time, so this follows the nightly
+          # matrix instead of going stale. OBS publishes no 24.04 .deb from 33 on.
+          - { ubuntu: "24.04", obs: ppa, required: true }
+          - { ubuntu: "24.04", obs: stable, required: true }
+          - { ubuntu: "26.04", obs: stable, required: true }
+          - { ubuntu: "26.04", obs: beta, required: false }
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v8
+        with:
+          path: packages
+          pattern: '*-ubuntu-${{ matrix.ubuntu }}-x86_64-${{ needs.check-event.outputs.commitHash }}'
+          merge-multiple: true
+      - name: Load Check 🧪
+        run: |
+          : Load Check 🧪
+          deb="$(ls packages/*-ubuntu-${{ matrix.ubuntu }}.deb | head -1)"
+          [ -n "$deb" ] || { echo "::error::no package for Ubuntu ${{ matrix.ubuntu }}"; ls -R packages; exit 1; }
+          case "${{ matrix.obs }}" in
+            stable) obs="$(sed -n 's/.*"max_tested": "\([^"]*\)".*/\1/p' obs-compat.json)" ;;
+            beta) obs="$(sed -n 's/.*"beta_tested": "\([^"]*\)".*/\1/p' obs-compat.json)" ;;
+            *) obs="${{ matrix.obs }}" ;;
+          esac
+          if [ -z "$obs" ]; then echo "obs-compat.json names no ${{ matrix.obs }} OBS: nothing to check"; exit 0; fi
+          echo "OBS: $obs"
+          bash .github/scripts/linux-load-check.sh "$deb" "$obs"
 
   windows-build:
     name: Build for Windows 🪟

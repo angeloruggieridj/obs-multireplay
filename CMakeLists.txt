@@ -181,6 +181,19 @@ target_sources(
 
 set_target_properties_plugin(${CMAKE_PROJECT_NAME} PROPERTIES OUTPUT_NAME ${_name})
 
+# Linux: link the installed plugin into the folders OBS 33 and OBS's own .deb
+# (installed under /usr/local) search too. Why, and what exactly, is in the
+# script; the template's helpers.cmake is left untouched on purpose.
+if(OS_LINUX)
+  install(
+    CODE
+      "set(MR_LIBDIR \"${CMAKE_INSTALL_LIBDIR}\")
+set(MR_DATADIR \"${CMAKE_INSTALL_DATAROOTDIR}\")
+set(MR_NAME \"${_name}\")"
+  )
+  install(SCRIPT "${CMAKE_CURRENT_SOURCE_DIR}/cmake/linux/install-obs-layouts.cmake")
+endif()
+
 # --- Unit tests (pure logic, no OBS/FFmpeg deps) -----------------------------
 # The targets live in tests/CMakeLists.txt, which is ALSO a project in its own
 # right: the CI configures that directory directly and runs ctest on all three

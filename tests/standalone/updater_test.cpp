@@ -122,6 +122,51 @@ static void test_each_platform_gets_its_own()
 	CHECK(out.name == "obs-multireplay-1.0.0-x86_64.deb");
 }
 
+static void test_the_ubuntu_release_is_read_from_os_release()
+{
+	using update_asset::distroTag;
+	CHECK(distroTag("PRETTY_NAME=\"Ubuntu 26.04 LTS\"\nNAME=\"Ubuntu\"\n"
+			"VERSION_ID=\"26.04\"\nID=ubuntu\nID_LIKE=debian\n") ==
+	      "ubuntu-26.04");
+	// Unquoted, CRLF, single quotes: all things an os-release may carry.
+	CHECK(distroTag("ID=ubuntu\r\nVERSION_ID=24.04\r\n") == "ubuntu-24.04");
+	CHECK(distroTag("ID='ubuntu'\nVERSION_ID='24.04'\n") == "ubuntu-24.04");
+	// Not Ubuntu, no version, garbage: no tag, and no Ubuntu package refused.
+	CHECK(distroTag("ID=debian\nVERSION_ID=\"13\"\n").empty());
+	CHECK(distroTag("ID=ubuntu\n").empty());
+	CHECK(distroTag("ID=ubuntu\nVERSION_ID=\"26.04; rm\"\n").empty());
+	CHECK(distroTag("").empty());
+}
+
+static void test_each_ubuntu_gets_its_own_package()
+{
+	using namespace update_asset;
+	const std::vector<Asset> release = {
+		{"obs-multireplay-1.0.1-windows-x64.zip", "https://x/w.zip", 1},
+		{"obs-multireplay-1.0.1-x86_64-linux-gnu-ubuntu-26.04.deb",
+		 "https://x/2604.deb", 2},
+		{"obs-multireplay-1.0.1-x86_64-linux-gnu-ubuntu-24.04.deb",
+		 "https://x/2404.deb", 3},
+		{"obs-multireplay-1.0.1-x86_64-linux-gnu-ubuntu-24.04-dbgsym.ddeb",
+		 "https://x/dbg.ddeb", 4},
+	};
+	Asset out;
+	// The 26.04 package is listed FIRST: taking the first match, which is
+	// what the code did before, would hand it to a 24.04 machine.
+	CHECK(pick(release, Platform::Linux, out, "ubuntu-24.04"));
+	CHECK(out.name == "obs-multireplay-1.0.1-x86_64-linux-gnu-ubuntu-24.04.deb");
+	CHECK(pick(release, Platform::Linux, out, "ubuntu-26.04"));
+	CHECK(out.name == "obs-multireplay-1.0.1-x86_64-linux-gnu-ubuntu-26.04.deb");
+	// A release with no package for this Ubuntu offers nothing rather than
+	// the other one, which apt would refuse.
+	CHECK(!pick(release, Platform::Linux, out, "ubuntu-28.04"));
+	// Unknown distro: still something, as before.
+	CHECK(pick(release, Platform::Linux, out));
+	CHECK(assetDistroTag("obs-multireplay-1.0.1-x86_64-linux-gnu-ubuntu-26.04.deb") ==
+	      "ubuntu-26.04");
+	CHECK(assetDistroTag("obs-multireplay-1.0.1-x86_64-linux-gnu.deb").empty());
+}
+
 static void test_another_platform_is_not_a_fallback()
 {
 	using namespace update_asset;
@@ -577,6 +622,8 @@ int main()
 	test_sha256_known_vectors();
 	test_sha256_is_streaming_and_repeatable();
 	test_each_platform_gets_its_own();
+	test_the_ubuntu_release_is_read_from_os_release();
+	test_each_ubuntu_gets_its_own_package();
 	test_another_platform_is_not_a_fallback();
 	test_debug_symbols_and_sources_are_never_the_update();
 	test_an_unnamed_archive_still_works();

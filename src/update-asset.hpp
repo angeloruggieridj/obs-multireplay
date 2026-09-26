@@ -145,9 +145,77 @@ inline bool namesAnotherPlatform(const std::string &lowerName, Platform mine)
 	return false;
 }
 
+// "ubuntu-26.04" for an /etc/os-release that says ID=ubuntu, VERSION_ID="26.04";
+// empty for anything else, or anything unreadable. Pure: the caller reads the
+// file, so this is a unit test and not a Linux-only story.
+inline std::string distroTag(const std::string &osRelease)
+{
+	std::string id, version;
+	size_t start = 0;
+	while (start <= osRelease.size()) {
+		size_t end = osRelease.find('\n', start);
+		if (end == std::string::npos)
+			end = osRelease.size();
+		std::string line = osRelease.substr(start, end - start);
+		if (!line.empty() && line.back() == '\r')
+			line.pop_back();
+		const size_t eq = line.find('=');
+		if (eq != std::string::npos) {
+			const std::string key = line.substr(0, eq);
+			std::string value = line.substr(eq + 1);
+			if (value.size() >= 2 &&
+			    (value.front() == '"' || value.front() == '\'') &&
+			    value.back() == value.front())
+				value = value.substr(1, value.size() - 2);
+			if (key == "ID")
+				id = lower(value);
+			else if (key == "VERSION_ID")
+				version = value;
+		}
+		start = end + 1;
+	}
+	if (id != "ubuntu" || version.empty())
+		return {};
+	for (char c : version)
+		if (!((c >= '0' && c <= '9') || c == '.'))
+			return {};
+	return id + "-" + version;
+}
+
+// The "ubuntu-XX.YY" an asset name carries, or empty. Linux packages are built
+// per Ubuntu release (their FFmpeg and Qt package names differ, so a .deb for
+// one does not install on the other), and the name says which.
+inline std::string assetDistroTag(const std::string &lowerName)
+{
+	const std::string key = "ubuntu-";
+	size_t at = lowerName.find(key);
+	while (at != std::string::npos) {
+		size_t i = at + key.size();
+		const size_t digits = i;
+		while (i < lowerName.size() &&
+		       ((lowerName[i] >= '0' && lowerName[i] <= '9') ||
+			lowerName[i] == '.'))
+			i++;
+		// Strip a trailing dot: "ubuntu-26.04.deb" is 26.04, not "26.04."
+		size_t stop = i;
+		while (stop > digits && lowerName[stop - 1] == '.')
+			stop--;
+		if (stop > digits)
+			return lowerName.substr(at, stop - at);
+		at = lowerName.find(key, at + 1);
+	}
+	return {};
+}
+
 // The asset for `p`, or false. Debug-symbol bundles and source tarballs are
 // never it.
-inline bool pick(const std::vector<Asset> &assets, Platform p, Asset &out)
+//
+// `distro` is distroTag() of the machine asking, on Linux. An asset built for
+// ANOTHER Ubuntu release is refused, not ranked lower: its package names do not
+// exist here, and handing it over is handing over something apt will reject.
+// One built for this release wins over one that names none.
+inline bool pick(const std::vector<Asset> &assets, Platform p, Asset &out,
+		 const std::string &distro = std::string())
 {
 	const auto exts = extensionsFor(p);
 	// Rank: an asset that names this platform beats one that names none;
@@ -175,7 +243,13 @@ inline bool pick(const std::vector<Asset> &assets, Platform p, Asset &out)
 		if (namesAnotherPlatform(ln, p))
 			continue;
 
-		const int rank = (namesPlatform(ln, p) ? 100 : 50) - extIdx * 10;
+		int rank = (namesPlatform(ln, p) ? 100 : 50) - extIdx * 10;
+		const std::string tag = assetDistroTag(ln);
+		if (!tag.empty() && !distro.empty()) {
+			if (tag != distro)
+				continue;
+			rank += 5;
+		}
 		if (rank > bestRank) {
 			bestRank = rank;
 			out = a;
