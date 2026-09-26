@@ -404,6 +404,33 @@ static void test_the_virustotal_block_after_the_checksums_is_not_a_checksum()
 		      .empty());
 }
 
+// The Updates page shows the changelog, not the checksums the updater reads.
+static void test_the_page_shows_the_changelog_not_the_checksums()
+{
+	const std::string body =
+		"**Pre-release**, following `1.0.1-beta3`.\n\n"
+		"## Added\n\n- Checksums are now verified.\n\n"
+		"### Checksums\n"
+		"    obs-multireplay-1.0.1-windows-x64.zip: "
+		"3f6ec4a4adc8f65f8717b9de0c9729830b2cdd7107aab6fc62284b5b941ec79d\n\n"
+		"### Verification\n\n- **Provenance** - gh attestation verify\n";
+	const std::string shown = update_asset::notesForDisplay(body);
+	CHECK(shown == "**Pre-release**, following `1.0.1-beta3`.\n\n"
+		       "## Added\n\n- Checksums are now verified.");
+	CHECK(shown.find("3f6ec4a4") == std::string::npos);
+	CHECK(shown.find("Verification") == std::string::npos);
+	// The updater still reads the full body.
+	CHECK(update_asset::sha256For(body,
+				      "obs-multireplay-1.0.1-windows-x64.zip") ==
+	      "3f6ec4a4adc8f65f8717b9de0c9729830b2cdd7107aab6fc62284b5b941ec79d");
+	// CRLF bodies, and a different heading depth, are cut the same way.
+	CHECK(update_asset::notesForDisplay(
+		      "Notes\r\n\r\n## Checksums\r\nx: y\r\n") == "Notes");
+	// No checksums: the body as it is, minus trailing blank lines.
+	CHECK(update_asset::notesForDisplay("Just notes\n\n") == "Just notes");
+	CHECK(update_asset::notesForDisplay("").empty());
+}
+
 // --- the installer (B2) ----------------------------------------------------
 
 static void test_the_script_contains_no_path_at_all()
@@ -425,6 +452,27 @@ static void test_the_script_contains_no_path_at_all()
 		if (c == '\'')
 			quotes++;
 	CHECK(quotes % 2 == 0);
+}
+
+// The helper must not be a child of OBS when OBS exits: OBS runs in a job
+// object, and a job can take its processes with it. It re-launches itself
+// through WMI, elevates only when the plugin folder needs it, and leaves an
+// outcome the plugin reports — "Install when OBS closes" once failed with no
+// trace at all, and that must not happen again.
+static void test_the_helper_leaves_the_obs_job_and_reports_back()
+{
+	const std::string s = update_installer::script();
+	CHECK(s.find("param([string]$Stage = 'launch')") == 0);
+	CHECK(s.find("Win32_Process -MethodName Create") != std::string::npos);
+	CHECK(s.find("-Verb RunAs") != std::string::npos);
+	CHECK(s.find("install-result.txt") != std::string::npos);
+	CHECK(s.find("install-update.log") != std::string::npos);
+	// PowerShell variables ignore case: nothing but the stage itself may be
+	// called $stage, or the unpack folder overwrites it.
+	CHECK(s.find("$stage ") == std::string::npos);
+	// OBS is started again from its own folder, or it cannot find its data.
+	CHECK(s.find("-WorkingDirectory (Split-Path -Parent $exe)") !=
+	      std::string::npos);
 }
 
 static void test_the_plugin_folder_in_either_layout()
@@ -661,7 +709,9 @@ int main()
 	test_checksum_reading_is_tolerant_but_strict();
 	test_a_body_with_release_notes_in_front_of_the_checksums();
 	test_the_virustotal_block_after_the_checksums_is_not_a_checksum();
+	test_the_page_shows_the_changelog_not_the_checksums();
 	test_the_script_contains_no_path_at_all();
+	test_the_helper_leaves_the_obs_job_and_reports_back();
 	test_the_plugin_folder_in_either_layout();
 	test_the_script_leaves_both_layouts_behind();
 	test_the_parameters_travel_verbatim();

@@ -126,6 +126,11 @@ public:
 	// is his decision; the helper waits for him to make it.
 	bool installStaged(std::string &errorOut);
 
+	// Reads, logs and removes the outcome the update helper left beside
+	// itself (install-result.txt). A failure becomes Phase::Failed with the
+	// helper's reason, so the Updates page says it instead of looking idle.
+	void collectInstallResult();
+
 	// Stop waiting on whatever is in flight. Used at unload: a thread still
 	// joinable when this object dies is std::terminate.
 	void shutdown();
@@ -144,6 +149,9 @@ private:
 	std::thread worker_;
 	std::atomic<bool> busy_{false};
 	std::atomic<bool> abort_{false};
+	// One helper per staged archive: two of them would unpack over the
+	// same folder at the same moment when OBS closes.
+	std::string armedFor_;
 };
 
 } // namespace multireplay

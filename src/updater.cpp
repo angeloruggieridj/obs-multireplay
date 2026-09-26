@@ -508,11 +508,16 @@ bool startDetached(const std::string &commandLine, std::string &errorOut)
 	si.dwFlags = STARTF_USESHOWWINDOW;
 	si.wShowWindow = SW_HIDE;
 	PROCESS_INFORMATION pi = {};
-	// DETACHED_PROCESS + a new process group: it has to outlive the process
-	// it is waiting for.
+	// CREATE_NO_WINDOW, NOT DETACHED_PROCESS — and this line is the reason
+	// "Install when OBS closes" never installed anything. Windows PowerShell
+	// started with no console at all exits before it runs a single line of
+	// the script: measured with these exact flags, a script that only writes
+	// a file never wrote it, while with CREATE_NO_WINDOW (a console that is
+	// never shown) it did. A new process group so a Ctrl+C in OBS's console,
+	// when it has one, is not delivered to the helper as well.
 	const BOOL ok = CreateProcessW(
 		nullptr, wide.data(), nullptr, nullptr, FALSE,
-		CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS |
+		CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW |
 			CREATE_UNICODE_ENVIRONMENT,
 		nullptr, nullptr, &si, &pi);
 	if (!ok) {
@@ -936,12 +941,52 @@ void Updater::downloadAsync()
 	});
 }
 
+void Updater::collectInstallResult()
+{
+#if defined(_WIN32)
+	const std::filesystem::path dir = stagingDir();
+	if (dir.empty())
+		return;
+	const std::filesystem::path res = dir / "install-result.txt";
+	std::string text;
+	if (!readUtf8File(res, text))
+		return;
+	std::error_code ec;
+	std::filesystem::remove(res, ec);
+	// Set-Content -Encoding UTF8 on Windows PowerShell writes a BOM.
+	if (text.rfind("\xEF\xBB\xBF", 0) == 0)
+		text.erase(0, 3);
+	while (!text.empty() && (text.back() == '\n' || text.back() == '\r' ||
+				 text.back() == ' '))
+		text.pop_back();
+	if (text == "ok") {
+		obs_log(LOG_INFO,
+			"[update] the helper installed the update after OBS "
+			"closed (now running %s)",
+			PLUGIN_VERSION);
+		return;
+	}
+	obs_log(LOG_WARNING,
+		"[update] the last update did NOT install: %s (details in %s)",
+		text.c_str(), pathToUtf8(dir / "install-update.log").c_str());
+	Status s;
+	s.phase = Phase::Failed;
+	s.message = text.rfind("fail: ", 0) == 0 ? text.substr(6) : text;
+	setStatus(s);
+#endif
+}
+
 bool Updater::installStaged(std::string &errorOut)
 {
 	const Status s = status();
 	if (s.phase != Phase::Staged || s.stagedPath.empty()) {
 		errorOut = "there is nothing staged to install";
 		return false;
+	}
+	{
+		std::lock_guard<std::mutex> lk(mutex_);
+		if (armedFor_ == s.stagedPath)
+			return true; // already waiting for OBS to close
 	}
 
 #if defined(_WIN32)
@@ -996,6 +1041,10 @@ bool Updater::installStaged(std::string &errorOut)
 					  pathToUtf8(script)));
 	if (!startDetached(cmd, errorOut))
 		return false;
+	{
+		std::lock_guard<std::mutex> lk(mutex_);
+		armedFor_ = s.stagedPath;
+	}
 	obs_log(LOG_INFO,
 		"[update] installer armed — it unpacks %s over %s once OBS has "
 		"exited",

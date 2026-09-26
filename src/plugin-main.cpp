@@ -178,6 +178,11 @@ bool obs_module_load(void)
 	auto &core = multireplay::ReplayCore::instance();
 	core.load();
 
+	// What the update helper did after the last OBS closed, if it ran. Here
+	// and not later: a failed update has to be said the first time the
+	// operator opens the Updates page, not the second.
+	multireplay::Updater::instance().collectInstallResult();
+
 	// Register the packet-tap output types before anything can arm them,
 	// and the replay source type before a scene collection can reference it.
 	multireplay::PacketTap::instance().load();

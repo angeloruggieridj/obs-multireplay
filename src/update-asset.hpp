@@ -414,6 +414,40 @@ inline std::string sha256For(const std::string &notes,
 	return {};
 }
 
+// What the Updates page SHOWS of a release body: the changelog, without the
+// `### Checksums` block and whatever follows it (`### Verification`, appended
+// by CI). Those are for the updater and for someone verifying by hand; to an
+// operator reading "what changed" they are a wall of hex. Only a heading line
+// counts — a paragraph that says "checksums" is changelog — and the cut also
+// drops the blank lines it would leave at the end. sha256For() keeps reading
+// the full body: this is presentation only.
+inline std::string notesForDisplay(const std::string &body)
+{
+	size_t pos = 0;
+	size_t cut = body.size();
+	while (pos < body.size()) {
+		size_t end = body.find('\n', pos);
+		if (end == std::string::npos)
+			end = body.size();
+		std::string line = body.substr(pos, end - pos);
+		while (!line.empty() && (line.back() == '\r' || line.back() == ' '))
+			line.pop_back();
+		const size_t hashes = line.find_first_not_of('#');
+		if (hashes != std::string::npos && hashes >= 1 && hashes <= 6 &&
+		    line[hashes] == ' ' &&
+		    lower(line.substr(hashes + 1)) == "checksums") {
+			cut = pos;
+			break;
+		}
+		pos = end + 1;
+	}
+	std::string out = body.substr(0, cut);
+	while (!out.empty() && (out.back() == '\n' || out.back() == '\r' ||
+				out.back() == ' '))
+		out.pop_back();
+	return out;
+}
+
 } // namespace update_asset
 
 } // namespace multireplay

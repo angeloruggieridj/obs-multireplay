@@ -24,6 +24,7 @@ into their own translation units keeps each concern reviewable on its own.
 #include "camera-dedup.hpp"
 #include "replay-core.hpp"
 #include "updater.hpp"
+#include "update-asset.hpp"
 #include "event-store.hpp"
 #include "health.hpp"
 #include "packet-tap.hpp"
@@ -55,6 +56,7 @@ into their own translation units keeps each concern reviewable on its own.
 #include <QCompleter>
 #include <QCheckBox>
 #include <QPlainTextEdit>
+#include <QTextBrowser>
 #include <QTableWidget>
 #include <QItemSelectionModel>
 #include <QHeaderView>
@@ -98,6 +100,7 @@ into their own translation units keeps each concern reviewable on its own.
 
 #include <algorithm>
 #include <cmath>
+#include <memory>
 #include <string>
 #include <cstdlib>
 #include <cstring>
@@ -1312,12 +1315,27 @@ void MultiReplayDock::openSettings()
 
 	section(updPage, "Dock.SecCheck");
 
+	// EXPANDING, and it is not cosmetic. A word-wrapped QLabel at the
+	// default policy is laid out at its own sizeHint width in this form, and
+	// when the text changes after the dialog is shown the row keeps the
+	// height of the text it had before: "Version 1.0.1 downloaded and
+	// verified," with the rest of the sentence clipped under the next row
+	// (measured on this page: 16 px given, 32 needed). Given the whole field
+	// column, the label is laid out at the width it actually has and its
+	// height follows its text.
 	auto *updStatus = new QLabel(&dlg);
 	updStatus->setWordWrap(true);
-	auto *notes = new QPlainTextEdit(&dlg);
-	notes->setReadOnly(true);
+	updStatus->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+	updStatus->setTextInteractionFlags(Qt::TextSelectableByMouse);
+	// RENDERED, not shown as source. A release body is GitHub markdown, and
+	// in a plain-text box it read as asterisks, hashes and bracketed URLs.
+	// The checksums and verification blocks are the updater's, not the
+	// operator's: notesForDisplay() leaves them out.
+	auto *notes = new QTextBrowser(&dlg);
+	notes->setOpenExternalLinks(true);
 	notes->setMinimumHeight(140);
 	notes->setPlaceholderText(obs_module_text("Dock.UpdateNoNotes"));
+	auto shownNotes = std::make_shared<std::string>();
 	auto *checkBtn = new QPushButton(obs_module_text("Dock.UpdateCheck"), &dlg);
 	auto *getBtn = new QPushButton(obs_module_text("Dock.UpdateDownload"), &dlg);
 	auto *installBtn =
@@ -1376,9 +1394,16 @@ void MultiReplayDock::openSettings()
 		}
 		if (updStatus->text() != text)
 			updStatus->setText(text);
-		const QString body = QString::fromStdString(st.release.notes);
-		if (notes->toPlainText() != body)
+		if (*shownNotes != st.release.notes) {
+			*shownNotes = st.release.notes;
+			const QString body = QString::fromStdString(
+				update_asset::notesForDisplay(st.release.notes));
+#if QT_CONFIG(textmarkdownreader)
+			notes->setMarkdown(body);
+#else
 			notes->setPlainText(body);
+#endif
+		}
 		checkBtn->setEnabled(st.phase != Updater::Phase::Checking &&
 				     st.phase != Updater::Phase::Downloading);
 		getBtn->setEnabled(st.phase == Updater::Phase::Available);
