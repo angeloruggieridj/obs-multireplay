@@ -61,6 +61,7 @@ jobs:
 
       - name: Check Tag Matches buildspec 🧾
         if: github.ref_type == 'tag'
+        id: buildspec
         run: |
           : Check Tag Matches buildspec 🧾
           if [[ "${RUNNER_DEBUG}" ]]; then set -x; fi
@@ -75,6 +76,9 @@ jobs:
             exit 1
           fi
           echo "tag and buildspec agree on ${declared}"
+          # The asset names carry `version` alone, never the prerelease suffix
+          # (a 1.0.1-beta1 build ships obs-multireplay-1.0.1-windows-x64.zip).
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
 
       - name: Check Release Tag ☑️
         id: check
@@ -146,14 +150,16 @@ jobs:
       # instead: an attestation binding every asset to this workflow, this commit
       # and this runner. GitHub already publishes a SHA-256 per asset from the
       # same source; the attestation covers each asset directly rather than by
-      # proxy. `obs-multireplay-1.0.0-*` is the exact set the Rename Files step
-      # moved into the workspace -- a per-extension glob would fail on *.exe,
-      # which this project has no asset for.
+      # proxy. `obs-multireplay-<version>-*` is the exact set the Rename Files
+      # step moved into the workspace -- a per-extension glob would fail on
+      # *.exe, which this project has no asset for. The version comes from
+      # buildspec: it was written here as a literal 1.0.0, which matches
+      # nothing the moment the version moves.
       - name: Attest build provenance 🔏
         if: fromJSON(steps.check.outputs.validTag)
         uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
         with:
-          subject-path: ${{ github.workspace }}/obs-multireplay-1.0.0-*
+          subject-path: ${{ github.workspace }}/obs-multireplay-${{ steps.buildspec.outputs.version }}-*
 
       - name: Create Release 🛫
         if: fromJSON(steps.check.outputs.validTag)
