@@ -171,9 +171,14 @@ Generated from [`obs-compat.json`](obs-compat.json) by `tools/obs_compat.py`.
 5. **Add `MultiReplay - Replay A` to a scene** — it is an ordinary OBS input and
    has to be in a scene to be seen and heard.
 
-Windows: OBS only scans `%ProgramData%\obs-studio\plugins`; the installer puts it
-there. macOS: the `.pkg` is not notarised — if the dock does not appear, run
-`xattr -dr com.apple.quarantine "/Library/Application Support/obs-studio/plugins/obs-multireplay.plugin"`
+**Windows:** run `obs-multireplay-<version>-windows-x64-setup.exe` with OBS
+closed. It installs into `%ProgramData%\obs-studio\plugins`, the only folder OBS
+searches on Windows, in both the OBS 33 layout and the older one, and uninstalls
+from **Apps & features** (your settings and recordings are kept). SmartScreen may
+warn about an unsigned installer: **More info ▸ Run anyway**. The `.zip` is still
+there for portable OBS or a manual install: extract it into that same folder.
+**macOS:** the `.pkg` is not notarised — if the dock does not appear, run
+`xattr -dr com.apple.quarantine "$HOME/Library/Application Support/obs-studio/plugins/obs-multireplay.plugin"`
 and restart OBS.
 
 ### Unsigned builds
@@ -181,7 +186,8 @@ and restart OBS.
 The releases carry **no publisher signature on any platform** — code-signing
 certificates are neither free nor issued to one-person projects. Your OS will say
 so: macOS quarantines the plugin (and OBS then fails to load it, silently),
-Windows marks the zip as coming from the internet.
+Windows marks the downloads as coming from the internet and SmartScreen may
+warn about the installer.
 
 Unsigned does not mean unverifiable. Every release is built in public from the
 tagged source and ships a signed **build provenance attestation**, GitHub's
@@ -401,10 +407,15 @@ Generato da [`obs-compat.json`](obs-compat.json) con `tools/obs_compat.py`.
 5. **Aggiungi `MultiReplay - Replay A` a una scena** — è un normale input di OBS
    e per vederlo e sentirlo deve stare in una scena.
 
-Windows: OBS cerca i plugin solo in `%ProgramData%\obs-studio\plugins`, ed è lì
-che li mette l'installer. macOS: il `.pkg` non è notarizzato — se la dock non
-compare, esegui
-`xattr -dr com.apple.quarantine "/Library/Application Support/obs-studio/plugins/obs-multireplay.plugin"`
+**Windows:** esegui `obs-multireplay-<versione>-windows-x64-setup.exe` con OBS
+chiuso. Installa in `%ProgramData%\obs-studio\plugins`, l'unica cartella in cui
+OBS cerca i plugin su Windows, sia nel layout di OBS 33 sia in quello precedente,
+e si disinstalla da **App e funzionalità** (impostazioni e registrazioni restano).
+SmartScreen può avvisare che l'installer non è firmato: **Ulteriori informazioni ▸
+Esegui comunque**. Lo `.zip` resta disponibile per OBS portable o per
+un'installazione manuale: estrailo in quella stessa cartella.
+**macOS:** il `.pkg` non è notarizzato — se la dock non compare, esegui
+`xattr -dr com.apple.quarantine "$HOME/Library/Application Support/obs-studio/plugins/obs-multireplay.plugin"`
 e riavvia OBS.
 
 ### Build non firmate
@@ -412,8 +423,8 @@ e riavvia OBS.
 Le release non portano **nessuna firma dell'editore, su nessuna piattaforma** —
 i certificati di code-signing non sono gratuiti né vengono rilasciati a progetti
 di una persona sola. Il sistema operativo lo segnala: macOS mette il plugin in
-quarantena (e OBS non lo carica, in silenzio), Windows marca lo zip come
-proveniente da internet.
+quarantena (e OBS non lo carica, in silenzio), Windows marca i download come
+provenienti da internet e SmartScreen può avvisare sull'installer.
 
 Non firmato non vuol dire non verificabile. Ogni release è compilata in pubblico
 dai sorgenti taggati e porta con sé un'**attestazione di provenance firmata**,
