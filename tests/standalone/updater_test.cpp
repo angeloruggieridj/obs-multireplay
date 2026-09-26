@@ -354,6 +354,44 @@ static void test_the_script_contains_no_path_at_all()
 	CHECK(quotes % 2 == 0);
 }
 
+static void test_the_plugin_folder_in_either_layout()
+{
+	using update_installer::pluginDirFromBinary;
+	// The legacy layout, which every OBS up to 32 uses and 33 still loads.
+	CHECK(pluginDirFromBinary("C:\\ProgramData\\obs-studio\\plugins\\"
+				  "obs-multireplay\\bin\\64bit\\obs-multireplay.dll") ==
+	      "C:\\ProgramData\\obs-studio\\plugins\\obs-multireplay");
+	// OBS 33's layout. The old code climbed three levels here and answered
+	// C:\ProgramData\obs-studio, the folder holding every plugin, which the
+	// helper would then have renamed away and unpacked over.
+	CHECK(pluginDirFromBinary("C:\\ProgramData\\obs-studio\\plugins\\"
+				  "obs-multireplay\\obs-multireplay.dll") ==
+	      "C:\\ProgramData\\obs-studio\\plugins\\obs-multireplay");
+	// Forward slashes (what libobs often hands back) and a different case.
+	CHECK(pluginDirFromBinary("C:/obs/plugins/obs-multireplay/BIN/64Bit/"
+				  "obs-multireplay.dll") ==
+	      "C:/obs/plugins/obs-multireplay");
+	// A "64bit" that is not under "bin" is just a folder name.
+	CHECK(pluginDirFromBinary("D:/tools/64bit/obs-multireplay.dll") ==
+	      "D:/tools/64bit");
+	// Nothing to climb from.
+	CHECK(pluginDirFromBinary("obs-multireplay.dll").empty());
+	CHECK(pluginDirFromBinary("").empty());
+}
+
+static void test_the_script_leaves_both_layouts_behind()
+{
+	const std::string s = update_installer::script();
+	// It no longer assumes bin/64bit when finding the plugin folder in the
+	// archive...
+	CHECK(s.find("$dll.Directory.Name -eq '64bit'") != std::string::npos);
+	// ...and it mirrors the binary so OBS 32 (bin/64bit) and OBS 33+ (the
+	// plugin folder itself) both find one.
+	CHECK(s.find("$legacyDir") != std::string::npos);
+	CHECK(s.find("Join-Path $target 'obs-multireplay.dll'") !=
+	      std::string::npos);
+}
+
 static void test_the_parameters_travel_verbatim()
 {
 	update_installer::Params p;
@@ -548,6 +586,8 @@ int main()
 	test_checksum_reading_is_tolerant_but_strict();
 	test_a_body_with_release_notes_in_front_of_the_checksums();
 	test_the_script_contains_no_path_at_all();
+	test_the_plugin_folder_in_either_layout();
+	test_the_script_leaves_both_layouts_behind();
 	test_the_parameters_travel_verbatim();
 	test_the_command_line_is_quoted_the_way_windows_reads_it();
 	test_only_windows_claims_it_can_install();

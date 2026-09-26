@@ -42,6 +42,48 @@ namespace update_installer {
 inline constexpr const char *kParamFileName = "install-update.txt";
 inline constexpr const char *kScriptFileName = "install-update.ps1";
 
+// THE PLUGIN FOLDER, FROM THE BINARY OBS ACTUALLY LOADED — in either layout.
+//
+//   OBS 32 and earlier (and OBS 33, as "legacy"):
+//       <plugins>/obs-multireplay/bin/64bit/obs-multireplay.dll
+//   OBS 33 onwards:
+//       <plugins>/obs-multireplay/obs-multireplay.dll
+//
+// It used to climb three levels unconditionally. On OBS 33's layout three
+// levels up from the DLL is C:\ProgramData\obs-studio — the folder that holds
+// EVERY plugin — and that is what the update helper would have renamed to a
+// backup and unpacked over. So: climb past bin/64bit only when it is there.
+// Empty when the path has no folder at all. Pure string work, both separators,
+// so it is a unit test and not a Windows-only story.
+inline std::string pluginDirFromBinary(const std::string &binaryPath)
+{
+	const auto parent = [](const std::string &p) -> std::string {
+		const size_t cut = p.find_last_of("/\\");
+		return cut == std::string::npos ? std::string() : p.substr(0, cut);
+	};
+	const auto leafIs = [](const std::string &p, const char *want) {
+		const size_t cut = p.find_last_of("/\\");
+		const std::string leaf = cut == std::string::npos ? p : p.substr(cut + 1);
+		std::string lower;
+		for (char c : leaf)
+			lower += (c >= 'A' && c <= 'Z') ? (char)(c - 'A' + 'a') : c;
+		return lower == want;
+	};
+
+	const std::string dir = parent(binaryPath);
+	if (dir.empty())
+		return {};
+	if (leafIs(dir, "64bit")) {
+		const std::string bin = parent(dir);
+		if (leafIs(bin, "bin")) {
+			const std::string root = parent(bin);
+			if (!root.empty())
+				return root;
+		}
+	}
+	return dir;
+}
+
 // The three things the helper has to be told, in the order it reads them.
 struct Params {
 	std::string archivePath; // the downloaded asset
@@ -62,6 +104,18 @@ inline std::string paramFile(const Params &p)
 
 // The helper itself. A CONSTANT — grep it for a backslash and you will find
 // none that belongs to a path.
+//
+// THE RELEASE ZIP STAYS IN THE LEGACY LAYOUT (<plugin>/bin/64bit), although
+// OBS 33 prefers <plugin>/<plugin>.dll, and the reason is the helper that is
+// ALREADY INSTALLED: the copy built into 1.0.0 and every beta before it takes
+// the first obs-multireplay.dll the zip holds and climbs two folders. A DLL at
+// the plugin folder's root is found first (measured under Windows PowerShell
+// 5.1), and two folders up from it is the parent of the unpack folder — that
+// helper would copy the whole of %TEMP% into the plugin folder. So the zip
+// keeps bin/64bit (which OBS 33 still loads, as "legacy", until OBS 34), and it
+// is THIS helper, from 1.0.1 on, that puts the second copy in the new place.
+// The install tree is cmake/windows/helpers.cmake's — the template's file,
+// which is why this is written here and not there.
 inline std::string script()
 {
 	return "$ErrorActionPreference = 'Stop'\n"
@@ -95,11 +149,21 @@ inline std::string script()
 	       "Expand-Archive -LiteralPath $archive -DestinationPath $stage "
 	       "-Force\n"
 	       "# The archive may carry the plugin folder at its root or a\n"
-	       "# level down; take whichever actually holds the binary.\n"
+	       "# level down, and the binary in the legacy layout\n"
+	       "# (bin/64bit under the plugin folder), in the OBS 33 one\n"
+	       "# (directly in it) or both; the plugin folder is the one above\n"
+	       "# bin/64bit\n"
+	       "# when the binary sits there, else the folder of the binary.\n"
 	       "$src = $stage\n"
 	       "$dll = Get-ChildItem -LiteralPath $stage -Recurse -Filter "
 	       "'obs-multireplay.dll' | Select-Object -First 1\n"
-	       "if ($dll) { $src = $dll.Directory.Parent.Parent.FullName }\n"
+	       "if ($dll) {\n"
+	       "  $src = $dll.Directory.FullName\n"
+	       "  if ($dll.Directory.Name -eq '64bit' -and "
+	       "$dll.Directory.Parent.Name -eq 'bin') {\n"
+	       "    $src = $dll.Directory.Parent.Parent.FullName\n"
+	       "  }\n"
+	       "}\n"
 	       "# BACKUP FIRST. $ErrorActionPreference is Stop, so anything\n"
 	       "# that throws below here leaves this folder on disk instead of\n"
 	       "# the copy it was mid-way through -- renaming it back is how\n"
@@ -124,6 +188,23 @@ inline std::string script()
 	       "# literal while actually copying the files.\n"
 	       "Get-ChildItem -LiteralPath $src -Force | Copy-Item "
 	       "-Destination $target -Recurse -Force\n"
+	       "# BOTH LAYOUTS, whatever the archive carried. OBS 33 loads\n"
+	       "# the binary in the plugin folder and skips the bin/64bit\n"
+	       "# copy as a duplicate; OBS 32 and earlier only ever look in\n"
+	       "# bin/64bit; OBS 34 drops bin/64bit. One DLL in each place\n"
+	       "# is what keeps a single install loading on all three.\n"
+	       "$legacyDir = Join-Path (Join-Path $target 'bin') '64bit'\n"
+	       "$top = Join-Path $target 'obs-multireplay.dll'\n"
+	       "$old = Join-Path $legacyDir 'obs-multireplay.dll'\n"
+	       "if ((Test-Path -LiteralPath $old) -and -not "
+	       "(Test-Path -LiteralPath $top)) {\n"
+	       "  Copy-Item -LiteralPath $old -Destination $top -Force\n"
+	       "} elseif ((Test-Path -LiteralPath $top) -and -not "
+	       "(Test-Path -LiteralPath $old)) {\n"
+	       "  New-Item -ItemType Directory -Force -Path $legacyDir "
+	       "| Out-Null\n"
+	       "  Copy-Item -LiteralPath $top -Destination $old -Force\n"
+	       "}\n"
 	       "if ($backup -and (Test-Path -LiteralPath $backup)) {\n"
 	       "  Remove-Item -LiteralPath $backup -Recurse -Force "
 	       "-ErrorAction SilentlyContinue\n"

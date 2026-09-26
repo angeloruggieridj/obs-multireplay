@@ -457,18 +457,16 @@ bool fileDigest(const std::filesystem::path &p, std::string &hexOut)
 
 #if defined(_WIN32)
 // Where this very plugin is installed, derived from the module OBS actually
-// loaded rather than from a constant. obs_get_module_binary_path() hands back
-//   <root>/obs-multireplay/bin/64bit/obs-multireplay.dll
-// and the folder an update is unpacked over is three levels up. Hardcoding
-// C:\ProgramData\... was right on one machine and wrong on a portable install.
+// loaded rather than from a constant: hardcoding C:\ProgramData\... was right on
+// one machine and wrong on a portable install. Which folder that is depends on
+// the layout OBS loaded it from (bin/64bit, or OBS 33's flat one) —
+// update_installer::pluginDirFromBinary() knows both, and why it matters.
 std::string installedPluginDir()
 {
 	const char *bin = obs_get_module_binary_path(obs_current_module());
 	if (bin && *bin) {
-		std::filesystem::path p = utf8ToPath(bin);
-		// dll -> 64bit -> bin -> the plugin folder
-		for (int i = 0; i < 3 && p.has_parent_path(); i++)
-			p = p.parent_path();
+		const std::filesystem::path p =
+			utf8ToPath(update_installer::pluginDirFromBinary(bin));
 		if (!p.empty() && p.has_filename())
 			return pathToUtf8(p);
 	}
