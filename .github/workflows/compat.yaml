@@ -1,0 +1,187 @@
+name: OBS Compatibility
+run-name: ${{ github.ref_name }} OBS compatibility 🧩
+# What OBS versions this plugin supports is derived here, not asserted by hand:
+# one probe per OBS minor, a contiguity rule, and a manifest (obs-compat.json)
+# the README's two Requirements tables are generated from. The logic lives in
+# tools/obs_compat.py and is ported from obs-playlist-deck; the differences are
+# listed at the top of that file.
+on:
+  push:
+    branches-ignore:
+      - 'release/**'
+    tags:
+      - '*'
+  pull_request:
+    branches: [master, main]
+  workflow_dispatch:
+  schedule:
+    # Daily watch: cheap. compat-discover compares the newest OBS release
+    # against obs-compat.json and starts the heavy jobs only when OBS moved.
+    - cron: "0 6 * * *"
+    # Weekly full run: not all breakage is version-driven — runner images and
+    # system dependencies rot on their own schedule.
+    - cron: "0 7 * * 1"
+permissions:
+  contents: read
+jobs:
+  compat-check:
+    name: Compatibility Declaration 🧾
+    # Skipped on the daily watch and only there: that cron exists to ask OBS
+    # whether it has published anything, and on a quiet day compat-discover
+    # answers in seconds with nothing else awake. Every other trigger checks
+    # that README, obs-compat.json and buildspec.json still agree.
+    if: github.event_name != 'schedule' || github.event.schedule != '0 6 * * *'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      # The README's two compatibility tables, obs-compat.json and the OBS
+      # version buildspec.json pins are statements about the same thing; this
+      # is what stops them disagreeing for months, and costs a second.
+      - name: Compatibility declaration is in sync 🧾
+        run: python3 tools/obs_compat.py --check
+      - name: Compat matrix logic 🧪
+        run: python3 -m unittest discover -s tools -p "test_*.py"
+
+  compat-discover:
+    name: Discover OBS Releases 🔭
+    # No `needs: compat-check`, deliberately (the same reasoning as in
+    # obs-playlist-deck): on the first-ever run there is no obs-compat.json, so
+    # --check fails, and Actions skips every job downstream of a failed
+    # dependency regardless of its own `if:` — the pipeline could then never
+    # produce the manifest its own check requires. It never runs on a branch
+    # push or a pull request, so the cost of running it anyway is bounded.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'schedule' ||
+      startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-24.04
+    outputs:
+      run_full: ${{ steps.discover.outputs.run_full }}
+      native: ${{ steps.discover.outputs.native }}
+      jammy: ${{ steps.discover.outputs.jammy }}
+      grid: ${{ steps.discover.outputs.grid }}
+      latest_stable: ${{ steps.discover.outputs.latest_stable }}
+      beta: ${{ steps.discover.outputs.beta }}
+    steps:
+      - uses: actions/checkout@v6
+      - id: discover
+        name: Compare OBS tags with the manifest 🔭
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          # Which cron fired: the weekly one always runs the full matrix.
+          GITHUB_SCHEDULE: ${{ github.event.schedule }}
+        run: python3 tools/obs_compat.py --discover
+
+  compat:
+    name: OBS ${{ matrix.obs }} 🧩
+    needs: compat-discover
+    if: needs.compat-discover.outputs.run_full == 'true'
+    runs-on: ubuntu-24.04
+    continue-on-error: ${{ !matrix.required }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.compat-discover.outputs.native) }}
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install build deps 📦
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build pkg-config extra-cmake-modules \
+            qt6-base-dev qt6-base-private-dev qt6-svg-dev \
+            libavcodec-dev libavformat-dev libavutil-dev libavdevice-dev \
+            libavfilter-dev libswscale-dev libswresample-dev libx264-dev \
+            libcurl4-openssl-dev libjansson-dev libmbedtls-dev libsimde-dev \
+            uthash-dev nlohmann-json3-dev zlib1g-dev libpng-dev \
+            libpipewire-0.3-dev libwayland-dev libxkbcommon-dev libgl1-mesa-dev \
+            libgles2-mesa-dev libx11-dev libx11-xcb-dev libxcb1-dev \
+            libxcb-xinerama0-dev libxcb-randr0-dev libxcb-shm0-dev \
+            libxcb-xfixes0-dev libxcb-composite0-dev libxcb-xinput-dev \
+            libxfixes-dev libxcomposite-dev libxinerama-dev libxss-dev \
+            libdrm-dev libva-dev libxcb-cursor-dev \
+            libqrcodegencpp-dev librist-dev libsrt-openssl-dev \
+            libfontconfig1-dev libfreetype-dev \
+            libpci-dev libpulse-dev libudev-dev libasound2-dev
+      - uses: ./.github/actions/obs-compat-probe
+        with:
+          obs-version: ${{ matrix.obs }}
+          env-name: native
+
+  # ubuntu-24.04 ships FFmpeg 7, which OBS 30-era code does not build against.
+  # That is an OBS build problem, not a plugin one, so older SDKs would be built
+  # in jammy rather than written off as incompatible. With the floor at OBS 32
+  # nothing is routed here today (the job is skipped); it stays so that lowering
+  # FLOOR in tools/obs_compat.py is the only change needed.
+  compat-legacy:
+    name: OBS ${{ matrix.obs }} (jammy) 🧩
+    needs: compat-discover
+    if: >-
+      needs.compat-discover.outputs.run_full == 'true' &&
+      needs.compat-discover.outputs.jammy != '[]'
+    runs-on: ubuntu-24.04
+    container: ubuntu:22.04
+    continue-on-error: ${{ !matrix.required }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.compat-discover.outputs.jammy) }}
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install build deps 📦
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            git perl cmake ninja-build pkg-config extra-cmake-modules g++ \
+            qt6-base-dev qt6-base-private-dev libqt6svg6-dev \
+            libavcodec-dev libavformat-dev libavutil-dev libavdevice-dev \
+            libavfilter-dev libswscale-dev libswresample-dev libx264-dev \
+            libcurl4-openssl-dev libjansson-dev libmbedtls-dev \
+            uthash-dev nlohmann-json3-dev zlib1g-dev libpng-dev \
+            libpipewire-0.3-dev libwayland-dev libxkbcommon-dev libgl1-mesa-dev \
+            libgles2-mesa-dev libx11-dev libx11-xcb-dev libxcb1-dev \
+            libxcb-xinerama0-dev libxcb-randr0-dev libxcb-shm0-dev \
+            libxcb-xfixes0-dev libxcb-composite0-dev libxcb-xinput-dev \
+            libxfixes-dev libxcomposite-dev libxinerama-dev libxss-dev \
+            libdrm-dev libva-dev libxcb-cursor-dev \
+            libfontconfig1-dev libfreetype-dev \
+            libpci-dev libpulse-dev libudev-dev libasound2-dev
+      - uses: ./.github/actions/obs-compat-probe
+        with:
+          obs-version: ${{ matrix.obs }}
+          env-name: jammy
+
+  compat-report:
+    name: Derive the Supported Range 📋
+    needs: [compat-discover, compat, compat-legacy]
+    if: always() && needs.compat-discover.outputs.run_full == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v8
+        with:
+          path: compat-artifacts
+          pattern: compat-*
+      # --report only ever writes a fresh obs-compat.json when it can derive a
+      # range. On EXIT_NO_RANGE it returns before that write, and checkout above
+      # left the *committed* manifest at this same path — indistinguishable, to
+      # the upload step below, from a fresh one. Removing it first means a
+      # no-range run uploads nothing rather than a stale file that looks current.
+      - name: Remove the committed manifest so a no-range run cannot pass it off as fresh 🧹
+        run: rm -f obs-compat.json
+      - name: Derive the supported range 📋
+        run: |
+          python3 tools/obs_compat.py --report \
+            --artifacts compat-artifacts \
+            --grid '${{ needs.compat-discover.outputs.grid }}' \
+            --latest-stable '${{ needs.compat-discover.outputs.latest_stable }}' \
+            --beta '${{ needs.compat-discover.outputs.beta }}'
+      # See tools/obs_compat.py's UPDATE_INSTRUCTIONS for the three steps a
+      # human needs after a non-zero exit here: this artifact is what step 1
+      # downloads. It is absent, not stale, when the step above didn't run.
+      - name: Upload the manifest as it would be written 📡
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: obs-compat-manifest
+          path: obs-compat.json
+          if-no-files-found: warn

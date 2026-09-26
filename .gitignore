@@ -8,3 +8,6 @@
 .vscode/
 compile_commands.json
 CMakeUserPresets.json
+
+# Python bytecode from tools/ (obs_compat.py and its tests)
+__pycache__/

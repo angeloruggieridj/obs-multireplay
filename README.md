@@ -127,11 +127,13 @@ and keeps the last minutes of them in a bounded ring in RAM.
 
 ### Requirements
 
+<!-- obs-compat:start -->
 | | |
 |---|---|
 | **OBS Studio** | 32 or newer |
 | **Branch Output** | [Download](https://github.com/OPENSPHERE-Inc/branch-output/releases) · [repository](https://github.com/OPENSPHERE-Inc/branch-output) — the recording layer; MultiReplay does nothing without it |
 | **Platforms** | Windows (primary) · macOS · Linux (X11/XWayland; under native Wayland the embedded previews say so in the box rather than going black) |
+<!-- obs-compat:end -->
 
 ### Installation
 
@@ -338,11 +340,13 @@ tiene gli ultimi minuti in un buffer circolare in RAM.
 
 ### Requisiti
 
+<!-- obs-compat-it:start -->
 | | |
 |---|---|
 | **OBS Studio** | 32 o successivo |
 | **Branch Output** | [Download](https://github.com/OPENSPHERE-Inc/branch-output/releases) · [repository](https://github.com/OPENSPHERE-Inc/branch-output) — è lo strato che registra, e senza di lui MultiReplay non fa niente |
 | **Piattaforme** | Windows (principale) · macOS · Linux (X11/XWayland; sotto Wayland nativo le anteprime lo scrivono nel riquadro invece di restare nere) |
+<!-- obs-compat-it:end -->
 
 ### Installazione
 

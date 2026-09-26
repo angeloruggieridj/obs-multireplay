@@ -1,0 +1,197 @@
+name: OBS compat probe
+description: Build one OBS SDK and compile the plugin against it, recording the outcome.
+
+inputs:
+  obs-version:
+    description: OBS tag to build against, e.g. 30.0.0 or 32.2.0-beta1
+    required: true
+  env-name:
+    description: native or jammy — recorded in the result, and part of the cache key
+    required: true
+
+runs:
+  using: composite
+  steps:
+    # Every failure below is caught and recorded rather than thrown, because
+    # the phase is the whole point: an SDK that will not build says nothing
+    # about the plugin, and must never be reported as an incompatibility.
+    - name: Cache OBS dev
+      id: cache-obsdev
+      uses: actions/cache@v5
+      with:
+        path: /tmp/obs-dev
+        key: obsdev-linux-${{ inputs.obs-version }}-${{ inputs.env-name }}-v2
+
+    - name: Build OBS dev
+      id: obs-build
+      if: steps.cache-obsdev.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        set -o pipefail
+        status=ok
+        {
+          # These are chained with && rather than run as separate statements.
+          # set -e would be the obvious fix for "one early failure shouldn't
+          # let a later command's success paper over it", but it does not
+          # work here: bash ignores errexit for every command that is not
+          # the pipeline's last stage, and this whole group is stage one of
+          # a pipe into tail — that exemption reaches inside the group too.
+          # && has no such exemption: a failing clone/configure/build stops
+          # the chain right there, so the group's exit code is the real
+          # failure's, not whatever the trailing command happened to return.
+          git clone --depth=1 --branch "${{ inputs.obs-version }}" \
+            https://github.com/obsproject/obs-studio.git /tmp/obs &&
+          # OBS 32.2's Linux helper calls add_dependencies(obs-studio <execs> <mods>),
+          # which errors when both lists are empty — as they are here, since only
+          # obs-frontend-api is built. Harmless on versions without the call.
+          { sed -i 's|add_dependencies(${target} ${obs_executables} ${obs_modules})|if(obs_executables OR obs_modules)\n      add_dependencies(${target} ${obs_executables} ${obs_modules})\n    endif()|' \
+              /tmp/obs/cmake/linux/helpers.cmake || true; } &&
+          # OBS 33's libobs compiles obs-core-modules.c, which only
+          # set_obs_core_modules() generates -- at the end of
+          # plugins/CMakeLists.txt, after the early return() taken when core
+          # modules are off. Call it in that branch too (an empty list is valid
+          # C). No match, and so no change, on versions before 33.
+          { perl -pi -e 's/^(\s*)set_property\(GLOBAL APPEND PROPERTY OBS_FEATURES_DISABLED "Core Modules"\)\s*$/$&$1set_obs_core_modules()\n/' \
+              /tmp/obs/plugins/CMakeLists.txt || true; } &&
+          # OBS 33 renamed the option to ENABLE_CORE_MODULES; ENABLE_PLUGINS is
+          # now only a global property derived from it, so passing the old name
+          # alone configures every bundled module (aja then fails on a missing
+          # libajantv2). Both are passed: each is simply unused where it does
+          # not exist.
+          cmake -B /tmp/obs-build -S /tmp/obs -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_COMPILE_WARNING_AS_ERROR=OFF \
+            -DENABLE_PLUGINS=OFF -DENABLE_CORE_MODULES=OFF -DENABLE_SCRIPTING=OFF \
+            -DENABLE_BROWSER=OFF -DENABLE_VLC=OFF &&
+          cmake --build /tmp/obs-build --target obs-frontend-api --parallel &&
+          # The install component holding development files (headers, the
+          # shared library, the cmake package config) is not named
+          # consistently across OBS versions: 30.0.0 installs it under
+          # obs_libraries, later versions under Development. A lookup table
+          # keyed on version would be extrapolation from a single verified
+          # data point, so instead try both and tolerate whichever this
+          # version does not define. cmake --install exits 0 either way —
+          # an unrecognized --component silently installs nothing rather
+          # than erroring — so neither install's exit status settles
+          # anything; the header check in the next step is what decides.
+          { cmake --install /tmp/obs-build --component Development --prefix /tmp/obs-dev || true; } &&
+          { cmake --install /tmp/obs-build --component obs_libraries --prefix /tmp/obs-dev || true; }
+        } 2>&1 | tail -200 || status=fail
+        echo "status=$status" >> "$GITHUB_OUTPUT"
+
+    - name: Verify OBS dev headers
+      id: obs-verify
+      shell: bash
+      run: |
+        # This step is unconditional (no `if:`) because it must also cover
+        # the cache-hit path, where "Build OBS dev" above never ran at all —
+        # a cached prefix from a prior broken run must not sail through
+        # unexamined. A prior hard failure short-circuits it below; a clean
+        # cache-hit or a clean build both fall through to the same proof.
+        if [ "${{ steps.obs-build.outputs.status }}" = "fail" ]; then
+          echo "status=fail" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        # A green install (or a cache hit) is not evidence anything is
+        # actually there: an unrecognized --component silently installs
+        # nothing and still exits 0. The only proof that counts is files the
+        # plugin actually needs, found on disk under their own names — never
+        # a pipeline's exit code, which is exactly what let a broken prefix
+        # report success before.
+        #
+        # The header alone is not enough either: the plugin's own CMakeLists
+        # does find_package(obs-frontend-api REQUIRED), and a prefix that has
+        # headers but no CMake package config fails that CONFIGURE step, not
+        # the compile. Without this second check, that configure failure is
+        # recorded by "Build the plugin against it" as phase=plugin-build --
+        # obs-build wearing the plugin-build label, one level deeper than the
+        # header check already closed, and it would stick: the cache key
+        # never changes, so an incomplete prefix would be served forever.
+        header="$(find /tmp/obs-dev -type f -name obs-frontend-api.h -print -quit)"
+        package_config="$(find /tmp/obs-dev -type f -name 'obs-frontend-apiConfig.cmake' -print -quit)"
+        if [ -n "$header" ] && [ -n "$package_config" ]; then
+          echo "status=ok" >> "$GITHUB_OUTPUT"
+        else
+          [ -n "$header" ] || echo "::warning::obs-frontend-api.h not found under /tmp/obs-dev; treating as an obs-build failure"
+          [ -n "$package_config" ] || echo "::warning::obs-frontend-api CMake package config not found under /tmp/obs-dev; treating as an obs-build failure"
+          echo "status=fail" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Build the plugin against it
+      id: plugin
+      if: steps.obs-verify.outputs.status != 'fail'
+      shell: bash
+      run: |
+        set -o pipefail
+        status=ok
+        {
+          # && rather than two statements, for the same reason as "Build OBS
+          # dev" above: set -e does not apply inside this group (it is stage
+          # one of a pipe into tail), so only && stops a failing configure
+          # from letting the build step's own exit code paper over it.
+          #
+          # CMAKE_COMPILE_WARNING_AS_ERROR=OFF: the template turns every
+          # warning into an error, which is right for the pinned SDK the
+          # release is built against (the regular CI keeps it) and wrong here.
+          # A newer OBS that deprecates an API the plugin calls emits
+          # -Wdeprecated-declarations; under -Werror that would be recorded as
+          # "does not compile" — a plugin-build failure, i.e. a declared
+          # incompatibility — against an OBS the plugin builds and loads on.
+          # -Werror=return-type is a flag of its own and still applies.
+          cmake -B build -S . -G Ninja -DCMAKE_BUILD_TYPE=Release -DENABLE_TESTS=OFF \
+            -DCMAKE_COMPILE_WARNING_AS_ERROR=OFF \
+            -DCMAKE_PREFIX_PATH="/tmp/obs-dev;/usr" &&
+          cmake --build build
+        } 2>&1 | tail -200 || status=fail
+        echo "status=$status" >> "$GITHUB_OUTPUT"
+
+    - name: Record the outcome
+      if: always()
+      shell: bash
+      run: |
+        # status is "ok" only when both checks actually reported ok --
+        # never as a fallthrough default. An empty output is not evidence
+        # of anything: it means the step that would have set it never ran
+        # at all (e.g. "Cache OBS dev" hard-failing as an Actions step
+        # skips every following non-always() step, leaving both outputs
+        # empty), and a probe that never ran anything must not report the
+        # same green as one that actually verified something. Do not
+        # "simplify" this back to an else-is-ok default.
+        if [ "${{ steps.obs-verify.outputs.status }}" = "ok" ] && [ "${{ steps.plugin.outputs.status }}" = "ok" ]; then
+          status=ok; phase=null
+        elif [ "${{ steps.obs-verify.outputs.status }}" != "ok" ]; then
+          # Covers both an explicit obs-verify failure and obs-verify never
+          # having run at all. Either way we did not get an SDK we could
+          # verify, so nothing has been learned about the plugin -- this
+          # can never be misreported as a plugin-build finding.
+          status=fail; phase=obs-build
+        else
+          status=fail; phase=plugin-build
+        fi
+        printf '{"obs":"%s","status":"%s","phase":%s,"env":"%s"}\n' \
+          "${{ inputs.obs-version }}" "$status" \
+          "$([ "$phase" = null ] && echo null || echo "\"$phase\"")" \
+          "${{ inputs.env-name }}" > "compat-${{ inputs.obs-version }}.json"
+        cat "compat-${{ inputs.obs-version }}.json"
+        [ "$status" = ok ] || echo "::warning::probe ${{ inputs.obs-version }} failed at $phase"
+
+    - name: Upload the result
+      if: always()
+      uses: actions/upload-artifact@v7
+      with:
+        name: compat-${{ inputs.obs-version }}
+        path: compat-${{ inputs.obs-version }}.json
+
+    # The result is recorded and uploaded above; whether it should fail the
+    # workflow is the caller's decision, made with continue-on-error from
+    # the required flag. This step only fails the probe's own job step.
+    - name: Fail if the probe failed
+      if: always()
+      shell: bash
+      run: |
+        # Must agree with "Record the outcome": ok is earned, not assumed,
+        # so failure here is triggered by "not literally ok" rather than
+        # "literally fail" -- an empty (never ran) status fails this step
+        # too, matching the fail status/obs-build phase already recorded.
+        [ "${{ steps.obs-verify.outputs.status }}" = "ok" ] || exit 1
+        [ "${{ steps.plugin.outputs.status }}" = "ok" ] || exit 1
