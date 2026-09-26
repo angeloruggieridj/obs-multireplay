@@ -376,6 +376,34 @@ static void test_a_body_with_release_notes_in_front_of_the_checksums()
 		      .empty());
 }
 
+static void test_the_virustotal_block_after_the_checksums_is_not_a_checksum()
+{
+	// push.yaml appends this block AFTER "### Checksums" once VirusTotal has
+	// scanned the assets. Its lines name the very files the updater looks up,
+	// so they must not be mistaken for a digest -- or for the end of one.
+	const std::string body =
+		"Notes.\n\n"
+		"### Checksums\n"
+		"    obs-multireplay-1.0.1-windows-x64.zip: "
+		"4f7f70b4316eba6df1aa3d9543e498fee4bd21702abea9f8401f8cb6a9e95f1c\n"
+		"\n"
+		"### Verification\n"
+		"\n"
+		"- **VirusTotal** -\n"
+		"  - [obs-multireplay-1.0.1-windows-x64.zip](https://www.virustotal.com/"
+		"gui/file-analysis/"
+		"ZTM4ZTcyZGQ2ZTY4ZmE3ZjM4NDg0ZmY1YjU5OGY0ZmM6MTcyNzM1ODAwMA==)\n"
+		"  - [obs-multireplay-1.0.1-windows-x64-setup.exe](https://www."
+		"virustotal.com/gui/file-analysis/abc)\n";
+	CHECK(update_asset::sha256For(body,
+				      "obs-multireplay-1.0.1-windows-x64.zip") ==
+	      "4f7f70b4316eba6df1aa3d9543e498fee4bd21702abea9f8401f8cb6a9e95f1c");
+	// Named only in the VirusTotal block: no digest, not a made-up one.
+	CHECK(update_asset::sha256For(
+		      body, "obs-multireplay-1.0.1-windows-x64-setup.exe")
+		      .empty());
+}
+
 // --- the installer (B2) ----------------------------------------------------
 
 static void test_the_script_contains_no_path_at_all()
@@ -632,6 +660,7 @@ int main()
 	test_checksum_is_found_where_the_workflow_puts_it();
 	test_checksum_reading_is_tolerant_but_strict();
 	test_a_body_with_release_notes_in_front_of_the_checksums();
+	test_the_virustotal_block_after_the_checksums_is_not_a_checksum();
 	test_the_script_contains_no_path_at_all();
 	test_the_plugin_folder_in_either_layout();
 	test_the_script_leaves_both_layouts_behind();
