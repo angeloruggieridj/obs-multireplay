@@ -94,7 +94,18 @@ if ($LASTEXITCODE -ne 0) { Fail 'unit tests failed'; exit 1 }
 Step "Installing to $pluginDir"
 New-Item -ItemType Directory -Force -Path "$pluginDir\bin\64bit" | Out-Null
 New-Item -ItemType Directory -Force -Path "$pluginDir\data\locale" | Out-Null
-Copy-Item "$buildDir\RelWithDebInfo\obs-multireplay.dll" "$pluginDir\bin\64bit\" -Force
+try {
+    Copy-Item "$buildDir\RelWithDebInfo\obs-multireplay.dll" "$pluginDir\bin\64bit\" -Force
+} catch {
+    # The Windows installer (Inno Setup, elevated) leaves this folder owned by
+    # Administrators, and from then on this account cannot overwrite the DLL.
+    throw "Cannot install into $pluginDir ($($_.Exception.Message)). If the Windows installer was run on this machine, the folder is Administrators-owned: move it out of plugins and let this script recreate it."
+}
+# OBS 33 loads the copy at the folder root first; keep it the same build when
+# the installer has put one there.
+if (Test-Path "$pluginDir\obs-multireplay.dll") {
+    Copy-Item "$buildDir\RelWithDebInfo\obs-multireplay.dll" "$pluginDir\" -Force
+}
 Copy-Item "$buildDir\RelWithDebInfo\obs-multireplay.pdb" "$pluginDir\bin\64bit\" -Force -ErrorAction SilentlyContinue
 Copy-Item "$repo\data\locale\*.ini" "$pluginDir\data\locale\" -Force
 
@@ -496,7 +507,16 @@ for ($i = 0; $i -lt 8; $i++) {
 Step "MultiReplay config seeded (session folder $testSessionFolder)"
 
 # Put it all back whatever happens to the run — a failure, a crash, a Ctrl-C.
-trap { Restore-OperatorEnvironment; break }
+# A trap covers its WHOLE scope, not just the lines after it: an error in the
+# install step, long before the function below the build exists, landed here
+# and died again on "Restore-OperatorEnvironment is not recognized", hiding the
+# real error. Before that function exists there is nothing to restore.
+trap {
+    if (Get-Command Restore-OperatorEnvironment -ErrorAction SilentlyContinue) {
+        Restore-OperatorEnvironment
+    }
+    break
+}
 
 # --- 5. Launch OBS with the self-test environment ----------------------------
 if (Test-Path $report) { Remove-Item $report -Force }
