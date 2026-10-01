@@ -627,6 +627,16 @@ class BuildMatrix(unittest.TestCase):
         required = [entry["obs"] for entry in matrix if entry["required"]]
         self.assertEqual(required, ["32.2.2"])
 
+    def test_the_report_checks_exactly_the_candidates_the_matrix_probes(self):
+        # _report reads the same list to decide whether every probe came back,
+        # and only that completeness stands between a dead matrix job and a
+        # silently narrowed range. If the two ever drifted, a run could be
+        # declared complete while the matrix had never asked for a version.
+        matrix = obs_compat.build_matrix(GRID, "32.2.2", "32.3.0-beta1", sample_manifest())
+        self.assertEqual(
+            obs_compat.probed_candidates(GRID, "32.2.2", "32.3.0-beta1"),
+            [entry["obs"] for entry in matrix])
+
 
 class NeedsFullRun(unittest.TestCase):
     def test_a_tag_push_always_runs_the_full_matrix(self):
@@ -853,8 +863,14 @@ class ExitCodes(unittest.TestCase):
         self.assertEqual(len(codes), 5)
 
 
-class ReportMessageWhenDegraded(unittest.TestCase):
-    """Verify the _report message accurately reflects when evidence is missing.
+class ReportOutcomes(unittest.TestCase):
+    """Verify that _report's message, and what it writes, match the evidence.
+
+    A green run that moved the range needs nobody: it rewrites the declaration
+    (obs-compat.json and both README tables) and hands the workflow the two
+    outputs that say so. Every run whose evidence is missing or failed must
+    name which of those happened, leave the declaration alone, and exit 2 for
+    a human instead of 0 for the workflow.
 
     Each test passes its own temp `root` straight into _report() (rather than
     patching the obs_compat.ROOT module attribute, which check() and
@@ -976,8 +992,14 @@ class ReportMessageWhenDegraded(unittest.TestCase):
             # the range genuinely shifts up past it rather than staying put.
             self.assertEqual(written["min_supported"], "32.1")
 
-    def test_report_fully_green_stale_run_claims_probes_are_green(self):
-        # When all probes succeeded and nothing was skipped, the original message is used.
+    def test_a_fully_green_run_that_moved_the_range_rewrites_the_declaration(self):
+        # The generalisation of the 2026-10-01 failure: OBS published a new
+        # beta, every probe compiled against it, and the only thing wrong was
+        # the committed declaration. That must not be a red run, and it must
+        # not need an operator either -- _report rewrites both files and hands
+        # the workflow a cue to commit them. The old behaviour (exit 2, "range
+        # simply moved") made every OBS release a failure to be dismissed by
+        # hand, which is how a real one gets missed.
         with tempfile.TemporaryDirectory() as name:
             root = Path(name)
             # Set up a mock repo
@@ -1002,29 +1024,136 @@ class ReportMessageWhenDegraded(unittest.TestCase):
             # Create an initial manifest so check() will find differences
             obs_compat.save_manifest(sample_manifest(), root / "obs-compat.json")
 
-            # Set GITHUB_STEP_SUMMARY to a temp file (hermetic, real CI path, UTF-8)
+            # Set GITHUB_STEP_SUMMARY to a temp file (hermetic, real CI path,
+            # UTF-8) and GITHUB_OUTPUT to the file the workflow reads.
             summary_file = root / "summary.txt"
-            with mock.patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": str(summary_file)}):
+            output_file = root / "github_output"
+            output_file.write_text("", encoding="utf-8")
+            with mock.patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": str(summary_file),
+                                              "GITHUB_OUTPUT": str(output_file)}):
                 import io
                 captured_stderr = io.StringIO()
                 with mock.patch("sys.stderr", captured_stderr):
                     exit_code = obs_compat._report(artifact_dir, GRID, MAX_TESTED, None, root=root)
 
-            self.assertEqual(exit_code, obs_compat.EXIT_STALE)
+            self.assertEqual(exit_code, obs_compat.EXIT_OK)
             stderr = captured_stderr.getvalue()
             # Should claim every probe is green
             self.assertIn("every probe is green", stderr)
             # Should NOT mention artifacts that couldn't be read
             self.assertNotIn("artifact(s) could not be read", stderr)
+            # ... and a green run carries no error annotation at all: an
+            # ::error:: line in a green run is read as a defect by whoever
+            # scans the annotations, and there is nothing left to act on.
+            self.assertNotIn("::error::", stderr)
 
             # Proof this consulted the fixture: the summary file this test
             # pointed GITHUB_STEP_SUMMARY at is the only place the table
-            # could have been written, since check(root) found the fixture
-            # README stale (real content would never contain "stale").
+            # could have been written.
             self.assertIn("32.2.2", summary_file.read_text(encoding="utf-8"))
             written = obs_compat.load_manifest(root / "obs-compat.json")
             self.assertEqual(written["unverifiable"], [])
             self.assertIn("32.0.0", written["results"])
+
+            # The declaration is now self-consistent with the manifest the run
+            # derived, and the workflow has been told to commit it (the
+            # heredoc form _emit_output writes; see its own comment on why the
+            # delimiter is safe).
+            self.assertEqual(obs_compat.check(root), [])
+            self.assertIn("declaration_moved<<__EOF__\ntrue\n__EOF__",
+                          output_file.read_text(encoding="utf-8"))
+            # ... with the range spelled out for the commit message, which is
+            # the one thing the workflow must not have to parse back out of
+            # the JSON it just committed.
+            self.assertIn("declaration<<__EOF__\n32.0 - 32.2.2\n__EOF__",
+                          output_file.read_text(encoding="utf-8"))
+
+    def test_a_probe_that_never_reported_is_not_a_green_run(self):
+        # A matrix job that dies is allowed to (continue-on-error is keyed off
+        # `required`), and it leaves no artifact at all -- so aggregate never
+        # sees a file it cannot read, and the version is not in `skipped`
+        # either. It still silently narrows the derived range (the missing
+        # probe reads as unverifiable and the green block stops below it),
+        # which is precisely the edit that must not be committed by itself:
+        # what the plugin promises may shrink for a defect, never for a runner
+        # that ran out of time.
+        with tempfile.TemporaryDirectory() as name:
+            root = Path(name)
+            write_buildspec(root)
+            (root / "README.md").write_text(readme_text(), encoding="utf-8", newline="\n")
+
+            artifact_dir = root / "compat-artifacts"
+            artifact_dir.mkdir()
+            for version in GRID + [MAX_TESTED]:
+                if version == "32.1.0":
+                    continue  # the job that would have probed it never reported
+                folder = artifact_dir / f"compat-{version}"
+                folder.mkdir()
+                (folder / f"compat-{version}.json").write_text(
+                    json.dumps({"obs": version, **ok()}), encoding="utf-8")
+
+            obs_compat.save_manifest(sample_manifest(), root / "obs-compat.json")
+            stale_readme = (root / "README.md").read_text(encoding="utf-8")
+
+            output_file = root / "github_output"
+            output_file.write_text("", encoding="utf-8")
+            with mock.patch.dict(os.environ, {"GITHUB_OUTPUT": str(output_file)}):
+                os.environ.pop("GITHUB_STEP_SUMMARY", None)
+                import io
+                captured_stderr = io.StringIO()
+                with mock.patch("sys.stdout", io.StringIO()), \
+                     mock.patch("sys.stderr", captured_stderr):
+                    exit_code = obs_compat._report(artifact_dir, GRID, MAX_TESTED, None, root=root)
+
+            self.assertEqual(exit_code, obs_compat.EXIT_STALE)
+            stderr = captured_stderr.getvalue()
+            self.assertIn("no result was reported for 32.1.0", stderr)
+            self.assertNotIn("every probe is green", stderr)
+            # Nothing was rewritten, and nothing was queued for committing.
+            self.assertEqual((root / "README.md").read_text(encoding="utf-8"),
+                             stale_readme)
+            self.assertNotIn("declaration_moved",
+                             output_file.read_text(encoding="utf-8"))
+            # The narrowing is real and is recorded -- it just is not published
+            # behind the operator's back.
+            written = obs_compat.load_manifest(root / "obs-compat.json")
+            self.assertEqual(written["unverifiable"], ["32.1"])
+            self.assertEqual(written["min_supported"], "32.2")
+
+    def test_a_green_run_whose_readme_lost_its_markers_is_a_human_edit(self):
+        # write() can only render a block the README still has a place for.
+        # A README that lost its markers is a repair to make by hand: not an
+        # incompatibility (exit 1 is spoken for), and not a licence to fail
+        # the run as if a probe had gone red.
+        with tempfile.TemporaryDirectory() as name:
+            root = Path(name)
+            write_buildspec(root)
+            (root / "README.md").write_text("# Requirements\n\nno markers here\n",
+                                            encoding="utf-8", newline="\n")
+
+            artifact_dir = root / "compat-artifacts"
+            artifact_dir.mkdir()
+            for version in GRID + [MAX_TESTED]:
+                folder = artifact_dir / f"compat-{version}"
+                folder.mkdir()
+                (folder / f"compat-{version}.json").write_text(
+                    json.dumps({"obs": version, **ok()}), encoding="utf-8")
+            obs_compat.save_manifest(sample_manifest(), root / "obs-compat.json")
+
+            output_file = root / "github_output"
+            output_file.write_text("", encoding="utf-8")
+            with mock.patch.dict(os.environ, {"GITHUB_OUTPUT": str(output_file)}):
+                os.environ.pop("GITHUB_STEP_SUMMARY", None)
+                import io
+                captured_stderr = io.StringIO()
+                with mock.patch("sys.stdout", io.StringIO()), \
+                     mock.patch("sys.stderr", captured_stderr):
+                    exit_code = obs_compat._report(artifact_dir, GRID, MAX_TESTED, None, root=root)
+
+            self.assertEqual(exit_code, obs_compat.EXIT_STALE)
+            self.assertIn("markers", captured_stderr.getvalue())
+            self.assertNotIn("declaration_moved",
+                             output_file.read_text(encoding="utf-8"))
 
 
 class ReportDegradesAnUnencodableSummaryInsteadOfDroppingIt(unittest.TestCase):
@@ -1034,8 +1163,8 @@ class ReportDegradesAnUnencodableSummaryInsteadOfDroppingIt(unittest.TestCase):
     cannot represent the ✅/❌ marks (e.g. Windows' cp1252) used to raise
     UnicodeEncodeError before a single byte reached stdout -- the entire
     table was lost, not just the two glyphs, and the old `except: pass`
-    hid that. This is the one branch none of the ReportMessageWhenDegraded
-    tests reaches, because all three set GITHUB_STEP_SUMMARY and take the
+    hid that. This is the one branch none of the ReportOutcomes tests
+    reaches, because every one of them sets GITHUB_STEP_SUMMARY and takes the
     file-write path instead.
     """
 
@@ -1298,7 +1427,10 @@ class ReportExitsCleanWhenEverythingAlreadyMatches(unittest.TestCase):
                     json.dumps({"obs": version, **ok()}), encoding="utf-8")
 
             summary_file = root / "summary.txt"
-            with mock.patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": str(summary_file)}):
+            output_file = root / "github_output"
+            output_file.write_text("", encoding="utf-8")
+            with mock.patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": str(summary_file),
+                                              "GITHUB_OUTPUT": str(output_file)}):
                 import io
                 stderr = io.StringIO()
                 with mock.patch("sys.stderr", stderr):
@@ -1308,6 +1440,13 @@ class ReportExitsCleanWhenEverythingAlreadyMatches(unittest.TestCase):
             self.assertEqual(exit_code, obs_compat.EXIT_OK)
             # Nothing to report: no ::error::, no ::notice::, no complaint.
             self.assertEqual(stderr.getvalue(), "")
+            # And nothing to commit either. The manifest this run derived is
+            # never byte-identical to the committed one for long -- it carries
+            # the day it was generated -- so a run that asked for a commit
+            # whenever the file differed would commit a date once a week and
+            # call it a declaration.
+            self.assertNotIn("declaration_moved",
+                             output_file.read_text(encoding="utf-8"))
 
 
 class ReportRequiresItsArguments(unittest.TestCase):
