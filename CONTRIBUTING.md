@@ -142,6 +142,32 @@ cmake --build build_tests --config RelWithDebInfo
 ctest --test-dir build_tests -C RelWithDebInfo --output-on-failure
 ```
 
+## The OBS compatibility range is generated
+
+**NEVER EDIT THE COMPATIBILITY TABLES BY HAND.** The range the README claims
+(both languages, in the blocks between the `obs-compat:*` markers),
+`obs-compat.json` and the OBS version `buildspec.json` pins are three statements
+about the same thing, derived rather than asserted: one probe per OBS minor
+compiles and links the plugin against that version's SDK. To change the range,
+change the evidence and run `python3 tools/obs_compat.py --write`; `--check` —
+what every push and pull request runs — fails the moment the three disagree.
+Bumping the SDK in `buildspec.json` is not how you widen the range: it moves the
+version the released binaries are built with, and its hashes plus the obs-deps
+and Qt releases have to follow (skip that and the plugin fails to load with
+error 126).
+
+**A RED "OBS Compatibility" RUN IS NOT "GO AND UPDATE THE DECLARATION".** When
+OBS ships a release or a beta and every probe compiled against it, that workflow
+regenerates the declaration and commits it itself. Red then means one of two
+things: the plugin does not compile against a probed OBS (exit 1 — a genuine
+incompatibility, fix the code), or the evidence was not clean (exit 2 or 3 — an
+SDK that would not build, an artifact that could not be read, a probe that never
+reported, a red beta, a range that cannot be derived). In the second case read
+the run and the `obs-compat-manifest` artifact before regenerating: a probe with
+no result reads as unverifiable and narrows the range, and a narrower range is a
+claim nobody asked this plugin to make. The codes are listed at the top of
+`tools/obs_compat.py`.
+
 ## Licence
 
 By contributing you agree your changes are licensed under GPL-2.0-or-later,
