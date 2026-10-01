@@ -1,11 +1,11 @@
 {
-  "beta_tested": "33.0.0-beta4",
+  "beta_tested": "33.0.0-beta5",
   "floor": {
     "reason": "OBS 32 is the oldest release obs-multireplay is declared for and run against",
     "version": "32.0"
   },
   "gaps": [],
-  "generated": "2026-09-26",
+  "generated": "2026-10-01",
   "max_tested": "32.2.2",
   "min_supported": "32.0",
   "results": {
@@ -29,7 +29,7 @@
       "phase": null,
       "status": "ok"
     },
-    "33.0.0-beta4": {
+    "33.0.0-beta5": {
       "env": "native",
       "phase": null,
       "status": "ok"
