@@ -1298,6 +1298,12 @@ class ReportExcludesTheBetaFromTheGate(unittest.TestCase):
     is keyed off `required`). --report must not fail the whole run on a
     beta's behalf -- but its failure must still show up in the manifest and
     the summary table, since that is the entire point of probing it.
+
+    Since 2026-10-05 that covers every way a beta can fail, including an SDK
+    that will not build at all: OBS 33.0.0-beta6 raised its FFmpeg requirement
+    to >= 8.0 while the native runner ships 6.1. A beta failure is recorded,
+    never fatal; the same failure at a version the declared range covers still
+    is (test_report_with_obs_build_failure_does_not_claim_all_green).
     """
 
     BETA = "32.3.0-beta1"
@@ -1400,6 +1406,104 @@ class ReportExcludesTheBetaFromTheGate(unittest.TestCase):
             beta_row = next(line for line in rendered.splitlines()
                             if f"`{self.BETA}`" in line)
             self.assertIn("does not compile", beta_row)
+
+    def test_a_beta_broken_at_obs_build_is_recorded_not_fatal(self):
+        # The 2026-10-05 regression in the shape it actually arrived: OBS
+        # 33.0.0-beta6 raised its FFmpeg requirement to >= 8.0, the native
+        # runner ships 6.1, so the SDK would not build. The test above already
+        # pinned a red beta at plugin-build; this one pins that an *unbuildable
+        # SDK* at a candidate the declared range never covers is not fatal
+        # either.
+        #
+        # What turned it into a daily red rather than a one-off was that
+        # --report refused to write the manifest: the beta was never recorded,
+        # so needs_full_run found it "new" again the next morning and the daily
+        # watch re-ran the whole matrix to fail in exactly the same way.
+        with tempfile.TemporaryDirectory() as name:
+            root = Path(name)
+            write_buildspec(root)
+            (root / "README.md").write_text(readme_text(), encoding="utf-8", newline="\n")
+
+            artifact_dir = root / "compat-artifacts"
+            artifact_dir.mkdir()
+            for version in GRID + [MAX_TESTED]:
+                folder = artifact_dir / f"compat-{version}"
+                folder.mkdir()
+                (folder / f"compat-{version}.json").write_text(
+                    json.dumps({"obs": version, **ok()}), encoding="utf-8")
+            beta_folder = artifact_dir / f"compat-{self.BETA}"
+            beta_folder.mkdir()
+            (beta_folder / f"compat-{self.BETA}.json").write_text(
+                json.dumps({"obs": self.BETA, **unbuildable()}), encoding="utf-8")
+
+            output_file = root / "github_output"
+            output_file.write_text("", encoding="utf-8")
+            with mock.patch.dict(os.environ, {"GITHUB_OUTPUT": str(output_file)}):
+                os.environ.pop("GITHUB_STEP_SUMMARY", None)
+                import io
+                stderr = io.StringIO()
+                with mock.patch("sys.stdout", io.StringIO()), \
+                     mock.patch("sys.stderr", stderr):
+                    exit_code = obs_compat._report(
+                        artifact_dir, GRID, MAX_TESTED, self.BETA, root=root)
+
+            self.assertEqual(exit_code, obs_compat.EXIT_OK)
+            # No clean sweep is claimed: the beta really did fail, and the
+            # sentence says so without being the green-moved one.
+            self.assertIn("did not build", stderr.getvalue())
+            self.assertNotIn("every probe is green", stderr.getvalue())
+            # Recorded, so tomorrow's watch does not rediscover it as new...
+            written = obs_compat.load_manifest(root / "obs-compat.json")
+            self.assertEqual(written["beta_tested"], self.BETA)
+            self.assertEqual(written["results"][self.BETA]["phase"], "obs-build")
+            # ...and the declaration is refreshed, so the run can commit it.
+            self.assertEqual(obs_compat.check(root), [])
+            self.assertIn("declaration_moved<<__EOF__\ntrue\n__EOF__",
+                          output_file.read_text(encoding="utf-8"))
+            rendered = obs_compat.render_readme_section(written)
+            self.assertNotIn("Also builds against", rendered)
+            beta_row = next(line for line in rendered.splitlines()
+                            if f"`{self.BETA}`" in line)
+            self.assertIn("SDK could not be built", beta_row)
+
+    def test_a_beta_that_never_reported_is_recorded_without_a_result(self):
+        # A beta whose job dies leaves no artifact at all: not "failed", not
+        # readable-but-broken, simply never reported. That cannot narrow the
+        # declared range -- the beta is not in the grid -- so it is recorded
+        # without a result and the run stays green, unlike the same thing
+        # happening to a version the range covers (see
+        # test_a_probe_that_never_reported_is_not_a_green_run).
+        with tempfile.TemporaryDirectory() as name:
+            root = Path(name)
+            write_buildspec(root)
+            (root / "README.md").write_text(readme_text(), encoding="utf-8", newline="\n")
+
+            artifact_dir = root / "compat-artifacts"
+            artifact_dir.mkdir()
+            for version in GRID + [MAX_TESTED]:
+                folder = artifact_dir / f"compat-{version}"
+                folder.mkdir()
+                (folder / f"compat-{version}.json").write_text(
+                    json.dumps({"obs": version, **ok()}), encoding="utf-8")
+
+            output_file = root / "github_output"
+            output_file.write_text("", encoding="utf-8")
+            with mock.patch.dict(os.environ, {"GITHUB_OUTPUT": str(output_file)}):
+                os.environ.pop("GITHUB_STEP_SUMMARY", None)
+                import io
+                stderr = io.StringIO()
+                with mock.patch("sys.stdout", io.StringIO()), \
+                     mock.patch("sys.stderr", stderr):
+                    exit_code = obs_compat._report(
+                        artifact_dir, GRID, MAX_TESTED, self.BETA, root=root)
+
+            self.assertEqual(exit_code, obs_compat.EXIT_OK)
+            self.assertIn("nothing was reported for the beta", stderr.getvalue())
+            written = obs_compat.load_manifest(root / "obs-compat.json")
+            self.assertEqual(written["beta_tested"], self.BETA)
+            self.assertNotIn(self.BETA, written["results"])
+            self.assertIn("declaration_moved<<__EOF__\ntrue\n__EOF__",
+                          output_file.read_text(encoding="utf-8"))
 
 
 class ReportExitsCleanWhenEverythingAlreadyMatches(unittest.TestCase):

@@ -156,17 +156,22 @@ version the released binaries are built with, and its hashes plus the obs-deps
 and Qt releases have to follow (skip that and the plugin fails to load with
 error 126).
 
-**A RED "OBS Compatibility" RUN IS NOT "GO AND UPDATE THE DECLARATION".** When
-OBS ships a release or a beta and every probe compiled against it, that workflow
+**A RED "OBS COMPATIBILITY" RUN IS NOT "GO AND UPDATE THE DECLARATION".** When
+OBS ships a release, or a beta that CI cannot even build, that workflow
 regenerates the declaration and commits it itself. Red then means one of two
 things: the plugin does not compile against a probed OBS (exit 1 — a genuine
-incompatibility, fix the code), or the evidence was not clean (exit 2 or 3 — an
-SDK that would not build, an artifact that could not be read, a probe that never
-reported, a red beta, a range that cannot be derived). In the second case read
-the run and the `obs-compat-manifest` artifact before regenerating: a probe with
-no result reads as unverifiable and narrows the range, and a narrower range is a
-claim nobody asked this plugin to make. The codes are listed at the top of
-`tools/obs_compat.py`.
+incompatibility, fix the code), or evidence about a version the *declared range*
+covers was not gathered (exit 2 or 3 — an artifact that could not be read, an
+SDK that would not build, a probe that never reported, a range that cannot be
+derived). In the second case read the run and the `obs-compat-manifest` artifact
+before regenerating: a probe with no result reads as unverifiable and narrows
+the range, and a narrower range is a claim nobody asked this plugin to make.
+
+A beta is deliberately not part of that. It never enters the declared range and
+never gates, so its own failure — including an SDK too new to build on our
+runner, as OBS 33.0.0-beta6 is (it requires FFmpeg >= 8.0; the native runner
+ships 6.1) — is recorded as ⚠️ or ❌ in the probe table and the run stays green.
+The codes are listed at the top of `tools/obs_compat.py`.
 
 ## Licence
 

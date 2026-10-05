@@ -200,9 +200,12 @@ jobs:
           if-no-files-found: warn
       # A green run that moved the range has already rewritten both files, and
       # declares that by setting declaration_moved — it is set on exactly one
-      # exit path, so a red run leaves it empty and commits nothing. Tag runs
-      # are excluded: a tag's tree is fixed, and the next scheduled run on the
-      # branch picks the same declaration up anyway.
+      # exit path, so a red run leaves it empty and commits nothing. A run in
+      # which only a beta the declared range never claims failed (or never
+      # reported) is one of those green runs: the failure is recorded, not
+      # fatal — see tools/obs_compat.py. Tag runs are excluded: a tag's tree is
+      # fixed, and the next scheduled run on the branch picks the same
+      # declaration up anyway.
       - name: Commit the declaration when the range moved 📝
         if: >-
           steps.report.outputs.declaration_moved == 'true' &&

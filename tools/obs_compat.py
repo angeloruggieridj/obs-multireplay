@@ -18,12 +18,16 @@ What differs from obs-playlist-deck, and why:
   together with per-platform hashes and the obs-deps/Qt releases that must
   follow it — so --write does not move it. It is rendered in the README and
   --check keeps that row honest, but bumping it stays a deliberate, manual step.
-- --report refreshes the declaration itself, and exits 0, when the range moved
-  with every probe green (OBS published a release or a beta and the plugin
-  compiled against it); the caller commits the two files it rewrote. Upstream
-  fails that run and asks an operator to fetch the manifest and re-run --write
-  by hand. That writes a red run per OBS release, and a red run that usually
-  means "dismiss me" is how the one that means "a probe failed" gets missed.
+- --report refreshes the declaration itself, and exits 0, when everything the
+  declared range depends on came back green -- OBS published a release, or a
+  beta the range never claims failed to build, or never reported at all. The
+  caller commits the two files it rewrote. What stays fatal is evidence about a
+  version the range covers: an artifact that could not be read, an SDK that
+  would not build, a probe that never came back -- any of the three can narrow
+  the declared range, and narrowing what the plugin promises is not a
+  mechanical edit. Upstream reaches the same rule one job later (its --report
+  returns OK and a separate compat-record job renders and commits), so the
+  difference here is where the write happens, not what counts as a failure.
 """
 from __future__ import annotations
 
@@ -791,27 +795,34 @@ def _report(artifact_dir: Path, grid: list[str], latest: str, beta: str | None,
     if not problems:
         return EXIT_OK
 
-    # Everything that would make "every probe is green" a lie. A probe whose
-    # artifact never arrived says exactly as much as one whose SDK would not
-    # build -- aggregate's own docstring lumps them together -- so it belongs
-    # on this list rather than in the auto-update below: a matrix job that died
-    # (they are allowed to fail; continue-on-error is keyed off `required`)
-    # would otherwise narrow the declared range in silence, and narrowing what
-    # the plugin promises is never a mechanical edit.
-    obs_build_failures = [version for version, result in results.items()
-                          if result.get("phase") == "obs-build"]
-    unprobed = [candidate for candidate
-                in probed_candidates(grid, latest, beta) if candidate not in results]
-    # A beta that failed is not "every probe is green" either -- its result is
-    # real evidence and its absence from the declared range is by design, but
-    # the message must not claim a clean sweep while holding a fail/plugin-build
-    # record for it.
-    beta_failed = beta is not None and results.get(beta, {}).get("status") != "ok"
+    # What is fatal: evidence about a version the *declared range* covers that
+    # CI could not gather. A probe whose artifact never arrived says exactly as
+    # much as one whose SDK would not build -- aggregate's own docstring lumps
+    # them together -- and either way the derived range can end up narrower
+    # than it should be, which is never a mechanical edit.
+    #
+    # The beta is deliberately not in that set. It never enters the declared
+    # range and never gates (its job is allowed to fail: continue-on-error is
+    # keyed off `required`), so a beta that will not build -- or that never
+    # reported at all -- is evidence about a prerelease the range never
+    # claimed, and it is recorded rather than fatal. OBS 33.0.0-beta6 raised
+    # its FFmpeg requirement to >= 8.0 while the native runner ships 6.1, so
+    # its SDK does not build; keeping that fatal reddened the daily watch every
+    # day, because --report refused to write the manifest that would have
+    # recorded it, so the next run rediscovered the same beta and failed again.
+    range_candidates = [candidate for candidate
+                        in probed_candidates(grid, latest, beta) if candidate != beta]
+    unprobed = [candidate for candidate in range_candidates if candidate not in results]
+    fatal_obs_build = [version for version, result in results.items()
+                       if result.get("phase") == "obs-build" and version != beta]
+    beta_failed = (beta is not None and beta in results
+                   and results[beta].get("status") != "ok")
+    beta_unprobed = beta is not None and beta not in results
 
-    if skipped or unprobed or obs_build_failures or beta_failed:
+    if skipped or unprobed or fatal_obs_build:
         for problem in problems:
             print(f"::error::{problem}", file=sys.stderr)
-        # Name whichever of the four actually occurred rather than a fixed
+        # Name whichever of the three actually occurred rather than a fixed
         # sentence that would point at a zero count or at ::warning:: lines
         # that were never printed.
         reasons = []
@@ -820,23 +831,22 @@ def _report(artifact_dir: Path, grid: list[str], latest: str, beta: str | None,
                            f"(see ::warning:: messages above)")
         if unprobed:
             reasons.append(f"no result was reported for {', '.join(unprobed)}")
-        if obs_build_failures:
+        if fatal_obs_build:
             reasons.append(f"the OBS SDK failed to build for "
-                           f"{', '.join(sorted(obs_build_failures))}")
-        if beta_failed:
-            reasons.append(f"the beta ({beta}) failed to build")
+                           f"{', '.join(sorted(fatal_obs_build))}")
         print(f"::notice::compatibility matrix check failed: {'; '.join(reasons)}. "
               f"The supported range may not have genuinely moved — inspect "
               f"--artifacts and re-run before updating the declaration. "
               f"{UPDATE_INSTRUCTIONS}", file=sys.stderr)
         return EXIT_STALE
 
-    # Every probe came back green and the declaration no longer matches them:
-    # OBS published a release or a beta and the plugin compiled against it, so
-    # the range moved and this is the only thing left behind. Nothing here
-    # needs a human, so refresh it here rather than failing the run and asking
-    # an operator to fetch an artifact and re-run --write by hand -- see the
-    # module docstring for why this diverges from obs-playlist-deck.
+    # Everything the declared range depends on came back green and the
+    # declaration no longer matches: this is the only thing left behind. OBS
+    # published a release, or a beta the range never claimed failed to build --
+    # either way nothing here needs a human, so refresh it here rather than
+    # failing the run and asking an operator to fetch an artifact and re-run
+    # --write by hand -- see the module docstring for why this diverges from
+    # obs-playlist-deck, where a separate compat-record job does the commit.
     try:
         write(root)
         remaining = check(root)
@@ -851,9 +861,24 @@ def _report(artifact_dir: Path, grid: list[str], latest: str, beta: str | None,
             print(f"::error::{problem}", file=sys.stderr)
         return EXIT_STALE
 
-    print("::notice::every probe is green — the declared range moved. "
-          "obs-compat.json and both README tables were regenerated from this "
-          "run and are ready to commit.", file=sys.stderr)
+    # The notice must not claim a clean sweep while holding a failure for the
+    # beta, or a beta nothing was ever reported for: both are real information
+    # about a prerelease, and both are recorded by the manifest written above.
+    if beta_failed:
+        print(f"::notice::every probe the declared range depends on is green; "
+              f"the beta ({beta}) did not build and is recorded as such. "
+              f"obs-compat.json and both README tables were regenerated from "
+              f"this run and are ready to commit.", file=sys.stderr)
+    elif beta_unprobed:
+        print(f"::notice::every probe the declared range depends on is green; "
+              f"nothing was reported for the beta ({beta}), which is recorded "
+              f"without a result. obs-compat.json and both README tables were "
+              f"regenerated from this run and are ready to commit.",
+              file=sys.stderr)
+    else:
+        print("::notice::every probe is green — the declared range moved. "
+              "obs-compat.json and both README tables were regenerated from "
+              "this run and are ready to commit.", file=sys.stderr)
     # The workflow's cue to commit, and the range to phrase the commit message
     # with. Nothing else in this tool writes README.md, and every other exit
     # path leaves both unset, so an absent value reads as "nothing to commit"
