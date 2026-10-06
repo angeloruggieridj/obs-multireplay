@@ -30,9 +30,9 @@
       "status": "ok"
     },
     "33.0.0-beta6": {
-      "env": "native",
-      "phase": "obs-build",
-      "status": "fail"
+      "env": "resolute",
+      "phase": null,
+      "status": "ok"
     }
   },
   "unverifiable": []
