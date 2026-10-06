@@ -423,6 +423,15 @@ class ProbeTable(unittest.TestCase):
         self.assertIn("Ubuntu 24.04", table)
         self.assertNotIn("jammy", table)
 
+    def test_the_newest_line_says_it_was_probed_in_the_26_04_container(self):
+        # OBS 33 needs FFmpeg >= 8.0 and the runner ships 6.1, so that probe
+        # runs in ubuntu:26.04. A reader is entitled to see that in the row.
+        manifest = sample_manifest()
+        manifest["results"]["33.0.0-beta6"] = ok("resolute")
+        table = obs_compat.render_probe_table(manifest)
+        self.assertIn("Ubuntu 26.04 (container)", table)
+        self.assertNotIn("resolute", table)
+
     def test_the_readme_section_carries_the_table_and_points_at_the_manifest(self):
         body = obs_compat.render_readme_section(sample_manifest())
         self.assertIn("`32.0.0`", body)
@@ -586,12 +595,36 @@ class WriteThenCheck(unittest.TestCase):
 
 class Environment(unittest.TestCase):
     def test_pre_31_probes_run_in_the_jammy_container(self):
-        # ubuntu-24.04 ships FFmpeg 7, which OBS 30-era code will not build against.
+        # ubuntu-24.04 ships FFmpeg 6.1, which OBS 30-era code will not build against.
         self.assertEqual(obs_compat.env_for("30.2.0"), "jammy")
 
     def test_31_and_later_run_on_the_native_runner(self):
         self.assertEqual(obs_compat.env_for("31.0.0"), "native")
         self.assertEqual(obs_compat.env_for("32.2.2"), "native")
+
+    def test_33_and_later_run_in_the_26_04_container(self):
+        # The other end of the same problem: OBS 33's libobs requires
+        # FFmpeg >= 8.0 and ubuntu-24.04 has 6.1, so those probes move to
+        # ubuntu:26.04 (8.0.1). It applies to a beta of that line too -- the
+        # beta is where the SDK first asks for it.
+        self.assertEqual(obs_compat.env_for("33.0.0"), "resolute")
+        self.assertEqual(obs_compat.env_for("33.0.0-beta6"), "resolute")
+        self.assertEqual(obs_compat.env_for("34.0.0-beta1"), "resolute")
+
+    def test_the_boundaries_do_not_overlap(self):
+        # A version can only be in one place: the two container paths are for
+        # opposite ends and must never claim the same minor.
+        self.assertLess(obs_compat.LEGACY_BOUNDARY, obs_compat.NEXT_BOUNDARY)
+
+    def test_every_environment_it_can_return_has_a_reader_facing_label(self):
+        # The workflow has one job per key of ENV_LABELS and the README prints
+        # the label: an env with no label would either be dropped from the
+        # matrix entirely or printed as an internal word.
+        for tag in ("30.0.0", "31.0.0", "32.2.2", "33.0.0-beta6", "40.0.0"):
+            self.assertIn(obs_compat.env_for(tag), obs_compat.ENV_LABELS)
+        self.assertEqual(obs_compat.ENVS, tuple(obs_compat.ENV_LABELS))
+        self.assertEqual(set(obs_compat.ENVS),
+                         {"native", "jammy", "resolute"})
 
 
 class BuildMatrix(unittest.TestCase):
@@ -636,6 +669,64 @@ class BuildMatrix(unittest.TestCase):
         self.assertEqual(
             obs_compat.probed_candidates(GRID, "32.2.2", "32.3.0-beta1"),
             [entry["obs"] for entry in matrix])
+
+
+def github_outputs(path: Path) -> dict:
+    """Parse the heredoc blocks _emit_output writes into a GITHUB_OUTPUT file."""
+    values, key, body = {}, None, []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if key is None:
+            if line.endswith("<<__EOF__"):
+                key, body = line[:-len("<<__EOF__")], []
+        elif line == "__EOF__":
+            values[key] = "\n".join(body)
+            key = None
+        else:
+            body.append(line)
+    return values
+
+
+class DiscoverOutputs(unittest.TestCase):
+    """The discover job's outputs *are* the workflow's matrix.
+
+    compat.yaml has one job per key of ENV_LABELS, fed by the output of the
+    same name, so an environment the discover job never emits is a whole
+    container's worth of probes silently not running -- which is what happened
+    to OBS 33 while the SDK could not be built on the runner at all.
+    """
+
+    TAGS = ["34.0.0-beta1", "33.0.0-beta2", "32.2.2", "32.2.0", "32.1.0",
+            "32.0.0", "30.2.0", "30.0.0"]
+
+    def _discover(self, tmp: Path) -> dict:
+        output = tmp / "github_output"
+        output.write_text("", encoding="utf-8")
+        env = {"GITHUB_OUTPUT": str(output), "GITHUB_EVENT_NAME": "schedule",
+               "GITHUB_SCHEDULE": obs_compat.WEEKLY_CRON,
+               "GITHUB_REF": "refs/heads/main"}
+        with mock.patch.dict(os.environ, env), \
+             mock.patch.object(obs_compat, "fetch_tags", return_value=self.TAGS), \
+             mock.patch.object(obs_compat, "load_manifest", return_value=None):
+            self.assertEqual(obs_compat._discover(), obs_compat.EXIT_OK)
+        return github_outputs(output)
+
+    def test_it_emits_one_output_per_environment(self):
+        with tempfile.TemporaryDirectory() as name:
+            values = self._discover(Path(name))
+        self.assertEqual(set(values),
+                         {"run_full", "grid", "latest_stable", "beta", *obs_compat.ENVS})
+
+    def test_the_newest_line_goes_to_the_26_04_job_and_nothing_to_the_legacy_one(self):
+        with tempfile.TemporaryDirectory() as name:
+            values = self._discover(Path(name))
+        self.assertEqual([e["obs"] for e in json.loads(values["resolute"])],
+                         ["34.0.0-beta1"])
+        self.assertEqual([e["obs"] for e in json.loads(values["native"])],
+                         ["32.0.0", "32.1.0", "32.2.0", "32.2.2"])
+        # Nothing below the floor is probed at all, so the legacy container is
+        # empty today: the job exists for the day FLOOR moves down, not now.
+        self.assertEqual(json.loads(values["jammy"]), [])
+        self.assertEqual(values["beta"], "34.0.0-beta1")
 
 
 class NeedsFullRun(unittest.TestCase):

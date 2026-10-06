@@ -333,11 +333,17 @@ STATIC_ROWS = {
 
 
 # How each probe environment reads to someone who has never opened the
-# workflow. "jammy" and "native" are our words, not theirs.
+# workflow. "jammy", "resolute" and "native" are our words, not theirs.
+# Every env env_for() can return must appear here: the probes are split across
+# these keys, so a missing one would silently drop a job from the matrix and a
+# missing label would print the internal name in the README. The key tuple is
+# derived from this dict so the two cannot drift.
 ENV_LABELS = {
     "native": "Ubuntu 24.04",
     "jammy": "Ubuntu 22.04 (container)",
+    "resolute": "Ubuntu 26.04 (container)",
 }
+ENVS = tuple(ENV_LABELS)
 
 
 def _probe_outcome(result: dict, lang: str = "en") -> str:
@@ -524,13 +530,26 @@ def check(root: Path = ROOT) -> list[str]:
     return problems
 
 
-# Below this, the runner's FFmpeg 7 cannot build OBS, so the probe moves into an
-# ubuntu:22.04 container (FFmpeg 4.4). Lower this to FLOOR to disable the
-# container path entirely — the older probes then report obs-build failures,
-# which the range logic already treats as unverifiable rather than unsupported.
-# With FLOOR at 32.0 nothing reaches the container today; it stays so that
-# lowering FLOOR is a one-line change rather than a rebuild of the workflow.
+# The two ends of the matrix move for the same reason — the runner image's
+# FFmpeg is not the one an OBS generation needs — in opposite directions, so
+# each has its own container.
+#
+# Below this, OBS needs FFmpeg 4.x and the runner's 6.1 will not configure it,
+# so the probe moves into an ubuntu:22.04 container (FFmpeg 4.4). Lower this to
+# FLOOR to disable the container path entirely — the older probes then report
+# obs-build failures, which the range logic already treats as unverifiable
+# rather than unsupported.
 LEGACY_BOUNDARY = (31, 0)
+
+# Above this, OBS 33's libobs asks for more FFmpeg than the runner has:
+# `find_package(FFmpeg 8.0 REQUIRED ...)` in its libobs/CMakeLists.txt against
+# ubuntu-24.04's 6.1, which is a configure failure, so the probe moves into an
+# ubuntu:26.04 container (resolute, FFmpeg 8.0.1). The alternative — building
+# FFmpeg 8 on the runner — was rejected because it would verify a configuration
+# nobody runs: no 24.04 machine has FFmpeg 8 either, while 26.04 is a release
+# this plugin already ships a .deb for. Raise or drop this if OBS moves again;
+# the configure error names the version it wants.
+NEXT_BOUNDARY = (33, 0)
 
 WEEKLY_CRON = "0 7 * * 1"
 TAGS_URL = "https://api.github.com/repos/obsproject/obs-studio/tags?per_page=100"
@@ -538,7 +557,10 @@ TAGS_URL = "https://api.github.com/repos/obsproject/obs-studio/tags?per_page=100
 
 def env_for(candidate: str) -> str:
     version = parse_version(candidate)
-    return "jammy" if (version[0], version[1]) < LEGACY_BOUNDARY else "native"
+    minor = (version[0], version[1])
+    if minor < LEGACY_BOUNDARY:
+        return "jammy"
+    return "resolute" if minor >= NEXT_BOUNDARY else "native"
 
 
 def probed_candidates(grid: list[str], latest_stable: str, beta: str | None) -> list[str]:
@@ -736,8 +758,11 @@ def _discover() -> int:
     _emit_output("grid", json.dumps(grid))
     _emit_output("latest_stable", latest)
     _emit_output("beta", beta or "")
-    _emit_output("native", json.dumps([e for e in matrix if e["env"] == "native"]))
-    _emit_output("jammy", json.dumps([e for e in matrix if e["env"] == "jammy"]))
+    # One output per probe environment, named after it: compat.yaml has one job
+    # per key of ENV_LABELS, so adding an environment is a dict entry here, a
+    # job there, and nothing else.
+    for env in ENVS:
+        _emit_output(env, json.dumps([e for e in matrix if e["env"] == env]))
     print(f"grid={grid} latest={latest} beta={beta} run_full={full}", file=sys.stderr)
     return EXIT_OK
 

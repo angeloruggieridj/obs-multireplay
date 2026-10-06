@@ -59,6 +59,7 @@ jobs:
       run_full: ${{ steps.discover.outputs.run_full }}
       native: ${{ steps.discover.outputs.native }}
       jammy: ${{ steps.discover.outputs.jammy }}
+      resolute: ${{ steps.discover.outputs.resolute }}
       grid: ${{ steps.discover.outputs.grid }}
       latest_stable: ${{ steps.discover.outputs.latest_stable }}
       beta: ${{ steps.discover.outputs.beta }}
@@ -107,11 +108,11 @@ jobs:
           obs-version: ${{ matrix.obs }}
           env-name: native
 
-  # ubuntu-24.04 ships FFmpeg 7, which OBS 30-era code does not build against.
-  # That is an OBS build problem, not a plugin one, so older SDKs would be built
-  # in jammy rather than written off as incompatible. With the floor at OBS 32
-  # nothing is routed here today (the job is skipped); it stays so that lowering
-  # FLOOR in tools/obs_compat.py is the only change needed.
+  # OBS below 31 needs FFmpeg 4.x, which ubuntu-24.04 does not have (it ships
+  # 6.1), so those SDKs are built in jammy rather than written off as
+  # incompatible: an OBS build problem is not a plugin one. With the floor at
+  # OBS 32 nothing is routed here today (the job is skipped); it stays so that
+  # lowering FLOOR in tools/obs_compat.py is the only change needed.
   compat-legacy:
     name: OBS ${{ matrix.obs }} (jammy) 🧩
     needs: compat-discover
@@ -150,9 +151,57 @@ jobs:
           obs-version: ${{ matrix.obs }}
           env-name: jammy
 
+  # The other end of the same boundary (tools/obs_compat.py NEXT_BOUNDARY, which
+  # is what decides this job's candidates): OBS 33's libobs requires FFmpeg >=
+  # 8.0 and the runner ships 6.1, so its SDK cannot even be configured there.
+  # That is why OBS 33.0.0-beta6 sat in the manifest as "SDK could not be built
+  # in CI" -- recorded honestly, but it meant the newest OBS line was not being
+  # verified at all. ubuntu:26.04 (resolute) ships FFmpeg 8.0.1, and it is also
+  # a release this plugin ships a .deb for, so probing the newest line there
+  # verifies a configuration users actually run (no 24.04 machine has FFmpeg 8
+  # either, which is why the runner was not patched instead).
+  compat-next:
+    name: OBS ${{ matrix.obs }} (26.04) 🧩
+    needs: compat-discover
+    if: >-
+      needs.compat-discover.outputs.run_full == 'true' &&
+      needs.compat-discover.outputs.resolute != '[]'
+    runs-on: ubuntu-24.04
+    container: ubuntu:26.04
+    continue-on-error: ${{ !matrix.required }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.compat-discover.outputs.resolute) }}
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install build deps 📦
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            git perl cmake ninja-build pkg-config extra-cmake-modules g++ \
+            qt6-base-dev qt6-base-private-dev qt6-svg-dev \
+            libavcodec-dev libavformat-dev libavutil-dev libavdevice-dev \
+            libavfilter-dev libswscale-dev libswresample-dev libx264-dev \
+            libcurl4-openssl-dev libjansson-dev libmbedtls-dev libsimde-dev \
+            uthash-dev nlohmann-json3-dev zlib1g-dev libpng-dev \
+            libpipewire-0.3-dev libwayland-dev libxkbcommon-dev libgl1-mesa-dev \
+            libgles2-mesa-dev libx11-dev libx11-xcb-dev libxcb1-dev \
+            libxcb-xinerama0-dev libxcb-randr0-dev libxcb-shm0-dev \
+            libxcb-xfixes0-dev libxcb-composite0-dev libxcb-xinput-dev \
+            libxfixes-dev libxcomposite-dev libxinerama-dev libxss-dev \
+            libdrm-dev libva-dev libxcb-cursor-dev \
+            libqrcodegencpp-dev librist-dev libsrt-openssl-dev \
+            libfontconfig1-dev libfreetype-dev \
+            libpci-dev libpulse-dev libudev-dev libasound2-dev
+      - uses: ./.github/actions/obs-compat-probe
+        with:
+          obs-version: ${{ matrix.obs }}
+          env-name: resolute
+
   compat-report:
     name: Derive the Supported Range 📋
-    needs: [compat-discover, compat, compat-legacy]
+    needs: [compat-discover, compat, compat-legacy, compat-next]
     if: always() && needs.compat-discover.outputs.run_full == 'true'
     runs-on: ubuntu-24.04
     # The one job in this workflow allowed to write: when the range moved with
