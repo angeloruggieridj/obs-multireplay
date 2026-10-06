@@ -681,6 +681,32 @@ def summary_table(manifest: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
+def declared_range(manifest: dict, results: dict[str, dict],
+                   beta: str | None) -> str:
+    """How the recorded declaration reads in a commit subject.
+
+    The subject a green run leaves behind names the range it recorded, and a
+    betas name only means a claim when that beta's own probe was green: the
+    manifest records `beta_tested` for three different outcomes, and "+ X" is
+    true for exactly one of them. An SDK that would not build here and a plugin
+    that does not compile are different findings -- one says nothing about the
+    plugin, the other is the warning that the next OBS will not take this code
+    as it stands -- so the subject has to say which happened rather than claim
+    the version either way.
+    """
+    declared = f"{manifest['min_supported']} - {manifest['max_tested']}"
+    if not beta:
+        return declared
+    result = results.get(beta)
+    if result is None:
+        return f"{declared} (beta {beta} not probed)"
+    if result.get("status") == "ok":
+        return f"{declared} + {beta}"
+    verdict = ("unbuildable in CI" if result.get("phase") == "obs-build"
+               else "does not compile")
+    return f"{declared} (beta {beta} {verdict})"
+
+
 def _emit_output(name: str, value: str) -> None:
     path = os.environ.get("GITHUB_OUTPUT")
     if path:
@@ -884,10 +910,7 @@ def _report(artifact_dir: Path, grid: list[str], latest: str, beta: str | None,
     # path leaves both unset, so an absent value reads as "nothing to commit"
     # -- for the message, as nothing to name.
     _emit_output("declaration_moved", "true")
-    declared = f"{manifest['min_supported']} - {manifest['max_tested']}"
-    if manifest.get("beta_tested"):
-        declared += f" + {manifest['beta_tested']}"
-    _emit_output("declaration", declared)
+    _emit_output("declaration", declared_range(manifest, results, beta))
     return EXIT_OK
 
 

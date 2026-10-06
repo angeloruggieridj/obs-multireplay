@@ -855,6 +855,54 @@ class SummaryTable(unittest.TestCase):
         self.assertIn("obs-build", table)
 
 
+class DeclaredRange(unittest.TestCase):
+    """The subject of the commit a green run leaves behind.
+
+    It is read long after the run, by whoever is looking for when the range
+    moved and why, so it may only claim what the manifest actually holds. The
+    beta is recorded for three different outcomes and "+ X" is true for one.
+    """
+
+    BETA = "32.3.0-beta1"
+
+    def _declared(self, beta: str | None, result: dict | None) -> str:
+        results = grid_results()
+        results[MAX_TESTED] = ok()
+        if result is not None:
+            results[beta] = result
+        manifest = obs_compat.build_manifest(
+            results, GRID, MAX_TESTED, beta, "2026-08-31")
+        return obs_compat.declared_range(manifest, results, beta)
+
+    def test_no_beta_is_just_the_range(self):
+        self.assertEqual(self._declared(None, None), "32.0 - 32.2.2")
+
+    def test_a_green_beta_is_a_numbering_claim(self):
+        # The one case where "+ X" is true, and the reason the claim is not
+        # rendered from beta_tested's presence alone.
+        self.assertEqual(self._declared(self.BETA, ok()),
+                         f"32.0 - 32.2.2 + {self.BETA}")
+
+    def test_an_unbuildable_sdk_says_so_rather_than_claiming_the_version(self):
+        # 2026-10-05: OBS 33.0.0-beta6 needs FFmpeg >= 8.0 and the runner ships
+        # 6.1. The commit it produced said "declare OBS 32.0 - 32.2.2 +
+        # 33.0.0-beta6", which reads as support for a beta nothing was ever
+        # learned about.
+        self.assertEqual(self._declared(self.BETA, unbuildable()),
+                         f"32.0 - 32.2.2 (beta {self.BETA} unbuildable in CI)")
+
+    def test_a_red_beta_says_it_does_not_compile(self):
+        # The opposite finding, and the one worth reading first: the plugin
+        # itself failed against that OBS, which is the warning about the next
+        # stable.
+        self.assertEqual(self._declared(self.BETA, incompatible()),
+                         f"32.0 - 32.2.2 (beta {self.BETA} does not compile)")
+
+    def test_a_beta_that_never_reported_is_not_claimed_either(self):
+        self.assertEqual(self._declared(self.BETA, None),
+                         f"32.0 - 32.2.2 (beta {self.BETA} not probed)")
+
+
 class ExitCodes(unittest.TestCase):
     def test_the_codes_are_distinct(self):
         codes = {obs_compat.EXIT_OK, obs_compat.EXIT_INCOMPATIBLE,
@@ -1460,6 +1508,12 @@ class ReportExcludesTheBetaFromTheGate(unittest.TestCase):
             self.assertEqual(obs_compat.check(root), [])
             self.assertIn("declaration_moved<<__EOF__\ntrue\n__EOF__",
                           output_file.read_text(encoding="utf-8"))
+            # The subject the commit will carry must not claim the beta: its
+            # SDK did not build, so nothing was learned about that version.
+            self.assertIn(
+                f"declaration<<__EOF__\n32.0 - 32.2.2 "
+                f"(beta {self.BETA} unbuildable in CI)\n__EOF__",
+                output_file.read_text(encoding="utf-8"))
             rendered = obs_compat.render_readme_section(written)
             self.assertNotIn("Also builds against", rendered)
             beta_row = next(line for line in rendered.splitlines()
