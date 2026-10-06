@@ -225,6 +225,33 @@ def derive_range(results: dict[str, dict], grid: list[str], max_tested: str) -> 
     }
 
 
+def floor_decision_note(manifest: dict, grid: list[str], offenders: list[str]) -> str:
+    """The sentence that turns "the oldest version you claim broke" into a choice.
+
+    A red run caused by the oldest probed minor is not like the others: CI
+    cannot stand behind a version the README claims, and there are exactly two
+    honest answers -- make it verifiable again (fix the plugin, or give the
+    probe an environment that can build that SDK), or stop claiming it, which
+    means moving FLOOR and the declared minimum with it. The second is a
+    support decision about users, not a conclusion evidence can reach by
+    itself, so the run names the minimum its own evidence *does* support and
+    leaves the choice with a human.
+
+    Returns "" whenever the failure is not about that boundary, so an ordinary
+    incompatibility higher up the range is not dressed up as a floor decision.
+    """
+    if not grid or grid[0] not in offenders:
+        return ""
+    return (f"Note: {grid[0]} is the oldest version the declared range claims, "
+            f"and it is what failed here. Either make it verifiable again -- "
+            f"the plugin, or the environment the probe needs -- or cut it: the "
+            f"minimum this run's evidence does support is "
+            f"{manifest['min_supported']}, so the change is FLOOR (and "
+            f"FLOOR_REASON) in tools/obs_compat.py plus a regenerated README. "
+            f"Dropping support for a version is a decision about users, not a "
+            f"CI one, so it is not made here.")
+
+
 MANIFEST_PATH = ROOT / "obs-compat.json"
 
 
@@ -840,6 +867,9 @@ def _report(artifact_dir: Path, grid: list[str], latest: str, beta: str | None,
     if broken:
         print(f"::error::the plugin does not build against {', '.join(sorted(broken))}. "
               f"This is an incompatibility, not a CI failure.", file=sys.stderr)
+        note = floor_decision_note(manifest, grid, broken)
+        if note:
+            print(f"::notice::{note}", file=sys.stderr)
         return EXIT_INCOMPATIBLE
 
     problems = check(root)
@@ -889,6 +919,9 @@ def _report(artifact_dir: Path, grid: list[str], latest: str, beta: str | None,
               f"The supported range may not have genuinely moved — inspect "
               f"--artifacts and re-run before updating the declaration. "
               f"{UPDATE_INSTRUCTIONS}", file=sys.stderr)
+        note = floor_decision_note(manifest, grid, unprobed + fatal_obs_build)
+        if note:
+            print(f"::notice::{note}", file=sys.stderr)
         return EXIT_STALE
 
     # Everything the declared range depends on came back green and the

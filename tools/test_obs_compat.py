@@ -1002,6 +1002,76 @@ class ExitCodes(unittest.TestCase):
         self.assertEqual(len(codes), 5)
 
 
+class FloorDecision(unittest.TestCase):
+    """The oldest version the range claims failing is a support decision.
+
+    CI can either make it verifiable again or stop claiming it, and only a
+    human can choose between those. The run's part is to say which version it
+    can no longer stand behind *and* what the evidence would let the README
+    claim instead: naming the new minimum is the point of the message, and it
+    is derived here, not guessed by whoever reads the red run.
+    """
+
+    def test_it_names_the_minimum_the_evidence_supports(self):
+        results = grid_results()
+        results["32.0.0"] = unbuildable()
+        manifest = obs_compat.build_manifest(results, GRID, MAX_TESTED, None, "2026-08-31")
+        note = obs_compat.floor_decision_note(manifest, GRID, ["32.0.0"])
+        self.assertIn("32.0.0 is the oldest version", note)
+        self.assertIn("32.1", note)          # what this evidence supports
+        self.assertIn("FLOOR", note)          # where the change goes
+        self.assertIn("not a CI one", note)   # and who decides
+
+    def test_a_failure_higher_up_the_range_is_not_a_floor_decision(self):
+        # An ordinary incompatibility must not be dressed up as one: the floor
+        # is only in play when the version that failed is the oldest claimed.
+        manifest = obs_compat.build_manifest(
+            grid_results(), GRID, MAX_TESTED, None, "2026-08-31")
+        self.assertEqual(obs_compat.floor_decision_note(manifest, GRID, ["32.1.0"]), "")
+        self.assertEqual(obs_compat.floor_decision_note(manifest, GRID, []), "")
+
+    def _report_at_the_floor(self, root: Path, floor_result: dict) -> tuple[int, str, Path]:
+        write_buildspec(root)
+        (root / "README.md").write_text(readme_text(), encoding="utf-8", newline="\n")
+        artifact_dir = root / "compat-artifacts"
+        artifact_dir.mkdir()
+        for version in GRID + [MAX_TESTED]:
+            folder = artifact_dir / f"compat-{version}"
+            folder.mkdir()
+            result = floor_result if version == "32.0.0" else ok()
+            (folder / f"compat-{version}.json").write_text(
+                json.dumps({"obs": version, **result}), encoding="utf-8")
+        import io
+        stderr = io.StringIO()
+        with mock.patch("sys.stderr", stderr):
+            exit_code = obs_compat._report(
+                artifact_dir, GRID, MAX_TESTED, None, root=root)
+        return exit_code, stderr.getvalue(), artifact_dir
+
+    def test_a_plugin_build_failure_at_the_floor_says_so_on_the_way_out(self):
+        # exit 1: the code no longer compiles against the version claimed as
+        # the oldest -- one of the two ways this decision arrives.
+        with tempfile.TemporaryDirectory() as name:
+            exit_code, stderr, _ = self._report_at_the_floor(
+                Path(name), incompatible())
+        self.assertEqual(exit_code, obs_compat.EXIT_INCOMPATIBLE)
+        self.assertIn("32.0.0 is the oldest version the declared range claims",
+                      stderr)
+        self.assertIn("32.1", stderr)
+        self.assertIn("::notice::Note:", stderr)
+
+    def test_an_unbuildable_sdk_at_the_floor_says_so_on_the_way_out(self):
+        # exit 2, arriving as "CI could not gather the evidence at all".
+        with tempfile.TemporaryDirectory() as name:
+            exit_code, stderr, _ = self._report_at_the_floor(
+                Path(name), unbuildable())
+        self.assertEqual(exit_code, obs_compat.EXIT_STALE)
+        self.assertIn("32.0.0 is the oldest version the declared range claims",
+                      stderr)
+        self.assertIn("32.1", stderr)
+        self.assertIn("::notice::Note:", stderr)
+
+
 class ReportOutcomes(unittest.TestCase):
     """Verify that _report's message, and what it writes, match the evidence.
 
@@ -1130,6 +1200,9 @@ class ReportOutcomes(unittest.TestCase):
             # minimum failing at obs-build still exits 2 (EXIT_STALE), and
             # the range genuinely shifts up past it rather than staying put.
             self.assertEqual(written["min_supported"], "32.1")
+            # ...and, because that version is the oldest the range claims,
+            # the run says what that means for the floor.
+            self.assertIn("32.0.0 is the oldest version", stderr)
 
     def test_a_fully_green_run_that_moved_the_range_rewrites_the_declaration(self):
         # The generalisation of the 2026-10-01 failure: OBS published a new
@@ -1248,6 +1321,9 @@ class ReportOutcomes(unittest.TestCase):
             stderr = captured_stderr.getvalue()
             self.assertIn("no result was reported for 32.1.0", stderr)
             self.assertNotIn("every probe is green", stderr)
+            # 32.1.0 is not the oldest version claimed, so this is not a floor
+            # decision and must not be reported as one.
+            self.assertNotIn("is the oldest version", stderr)
             # Nothing was rewritten, and nothing was queued for committing.
             self.assertEqual((root / "README.md").read_text(encoding="utf-8"),
                              stale_readme)

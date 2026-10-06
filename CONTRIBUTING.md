@@ -168,10 +168,21 @@ before regenerating: a probe with no result reads as unverifiable and narrows
 the range, and a narrower range is a claim nobody asked this plugin to make.
 
 A beta is deliberately not part of that. It never enters the declared range and
-never gates, so its own failure — including an SDK too new to build on our
-runner, as OBS 33.0.0-beta6 is (it requires FFmpeg >= 8.0; the native runner
-ships 6.1) — is recorded as ⚠️ or ❌ in the probe table and the run stays green.
-The codes are listed at the top of `tools/obs_compat.py`.
+never gates, so its own failure — an SDK that will not build here, or a plugin
+that does not compile against it — is recorded as ⚠️ or ❌ in the probe table
+and the run stays green. OBS 33.0.0-beta6 lived through the first of those: its
+libobs requires FFmpeg >= 8.0 and the runner ships 6.1. It is now probed in the
+`ubuntu:26.04` container, which ships 8.0.1, and it compiles and links. The
+codes are listed at the top of `tools/obs_compat.py`.
+
+**IF THE OLDEST VERSION THE RANGE CLAIMS STOPS BEING VERIFIABLE, THE CHOICE IS A
+HUMAN'S.** Two honest answers exist: make it verifiable again — the plugin, or
+the environment its probe needs, which is what `LEGACY_BOUNDARY` and
+`NEXT_BOUNDARY` in `tools/obs_compat.py` are for — or stop claiming it, which
+means moving `FLOOR` (and `FLOOR_REASON`) there and running `--write`, so the
+README's minimum follows. The run names the minimum its own evidence supports,
+because that number is derived rather than guessed; what it will not do is
+decide to drop support for a version, since that decision is about users.
 
 ## Licence
 
