@@ -133,7 +133,7 @@ and keeps the last minutes of them in a bounded ring in RAM.
 | **OBS Studio** | **32.0 – 32.2.2** |
 | **Verified by** | Compile and link against each version's OBS SDK in CI — not a runtime test. |
 | **Built against** | 31.1.1 (the OBS SDK the released binaries are compiled with) |
-| **Also builds against** | 33.0.0-beta6 (prerelease, not supported) |
+| **Also builds against** | 33.0.0-rc1 (prerelease, not supported) |
 | **Branch Output** | [Download](https://github.com/OPENSPHERE-Inc/branch-output/releases) · [repository](https://github.com/OPENSPHERE-Inc/branch-output) — the recording layer; MultiReplay does nothing without it |
 | **Platforms** | Windows (primary) · macOS · Linux: Ubuntu 24.04 and 26.04 (X11/XWayland; under native Wayland the embedded previews say so in the box rather than going black) |
 
@@ -146,7 +146,7 @@ and keeps the last minutes of them in a bounded ring in RAM.
 | `32.1.0` | ✅ compiles and links | Ubuntu 24.04 |
 | `32.2.0` | ✅ compiles and links | Ubuntu 24.04 |
 | `32.2.2` | ✅ compiles and links | Ubuntu 24.04 |
-| `33.0.0-beta6` | ✅ compiles and links | Ubuntu 26.04 (container) |
+| `33.0.0-rc1` | ✅ compiles and links | Ubuntu 26.04 (container) |
 
 Generated from [`obs-compat.json`](obs-compat.json) by `tools/obs_compat.py`.
 </details>
@@ -373,7 +373,7 @@ tiene gli ultimi minuti in un buffer circolare in RAM.
 | **OBS Studio** | **32.0 – 32.2.2** |
 | **Verificato da** | Compilazione e link contro l'SDK di ogni versione di OBS in CI — non è un test a runtime. |
 | **Compilato contro** | 31.1.1 (l'SDK di OBS con cui sono compilate le build pubblicate) |
-| **Compila anche contro** | 33.0.0-beta6 (pre-release, non supportata) |
+| **Compila anche contro** | 33.0.0-rc1 (pre-release, non supportata) |
 | **Branch Output** | [Download](https://github.com/OPENSPHERE-Inc/branch-output/releases) · [repository](https://github.com/OPENSPHERE-Inc/branch-output) — è lo strato che registra, e senza di lui MultiReplay non fa niente |
 | **Piattaforme** | Windows (principale) · macOS · Linux: Ubuntu 24.04 e 26.04 (X11/XWayland; sotto Wayland nativo le anteprime lo scrivono nel riquadro invece di restare nere) |
 
@@ -386,7 +386,7 @@ tiene gli ultimi minuti in un buffer circolare in RAM.
 | `32.1.0` | ✅ compila e linka | Ubuntu 24.04 |
 | `32.2.0` | ✅ compila e linka | Ubuntu 24.04 |
 | `32.2.2` | ✅ compila e linka | Ubuntu 24.04 |
-| `33.0.0-beta6` | ✅ compila e linka | Ubuntu 26.04 (container) |
+| `33.0.0-rc1` | ✅ compila e linka | Ubuntu 26.04 (container) |
 
 Generato da [`obs-compat.json`](obs-compat.json) con `tools/obs_compat.py`.
 </details>
