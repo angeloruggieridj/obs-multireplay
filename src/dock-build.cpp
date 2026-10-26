@@ -634,7 +634,8 @@ void MultiReplayDock::buildSpeedDial()
 	// and applyReplaySpeed() now re-speeds the clip on air instead of
 	// restarting it, which is what makes a dragged dial usable at all.
 	connect(speed_, &QSlider::valueChanged, this, [this](int val) {
-		speedLbl_->setText(QString::asprintf("%.2f\xc3\x97", val / 100.0));
+		speedLbl_->setText(QString::number(val / 100.0, 'f', 2) +
+				   QChar(0x00D7));
 		applyReplaySpeed(val);
 	});
 }
@@ -1454,8 +1455,8 @@ KeyBlock *MultiReplayDock::buildSpeedBlock()
 		connect(b, &QPushButton::clicked, this, [this, p]() {
 			QSignalBlocker block(speed_);
 			speed_->setValue(p);
-			speedLbl_->setText(
-				QString::asprintf("%.2f\xc3\x97", p / 100.0));
+			speedLbl_->setText(QString::number(p / 100.0, 'f', 2) +
+					   QChar(0x00D7));
 			applyReplaySpeed(p);
 		});
 		b->setFixedHeight(kKeyH);
