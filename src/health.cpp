@@ -26,6 +26,9 @@ every action is the operator's.
 #include <system_error>
 #include <thread>
 
+#ifdef __APPLE__
+#include <mach/mach.h>
+#endif
 #ifdef _WIN32
 #include <io.h>
 #else
@@ -33,6 +36,36 @@ every action is the operator's.
 #endif
 
 namespace multireplay {
+
+namespace {
+// RAM the ring could really use. libobs' os_get_sys_free_size() is the right
+// number on Windows and Linux, but on macOS it counts only the pages nothing
+// has touched — and macOS keeps those few on purpose, using the rest as file
+// cache it hands back the moment a program asks. A Mac with 16 GB and plenty
+// of room therefore reports a fraction of a gigabyte "free", and the preflight
+// refused to record. Free + inactive + purgeable is what Activity Monitor calls
+// available (inactive pages are clean or swappable, purgeable ones are given up
+// on request).
+uint64_t availableRamBytes()
+{
+#ifdef __APPLE__
+	vm_statistics64_data_t vm{};
+	mach_msg_type_number_t count = HOST_VM_INFO64_COUNT;
+	if (host_statistics64(mach_host_self(), HOST_VM_INFO64,
+			      (host_info64_t)&vm, &count) == KERN_SUCCESS) {
+		vm_size_t page = 0;
+		if (host_page_size(mach_host_self(), &page) == KERN_SUCCESS &&
+		    page > 0) {
+			const uint64_t pages = (uint64_t)vm.free_count +
+					       (uint64_t)vm.inactive_count +
+					       (uint64_t)vm.purgeable_count;
+			return pages * (uint64_t)page;
+		}
+	}
+#endif
+	return os_get_sys_free_size();
+}
+} // namespace
 
 static_assert(health::kMaxHealthAngles == kMaxCameras,
 	      "health rules and the camera slots must agree on how many angles "
@@ -223,7 +256,7 @@ health::PreflightResult HealthMonitor::preflight(const Config &cfg,
 	in.requiredBytesPerSec = requiredBytesPerSec(cfg, in.camerasWithSource);
 	in.ringBytesPerSecond = in.requiredBytesPerSec;
 
-	const uint64_t freeRam = os_get_sys_free_size();
+	const uint64_t freeRam = availableRamBytes();
 	in.freeRamBytes = freeRam > 0 ? (int64_t)freeRam : -1;
 
 	return health::preflight(in);
