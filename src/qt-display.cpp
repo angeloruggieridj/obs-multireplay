@@ -298,9 +298,11 @@ void OBSQTDisplay::createDisplay(const char *why)
 		return;
 	}
 
+	// Device pixels, not Qt points — see pixelSize().
+	const QSize px = pixelSize();
 	gs_init_data info = {};
-	info.cx = (uint32_t)width();
-	info.cy = (uint32_t)height();
+	info.cx = (uint32_t)px.width();
+	info.cy = (uint32_t)px.height();
 	info.format = GS_BGRA;
 	info.zsformat = GS_ZS_NONE;
 	info.window = qtToGsWindow(wid);
@@ -313,6 +315,7 @@ void OBSQTDisplay::createDisplay(const char *why)
 		return;
 	}
 	createdWinId_ = wid;
+	lastPixelSize_ = px;
 	// Remembered, not just logged. Until now the top-level was printed once
 	// and then forgotten, so a display whose ancestor was rebuilt underneath
 	// it had no way of being noticed — see recheckWindow.
@@ -321,13 +324,25 @@ void OBSQTDisplay::createDisplay(const char *why)
 	blockedSinceNs_ = 0;
 	blockedLoggedNs_ = 0;
 	createdCount_++;
+	// Both sizes are logged on purpose: on a Retina screen the pixel size is
+	// the point size times the ratio, and a log line where the two are equal
+	// despite a ratio of 2 is the signature of the old bug.
 	obs_log(LOG_INFO,
-		"[display] created on winId=0x%llx (top-level 0x%llx) %ux%u — %s",
+		"[display] created on winId=0x%llx (top-level 0x%llx) %ux%u px "
+		"(%dx%d pt, ratio %.2f) — %s",
 		(unsigned long long)wid, createdRootWinId_, info.cx, info.cy,
-		why);
+		width(), height(), (double)devicePixelRatioF(), why);
 
 	if (drawCb_)
 		obs_display_add_draw_callback(display_, drawCb_, drawData_);
+}
+
+QSize OBSQTDisplay::pixelSize() const
+{
+	qreal dpr = devicePixelRatioF();
+	if (!(dpr > 0.0))
+		dpr = 1.0;
+	return QSize((int)qRound(width() * dpr), (int)qRound(height() * dpr));
 }
 
 void OBSQTDisplay::destroyDisplay(const char *why)
@@ -341,6 +356,7 @@ void OBSQTDisplay::destroyDisplay(const char *why)
 	obs_display_destroy(display_);
 	display_ = nullptr;
 	createdWinId_ = 0;
+	lastPixelSize_ = QSize();
 	createdRootWinId_ = 0;
 	reportedRootWinId_ = 0;
 	// A fresh dry spell starts here: whatever comes next (a re-parent, a
@@ -424,6 +440,21 @@ void OBSQTDisplay::recheckWindow(const char *why)
 		}
 	}
 
+	// A window dragged from a Retina screen to a non-Retina one (or back)
+	// changes its device pixel ratio while keeping its point size, so no
+	// resize event follows and the swap chain would stay the old size. The
+	// poll catches it here.
+	if (display_ && pixelSize() != lastPixelSize_) {
+		const QSize px = pixelSize();
+		obs_log(LOG_INFO,
+			"[display] pixel size %dx%d -> %dx%d (ratio %.2f) — %s",
+			lastPixelSize_.width(), lastPixelSize_.height(),
+			px.width(), px.height(), (double)devicePixelRatioF(), why);
+		lastPixelSize_ = px;
+		obs_display_resize(display_, (uint32_t)px.width(),
+				   (uint32_t)px.height());
+	}
+
 	// A hidden widget must NOT create one: a multiview tile for a camera
 	// nobody configured is hidden, and a display it never asked for would
 	// still cost a present() per frame on the shared graphics thread.
@@ -434,10 +465,17 @@ void OBSQTDisplay::recheckWindow(const char *why)
 void OBSQTDisplay::resizeEvent(QResizeEvent *event)
 {
 	QWidget::resizeEvent(event);
+	// Resized first, and lastPixelSize_ updated with it, so the poll in
+	// recheckWindow does not log every step of a window drag as if the pixel
+	// ratio had changed. A display that recheckWindow then rebuilds is
+	// created at the current size anyway.
+	if (display_) {
+		const QSize px = pixelSize();
+		lastPixelSize_ = px;
+		obs_display_resize(display_, (uint32_t)px.width(),
+				   (uint32_t)px.height());
+	}
 	recheckWindow("resize");
-	if (display_)
-		obs_display_resize(display_, (uint32_t)width(),
-				   (uint32_t)height());
 }
 
 void OBSQTDisplay::paintEvent(QPaintEvent *)

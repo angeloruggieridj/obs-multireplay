@@ -36,6 +36,7 @@ created even if Qt never raises an exposure flag that libobs does not need.
 
 #include <obs.h>
 
+#include <QSize>
 #include <QString>
 #include <QWidget>
 #include <atomic>
@@ -123,7 +124,18 @@ private:
 	void createDisplay(const char *why);
 	void destroyDisplay(const char *why);
 
+	// The widget's size in DEVICE pixels, which is what libobs wants for the
+	// swap chain. width()/height() are Qt's logical points: on a Retina
+	// display (devicePixelRatio 2) they are half the real number in each
+	// direction, and a display told that size draws into one quarter of the
+	// surface.
+	QSize pixelSize() const;
+
 	obs_display_t *display_ = nullptr;
+	// The device-pixel size last handed to libobs (create or resize). The
+	// poll compares it with pixelSize(): a window dragged between a Retina
+	// and a non-Retina screen changes its ratio without any resize event.
+	QSize lastPixelSize_;
 	// The native handle `display_` was created against. Compared with the
 	// widget's current handle to detect a re-parent Qt did not announce.
 	WId createdWinId_ = 0;
