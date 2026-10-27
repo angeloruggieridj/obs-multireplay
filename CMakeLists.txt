@@ -173,6 +173,7 @@ target_sources(
     src/dock-build.cpp
     src/dock-layout.cpp
     src/dock-layout.hpp
+    src/dock-native-mac.hpp
     src/dock-metrics.hpp
     src/dock-style.hpp
     src/dock-icons.cpp

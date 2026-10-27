@@ -1139,6 +1139,10 @@ void MultiReplayDock::openSettings()
 	dblPlay->setChecked(cfg.doubleClickPlays);
 	dblPlay->setToolTip(obs_module_text("Dock.DoubleClickPlaysHint"));
 	evPage->addRow(obs_module_text("Dock.DoubleClickPlays"), dblPlay);
+	auto *ownDock = new QCheckBox(&dlg);
+	ownDock->setChecked(cfg.monitorsInOwnDock);
+	ownDock->setToolTip(obs_module_text("Dock.MonitorsOwnDockHint"));
+	evPage->addRow(obs_module_text("Dock.MonitorsOwnDock"), ownDock);
 
 	auto *toOut = new QCheckBox(&dlg);
 	toOut->setChecked(cfg.toOutputOnPlay);
@@ -1617,6 +1621,7 @@ void MultiReplayDock::openSettings()
 	cfg.sortEventsByTime = sortByTime->isChecked();
 	cfg.continuePastOutMs = (int)std::lround(pastOut->value() * 1000.0);
 	cfg.doubleClickPlays = dblPlay->isChecked();
+	cfg.monitorsInOwnDock = ownDock->isChecked();
 	cfg.toOutputOnPlay = toOut->isChecked();
 	cfg.spacebarPlays = spaceBar->isChecked();
 	cfg.eventIdDigits = idDigits->value();
