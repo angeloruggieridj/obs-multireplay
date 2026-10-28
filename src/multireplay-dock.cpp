@@ -3142,7 +3142,12 @@ int64_t MultiReplayDock::markTimeNs() const
 	// measured off the encoder on the shared system clock, so the mark lands
 	// on the frame that was on screen and means the same instant on every
 	// other angle — no arm timestamp, no encoder-startup lag to subtract.
-	if (EventStore::instance().liveMode()) {
+	// ...but only while the operator is FOLLOWING live. Once he has shuttled
+	// or stepped back he is looking at the playhead, and an IN taken at the
+	// live edge would land on a moment he is not looking at (the OUT-first
+	// workflow: OUT on the live edge, shuttle back, IN on the entry point).
+	if (EventStore::instance().liveMode() &&
+	    ReplayCore::instance().followLive()) {
 		int64_t now = PacketTap::instance().newestNs(currentAngle1() - 1);
 		if (now > 0) {
 			MR_DLOG("[ev] markTime LIVE master=%lldms (cam %d)",

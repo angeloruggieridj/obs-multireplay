@@ -63,7 +63,22 @@ struct ReplayEvent {
 	};
 	std::array<Angle, kEventAngles> angles;
 	std::string createdMode; // "live" | "recorded"
+	// OUT FIRST: the operator pressed Mark Out with no IN open (the goal went
+	// in, the car spun) and will shuttle back for the entry point. The event
+	// exists at once, so it can already be played, with a PROVISIONAL IN a
+	// fixed window before the OUT; the next Mark In moves that IN to where he
+	// is looking instead of starting a new event. Runtime only: after a
+	// restart the provisional IN is simply the IN.
+	bool inPending = false;
+	int64_t pendingSinceNs = 0; // os_gettime_ns() when it was created
 };
+
+// How far before the OUT the provisional IN of an OUT-first event sits, and
+// how long a later Mark In still counts as that event's IN. After the wait a
+// Mark In starts a new event again — otherwise nobody could tell whether an
+// IN pressed a minute later belongs to the old goal or to the next one.
+constexpr int64_t kOutFirstWindowNs = 20'000'000'000LL;
+constexpr int64_t kOutFirstWaitNs = 60'000'000'000LL;
 
 // Holds the 20 event lists. Persists to events.json in the session folder
 // on every mutation (crash-safe via obs_data_save_json_safe).
@@ -112,7 +127,9 @@ public:
 	// angle0Based: 0-based camera to enable (0 = CAM1). Replaces the old
 	// "always CAM1" default so the UI can pass the selected angle.
 	int markIn(int64_t tNs, int angle0Based = 0);                    // returns event id
-	bool markOut(int64_t tNs);                                       // closes last open event
+	// Closes the last open event; with none open it creates an OUT-first
+	// event (see ReplayEvent::inPending). `angle0Based` is for that case.
+	bool markOut(int64_t tNs, int angle0Based = 0);
 	int markInOut(int64_t tNowNs, int seconds, int angle0Based = 0); // -5/-10/-20 presets
 	bool markCancel();                          // deletes last open event
 
@@ -137,6 +154,9 @@ public:
 
 	// Most recent event by time (the reference controller "last event"), 0 if none.
 	int lastEventId() const;
+	// An IN with no OUT yet in the selected list (what markOut would close),
+	// or an OUT-first event still waiting for its IN.
+	bool hasOpenEvent() const;
 	bool get(int id, ReplayEvent &out) const;
 
 	// JSON of one list's events (for the web UI).

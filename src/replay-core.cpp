@@ -225,7 +225,10 @@ int64_t hotkeyMarkTimeNs()
 	// the encoder, on the shared system clock. No arm timestamp, no
 	// encoder-startup guess to subtract — a mark lands on the frame that was
 	// on screen, and the same value means the same instant on every angle.
-	if (EventStore::instance().liveMode()) {
+	// Only while following live: after a shuttle the mark belongs to the
+	// picture the operator is looking at (see MultiReplayDock::markTimeNs).
+	if (EventStore::instance().liveMode() &&
+	    ReplayCore::instance().followLive()) {
 		int64_t now = PacketTap::instance().newestNs(
 			ReplayCore::instance().currentAngle());
 		if (now > 0)
@@ -309,7 +312,7 @@ const HotkeyDef kReplayHotkeys[] = {
 	 []() {
 		 const int64_t t = hotkeyMarkTimeNs();
 		 if (hotkeyMarkable(t))
-			 EventStore::instance().markOut(t);
+			 EventStore::instance().markOut(t, hotkeyAngle0());
 	 }},
 	{"ReplayMarkInOut5", "Hotkey.Mark5",
 	 []() {

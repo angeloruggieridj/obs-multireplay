@@ -1771,6 +1771,7 @@ void MultiReplayDock::refreshEvents()
 		bool camOn[kEventAngles] = {};
 		double camSpeeds[kEventAngles] = {};
 		std::string note;
+		bool inPending = false; // OUT first, IN not set yet
 	};
 	std::vector<Row> rows;
 
@@ -1836,6 +1837,7 @@ void MultiReplayDock::refreshEvents()
 			r.camSpeeds[k] = camSpeeds[k];
 		}
 		r.note = note;
+		r.inPending = obs_data_get_bool(e, "inPending");
 		rows.push_back(std::move(r));
 
 		obs_data_release(e);
@@ -1909,7 +1911,16 @@ void MultiReplayDock::refreshEvents()
 					   ? QString()
 					   : obs_module_text(
 						     "Dock.EventNoFootage"));
-		setRoCell(row, kColIn, relTc(r.tin), mid);
+		// "~" = the IN is provisional: this event was started with OUT and
+		// is waiting for the operator to shuttle back and press IN.
+		QTableWidgetItem *inItem = setRoCell(
+			row, kColIn,
+			r.inPending ? QStringLiteral("~") + relTc(r.tin)
+				    : relTc(r.tin),
+			mid);
+		inItem->setToolTip(r.inPending
+					   ? QString(obs_module_text("Dock.InPending"))
+					   : QString());
 		setRoCell(row, kColOut,
 			  closed ? relTc(r.tout) : QStringLiteral("--"), mid);
 		setRoCell(row, kColDur, dur, mid);

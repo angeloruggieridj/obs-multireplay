@@ -1874,7 +1874,9 @@ KeyBlock *MultiReplayDock::buildMarkers()
 		const int64_t t = markTimeNs();
 		if (!markable(t))
 			return;
-		if (!EventStore::instance().markOut(t))
+		// With no IN open this starts an OUT-first event (see
+		// ReplayEvent::inPending); it only fails when there is nothing to mark.
+		if (!EventStore::instance().markOut(t, currentAngle1() - 1))
 			showNotice(obs_module_text("Dock.NoOpenEvent"));
 		refreshEvents();
 	});

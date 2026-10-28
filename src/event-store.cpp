@@ -21,6 +21,18 @@ SPDX-License-Identifier: GPL-2.0-or-later
 namespace multireplay {
 
 namespace {
+// Only used to age OUT-first events (a few tens of seconds), so any steady
+// clock will do; this keeps the file free of libobs for the standalone tests.
+int64_t steadyNowNs()
+{
+	return (int64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(
+		       std::chrono::steady_clock::now().time_since_epoch())
+		.count();
+}
+} // namespace
+
+
+namespace {
 constexpr const char *kEventsFile = "events.json";
 }
 
@@ -172,6 +184,25 @@ bool EventStore::moveEvent(int id, int delta)
 int EventStore::markIn(int64_t tNs, int angle0Based)
 {
 	std::lock_guard<std::mutex> lock(mutex_);
+	// An OUT-first event is waiting for its IN: this is it, provided the
+	// point lies before that event's OUT. An IN at or after the OUT is the
+	// start of something new and falls through.
+	{
+		const int64_t now = steadyNowNs();
+		for (auto it = events_.rbegin(); it != events_.rend(); ++it) {
+			if (it->list != selectedList_ || !it->inPending)
+				continue;
+			if (now - it->pendingSinceNs <= kOutFirstWaitNs &&
+			    tNs - preRollNs_.load() < it->tOutNs) {
+				it->tInNs = tNs - preRollNs_.load();
+				it->inPending = false;
+				MR_DLOG("[ev] markIn completes OUT-first id=%d", it->id);
+				save();
+				return it->id;
+			}
+			break; // only the newest waiting event is a candidate
+		}
+	}
 	ReplayEvent ev;
 	ev.id = nextId_++;
 	ev.list = selectedList_;
@@ -192,7 +223,7 @@ int EventStore::markIn(int64_t tNs, int angle0Based)
 	return ev.id;
 }
 
-bool EventStore::markOut(int64_t tNs)
+bool EventStore::markOut(int64_t tNs, int angle0Based)
 {
 	std::lock_guard<std::mutex> lock(mutex_);
 	// close the most recent open event in the selected list
@@ -210,7 +241,21 @@ bool EventStore::markOut(int64_t tNs)
 			return true;
 		}
 	}
-	return false;
+	// Nothing open: OUT first. The event is real at once (playable, with a
+	// provisional IN), and the next Mark In sets the true one.
+	ReplayEvent ev;
+	ev.id = nextId_++;
+	ev.list = selectedList_;
+	ev.order = nextOrderFor(ev.list);
+	ev.tOutNs = tNs + postRollNs_.load();
+	ev.tInNs = tNs - kOutFirstWindowNs;
+	ev.angles[std::clamp(angle0Based, 0, kEventAngles - 1)].enabled = true;
+	ev.createdMode = liveMode_ ? "live" : "recorded";
+	ev.inPending = true;
+	ev.pendingSinceNs = steadyNowNs();
+	events_.push_back(ev);
+	save();
+	return true;
 }
 
 int EventStore::markInOut(int64_t tNowNs, int seconds, int angle0Based)
@@ -237,6 +282,14 @@ bool EventStore::markCancel()
 	std::lock_guard<std::mutex> lock(mutex_);
 	for (auto it = events_.rbegin(); it != events_.rend(); ++it) {
 		if (it->list == selectedList_ && it->tOutNs == kNoInstant) {
+			events_.erase(std::next(it).base());
+			save();
+			return true;
+		}
+	}
+	// Nothing open: take back an OUT-first event that is still waiting.
+	for (auto it = events_.rbegin(); it != events_.rend(); ++it) {
+		if (it->list == selectedList_ && it->inPending) {
 			events_.erase(std::next(it).base());
 			save();
 			return true;
@@ -342,6 +395,7 @@ bool EventStore::movePoint(int id, bool inPoint, int64_t deltaNs)
 		if (inPoint) {
 			// No floor at 0: an instant may be negative.
 			ev.tInNs = ev.tInNs + deltaNs;
+			ev.inPending = false; // the operator set it himself
 			if (ev.tOutNs != kNoInstant)
 				ev.tInNs = std::min(ev.tInNs, ev.tOutNs - 1);
 		} else if (ev.tOutNs != kNoInstant) {
@@ -392,6 +446,18 @@ int EventStore::duplicate(int id)
 		}
 	}
 	return 0;
+}
+
+bool EventStore::hasOpenEvent() const
+{
+	std::lock_guard<std::mutex> lock(mutex_);
+	for (const auto &ev : events_)
+		if (ev.list == selectedList_ &&
+		    (ev.tOutNs == kNoInstant ||
+		     (ev.inPending &&
+		      steadyNowNs() - ev.pendingSinceNs <= kOutFirstWaitNs)))
+			return true;
+	return false;
 }
 
 int EventStore::lastEventId() const
@@ -453,6 +519,7 @@ std::string EventStore::listJson(int list) const
 		obs_data_set_int(e, "tInNs", ev.tInNs);
 		obs_data_set_int(e, "tOutNs", ev.tOutNs);
 		obs_data_set_int(e, "order", ev.order);
+		obs_data_set_bool(e, "inPending", ev.inPending);
 		obs_data_set_string(e, "createdMode", ev.createdMode.c_str());
 		obs_data_set_string(e, "note", ev.note.c_str());
 		obs_data_array_t *angles = obs_data_array_create();

@@ -59,9 +59,6 @@ static void test_mark_in_out()
 	CHECK(store().get(id, ev));
 	CHECK(ev.tOutNs == 9 * S);
 
-	// No open event left → markOut returns false.
-	CHECK(!store().markOut(10 * S));
-
 	// markOut clamps OUT to at least IN+1.
 	int id2 = store().markIn(100 * S, 0);
 	CHECK(store().markOut(50 * S)); // before IN
@@ -518,9 +515,72 @@ static void test_version_bumps()
 	CHECK(store().version() == v1);
 }
 
+// OUT FIRST: Mark Out with no IN open makes a playable event with a provisional
+// IN a fixed window earlier; the next Mark In sets the true IN on that same
+// event instead of starting another one.
+static void test_out_first()
+{
+	reset();
+	// Nothing open: OUT creates an event, OUT at 100 s, IN provisional.
+	CHECK(store().markOut(100 * S, /*angle0*/ 1));
+	CHECK(store().hasOpenEvent()); // IN is awaited
+	ReplayEvent ev;
+	CHECK(store().get(1, ev));
+	CHECK(ev.inPending);
+	CHECK(ev.tOutNs == 100 * S);
+	CHECK(ev.tInNs == 100 * S - kOutFirstWindowNs);
+	CHECK(ev.angles[1].enabled);
+
+	// Mark In before the OUT completes THAT event.
+	CHECK(store().markIn(93 * S, 0) == 1);
+	CHECK(store().get(1, ev));
+	CHECK(!ev.inPending);
+	CHECK(ev.tInNs == 93 * S);
+	CHECK(ev.tOutNs == 100 * S);
+	CHECK(!store().hasOpenEvent());
+
+	// Pre-roll applies to the IN as it does to any other.
+	reset();
+	store().setRollNs(2 * S, 0);
+	CHECK(store().markOut(100 * S, 0));
+	CHECK(store().markIn(93 * S, 0) == 1);
+	CHECK(store().get(1, ev));
+	CHECK(ev.tInNs == 91 * S);
+
+	// An IN at or after the OUT is the start of a NEW event.
+	reset();
+	CHECK(store().markOut(100 * S, 0));
+	const int next = store().markIn(120 * S, 0);
+	CHECK(next == 2);
+	CHECK(store().get(1, ev));
+	CHECK(ev.inPending); // untouched, still waiting
+
+	// Trimming the IN by hand is setting it.
+	reset();
+	CHECK(store().markOut(100 * S, 0));
+	CHECK(store().movePoint(1, true, 5 * S));
+	CHECK(store().get(1, ev));
+	CHECK(!ev.inPending);
+
+	// Cancel takes back a waiting OUT-first event.
+	reset();
+	CHECK(store().markOut(100 * S, 0));
+	CHECK(store().markCancel());
+	CHECK(!store().get(1, ev));
+
+	// An ordinary IN-first mark is unaffected.
+	reset();
+	const int a = store().markIn(10 * S, 0);
+	CHECK(store().markOut(20 * S, 0));
+	CHECK(store().get(a, ev));
+	CHECK(!ev.inPending);
+	CHECK(ev.tInNs == 10 * S && ev.tOutNs == 20 * S);
+}
+
 int main()
 {
 	test_mark_in_out();
+	test_out_first();
 	test_mark_in_out_preset();
 	test_mark_cancel();
 	test_angle_edits_bounds();
