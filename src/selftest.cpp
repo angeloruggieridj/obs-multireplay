@@ -2789,7 +2789,7 @@ DockChecks runDockChecks(int firstCam, int secondCam,
 						if (l->objectName() ==
 							    QStringLiteral(
 								    "mrTileCap") &&
-						    !l->text().isEmpty())
+						    !l->toolTip().isEmpty())
 							named++;
 				}
 			});

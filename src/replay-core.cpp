@@ -1345,6 +1345,7 @@ void ReplayCore::loadConfigFile(const char *path, bool projectScoped)
 	// mean OFF — not "the operator once had two bays". obs_data_get_bool
 	// returns false for a missing key, which is the answer we want.
 	config_.enableChannelB = obs_data_get_bool(data, "enableChannelB");
+	config_.monitorsInOwnDock = obs_data_get_bool(data, "monitorsInOwnDock");
 	// DEFAULT TRUE, so obs_data_get_bool's "missing means false" is not allowed
 	// to decide: a config.json written before these existed must keep behaving
 	// the way it behaves today, not come back with both switched off.
@@ -1540,6 +1541,7 @@ void ReplayCore::saveConfigFile(const char *path) const
 	obs_data_set_string(data, "outputSceneNameB",
 			    config_.outputSceneNameB.c_str());
 	obs_data_set_bool(data, "enableChannelB", config_.enableChannelB);
+	obs_data_set_bool(data, "monitorsInOwnDock", config_.monitorsInOwnDock);
 	obs_data_set_bool(data, "doubleClickPlays", config_.doubleClickPlays);
 	obs_data_set_bool(data, "toOutputOnPlay", config_.toOutputOnPlay);
 	obs_data_set_bool(data, "abOutputUsesB", config_.abOutputUsesB);

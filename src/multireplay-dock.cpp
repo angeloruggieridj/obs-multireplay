@@ -698,9 +698,9 @@ void SeekBar::paintEvent(QPaintEvent *)
 		p.setFont(zf);
 		p.setPen(QColor(zoomedIn ? sc().text : sc().textMuted));
 		const QString zlbl =
-			zoomedIn ? QString("%1\xc3\x97").arg(zoom_, 0, 'f',
+			zoomedIn ? QString(QStringLiteral("%1\u00D7")).arg(zoom_, 0, 'f',
 							      zoom_ < 10 ? 1 : 0)
-				 : QStringLiteral("1\xc3\x97");
+				 : QStringLiteral("1\u00D7");
 		p.drawText(zoomRect, Qt::AlignCenter, zlbl);
 	}
 
@@ -1029,9 +1029,14 @@ void MultiReplayDock::drawChannelA(void *data, uint32_t cx, uint32_t cy)
 		if (self->previewSource_)
 			src = obs_source_get_ref(self->previewSource_);
 	}
-	if (!src)
+	if (!src) {
+		self->overlayA_.draw(fallbackFit(cx, cy));
 		return;
-	renderSourceFitted(src, cx, cy);
+	}
+	FitRect fit = renderSourceFitted(src, cx, cy);
+	if (!fit.valid())
+		fit = fallbackFit(cx, cy);
+	self->overlayA_.draw(fit);
 	obs_source_release(src);
 }
 
@@ -1052,9 +1057,14 @@ void MultiReplayDock::drawChannelB(void *data, uint32_t cx, uint32_t cy)
 		if (self->previewSourceB_)
 			src = obs_source_get_ref(self->previewSourceB_);
 	}
-	if (!src)
+	if (!src) {
+		self->overlayB_.draw(fallbackFit(cx, cy));
 		return;
-	renderSourceFitted(src, cx, cy);
+	}
+	FitRect fit = renderSourceFitted(src, cx, cy);
+	if (!fit.valid())
+		fit = fallbackFit(cx, cy);
+	self->overlayB_.draw(fit);
 	obs_source_release(src);
 }
 
@@ -1078,15 +1088,35 @@ void MultiReplayDock::drawTile(void *data, uint32_t cx, uint32_t cy)
 		if (self->tileSource_[ctx->slot])
 			src = obs_source_get_ref(self->tileSource_[ctx->slot]);
 	}
-	if (!src)
+	if (!src) {
+		self->overlayTile_[ctx->slot].draw(fallbackFit(cx, cy));
 		return;
-	renderSourceFitted(src, cx, cy);
+	}
+	FitRect fit = renderSourceFitted(src, cx, cy);
+	if (!fit.valid())
+		fit = fallbackFit(cx, cy);
+	self->overlayTile_[ctx->slot].draw(fit);
 	obs_source_release(src);
 }
 
 // ---------------------------------------------------------------------------
 // Construction
 // ---------------------------------------------------------------------------
+
+namespace {
+// The host of the monitoring block when it lives in a dock of its own. Its
+// only extra is a hook that runs while its children still exist.
+class MonitorHostWidget : public QWidget {
+public:
+	explicit MonitorHostWidget(QWidget *parent) : QWidget(parent) {}
+	~MonitorHostWidget() override
+	{
+		if (beforeDestroy)
+			beforeDestroy();
+	}
+	std::function<void()> beforeDestroy;
+};
+} // namespace
 
 MultiReplayDock::MultiReplayDock(QWidget *parent) : QWidget(parent)
 {
@@ -1142,6 +1172,18 @@ MultiReplayDock::MultiReplayDock(QWidget *parent) : QWidget(parent)
 	root->setContentsMargins(4, 4, 4, 4);
 	root->setSpacing(3);
 
+	// THE VIEWER HEADER, first thing in the panel (hidden in Short).
+	header_ = new ReplayHeader(this);
+	header_->onIn = [this]() {
+		if (markInBtn_)
+			markInBtn_->click();
+	};
+	header_->onOut = [this]() {
+		if (markOutBtn_)
+			markOutBtn_->click();
+	};
+	root->addWidget(header_);
+
 	// Helper: 1px separator line (each call returns a fresh widget).
 	auto mkSep = [this]() -> QWidget * {
 		auto *s = new QWidget(this);
@@ -1189,7 +1231,54 @@ MultiReplayDock::MultiReplayDock(QWidget *parent) : QWidget(parent)
 		leftColLayout_ = new QVBoxLayout(leftCol_);
 		leftColLayout_->setContentsMargins(0, 0, 0, 0);
 		leftColLayout_->setSpacing(3);
-		leftColLayout_->addWidget(buildPreview(), 1);
+		QWidget *preview = buildPreview();
+		if (ReplayCore::instance().getConfig().monitorsInOwnDock) {
+			// THE PICTURES GO TO A HOST OF THEIR OWN — before anything is
+			// shown, which is the only time a re-parent is harmless (the same
+			// thing the splitter does with them below).
+			auto *mh = new MonitorHostWidget(parent);
+			monitorHost_ = mh;
+			mh->setObjectName(QStringLiteral("MultiReplayMonitors"));
+			mh->setAttribute(Qt::WA_StyledBackground, true);
+			mh->setMinimumSize(240, 140);
+			auto *hl = new QVBoxLayout(mh);
+			hl->setContentsMargins(4, 4, 4, 4);
+			hl->setSpacing(0);
+			hl->addWidget(preview, 1);
+			mh->installEventFilter(this);
+			// The big bays get the taller naming band.
+			if (aBox_)
+				aBox_->setTagHeight(kBayTagHOwnDock);
+			if (bBox_)
+				bBox_->setTagHeight(kBayTagHOwnDock);
+			for (PreviewTile &t : tiles_)
+				if (t.box)
+					t.box->setTagHeight(kTileTagHOwnDock);
+			// The host can die BEFORE this panel (OBS removes docks in an order
+			// of its own), taking the displays with it. Everything that points
+			// into it is let go of first, while the host's own children are
+			// still alive to detach.
+			mh->beforeDestroy = [this]() {
+				for (OBSQTDisplay *d : allDisplays())
+					d->setRenderCallback(nullptr, nullptr);
+				if (pollTimer_)
+					pollTimer_->stop();
+				monitorHost_ = nullptr;
+				previewPane_ = nullptr;
+				monitorSplit_ = nullptr;
+				monitorsRow_ = nullptr;
+				multiviewBox_ = nullptr;
+				bays_ = nullptr;
+				aBox_ = nullptr;
+				bBox_ = nullptr;
+				displayA_ = nullptr;
+				displayB_ = nullptr;
+				for (PreviewTile &t : tiles_)
+					t = PreviewTile{};
+			};
+		} else {
+			leftColLayout_->addWidget(preview, 1);
+		}
 		splitter_->addWidget(leftCol_);
 
 		// The list pane: what picks the events, then the events. One
@@ -1283,6 +1372,9 @@ MultiReplayDock::~MultiReplayDock()
 	// FIRST of all: nothing may reach a dock that is being taken apart.
 	if (g_dock == this)
 		g_dock = nullptr;
+	// The monitor host may outlive this panel; its hook points at us.
+	if (monitorHost_)
+		static_cast<MonitorHostWidget *>(monitorHost_)->beforeDestroy = nullptr;
 	// FIRST, before anything else is torn down: a hotkey firing from the
 	// hotkey thread must not find a half-destroyed dock. obs_hotkey_unregister
 	// takes libobs' hotkey mutex, so it returns only once no callback is in
@@ -1383,7 +1475,9 @@ void MultiReplayDock::applyMonitorsRoom()
 	// empty and must never be hidden.
 	const bool colHasKeys = panelMode_ == PanelMode::Short;
 
-	if (monitorsOn_) {
+	// With the monitors in a dock of their own, this column never holds them:
+	// it is treated as if they were down, whatever the Monitors key says.
+	if (monitorsOn_ && !monitorHost_) {
 		if (!leftCol_->isVisible())
 			leftCol_->setVisible(true);
 		return;
@@ -1391,7 +1485,7 @@ void MultiReplayDock::applyMonitorsRoom()
 
 	// A cap written for the pictures outlives them, and on the way back in it
 	// would hold the pane at whatever the last visible pass computed.
-	if (previewPane_)
+	if (previewPane_ && !monitorHost_)
 		previewPane_->setMaximumHeight(QWIDGETSIZE_MAX);
 
 	if (!colHasKeys) {
@@ -1428,6 +1522,9 @@ void MultiReplayDock::applyMonitorsRoom()
 // for the same reason: it stops being derived from anything.
 int MultiReplayDock::monitorRoomH() const
 {
+	// In a dock of its own the pictures may have all of it.
+	if (monitorHost_)
+		return std::max(60, monitorHost_->height() - 8);
 	// ONE COPY OF THIS ARITHMETIC, in dock-layout. There were two, and they
 	// disagreed about the one thing that mattered: a second renderer honoured
 	// the divider the operator had dragged between the pictures and the list,
@@ -1485,8 +1582,10 @@ void MultiReplayDock::applyPanelMode(PanelMode m, bool force)
 	// A AND B STAY SIDE BY SIDE IN ALL THREE. They are two bays of one deck;
 	// stacking them would make the pair read as a hierarchy, and it is the one
 	// relationship on this panel that is exactly equal.
-	monitorSplit_->setOrientation(m == PanelMode::Tall ? Qt::Vertical
-							   : Qt::Horizontal);
+	monitorSplit_->setOrientation(
+		(monitorHost_ ? monitorStacked_ : m == PanelMode::Tall)
+			? Qt::Vertical
+			: Qt::Horizontal);
 	splitter_->setOrientation(m == PanelMode::Short ? Qt::Horizontal
 						       : Qt::Vertical);
 
@@ -1496,6 +1595,8 @@ void MultiReplayDock::applyPanelMode(PanelMode m, bool force)
 	// left. The strip carries no picture, so moving it between the two layouts
 	// costs a relayout and nothing else.
 	applyControlsColumn(m == PanelMode::Short);
+	if (header_)
+		header_->setVisible(m != PanelMode::Short);
 
 	// THE DIVIDERS THE OPERATOR CHOSE FOR *THIS* ARRANGEMENT, put back. After
 	// the orientations, never before: a saved state applied to a splitter that
@@ -1870,15 +1971,15 @@ void MultiReplayDock::applyPreviewAspect()
 	const int cols = haveTiles ? std::max(1, tileColumns(visibleTiles)) : 1;
 	tileCap_ = kTileMinWidth;
 	const int rows = haveTiles ? (visibleTiles + cols - 1) / cols : 0;
-	const int tagH = AspectBox::kTagH;
+	const int tagH = tileTagH();
 
 	int want = 0;
-	if (panelMode_ == PanelMode::Tall) {
+	if (monitorsStacked()) {
 		// A COLUMN: the bays across the top (A full width, or A|B side by
 		// side), then the SAME grid of cameras as the Wide layout under
 		// them — ceil(n/2) columns, up to two rows.
 		const int bayH =
-			aspectHeight((paneW - 3 * (bays - 1)) / bays) + tagH;
+			aspectHeight((paneW - 3 * (bays - 1)) / bays) + bayTagH();
 		int stripH = 0;
 		if (haveTiles) {
 			// THE TILES FILL THE ROW. The kTileMaxShare ceiling is
@@ -1917,7 +2018,8 @@ void MultiReplayDock::applyPreviewAspect()
 			// narrower than the space it was given, and the difference is
 			// the black band beside it.
 			const TileBlock tb = tileBlockFor(paneW, bays, visibleTiles,
-							  gap, monitorRoomH());
+							  gap, monitorRoomH(),
+							  bayTagH(), tileTagH());
 			tb0 = tb;
 			tilesW = tb.blockW;
 			blockH = tb.blockH;
@@ -1930,7 +2032,7 @@ void MultiReplayDock::applyPreviewAspect()
 		// floated in a pane hundreds of pixels wider than itself.
 		const int bayW = haveTiles && tb0.bayW > 0
 					 ? tb0.bayW
-					 : aspectHeight(paneW / bays) + tagH;
+					 : aspectHeight(paneW / bays) + bayTagH();
 		int baysW = std::max(60, bays * bayW + 3 * (bays - 1));
 		if (haveTiles && baysW + tilesW + gap > paneW)
 			baysW = std::max(60, paneW - tilesW - gap);
@@ -1956,7 +2058,7 @@ void MultiReplayDock::applyPreviewAspect()
 			blockH = rows * (aspectHeight(tileCap_) + tagH) +
 				 (rows - 1) * kTileGap;
 		}
-		const int bayH = aspectHeight((baysW - 3 * (bays - 1)) / bays) + tagH;
+		const int bayH = aspectHeight((baysW - 3 * (bays - 1)) / bays) + bayTagH();
 		// monitorRoomH() is the ONE authority on how tall this block may be,
 		// and the tile arithmetic above was given the same number.
 		want = std::min(std::max(bayH, blockH), monitorRoomH());
@@ -1986,7 +2088,7 @@ void MultiReplayDock::applyPreviewAspect()
 	// from the width the layout just produced, fed back into the layout
 	// that produced it. Written that way this function span the panel until
 	// it was killed. Beside a big A the ceiling is a CONSTANT.
-	const int tileCapH = panelMode_ == PanelMode::Tall
+	const int tileCapH = monitorsStacked()
 				     ? QWIDGETSIZE_MAX
 				     : aspectHeight(tileCap_) + tagH;
 	for (const PreviewTile &t : tiles_)
@@ -2002,6 +2104,28 @@ void MultiReplayDock::applyPreviewAspect()
 
 	applyPreviewSplit(want);
 	queueMonitorDump("applyPreviewAspect");
+}
+
+// THE ARRANGEMENT OF THE PICTURES IN THEIR OWN DOCK, from that dock's shape.
+// Stacked (bays across the top, the camera grid under them) once the host is
+// tall enough for it, side by side while it is wide and shallow. Two
+// thresholds, so a host sitting on the boundary does not flip every resize.
+void MultiReplayDock::applyMonitorHostLayout()
+{
+	if (!monitorHost_ || !monitorSplit_)
+		return;
+	const int w = monitorHost_->width();
+	const int h = monitorHost_->height();
+	if (w <= 0 || h <= 0)
+		return;
+	const bool stacked = monitorStacked_ ? (h * 100 >= w * 38)
+					     : (h * 100 >= w * 42);
+	const Qt::Orientation want = stacked ? Qt::Vertical : Qt::Horizontal;
+	if (stacked == monitorStacked_ && monitorSplit_->orientation() == want)
+		return;
+	monitorStacked_ = stacked;
+	monitorSplit_->setOrientation(want);
+	applyPreviewAspect();
 }
 
 // ── WHERE THE KEYS LIVE ──────────────────────────────────────────────────
@@ -2040,6 +2164,13 @@ void MultiReplayDock::applyControlsColumn(bool inColumn)
 // a height means nothing to it and the pane simply takes the column it is in.
 void MultiReplayDock::applyPreviewSplit(int want)
 {
+	// In a dock of its own the pane fills its host: there is no list under it
+	// to share the height with.
+	if (monitorHost_) {
+		if (previewPane_ && previewPane_->maximumHeight() != QWIDGETSIZE_MAX)
+			previewPane_->setMaximumHeight(QWIDGETSIZE_MAX);
+		return;
+	}
 	if (panelMode_ == PanelMode::Short) {
 		previewPane_->setMaximumHeight(QWIDGETSIZE_MAX);
 		// shortSplitLeftWidth (dock-layout.hpp) — the width divider `want`
@@ -2195,6 +2326,19 @@ void MultiReplayDock::applyTheme()
 	if (const int settled = rowFontPx(); settled != rowFont_) {
 		rowFont_ = settled;
 		setStyleSheet(dockStyle(sc(), cfg.tableDensity, marks, settled));
+	}
+	// The monitors' host is not a child of this panel, so the sheet does not
+	// reach it by itself: hand it the same one, keyed to its own object name.
+	if (monitorHost_) {
+		QString s = styleSheet();
+		s.replace(QStringLiteral("#MultiReplayDock"),
+			  QStringLiteral("#MultiReplayMonitors"));
+		// ...and the bay tags are twice as tall there, so their words can be
+		// twice as big. Appended, so it wins over the rule it overrides.
+		s += QStringLiteral(
+			"\nQLabel#mrChanTag { font-size: 15px; font-weight: 700; }\n"
+			"QLabel#mrTileCap { font-size: 12px; }\n");
+		monitorHost_->setStyleSheet(s);
 	}
 	applyTableDensity(cfg.tableDensity);
 
@@ -2363,7 +2507,9 @@ void MultiReplayDock::rebuildMultiview()
 		PreviewTile &t = tiles_[tileSlots[k]];
 		if (!t.box)
 			continue;
-		t.caption->setText(captions[(int)k]);
+		// The name is printed in the picture now (DisplayOverlay); the band
+		// under it is only the tally colour. The text stays as the tooltip.
+		t.caption->setText(QString());
 		t.caption->setToolTip(
 			t.cam0 >= 0 ? QString("%1 %2")
 					      .arg(obs_module_text("Dock.Angle"))
@@ -4933,6 +5079,15 @@ void MultiReplayDock::onEventItemChanged(QTableWidgetItem *item)
 
 bool MultiReplayDock::eventFilter(QObject *watched, QEvent *event)
 {
+	// The monitors' own dock was resized: re-pick the arrangement and re-size
+	// the pictures once the layout has settled. Never swallowed.
+	if (monitorHost_ && watched == monitorHost_ &&
+	    event->type() == QEvent::Resize) {
+		QTimer::singleShot(0, this, [this]() {
+			applyMonitorHostLayout();
+			applyPreviewAspect();
+		});
+	}
 	// A DOUBLE CLICK ON THE FLOATING PANEL'S TITLE BAR MAXIMISES IT, it does
 	// not put it away. Qt's answer to one is _q_toggleTopLevel() — the panel
 	// re-docks — and inside OBS that means it goes back to wherever the layout

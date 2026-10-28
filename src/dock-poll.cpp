@@ -12,6 +12,7 @@ translation units keeps each concern reviewable on its own.
 */
 
 #include "multireplay-dock.hpp"
+#include "dock-native-mac.hpp"
 #include "angle-channels.hpp"
 #include "dock-internal.hpp"
 #include "dock-layout.hpp"
@@ -37,6 +38,7 @@ translation units keeps each concern reviewable on its own.
 #include <obs-frontend-api.h> // obs_frontend_get_scenes (output-scene picker)
 #include <util/platform.h>    // os_gettime_ns (arm watchdog deadline)
 
+#include <QTime>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QGridLayout>
@@ -212,6 +214,48 @@ void MultiReplayDock::updateChannelStrip()
 	if (statusSpeed_)
 		statusSpeed_->setText(QString::number(speedPct_ / 100.0, 'f', 2) +
 				      QChar(0x00D7));
+	// ── THE VIEWER HEADER: clock, delay behind live, open IN, rate ─────────
+	if (header_ && header_->isVisible()) {
+		obs_video_info ovi{};
+		double fps = 25.0;
+		if (obs_get_video_info(&ovi) && ovi.fps_den > 0 && ovi.fps_num > 0)
+			fps = (double)ovi.fps_num / (double)ovi.fps_den;
+		const int fpsI = std::max(1, (int)std::lround(fps));
+		const auto tcFrames = [fpsI](int64_t totalMs) {
+			const int64_t s = totalMs / 1000;
+			const int ff = (int)((totalMs % 1000) * fpsI / 1000);
+			return QString::asprintf("%02d:%02d:%02d:%02d",
+						 (int)(s / 3600),
+						 (int)((s / 60) % 60),
+						 (int)(s % 60), ff);
+		};
+		ReplayHeader::State hs;
+		const QTime now = QTime::currentTime();
+		hs.clock = tcFrames((int64_t)now.msecsSinceStartOfDay());
+		// Behind live: the distance from the playhead to the newest frame
+		// of the angle in view. Within a quarter second of the edge, or with
+		// nothing cued, it is LIVE.
+		const int64_t edge = PacketTap::instance().newestNs(currentAngle1() - 1);
+		const int64_t behind = (edge > 0 && playheadNs_ != kNoInstant)
+					       ? edge - playheadNs_
+					       : 0;
+		if (ps.active && haveEv) {
+			// A clip is running: say where we are INSIDE it.
+			hs.live = false;
+			hs.delay = tcFrames((clipPos - ev.tInNs) / 1000000);
+		} else {
+			hs.live = behind < 250000000;
+			hs.delay = hs.live ? QStringLiteral("LIVE")
+					   : QStringLiteral("-") +
+						     tcFrames(behind / 1000000);
+		}
+		hs.markOpen = store.hasOpenEvent();
+		hs.rate = QString::number(ps.active ? ps.speedPct : speedPct_) +
+			  QChar('%');
+		header_->setState(hs);
+	}
+	// (The caption under each bay is gone: event, position and speed are
+	// printed inside the picture now — see updatePictureOverlays().)
 	// clipPos and signedTc are still what the on-air band below is built from.
 	(void)clipPos;
 	(void)signedTc;
@@ -544,6 +588,15 @@ void MultiReplayDock::poll()
 	auto &core = ReplayCore::instance();
 	auto &chan = this->chan();
 	auto &tap = PacketTap::instance();
+
+	// The monitors' dock, once it floats, is kept on the NORMAL window level
+	// (macOS), so other windows can be brought in front of it. Re-applied about
+	// once a second: Qt sets the level again whenever the window is re-shown or
+	// the dock is floated and docked.
+	if (monitorHost_ && (winLevelTick_++ % 30) == 0)
+		mrMakeWindowNormalLevel(
+			monitorHost_,
+			static_cast<QWidget *>(obs_frontend_get_main_window()));
 
 	// The preview's obs_display is bound to a native window handle, and OBS
 	// re-parents its docks whenever the layout is restored, floated, tabbed or
@@ -1299,6 +1352,7 @@ void MultiReplayDock::poll()
 		Phase _ph(this, "channelStrip");
 		updateChannelStrip();
 	}
+	updatePictureOverlays();
 
 	// --- project label ---
 	// Same rate as the status line: it only changes when the operator opens
@@ -2063,6 +2117,133 @@ void MultiReplayDock::refreshEvents()
 			}
 		}
 		reselecting_ = false;
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Text inside the pictures of the two bays
+// ---------------------------------------------------------------------------
+//
+// What a replay server prints on its monitor image: the event on top left, the
+// recording dot on top right, and one thin line at the bottom — time of day of
+// the frame on screen, camera, speed. Qt cannot put a widget over an
+// obs_display, so this only hands the strings to the DisplayOverlay of each
+// bay; the graphics thread draws them (see display-overlay.hpp).
+void MultiReplayDock::updatePictureOverlays()
+{
+	if (!displayA_ || !displayB_)
+		return;
+
+	auto &core = ReplayCore::instance();
+	const Config cfg = core.getConfig();
+	const SessionEpoch epoch = core.sessionEpoch();
+	const bool rec = core.isRecording();
+
+	obs_video_info ovi{};
+	int fpsI = 25;
+	if (obs_get_video_info(&ovi) && ovi.fps_den > 0 && ovi.fps_num > 0)
+		fpsI = std::max(1, (int)std::lround((double)ovi.fps_num /
+						    (double)ovi.fps_den));
+	const int idDigits = std::clamp(cfg.eventIdDigits, 1, 8);
+
+	// Time of day of an instant on the master clock, as HH:MM:SS:FF. The
+	// session epoch pairs the master clock with the wall clock (which NTP
+	// keeps right), so a recorded frame shows the time it was recorded at.
+	const auto timeOfDay = [&](int64_t masterNs) {
+		const int64_t wallMs = masterToWallNs(epoch, masterNs) / 1000000;
+		const QTime t = QDateTime::fromMSecsSinceEpoch(wallMs).time();
+		const int ff = (t.msec() * fpsI) / 1000;
+		return QString::asprintf("%02d:%02d:%02d:%02d", t.hour(),
+					 t.minute(), t.second(), ff);
+	};
+
+	const auto &store = EventStore::instance();
+	const auto one = [&](Which w, OBSQTDisplay *disp, DisplayOverlay &ov) {
+		if (!disp->isVisible()) {
+			DisplayOverlay::Content off;
+			ov.setContent(off, 0);
+			return;
+		}
+		const bool isActive = w == activeChannel_;
+		const auto ps = PlaybackCoordinator::instance(w).playState();
+		auto &ch = ReplayChannel::instance(w);
+
+		DisplayOverlay::Content c;
+		c.visible = true;
+		c.rec = rec;
+
+		int evId = ps.active ? ps.eventId : 0;
+		if (evId <= 0 && isActive) {
+			const auto sel = selectedEventIds();
+			evId = sel.empty() ? store.lastEventId() : sel.front();
+		}
+		if (evId > 0)
+			c.topLeft = QString::number(evId).rightJustified(
+				idDigits, QLatin1Char('0'));
+
+		int64_t instant = kNoInstant;
+		if (ch.playing() && ch.hasPosition())
+			instant = ch.positionNs();
+		else if (isActive && playheadNs_ != kNoInstant)
+			instant = playheadNs_;
+		else if (ch.hasPosition())
+			instant = ch.positionNs();
+		if (instant != kNoInstant)
+			c.time = timeOfDay(instant);
+		else if (isActive)
+			// Nothing recorded yet: the bay shows the live picture, so it
+			// shows the live time of day, as the camera tiles do.
+			c.time = timeOfDay((int64_t)os_gettime_ns());
+
+		const int angle1 = ps.active && ps.angle1 > 0 ? ps.angle1
+							      : angle1_[(int)w];
+		if (angle1 >= 1 && angle1 <= kMaxCameras) {
+			const std::string &dn = cfg.cameras[angle1 - 1].displayName;
+			c.name = dn.empty() ? QString("Cam %1").arg(angle1)
+					    : QString::fromStdString(dn);
+		}
+
+		if (ps.active || isActive)
+			c.rate = QString::number(ps.active ? ps.speedPct
+							   : speedPct_) +
+				 QChar('%');
+
+		const QSize px = disp->devicePixelSize();
+		// The picture is 16:9 inside the box; its height is the smaller of
+		// the box height and the width-derived one.
+		const int picH = std::min(px.height(), px.width() * 9 / 16);
+		ov.setContent(c, picH);
+	};
+	one(Which::A, displayA_, overlayA_);
+	one(Which::B, displayB_, overlayB_);
+
+	// The camera tiles: camera number top left, name in the middle, and the
+	// time of day of the live picture bottom left (they show live cameras).
+	const QDateTime nowDt = QDateTime::currentDateTime();
+	const int nowFf = (nowDt.time().msec() * fpsI) / 1000;
+	const QString nowTc = QString::asprintf(
+		"%02d:%02d:%02d:%02d", nowDt.time().hour(), nowDt.time().minute(),
+		nowDt.time().second(), nowFf);
+	for (int i = 0; i < kMaxPreviewTiles; i++) {
+		const PreviewTile &t = tiles_[i];
+		DisplayOverlay::Content c;
+		if (!t.display || t.cam0 < 0 || t.cam0 >= kMaxCameras ||
+		    !t.display->isVisible()) {
+			overlayTile_[i].setContent(c, 0);
+			continue;
+		}
+		const QSize px = t.display->devicePixelSize();
+		const int picH = std::min(px.height(), px.width() * 9 / 16);
+		c.visible = true;
+		c.rec = false;
+		c.topLeft = QString::number(t.cam0 + 1);
+		const std::string &dn = cfg.cameras[t.cam0].displayName;
+		c.name = dn.empty() ? QString("Cam %1").arg(t.cam0 + 1)
+				    : QString::fromStdString(dn);
+		// Too narrow for the time and the name side by side: name only.
+		if (px.width() >= 420)
+			c.time = nowTc;
+		overlayTile_[i].setContent(c, picH);
 	}
 }
 

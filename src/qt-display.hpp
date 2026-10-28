@@ -76,6 +76,9 @@ public:
 	// this is the only number that can tell the two apart from outside.
 	int64_t blockedMs() const;
 
+	// The widget's size in device pixels (what the overlay text scales with).
+	QSize devicePixelSize() const { return pixelSize(); }
+
 	// Qt must NOT paint over the native surface OBS renders into — EXCEPT
 	// where there is no native surface to render into. On a platform this
 	// widget cannot serve (Wayland: libobs binds a swap chain to an X window

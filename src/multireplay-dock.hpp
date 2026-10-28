@@ -17,6 +17,8 @@ start.
 
 #pragma once
 
+#include "dock-header.hpp"
+#include "display-overlay.hpp"
 #include "dock-layout.hpp"
 #include "dock-style.hpp"
 
@@ -711,6 +713,40 @@ private:
 	// the row's arithmetic must not size — or cap — a block nobody can see.
 	bool monitorsOn_ = true;
 
+	// ── THE MONITORS IN A DOCK OF THEIR OWN ──────────────────────────────
+	// Non-null only when Config.monitorsInOwnDock was set at construction.
+	// The pictures are built exactly as before and are only PARENTED
+	// differently, before anything is shown — so no OBSQTDisplay is ever
+	// re-parented afterwards. The panel's own dock then holds the list and the
+	// keys, and leftCol_ stays hidden (see applyMonitorsRoom).
+	//
+	// With no window of its own to measure, the arrangement of the pictures
+	// follows this host's shape instead of the panel's PanelMode: stacked
+	// (bays on top, cameras under them) when it is tall enough, side by side
+	// when it is wide and shallow.
+	QWidget *monitorHost_ = nullptr;
+	bool monitorStacked_ = false;
+	bool monitorsStacked() const
+	{
+		return monitorHost_ ? monitorStacked_ : panelMode_ == PanelMode::Tall;
+	}
+	void applyMonitorHostLayout();
+	// The naming band under the two BIG pictures. In the monitors' own dock it
+	// is twice the tiles' (24 px against 12), so the event, the position and
+	// the speed can be read from across a desk; everywhere else it is the one
+	// shared number.
+	static constexpr int kBayTagHOwnDock = 5;
+	int bayTagH() const
+	{
+		return monitorHost_ ? kBayTagHOwnDock : AspectBox::kTagH;
+	}
+	// ...and the camera tiles' band, 18 px there (the default 12 elsewhere).
+	static constexpr int kTileTagHOwnDock = 5;
+	int tileTagH() const
+	{
+		return monitorHost_ ? kTileTagHOwnDock : AspectBox::kTagH;
+	}
+
 	// ─── ⛶ THE PANEL TO THE WHOLE SCREEN, AND ONLY WHILE IT FLOATS ───────
 	//
 	// An operator who pulls this dock out onto a second monitor wants it to
@@ -1129,6 +1165,9 @@ public:
 	// that knows the arrangement can name, and naming it is the difference
 	// between a red line and an afternoon.
 	PanelMode panelMode() const { return panelMode_; }
+	// The widget that holds the monitoring block when Config.monitorsInOwnDock
+	// is on, else null. plugin-main registers it as a second dock.
+	QWidget *monitorHost() const { return monitorHost_; }
 	void applyTableDensity(int level);
 	// The comment editor is a delegate, and it lives outside this class: it
 	// needs the session vocabulary and the place a chosen word is remembered.
@@ -1465,6 +1504,11 @@ private:
 	QLabel *statusNotice_ = nullptr;
 	QLabel *statusSpeed_ = nullptr;
 	QWidget *statusBar_ = nullptr;
+	uint32_t winLevelTick_ = 0;
+	// The viewer header across the top (clock, IN/OUT, delay, rate).
+	ReplayHeader *header_ = nullptr;
+	QPushButton *markInBtn_ = nullptr;
+	QPushButton *markOutBtn_ = nullptr;
 	// Whether the line is currently carrying a notice rather than the resting
 	// text. Kept so the restyle that goes with it happens on the CHANGE, not
 	// thirty times a second.
@@ -1615,6 +1659,13 @@ private:
 	// kNoInstant, not 0: this is an instant on the master clock and instants
 	// go negative for footage older than the machine's last boot.
 	int64_t playheadNs_ = kNoInstant;
+
+	// Text drawn into the pictures of the two bays (see display-overlay.hpp).
+	// Filled by updatePictureOverlays() in poll; drawn by the draw callbacks.
+	DisplayOverlay overlayA_;
+	DisplayOverlay overlayB_;
+	std::array<DisplayOverlay, kMaxPreviewTiles> overlayTile_;
+	void updatePictureOverlays();
 
 	// --- THE FREE REVIEW: footage nobody marked ---------------------------
 	// Where the bar was when the operator asked to watch a stretch that no

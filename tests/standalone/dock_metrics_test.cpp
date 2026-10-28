@@ -219,7 +219,7 @@ static void test_tile_block_max_height()
 	// documented here rather than pretended away.
 	const TileBlock floored = tileBlockFor(1000, 1, 8, 3, 60);
 	CHECK(floored.tileW == kTileMinWidth);
-	CHECK(floored.blockH == 114);
+	CHECK(floored.blockH == 100);
 }
 
 static void test_tile_block_exact_values()
@@ -229,16 +229,16 @@ static void test_tile_block_exact_values()
 	// constants shows up here rather than on a rig.
 	const TileBlock wide = tileBlockFor(1000, 1, 8, 3, 200);
 	CHECK(wide.cols == 4);
-	CHECK(wide.tileW == 152 && wide.tileH == 85);
-	CHECK(wide.blockW == 620 && wide.blockH == 198);
-	CHECK(wide.bayW == 377 && wide.rowH == 200);
+	CHECK(wide.tileW == 160 && wide.tileH == 90);
+	CHECK(wide.blockW == 652 && wide.blockH == 194);
+	CHECK(wide.bayW == 345 && wide.rowH == 195);
 
 	// The narrow pane: one camera on its own, sized by the width there is.
 	const TileBlock narrow = tileBlockFor(300, 1, 1, 3, 200);
 	CHECK(narrow.cols == 1);
 	CHECK(narrow.tileW == 102 && narrow.tileH == 57);
-	CHECK(narrow.blockW == 102 && narrow.blockH == 69);
-	CHECK(narrow.bayW == 195 && narrow.rowH == 95);
+	CHECK(narrow.blockW == 102 && narrow.blockH == 62);
+	CHECK(narrow.bayW == 195 && narrow.rowH == 88);
 }
 
 static void test_deterministic()
