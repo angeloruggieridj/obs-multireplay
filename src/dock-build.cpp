@@ -623,7 +623,7 @@ void MultiReplayDock::buildSpeedDial()
 	speed_->setToolTip(obs_module_text("Dock.SpeedSliderHint"));
 	speed_->setCursor(Qt::PointingHandCursor);
 
-	speedLbl_ = new QLabel(QStringLiteral("1.00\xc3\x97"), this);
+	speedLbl_ = new QLabel(QStringLiteral("1.00\u00D7"), this);
 	speedLbl_->setObjectName("mrTimecode");
 	speedLbl_->setFont(QFont(monoFamily()));
 	speedLbl_->setMinimumWidth(42);
@@ -1072,7 +1072,7 @@ QWidget *MultiReplayDock::buildStatusBar(QWidget *parent)
 	sep2->setFixedWidth(1);
 	h->addWidget(sep2);
 
-	statusSpeed_ = new QLabel(QStringLiteral("1.00\xc3\x97"), statusBar_);
+	statusSpeed_ = new QLabel(QStringLiteral("1.00\u00D7"), statusBar_);
 	statusSpeed_->setObjectName(QStringLiteral("mrStatusValue"));
 	h->addWidget(statusSpeed_);
 	return statusBar_;
@@ -1860,8 +1860,10 @@ KeyBlock *MultiReplayDock::buildMarkers()
 	// that mark a point and put nothing on air.
 	auto *in = compactBtn(obs_module_text("Dock.MarkIn"), this);
 	setKeyId(in, QStringLiteral("markIn"));
+	markInBtn_ = in;
 	auto *out = compactBtn(obs_module_text("Dock.MarkOut"), this);
 	setKeyId(out, QStringLiteral("markOut"));
+	markOutBtn_ = out;
 	connect(in, &QPushButton::clicked, this, [this]() {
 		const int64_t t = markTimeNs();
 		if (!markable(t))

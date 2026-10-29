@@ -12,6 +12,7 @@ translation units keeps each concern reviewable on its own.
 */
 
 #include "multireplay-dock.hpp"
+#include "dock-native-mac.hpp"
 #include "angle-channels.hpp"
 #include "dock-internal.hpp"
 #include "dock-layout.hpp"
@@ -37,6 +38,7 @@ translation units keeps each concern reviewable on its own.
 #include <obs-frontend-api.h> // obs_frontend_get_scenes (output-scene picker)
 #include <util/platform.h>    // os_gettime_ns (arm watchdog deadline)
 
+#include <QTime>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QGridLayout>
@@ -212,6 +214,76 @@ void MultiReplayDock::updateChannelStrip()
 	if (statusSpeed_)
 		statusSpeed_->setText(QString::number(speedPct_ / 100.0, 'f', 2) +
 				      QChar(0x00D7));
+	// ── THE VIEWER HEADER: clock, delay behind live, open IN, rate ─────────
+	if (header_ && header_->isVisible()) {
+		obs_video_info ovi{};
+		double fps = 25.0;
+		if (obs_get_video_info(&ovi) && ovi.fps_den > 0 && ovi.fps_num > 0)
+			fps = (double)ovi.fps_num / (double)ovi.fps_den;
+		const int fpsI = std::max(1, (int)std::lround(fps));
+		const auto tcFrames = [fpsI](int64_t totalMs) {
+			const int64_t s = totalMs / 1000;
+			const int ff = (int)((totalMs % 1000) * fpsI / 1000);
+			return QString::asprintf("%02d:%02d:%02d:%02d",
+						 (int)(s / 3600),
+						 (int)((s / 60) % 60),
+						 (int)(s % 60), ff);
+		};
+		ReplayHeader::State hs;
+		const QTime now = QTime::currentTime();
+		hs.clock = tcFrames((int64_t)now.msecsSinceStartOfDay());
+		// Behind live: the distance from the playhead to the newest frame
+		// of the angle in view. Within a quarter second of the edge, or with
+		// nothing cued, it is LIVE.
+		const int64_t edge = PacketTap::instance().newestNs(currentAngle1() - 1);
+		const int64_t behind = (edge > 0 && playheadNs_ != kNoInstant)
+					       ? edge - playheadNs_
+					       : 0;
+		if (ps.active && haveEv) {
+			// A clip is running: say where we are INSIDE it.
+			hs.live = false;
+			hs.delay = tcFrames((clipPos - ev.tInNs) / 1000000);
+		} else {
+			hs.live = behind < 250000000;
+			hs.delay = hs.live ? QStringLiteral("LIVE")
+					   : QStringLiteral("-") +
+						     tcFrames(behind / 1000000);
+		}
+		hs.markOpen = store.hasOpenEvent();
+		hs.rate = QString::number(ps.active ? ps.speedPct : speedPct_) +
+			  QChar('%');
+		header_->setState(hs);
+	}
+	// ── THE CAPTION UNDER A BAY, in the monitors' own dock ────────────────
+	// There the pictures are on their own, away from the on-air band, so the
+	// tag under the bay that is being driven also says what is in it: event,
+	// position inside the clip, speed. The bay that is not being driven keeps
+	// its bare letter. Only when the box is wide enough (320 px at the 15 px caption size) —
+	// a clipped caption is worse than a short one.
+	if (monitorHost_ && labelA_ && labelB_ && aBox_ && bBox_) {
+		const int shownSpeed = ps.active ? ps.speedPct : speedPct_;
+		QString info;
+		if (haveEv) {
+			info = QStringLiteral("E") +
+			       QString::number(evId).rightJustified(idDigits, QLatin1Char('0')) +
+			       QStringLiteral("   ") + shortTc(clipPos - ev.tInNs) +
+			       QStringLiteral("   ");
+		}
+		info += QString::number(shownSpeed / 100.0, 'f', 2) + QChar(0x00D7);
+		const auto caption = [&info](const QString &letter, bool driven,
+					     int boxW) {
+			if (!driven)
+				return letter;
+			return boxW >= 320 ? letter + QStringLiteral("   ") + info
+					   : letter;
+		};
+		labelA_->setText(caption(QStringLiteral("A"),
+					 linkedAB_ || activeChannel_ == Which::A,
+					 aBox_->width()));
+		labelB_->setText(caption(QStringLiteral("B"),
+					 linkedAB_ || activeChannel_ == Which::B,
+					 bBox_->width()));
+	}
 	// clipPos and signedTc are still what the on-air band below is built from.
 	(void)clipPos;
 	(void)signedTc;
@@ -544,6 +616,15 @@ void MultiReplayDock::poll()
 	auto &core = ReplayCore::instance();
 	auto &chan = this->chan();
 	auto &tap = PacketTap::instance();
+
+	// The monitors' dock, once it floats, is kept on the NORMAL window level
+	// (macOS), so other windows can be brought in front of it. Re-applied about
+	// once a second: Qt sets the level again whenever the window is re-shown or
+	// the dock is floated and docked.
+	if (monitorHost_ && (winLevelTick_++ % 30) == 0)
+		mrMakeWindowNormalLevel(
+			monitorHost_,
+			static_cast<QWidget *>(obs_frontend_get_main_window()));
 
 	// The preview's obs_display is bound to a native window handle, and OBS
 	// re-parents its docks whenever the layout is restored, floated, tabbed or

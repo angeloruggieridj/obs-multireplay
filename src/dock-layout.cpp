@@ -281,6 +281,15 @@ void AspectBox::resizeEvent(QResizeEvent *)
 	relayout();
 }
 
+void AspectBox::setTagHeight(int h)
+{
+	h = std::max(1, h);
+	if (h == tagH_)
+		return;
+	tagH_ = h;
+	relayout();
+}
+
 void AspectBox::relayout()
 {
 	if (!pic_)
@@ -291,9 +300,9 @@ void AspectBox::relayout()
 	// the one thing this class exists to prevent. A 12 px band on an 11 px
 	// box was not telling anybody anything; the ratio still is.
 	int availH = height();
-	const bool room = tag_ && availH >= kTagH + 10;
+	const bool room = tag_ && availH >= tagH_ + 10;
 	if (room)
-		availH -= kTagH;
+		availH -= tagH_;
 	if (tag_)
 		tag_->setVisible(room);
 	if (availH < 2 || width() < 4) {
@@ -307,7 +316,7 @@ void AspectBox::relayout()
 	const int y = (availH - h) / 2;
 	pic_->setGeometry(x, y, w, h);
 	if (room)
-		tag_->setGeometry(x, y + h, w, kTagH);
+		tag_->setGeometry(x, y + h, w, tagH_);
 }
 
 
