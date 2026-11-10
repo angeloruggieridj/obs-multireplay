@@ -88,6 +88,13 @@ struct Config {
 	// but it is also two pixels from the cells an operator edits, so he gets to
 	// switch it off.
 	bool doubleClickPlays = true;
+	// The monitoring block (both bays and the camera previews) in a dock of its
+	// own, so the panel with the list and the keys can sit on a second screen or
+	// be brought to the front on its own. Read ONCE, when the panel is built:
+	// an obs_display must never be re-parented, so changing it takes effect at
+	// the next start of OBS. Absent in every older config.json, and absent
+	// means OFF — the single dock they have always had.
+	bool monitorsInOwnDock = false;
 	// §7.3.11 — Space plays the selected event, for an operator who never
 	// leaves the keyboard. OFF by default, unlike doubleClickPlays and
 	// toOutputOnPlay above: those both need a deliberate mouse action

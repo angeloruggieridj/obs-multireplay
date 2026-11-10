@@ -334,6 +334,10 @@ public:
 	// reserves (kTileTagH, dock-metrics.hpp): that header has no AspectBox
 	// to ask.
 	static constexpr int kTagH = kTileTagH;
+	// This box's own band, for the big bays in the monitors' dock. Default is
+	// kTagH, so every other box is unchanged.
+	void setTagHeight(int h);
+	int tagHeight() const { return tagH_; }
 
 protected:
 	void resizeEvent(QResizeEvent *) override;
@@ -343,6 +347,7 @@ private:
 	QWidget *pic_ = nullptr;
 	QWidget *tag_ = nullptr;
 	int rw_ = 16, rh_ = 9;
+	int tagH_ = kTagH;
 };
 
 // ---------------------------------------------------------------------------

@@ -251,13 +251,17 @@ inline constexpr int kTileTagH = 12;
 // that matters when the panel is docked under the OBS preview: there the pane
 // is wide and shallow, and an arrangement chosen from the width alone asks for
 // four rows of tiles in a pane with room for two. 0 = no limit.
-inline TileBlock tileBlockFor(int paneW, int bays, int n, int gap, int maxH = 0)
+// `bayTagH` is the naming band under the BIG pictures, which is taller than
+// the tiles' in the monitors' own dock (see MultiReplayDock::bayTagH), and
+// `tileTagH` the band under each camera tile, which can differ from both.
+inline TileBlock tileBlockFor(int paneW, int bays, int n, int gap, int maxH = 0,
+			      int bayTagH = kTileTagH, int tileTagH = kTileTagH)
 {
 	TileBlock best;
 	if (n <= 0 || paneW <= 0 || bays <= 0)
 		return best;
 	const auto aspect = [](int w) { return std::max(1, w * 9 / 16); };
-	const int tagH = kTileTagH;
+	const int tagH = tileTagH;
 	// Proportional, not a constant: see kTileMaxShare.
 	const int ceiling =
 		std::max(kTileMinWidth, (int)(paneW * kTileMaxShare));
@@ -305,7 +309,7 @@ inline TileBlock tileBlockFor(int paneW, int bays, int n, int gap, int maxH = 0)
 	const double perTile = cols * 16.0 / (9.0 * rows);
 	const double k = bays * perBay + perTile;
 	const double cst = gap * bays + (cols - 1) * kTileGap -
-			   bays * perBay * tagH -
+			   bays * perBay * bayTagH -
 			   cols * (16.0 / 9.0) *
 				   ((rows - 1) * kTileGap / (double)rows + tagH);
 	int h = (k > 0.01) ? (int)((paneW - cst) / k) : maxH;
@@ -340,7 +344,7 @@ inline TileBlock tileBlockFor(int paneW, int bays, int n, int gap, int maxH = 0)
 	// slightly wider slot instead of the row falling short of the edge. Only
 	// ever a widen: a bay narrower than aw(h) would letterbox vertically,
 	// which is worse, and the caller already clamps an over-wide block.
-	int finalBayW = std::max(40, (h - tagH) * 16 / 9);
+	int finalBayW = std::max(40, (h - bayTagH) * 16 / 9);
 	if (bays > 0) {
 		const int filled = (paneW - blockW - gap * bays) / bays;
 		if (filled > finalBayW)

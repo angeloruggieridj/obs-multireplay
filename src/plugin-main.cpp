@@ -41,6 +41,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 
 namespace {
 constexpr const char *kDockId = "obs-multireplay-dock";
+constexpr const char *kMonitorDockId = "obs-multireplay-monitors";
 }
 
 namespace {
@@ -235,7 +236,18 @@ void obs_module_post_load(void)
 	if (!obs_frontend_add_dock_by_id(kDockId, obs_module_text("Dock.Title"),
 					 dock)) {
 		obs_log(LOG_ERROR, "Failed to register the obs-multireplay dock");
-		delete dock;
+		QWidget *mon = dock->monitorHost();
+		delete dock; // detaches every display callback first
+		delete mon;  // null when the monitors are not in a dock of their own
+	} else if (QWidget *mon = dock->monitorHost()) {
+		// The monitoring block in a dock of its own (Settings).
+		if (!obs_frontend_add_dock_by_id(
+			    kMonitorDockId, obs_module_text("Dock.MonitorsTitle"),
+			    mon)) {
+			obs_log(LOG_ERROR,
+				"Failed to register the obs-multireplay monitors dock");
+			mon->hide();
+		}
 	}
 
 	// External control for hardware controllers (tools/hardware-bridge).
@@ -270,6 +282,7 @@ void obs_module_unload(void)
 	obs_frontend_remove_event_callback(onFrontendEvent, nullptr);
 	multireplay::remote_control::shutdown();
 	obs_frontend_remove_dock(kDockId);
+	obs_frontend_remove_dock(kMonitorDockId); // no-op when it was never added
 	// Detach from Branch Output's encoders before anything else tears down.
 	multireplay::PacketTap::instance().unload();
 	for (int i = 0; i < multireplay::kChannels; i++)
